@@ -450,10 +450,17 @@ FindLockCycle(PGPROC *checkProc,
 			  EDGE *softEdges,	/* output argument */
 			  int *nSoftEdges)	/* output argument */
 {
+	bool found;
+	TimestampTz now;
+	int i;
 	nVisitedProcs = 0;
 	nDeadlockDetails = 0;
 	*nSoftEdges = 0;
-	return FindLockCycleRecurse(checkProc, 0, softEdges, nSoftEdges);
+	found = FindLockCycleRecurse(checkProc, 0, softEdges, nSoftEdges);
+	now = GetCurrentTimestamp();
+	for (i = 0; i < nVisitedProcs; i++)
+		visitedProcs[i]->lastDeadlockCheck = now;
+	return found;
 }
 
 static bool

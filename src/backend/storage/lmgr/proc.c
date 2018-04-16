@@ -86,6 +86,8 @@ static LOCALLOCK *lockAwaited = NULL;
 
 static DeadLockState deadlock_state = DS_NOT_YET_CHECKED;
 
+static bool inside_deadlock_check = false;
+
 /* Is a deadlock check pending? */
 static volatile sig_atomic_t got_deadlock_timeout;
 
@@ -187,6 +189,7 @@ InitProcGlobal(void)
 	ProcGlobal->checkpointerLatch = NULL;
 	pg_atomic_init_u32(&ProcGlobal->procArrayGroupFirst, INVALID_PGPROCNO);
 	pg_atomic_init_u32(&ProcGlobal->clogGroupFirst, INVALID_PGPROCNO);
+	pg_atomic_init_flag(&ProcGlobal->activeDeadlockCheck);
 
 	/*
 	 * Create and initialize all the PGPROC structures we'll need.  There are
@@ -763,6 +766,14 @@ ProcReleaseLocks(bool isCommit)
 {
 	if (!MyProc)
 		return;
+
+	/* Release deadlock detection flag is backend was interrupted inside deadlock check */
+	if (inside_deadlock_check)
+	{
+		pg_atomic_clear_flag(&ProcGlobal->activeDeadlockCheck);
+		inside_deadlock_check = false;
+	}
+
 	/* If waiting, get off wait queue (should only be needed after error) */
 	LockErrorCleanup();
 	/* Release standard locks, including session-level if aborting */
@@ -1665,6 +1676,21 @@ static void
 CheckDeadLock(void)
 {
 	int			i;
+	TimestampTz now = GetCurrentTimestamp();
+
+	if (now - MyProc->lastDeadlockCheck < DeadlockTimeout*1000)
+		return;
+
+	/*
+	 * Ensure that only one backend is checking for deadlock.
+	 * Otherwise under high load cascade of deadlock timeout expirations can cause stuck of Postgres.
+	 */
+	if (!pg_atomic_test_set_flag(&ProcGlobal->activeDeadlockCheck))
+	{
+		enable_timeout_after(DEADLOCK_TIMEOUT, random() % DeadlockTimeout);
+		return;
+	}
+	inside_deadlock_check = true;
 
 	/*
 	 * Acquire exclusive lock on the entire shared lock data structures. Must
@@ -1741,6 +1767,9 @@ CheckDeadLock(void)
 check_done:
 	for (i = NUM_LOCK_PARTITIONS; --i >= 0;)
 		LWLockRelease(LockHashPartitionLockByIndex(i));
+
+	pg_atomic_clear_flag(&ProcGlobal->activeDeadlockCheck);
+	inside_deadlock_check = false;
 }
 
 /*
