@@ -43,7 +43,7 @@
 #include "utils/snapmgr.h"
 #include "utils/typcache.h"
 #include "utils/tqual.h"
-
+#include "nodes/bitmapset.h"
 
 #undef TOAST_DEBUG
 
@@ -69,7 +69,7 @@ typedef struct toast_compress_header
 
 static void toast_delete_datum(Relation rel, Datum value, bool is_speculative);
 static Datum toast_save_datum(Relation rel, Datum value,
-				 struct varlena *oldexternal, int options);
+							  struct varlena *oldexternal, int options, Bitmapset* update_chunks);
 static bool toastrel_valueid_exists(Relation toastrel, Oid valueid);
 static bool toastid_valueid_exists(Oid toastrelid, Oid valueid);
 static struct varlena *toast_fetch_datum(struct varlena *attr);
@@ -511,6 +511,28 @@ toast_delete(Relation rel, HeapTuple oldtup, bool is_speculative)
 	}
 }
 
+static Bitmapset*
+build_diff_map(char const* old_value, char const* new_value, size_t old_size, size_t new_size)
+{
+	Bitmapset* map = NULL;
+	int i;
+	size_t size = Min(old_size, new_size);
+
+	for (i = 0; size != 0; i++)
+	{
+		int chunk_size = size > TOAST_MAX_CHUNK_SIZE ? TOAST_MAX_CHUNK_SIZE : size;
+		if (memcmp(old_value, new_value, chunk_size) != 0) {
+			map = bms_add_member(map, i);
+		}
+		size -= chunk_size;
+		old_value += chunk_size;
+		new_value += chunk_size;
+	}
+	if (old_size != new_size) {
+		map = bms_add_member(map, new_size / TOAST_MAX_CHUNK_SIZE);
+	}
+	return map;
+}
 
 /* ----------
  * toast_insert_or_update -
@@ -542,6 +564,7 @@ toast_insert_or_update(Relation rel, HeapTuple newtup, HeapTuple oldtup,
 	bool		need_change = false;
 	bool		need_free = false;
 	bool		need_delold = false;
+	bool		need_delmap = false;
 	bool		has_nulls = false;
 
 	Size		maxDataLen;
@@ -556,6 +579,7 @@ toast_insert_or_update(Relation rel, HeapTuple newtup, HeapTuple oldtup,
 	int32		toast_sizes[MaxHeapAttributeNumber];
 	bool		toast_free[MaxHeapAttributeNumber];
 	bool		toast_delold[MaxHeapAttributeNumber];
+	Bitmapset** update_chunks;
 
 	/*
 	 * Ignore the INSERT_SPECULATIVE option. Speculative insertions/super
@@ -599,6 +623,7 @@ toast_insert_or_update(Relation rel, HeapTuple newtup, HeapTuple oldtup,
 	memset(toast_oldexternal, 0, numAttrs * sizeof(struct varlena *));
 	memset(toast_free, 0, numAttrs * sizeof(bool));
 	memset(toast_delold, 0, numAttrs * sizeof(bool));
+	update_chunks = palloc0(numAttrs*sizeof(Bitmapset*));
 
 	for (i = 0; i < numAttrs; i++)
 	{
@@ -630,7 +655,32 @@ toast_insert_or_update(Relation rel, HeapTuple newtup, HeapTuple oldtup,
 					 * after the update
 					 */
 					toast_delold[i] = true;
-					need_delold = true;
+
+					if (VARATT_IS_4B(new_value))
+					{
+						struct varlena *orig_value = heap_tuple_untoast_attr(old_value);
+						size_t old_size = VARSIZE(orig_value) - VARHDRSZ;
+						size_t new_size = VARSIZE(new_value) - VARHDRSZ;
+						Bitmapset* map = build_diff_map((char *) VARDATA(orig_value),
+														(char *) VARDATA(new_value),
+														old_size,
+														new_size);
+						pfree(orig_value);
+						/* If less than half of the chunks are changed
+						 * and attribute is not compressed then use update rather than insert
+						 */
+						if ((old_size + TOAST_MAX_CHUNK_SIZE - 1) / TOAST_MAX_CHUNK_SIZE == (new_size + TOAST_MAX_CHUNK_SIZE - 1) / TOAST_MAX_CHUNK_SIZE
+							&& bms_num_members(map)*2 < (new_size + TOAST_MAX_CHUNK_SIZE - 1) / TOAST_MAX_CHUNK_SIZE
+							&& TupleDescAttr(tupleDesc, i)->attstorage == 'e')
+						{
+							update_chunks[i] = map;
+							need_delmap = true;
+							toast_delold[i] = false;
+							toast_oldexternal[i] = old_value;
+						}
+					}
+					if (toast_delold[i])
+						need_delold = true;
 				}
 				else
 				{
@@ -812,7 +862,8 @@ toast_insert_or_update(Relation rel, HeapTuple newtup, HeapTuple oldtup,
 			old_value = toast_values[i];
 			toast_action[i] = 'p';
 			toast_values[i] = toast_save_datum(rel, toast_values[i],
-											   toast_oldexternal[i], options);
+											   toast_oldexternal[i], options,
+											   update_chunks[i]);
 			if (toast_free[i])
 				pfree(DatumGetPointer(old_value));
 			toast_free[i] = true;
@@ -865,7 +916,9 @@ toast_insert_or_update(Relation rel, HeapTuple newtup, HeapTuple oldtup,
 		old_value = toast_values[i];
 		toast_action[i] = 'p';
 		toast_values[i] = toast_save_datum(rel, toast_values[i],
-										   toast_oldexternal[i], options);
+										   toast_oldexternal[i],
+										   options,
+										   update_chunks[i]);
 		if (toast_free[i])
 			pfree(DatumGetPointer(old_value));
 		toast_free[i] = true;
@@ -979,7 +1032,9 @@ toast_insert_or_update(Relation rel, HeapTuple newtup, HeapTuple oldtup,
 		old_value = toast_values[i];
 		toast_action[i] = 'p';
 		toast_values[i] = toast_save_datum(rel, toast_values[i],
-										   toast_oldexternal[i], options);
+										   toast_oldexternal[i],
+										   options,
+										   update_chunks[i]);
 		if (toast_free[i])
 			pfree(DatumGetPointer(old_value));
 		toast_free[i] = true;
@@ -1066,6 +1121,12 @@ toast_insert_or_update(Relation rel, HeapTuple newtup, HeapTuple oldtup,
 		for (i = 0; i < numAttrs; i++)
 			if (toast_delold[i])
 				toast_delete_datum(rel, toast_oldvalues[i], false);
+
+	if (need_delmap)
+		for (i = 0; i < numAttrs; i++)
+			bms_free(update_chunks[i]);
+
+	pfree(update_chunks);
 
 	return result_tuple;
 }
@@ -1452,6 +1513,61 @@ toast_get_valid_index(Oid toastoid, LOCKMODE lock)
 }
 
 
+static void
+toast_update_chunk(Relation toastrel, struct varatt_external* toast_pointer, int chunk_id, HeapTuple newtoasttup)
+{
+	Relation   *toastidxs;
+	ScanKeyData toastkey[2];
+	SysScanDesc toastscan;
+	HeapTuple	oldtoasttup;
+	int			num_indexes;
+	int			validIndex;
+	SnapshotData SnapshotToast;
+
+	/* Fetch valid relation used for process */
+	validIndex = toast_open_indexes(toastrel,
+									RowExclusiveLock,
+									&toastidxs,
+									&num_indexes);
+
+	/*
+	 * Setup a scan key to find specified chunk
+	 */
+	ScanKeyInit(&toastkey[0],
+				(AttrNumber) 1,
+				BTEqualStrategyNumber, F_OIDEQ,
+				ObjectIdGetDatum(toast_pointer->va_valueid));
+	ScanKeyInit(&toastkey[1],
+				(AttrNumber) 2,
+				BTEqualStrategyNumber, F_INT4EQ,
+				Int32GetDatum(chunk_id));
+
+	/*
+	 * Find all the chunks.  (We don't actually care whether we see them in
+	 * sequence or not, but since we've already locked the index we might as
+	 * well use systable_beginscan_ordered.)
+	 */
+	init_toast_snapshot(&SnapshotToast);
+	toastscan = systable_beginscan(toastrel, validIndex,
+								   false, &SnapshotToast, 2, toastkey);
+	oldtoasttup = systable_getnext(toastscan);
+
+	if (oldtoasttup == NULL)
+		elog(ERROR, "Failed to locate TOAST chunk %d.%d",
+			 toast_pointer->va_valueid,
+			 chunk_id);
+
+	simple_heap_update(toastrel, &oldtoasttup->t_self, newtoasttup);
+
+	elog(LOG, "Update toast chunk %d.%d",
+		 toast_pointer->va_valueid,
+		 chunk_id);
+
+	systable_endscan(toastscan);
+	toast_close_indexes(toastidxs, num_indexes, RowExclusiveLock);
+}
+
+
 /* ----------
  * toast_save_datum -
  *
@@ -1466,7 +1582,8 @@ toast_get_valid_index(Oid toastoid, LOCKMODE lock)
  */
 static Datum
 toast_save_datum(Relation rel, Datum value,
-				 struct varlena *oldexternal, int options)
+				 struct varlena *oldexternal, int options,
+				 Bitmapset* update_chunks)
 {
 	Relation	toastrel;
 	Relation   *toastidxs;
@@ -1567,7 +1684,18 @@ toast_save_datum(Relation rel, Datum value,
 	 * options have been changed), we have to pick a value ID that doesn't
 	 * conflict with either new or existing toast value OIDs.
 	 */
-	if (!OidIsValid(rel->rd_toastoid))
+	if (update_chunks)
+	{
+		/* If we updte existed toask chaunk, use old toast OID */
+		struct varatt_external old_toast_pointer;
+		Assert(oldexternal != NULL);
+		Assert(VARATT_IS_EXTERNAL_ONDISK(oldexternal));
+		/* Must copy to access aligned fields */
+		VARATT_EXTERNAL_GET_POINTER(old_toast_pointer, oldexternal);
+		Assert(old_toast_pointer.va_toastrelid == toast_pointer.va_toastrelid);
+		toast_pointer.va_valueid = old_toast_pointer.va_valueid;
+	}
+	else if (!OidIsValid(rel->rd_toastoid))
 	{
 		/* normal case: just choose an unused OID */
 		toast_pointer.va_valueid =
@@ -1659,12 +1787,20 @@ toast_save_datum(Relation rel, Datum value,
 		/*
 		 * Build a tuple and store it
 		 */
-		t_values[1] = Int32GetDatum(chunk_seq++);
+		t_values[1] = Int32GetDatum(chunk_seq);
 		SET_VARSIZE(&chunk_data, chunk_size + VARHDRSZ);
 		memcpy(VARDATA(&chunk_data), data_p, chunk_size);
 		toasttup = heap_form_tuple(toasttupDesc, t_values, t_isnull);
 
-		heap_insert(toastrel, toasttup, mycid, options, NULL);
+		if (update_chunks != NULL)
+		{
+			if (bms_is_member(chunk_seq, update_chunks))
+				toast_update_chunk(toastrel, &toast_pointer, chunk_seq, toasttup);
+			else
+				goto skip_chunk;
+		}
+		else
+			heap_insert(toastrel, toasttup, mycid, options, NULL);
 
 		/*
 		 * Create the index entry.  We cheat a little here by not using
@@ -1677,18 +1813,21 @@ toast_save_datum(Relation rel, Datum value,
 		 * Note also that there had better not be any user-created index on
 		 * the TOAST table, since we don't bother to update anything else.
 		 */
-		for (i = 0; i < num_indexes; i++)
+		if (!HeapTupleIsHeapOnly(toasttup))
 		{
-			/* Only index relations marked as ready can be updated */
-			if (IndexIsReady(toastidxs[i]->rd_index))
-				index_insert(toastidxs[i], t_values, t_isnull,
-							 &(toasttup->t_self),
-							 toastrel,
-							 toastidxs[i]->rd_index->indisunique ?
-							 UNIQUE_CHECK_YES : UNIQUE_CHECK_NO,
-							 NULL);
+			for (i = 0; i < num_indexes; i++)
+			{
+				/* Only index relations marked as ready can be updated */
+				if (IndexIsReady(toastidxs[i]->rd_index))
+					index_insert(toastidxs[i], t_values, t_isnull,
+								 &(toasttup->t_self),
+								 toastrel,
+								 toastidxs[i]->rd_index->indisunique ?
+								 UNIQUE_CHECK_YES : UNIQUE_CHECK_NO,
+								 NULL);
+			}
 		}
-
+	  skip_chunk:
 		/*
 		 * Free memory
 		 */
@@ -1699,6 +1838,7 @@ toast_save_datum(Relation rel, Datum value,
 		 */
 		data_todo -= chunk_size;
 		data_p += chunk_size;
+		chunk_seq += 1;
 	}
 
 	/*
@@ -2387,6 +2527,6 @@ init_toast_snapshot(Snapshot toast_snapshot)
 
 	if (snapshot == NULL)
 		elog(ERROR, "no known snapshots");
-
-	InitToastSnapshot(*toast_snapshot, snapshot->lsn, snapshot->whenTaken);
+	*toast_snapshot = *snapshot;
+	//InitToastSnapshot(*toast_snapshot, snapshot->lsn, snapshot->whenTaken);
 }
