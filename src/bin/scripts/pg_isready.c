@@ -34,7 +34,7 @@ main(int argc, char **argv)
 	const char *pghostaddr_str = NULL;
 	const char *pgport_str = NULL;
 
-#define PARAMS_ARRAY_SIZE	7
+#define PARAMS_ARRAY_SIZE	8
 
 	const char *keywords[PARAMS_ARRAY_SIZE];
 	const char *values[PARAMS_ARRAY_SIZE];

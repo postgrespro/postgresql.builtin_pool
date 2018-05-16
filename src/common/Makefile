@@ -43,7 +43,7 @@ LIBS += $(PTHREAD_LIBS)
 OBJS_COMMON = base64.o config_info.o controldata_utils.o exec.o file_perm.o \
 	ip.o keywords.o md5.o pg_lzcompress.o pgfnames.o psprintf.o relpath.o \
 	rmtree.o saslprep.o scram-common.o string.o unicode_norm.o \
-	username.o wait_error.o
+	username.o wait_error.o zpq_stream.o
 
 ifeq ($(with_openssl),yes)
 OBJS_COMMON += sha2_openssl.o

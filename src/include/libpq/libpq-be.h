@@ -182,6 +182,8 @@ typedef struct Port
 	char	   *peer_cn;
 	bool		peer_cert_valid;
 
+	bool        use_compression;
+	
 	/*
 	 * OpenSSL structures. (Keep these last so that the locations of other
 	 * fields are the same whether or not you build with OpenSSL.)

@@ -53,11 +53,12 @@
 #include "port/pg_bswap.h"
 #include "pg_config_paths.h"
 
+#include  <common/zpq_stream.h>
 
 static int	pqPutMsgBytes(const void *buf, size_t len, PGconn *conn);
 static int	pqSendSome(PGconn *conn, int len);
-static int pqSocketCheck(PGconn *conn, int forRead, int forWrite,
-			  time_t end_time);
+static int  pqSocketCheck(PGconn *conn, int forRead, int forWrite,
+						  time_t end_time);
 static int	pqSocketPoll(int sock, int forRead, int forWrite, time_t end_time);
 
 /*
@@ -630,6 +631,7 @@ pqReadData(PGconn *conn)
 {
 	int			someread = 0;
 	int			nread;
+	size_t      processed;
 
 	if (conn->sock == PGINVALID_SOCKET)
 	{
@@ -678,10 +680,23 @@ pqReadData(PGconn *conn)
 
 	/* OK, try to read some data */
 retry3:
-	nread = pqsecure_read(conn, conn->inBuffer + conn->inEnd,
-						  conn->inBufSize - conn->inEnd);
+	processed = 0;
+	nread = conn->zstream
+		? zpq_read(conn->zstream, conn->inBuffer + conn->inEnd,
+				   conn->inBufSize - conn->inEnd, &processed)
+		: pqsecure_read(conn, conn->inBuffer + conn->inEnd,
+						conn->inBufSize - conn->inEnd);
+	conn->inEnd += processed;
 	if (nread < 0)
 	{
+		if (nread == ZPQ_DECOMPRESS_ERROR)
+		{
+			printfPQExpBuffer(&conn->errorMessage,
+							  libpq_gettext("decompress error: %s\n"),
+							  zpq_error(conn->zstream));
+			return -1;
+		}
+
 		if (SOCK_ERRNO == EINTR)
 			goto retry3;
 		/* Some systems return EAGAIN/EWOULDBLOCK for no data */
@@ -768,10 +783,24 @@ retry3:
 	 * arrived.
 	 */
 retry4:
-	nread = pqsecure_read(conn, conn->inBuffer + conn->inEnd,
-						  conn->inBufSize - conn->inEnd);
+	processed = 0;
+	nread = conn->zstream
+		? zpq_read(conn->zstream, conn->inBuffer + conn->inEnd,
+				   conn->inBufSize - conn->inEnd, &processed)
+		: pqsecure_read(conn, conn->inBuffer + conn->inEnd,
+						conn->inBufSize - conn->inEnd);
+	conn->inEnd += processed;
+
 	if (nread < 0)
 	{
+		if (nread == ZPQ_DECOMPRESS_ERROR)
+		{
+			printfPQExpBuffer(&conn->errorMessage,
+							  libpq_gettext("decompress error: %s\n"),
+							  zpq_error(conn->zstream));
+			return -1;
+		}
+
 		if (SOCK_ERRNO == EINTR)
 			goto retry4;
 		/* Some systems return EAGAIN/EWOULDBLOCK for no data */
@@ -842,12 +871,14 @@ pqSendSome(PGconn *conn, int len)
 	}
 
 	/* while there's still data to send */
-	while (len > 0)
+	while (len > 0 || zpq_buffered(conn->zstream))
 	{
 		int			sent;
-
+		size_t      processed = 0;
+		sent = conn->zstream
+			? zpq_write(conn->zstream, ptr, len, &processed)
 #ifndef WIN32
-		sent = pqsecure_write(conn, ptr, len);
+			: pqsecure_write(conn, ptr, len);
 #else
 
 		/*
@@ -855,8 +886,11 @@ pqSendSome(PGconn *conn, int len)
 		 * failure-point appears to be different in different versions of
 		 * Windows, but 64k should always be safe.
 		 */
-		sent = pqsecure_write(conn, ptr, Min(len, 65536));
+			: pqsecure_write(conn, ptr, Min(len, 65536));
 #endif
+		ptr += processed;
+		len -= processed;
+		remaining -= processed;
 
 		if (sent < 0)
 		{
@@ -896,7 +930,7 @@ pqSendSome(PGconn *conn, int len)
 			remaining -= sent;
 		}
 
-		if (len > 0)
+		if (len > 0 || sent < 0 || zpq_buffered(conn->zstream))
 		{
 			/*
 			 * We didn't send it all, wait till we can send more.

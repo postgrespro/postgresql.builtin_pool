@@ -29,6 +29,10 @@ endif
 # platforms require special flags.
 LIBS := $(LIBS:-lpgport=)
 
+ifeq ($(with_zstd),yes)
+LIBS += -lzstd
+endif
+
 # We can't use Makefile variables here because the MSVC build system scrapes
 # OBJS from this file.
 OBJS=	fe-auth.o fe-auth-scram.o fe-connect.o fe-exec.o fe-misc.o fe-print.o fe-lobj.o \

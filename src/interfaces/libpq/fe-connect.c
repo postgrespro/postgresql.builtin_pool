@@ -72,6 +72,7 @@ static int ldapServiceLookup(const char *purl, PQconninfoOption *options,
 
 #include "common/ip.h"
 #include "common/scram-common.h"
+#include "common/zpq_stream.h"
 #include "mb/pg_wchar.h"
 #include "port/pg_bswap.h"
 
@@ -269,6 +270,10 @@ static const internalPQconninfoOption PQconninfoOptions[] = {
 		21,						/* sizeof("tls-server-end-point") == 21 */
 	offsetof(struct pg_conn, scram_channel_binding)},
 
+	{"compression", "COMPRESSION", "0", NULL,
+		"ZSTD-Compression", "", 1,
+	offsetof(struct pg_conn, compression)},
+
 	/*
 	 * ssl options are allowed even without client SSL support because the
 	 * client can still handle SSL modes "disable" and "allow". Other
@@ -324,6 +329,10 @@ static const internalPQconninfoOption PQconninfoOptions[] = {
 	{"replication", NULL, NULL, NULL,
 		"Replication", "D", 5,
 	offsetof(struct pg_conn, replication)},
+
+	{"compression", NULL, NULL, NULL,
+		"Compression", "Z", 5,
+	offsetof(struct pg_conn, compression)},
 
 	{"target_session_attrs", "PGTARGETSESSIONATTRS",
 		DefaultTargetSessionAttrs, NULL,
@@ -430,6 +439,10 @@ pgthreadlock_t pg_g_threadlock = default_threadlock;
 void
 pqDropConnection(PGconn *conn, bool flushInput)
 {
+	/* Release compression streams */
+	zpq_free(conn->zstream);
+	conn->zstream = NULL;
+
 	/* Drop any SSL state */
 	pqsecure_close(conn);
 
@@ -2648,11 +2661,23 @@ keep_going:						/* We will come back to here until there is
 				 */
 				conn->inCursor = conn->inStart;
 
-				/* Read type byte */
-				if (pqGetc(&beresp, conn))
+				while (1)
 				{
-					/* We'll come back when there is more data */
-					return PGRES_POLLING_READING;
+					/* Read type byte */
+					if (pqGetc(&beresp, conn))
+					{
+						/* We'll come back when there is more data */
+						return PGRES_POLLING_READING;
+					}
+
+					if (beresp == 'z') /* Switch on compression */
+					{
+						/* mark byte consumed */
+						conn->inStart = conn->inCursor;
+						Assert(!conn->zstream);
+						conn->zstream = zpq_create((zpq_tx_func)pqsecure_write, (zpq_rx_func)pqsecure_read, conn);
+					} else
+						break;
 				}
 
 				/*
@@ -3462,6 +3487,8 @@ freePGconn(PGconn *conn)
 		free(conn->dbName);
 	if (conn->replication)
 		free(conn->replication);
+	if (conn->compression)
+		free(conn->compression);
 	if (conn->pguser)
 		free(conn->pguser);
 	if (conn->pgpass)

@@ -188,6 +188,7 @@ int			nclients = 1;		/* number of clients */
 int			nthreads = 1;		/* number of threads */
 bool		is_connect;			/* establish connection for each transaction */
 bool		is_latencies;		/* report per-command latencies */
+bool        libpq_compression;  /* use libpq compression */
 int			main_pid;			/* main process id used in log filename */
 
 char	   *pghost = "";
@@ -590,6 +591,7 @@ usage(void)
 		   "  -h, --host=HOSTNAME      database server host or socket directory\n"
 		   "  -p, --port=PORT          database server port number\n"
 		   "  -U, --username=USERNAME  connect as specified database user\n"
+		   "  -Z, --compression        use libpq compression\n"
 		   "  -V, --version            output version information, then exit\n"
 		   "  -?, --help               show this help, then exit\n"
 		   "\n"
@@ -1107,7 +1109,7 @@ doConnect(void)
 	 */
 	do
 	{
-#define PARAMS_ARRAY_SIZE	7
+#define PARAMS_ARRAY_SIZE	8
 
 		const char *keywords[PARAMS_ARRAY_SIZE];
 		const char *values[PARAMS_ARRAY_SIZE];
@@ -1124,8 +1126,10 @@ doConnect(void)
 		values[4] = dbName;
 		keywords[5] = "fallback_application_name";
 		values[5] = progname;
-		keywords[6] = NULL;
-		values[6] = NULL;
+		keywords[6] = "compression";
+		values[6] = libpq_compression ? "on" : "off";
+		keywords[7] = NULL;
+		values[7] = NULL;
 
 		new_pass = false;
 
@@ -4759,6 +4763,7 @@ main(int argc, char **argv)
 		{"builtin", required_argument, NULL, 'b'},
 		{"client", required_argument, NULL, 'c'},
 		{"connect", no_argument, NULL, 'C'},
+		{"compression", no_argument, NULL, 'Z'},
 		{"debug", no_argument, NULL, 'd'},
 		{"define", required_argument, NULL, 'D'},
 		{"file", required_argument, NULL, 'f'},
@@ -4868,12 +4873,15 @@ main(int argc, char **argv)
 		exit(1);
 	}
 
-	while ((c = getopt_long(argc, argv, "iI:h:nvp:dqb:SNc:j:Crs:t:T:U:lf:D:F:M:P:R:L:", long_options, &optindex)) != -1)
+	while ((c = getopt_long(argc, argv, "iI:h:nvp:dqb:SNc:j:Crs:t:T:U:lf:D:F:M:P:R:L:Z", long_options, &optindex)) != -1)
 	{
 		char	   *script;
 
 		switch (c)
 		{
+			case 'Z':
+				libpq_compression = true;
+				break;
 			case 'i':
 				is_init_mode = true;
 				break;
