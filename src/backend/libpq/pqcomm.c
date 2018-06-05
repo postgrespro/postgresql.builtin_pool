@@ -1005,9 +1005,12 @@ pq_recvbuf(bool nowait)
 		{
 			if (r == ZPQ_DECOMPRESS_ERROR)
 			{
+				char const* msg = zpq_error(PqStream);
+				if (msg == NULL)
+					msg = "end of stream";
 				ereport(COMMERROR,
 						(errcode_for_socket_access(),
-						 errmsg("Failed to decompress data: %s", zpq_error(PqStream))));
+						 errmsg("failed to decompress data: %s", msg)));
 				return EOF;
 			}
 			if (errno == EINTR)

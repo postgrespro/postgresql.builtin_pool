@@ -30,7 +30,8 @@ struct ZpqStream
 	char           rx_buf[ZPQ_BUFFER_SIZE];
 };
 
-ZpqStream* zpq_create(zpq_tx_func tx_func, zpq_rx_func rx_func, void* arg)
+ZpqStream*
+zpq_create(zpq_tx_func tx_func, zpq_rx_func rx_func, void *arg)
 {
 	ZpqStream* zs = (ZpqStream*)malloc(sizeof(ZpqStream));
 	zs->tx_stream = ZSTD_createCStream();
@@ -54,7 +55,8 @@ ZpqStream* zpq_create(zpq_tx_func tx_func, zpq_rx_func rx_func, void* arg)
 	return zs;
 }
 
-ssize_t zpq_read(ZpqStream* zs, void* buf, size_t size, size_t* processed)
+ssize_t
+zpq_read(ZpqStream *zs, void *buf, size_t size, size_t *processed)
 {
 	ssize_t rc;
 	ZSTD_outBuffer out;
@@ -95,7 +97,8 @@ ssize_t zpq_read(ZpqStream* zs, void* buf, size_t size, size_t* processed)
 	}
 }
 
-ssize_t zpq_write(ZpqStream* zs, void const* buf, size_t size, size_t* processed)
+ssize_t
+zpq_write(ZpqStream *zs, void const *buf, size_t size, size_t *processed)
 {
 	ssize_t rc;
 	ZSTD_inBuffer in_buf;
@@ -138,7 +141,8 @@ ssize_t zpq_write(ZpqStream* zs, void const* buf, size_t size, size_t* processed
 	return in_buf.pos;
 }
 
-void zpq_free(ZpqStream* zs)
+void
+zpq_free(ZpqStream *zs)
 {
 	if (zs != NULL)
 	{
@@ -148,12 +152,14 @@ void zpq_free(ZpqStream* zs)
 	}
 }
 
-char const* zpq_error(ZpqStream* zs)
+char const*
+zpq_error(ZpqStream *zs)
 {
 	return zs->rx_error;
 }
 
-size_t zpq_buffered(ZpqStream* zs)
+size_t
+zpq_buffered(ZpqStream *zs)
 {
 	return zs != NULL ? zs->tx_buffered + zs->tx_not_flushed : 0;
 }
@@ -181,20 +187,32 @@ struct ZpqStream
 	Bytef          rx_buf[ZPQ_BUFFER_SIZE];
 };
 
-ZpqStream* zpq_create(zpq_tx_func tx_func, zpq_rx_func rx_func, void* arg)
+ZpqStream*
+zpq_create(zpq_tx_func tx_func, zpq_rx_func rx_func, void *arg)
 {
+	int rc;
 	ZpqStream* zs = (ZpqStream*)malloc(sizeof(ZpqStream));
 	memset(&zs->tx, 0, sizeof(zs->tx));
 	zs->tx.next_out = zs->tx_buf;
 	zs->tx.avail_out = ZPQ_BUFFER_SIZE;
 	zs->tx_buffered = 0;
-	deflateInit(&zs->tx, ZLIB_COMPRESSION_LEVEL);
+	rc = deflateInit(&zs->tx, ZLIB_COMPRESSION_LEVEL);
+	if (rc != Z_OK)
+	{
+		free(zs);
+		return NULL;
+	}
 	Assert(zs->tx.next_out == zs->tx_buf && zs->tx.avail_out == ZPQ_BUFFER_SIZE);
 
 	memset(&zs->rx, 0, sizeof(zs->tx));
 	zs->rx.next_in = zs->rx_buf;
 	zs->rx.avail_in = ZPQ_BUFFER_SIZE;
-	inflateInit(&zs->rx);
+	rc = inflateInit(&zs->rx);
+	if (rc != Z_OK)
+	{
+		free(zs);
+		return NULL;
+	}
 	Assert(zs->rx.next_in == zs->rx_buf && zs->rx.avail_in == ZPQ_BUFFER_SIZE);
 	zs->rx.avail_in = 0;
 
@@ -205,7 +223,8 @@ ZpqStream* zpq_create(zpq_tx_func tx_func, zpq_rx_func rx_func, void* arg)
 	return zs;
 }
 
-ssize_t zpq_read(ZpqStream* zs, void* buf, size_t size, size_t* processed)
+ssize_t
+zpq_read(ZpqStream *zs, void *buf, size_t size, size_t *processed)
 {
 	int rc;
 	zs->rx.next_out = (Bytef *)buf;
@@ -246,7 +265,8 @@ ssize_t zpq_read(ZpqStream* zs, void* buf, size_t size, size_t* processed)
 	}
 }
 
-ssize_t zpq_write(ZpqStream* zs, void const* buf, size_t size, size_t* processed)
+ssize_t
+zpq_write(ZpqStream *zs, void const *buf, size_t size, size_t *processed)
 {
     int rc;
 	zs->tx.next_in = (Bytef *)buf;
@@ -283,7 +303,8 @@ ssize_t zpq_write(ZpqStream* zs, void const* buf, size_t size, size_t* processed
 	return size - zs->tx.avail_in;
 }
 
-void zpq_free(ZpqStream* zs)
+void
+zpq_free(ZpqStream *zs)
 {
 	if (zs != NULL)
 	{
@@ -293,44 +314,52 @@ void zpq_free(ZpqStream* zs)
 	}
 }
 
-char const* zpq_error(ZpqStream* zs)
+char const*
+zpq_error(ZpqStream *zs)
 {
 	return zs->rx.msg;
 }
 
-size_t zpq_buffered(ZpqStream* zs)
+size_t
+zpq_buffered(ZpqStream *zs)
 {
 	return zs != NULL ? zs->tx_buffered : 0;
 }
 
 #else
 
-ZpqStream* zpq_create(zpq_tx_func tx_func, zpq_rx_func rx_func, void* arg)
+ZpqStream*
+zpq_create(zpq_tx_func tx_func, zpq_rx_func rx_func, void *arg)
 {
 	return NULL;
 }
 
-ssize_t zpq_read(ZpqStream* zs, void* buf, size_t size)
+ssize_t
+zpq_read(ZpqStream *zs, void *buf, size_t size)
 {
 	return -1;
 }
 
-ssize_t zpq_write(ZpqStream* zs, void const* buf, size_t size)
+ssize_t
+zpq_write(ZpqStream *zs, void const *buf, size_t size)
 {
 	return -1;
 }
 
-void zpq_free(ZpqStream* zs)
+void
+zpq_free(ZpqStream *zs)
 {
 }
 
-char const* zpq_error(ZpqStream* zs)
+char const*
+zpq_error(ZpqStream *zs)
 {
 	return NULL;
 }
 
 
-size_t zpq_buffered(ZpqStream* zs)
+size_t
+zpq_buffered(ZpqStream *zs)
 {
 	return 0;
 }
