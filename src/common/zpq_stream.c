@@ -1,3 +1,4 @@
+#include "postgres_fe.h"
 #include "common/zpq_stream.h"
 #include "c.h"
 #include "pg_config.h"
