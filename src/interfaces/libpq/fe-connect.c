@@ -270,10 +270,6 @@ static const internalPQconninfoOption PQconninfoOptions[] = {
 		21,						/* sizeof("tls-server-end-point") == 21 */
 	offsetof(struct pg_conn, scram_channel_binding)},
 
-	{"compression", "COMPRESSION", "0", NULL,
-		"ZSTD-Compression", "", 1,
-	offsetof(struct pg_conn, compression)},
-
 	/*
 	 * ssl options are allowed even without client SSL support because the
 	 * client can still handle SSL modes "disable" and "allow". Other
@@ -330,8 +326,8 @@ static const internalPQconninfoOption PQconninfoOptions[] = {
 		"Replication", "D", 5,
 	offsetof(struct pg_conn, replication)},
 
-	{"compression", NULL, NULL, NULL,
-		"Compression", "Z", 5,
+	{"compression", "COMPRESSION", "0", NULL,
+		"Libpq-compression", "Z", 1,
 	offsetof(struct pg_conn, compression)},
 
 	{"target_session_attrs", "PGTARGETSESSIONATTRS",

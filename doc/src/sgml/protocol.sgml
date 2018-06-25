@@ -92,6 +92,15 @@
    such as <command>COPY</command>.
   </para>
 
+  <para>
+    Is is possible to compress protocol data to reduce traffic and speed-up client-server interaction.
+    Compression is especialy useful for importing/exprorting data to/from database using COPY command
+    and for replication (oth physical and logical). Also compression can reduce server response time
+    in case of queries, requestion larger amount of data (for example returning JSON, BLOBs, text,...)
+    Right now compression algorithm is hardcoded: is it is either zlib (default), either zstd (if Postgres was
+    configured with --with-zstd option). In both cases streaming mode is used.
+  </para>
+
  <sect2 id="protocol-message-concepts">
   <title>Messaging Overview</title>
 
@@ -258,6 +267,18 @@
        <para>
         The connection attempt has been rejected.
         The server then immediately closes the connection.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term>CompressionOk</term>
+      <listitem>
+       <para>
+         Server acknowledge using compression for client-server communication protocol.
+         Compression can be requested by client by including "compression" option in connection string.
+         Right now compression algorithm is hardcoded, but in future client and server may negotiate to
+         choose proper compression algorithm.
        </para>
       </listitem>
      </varlistentry>
@@ -3410,6 +3431,33 @@ AuthenticationSASLFinal (B)
 </listitem>
 </varlistentry>
 
+<varlistentry>
+<term>
+CompressionOk (B)
+</term>
+<listitem>
+<para>
+
+<variablelist>
+<varlistentry>
+<term>
+        Byte1('z')
+</term>
+<listitem>
+<para>
+  Acknowledge use of compression for protocol data. After receiving this message bother server and client are switched to compression mode
+  and exchange compressed messages.
+</para>
+</listitem>
+
+</varlistentry>
+</variablelist>
+
+</para>
+</listitem>
+</varlistentry>
+
+
 
 <varlistentry>
 <term>
@@ -5823,6 +5871,19 @@ StartupMessage (F)
                         <literal>database</literal>, and the default is
                         <literal>false</literal>. See
                         <xref linkend="protocol-replication"/> for details.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+                <literal>compression</literal>
+</term>
+<listitem>
+<para>
+                        Request compression of libpq traffic. Value can be
+                        <literal>0</literal>, <literal>1</literal>, <literal>true</literal>,
+                        <literal>false</literal>,  <literal>on</literal>, <literal>off.</literal>.
+                        By default compression is disabled.
 </para>
 </listitem>
 </varlistentry>

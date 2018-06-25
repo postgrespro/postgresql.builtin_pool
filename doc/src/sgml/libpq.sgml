@@ -1115,6 +1115,17 @@ postgresql://%2Fvar%2Flib%2Fpostgresql/dbname
       </listitem>
      </varlistentry>
 
+     <varlistentry id="libpq-connect-compression" xreflabel="compression">
+      <term><literal>compression</literal></term>
+      <listitem>
+      <para>
+        Request compression of libpq traffic. If server is supporting compression, then all libpq messages send both from client to server and
+        visa versa will be compressed. Right now compression algorithm is hardcoded: is it is either zlib (default), either zstd (if Postgres was
+        configured with --with-zstd option). In both cases streaming mode is used.
+      </para>
+      </listitem>
+     </varlistentry>
+
      <varlistentry id="libpq-connect-client-encoding" xreflabel="client_encoding">
       <term><literal>client_encoding</literal></term>
       <listitem>
