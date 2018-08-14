@@ -170,6 +170,7 @@ test: temp
 test: domain
 test: rangefuncs
 test: prepare
+test: autoprepare
 test: without_oid
 test: conversion
 test: truncate

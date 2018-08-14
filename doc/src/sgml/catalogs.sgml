@@ -8231,6 +8231,11 @@ SCRAM-SHA-256$<replaceable>&lt;iteration count&gt;</replaceable>:<replaceable>&l
      </row>
 
      <row>
+      <entry><link linkend="view-pg-autoprepared-statements"><structname>pg_autoprepared_statements</structname></link></entry>
+      <entry>autoprepared statements</entry>
+     </row>
+
+     <row>
       <entry><link linkend="view-pg-prepared-xacts"><structname>pg_prepared_xacts</structname></link></entry>
       <entry>prepared transactions</entry>
      </row>
@@ -9539,6 +9544,68 @@ SELECT * FROM pg_locks pl LEFT JOIN pg_prepared_xacts ppx
 
   <para>
    The <structname>pg_prepared_statements</structname> view is read only.
+  </para>
+ </sect1>
+
+
+ <sect1 id="view-pg-autoprepared-statements">
+  <title><structname>pg_autoprepared_statements</structname></title>
+
+  <indexterm zone="view-pg-autoprepared-statements">
+   <primary>pg_autoprepared_statements</primary>
+  </indexterm>
+
+  <para>
+   The <structname>pg_autoprepared_statements</structname> view displays
+   all the autoprepared statements that are available in the current
+   session. See <xref linkend="autoprepare"/> for more information about autoprepared
+   statements.
+  </para>
+
+  <table>
+   <title><structname>pg_autoprepared_statements</structname> Columns</title>
+
+   <tgroup cols="3">
+    <thead>
+     <row>
+      <entry>Name</entry>
+      <entry>Type</entry>
+      <entry>Description</entry>
+     </row>
+    </thead>
+    <tbody>
+     <row>
+      <entry><structfield>statement</structfield></entry>
+      <entry><type>text</type></entry>
+      <entry>
+        The query string submitted by the client from which this prepared statement
+        was created. Please notice that literals in this statement are not
+        replaced with prepared statement placeholders.
+      </entry>
+     </row>
+     <row>
+      <entry><structfield>parameter_types</structfield></entry>
+      <entry><type>regtype[]</type></entry>
+      <entry>
+       The expected parameter types for the autoprepared statement in the
+       form of an array of <type>regtype</type>. The OID corresponding
+       to an element of this array can be obtained by casting the
+       <type>regtype</type> value to <type>oid</type>.
+      </entry>
+     </row>
+     <row>
+      <entry><structfield>exec_count</structfield></entry>
+      <entry><type>int8</type></entry>
+      <entry>
+        Number of times this statement was executed.
+      </entry>
+     </row>
+    </tbody>
+   </tgroup>
+  </table>
+
+  <para>
+   The <structname>pg_autoprepared_statements</structname> view is read only.
   </para>
  </sect1>
 

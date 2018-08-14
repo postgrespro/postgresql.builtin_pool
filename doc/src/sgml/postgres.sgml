@@ -109,6 +109,7 @@
   &mvcc;
   &perform;
   &parallel;
+  &autoprepare;
 
  </part>
 

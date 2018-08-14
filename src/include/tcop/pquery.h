@@ -42,4 +42,6 @@ extern uint64 PortalRunFetch(Portal portal,
 			   long count,
 			   DestReceiver *dest);
 
+extern void ResetAutoprepareCache(void);
+
 #endif							/* PQUERY_H */

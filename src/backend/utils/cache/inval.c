@@ -111,6 +111,7 @@
 #include "utils/relmapper.h"
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
+#include "tcop/pquery.h"
 
 
 /*
@@ -644,6 +645,7 @@ InvalidateSystemCaches(void)
 
 	InvalidateCatalogSnapshot();
 	ResetCatalogCaches();
+	ResetAutoprepareCache();
 	RelationCacheInvalidate();	/* gets smgr and relmap too */
 
 	for (i = 0; i < syscache_callback_count; i++)

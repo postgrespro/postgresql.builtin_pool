@@ -676,10 +676,12 @@ standard_ProcessUtility(PlannedStmt *pstmt,
 		case T_AlterSystemStmt:
 			PreventInTransactionBlock(isTopLevel, "ALTER SYSTEM");
 			AlterSystemSetConfigFile((AlterSystemStmt *) parsetree);
+			ResetAutoprepareCache();
 			break;
 
 		case T_VariableSetStmt:
 			ExecSetVariableStmt((VariableSetStmt *) parsetree, isTopLevel);
+			ResetAutoprepareCache();
 			break;
 
 		case T_VariableShowStmt:
@@ -951,6 +953,8 @@ ProcessUtilitySlow(ParseState *pstate,
 
 	/* All event trigger calls are done only when isCompleteQuery is true */
 	needCleanup = isCompleteQuery && EventTriggerBeginCompleteQuery();
+
+	ResetAutoprepareCache();
 
 	/* PG_TRY block is to ensure we call EventTriggerEndCompleteQuery */
 	PG_TRY();

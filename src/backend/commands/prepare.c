@@ -48,7 +48,6 @@ static HTAB *prepared_queries = NULL;
 static void InitQueryHashTable(void);
 static ParamListInfo EvaluateParams(PreparedStatement *pstmt, List *params,
 			   const char *queryString, EState *estate);
-static Datum build_regtype_array(Oid *param_types, int num_params);
 
 /*
  * Implements the 'PREPARE' utility statement.
@@ -797,7 +796,7 @@ pg_prepared_statement(PG_FUNCTION_ARGS)
  * pointing to a one-dimensional Postgres array of regtypes. An empty
  * array is returned as a zero-element array, not NULL.
  */
-static Datum
+Datum
 build_regtype_array(Oid *param_types, int num_params)
 {
 	Datum	   *tmp_ary;

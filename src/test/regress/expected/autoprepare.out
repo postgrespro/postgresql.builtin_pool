@@ -1,0 +1,55 @@
+select count(*) from pg_class where relname='pg_class';
+ count 
+-------
+     1
+(1 row)
+
+select * from pg_autoprepared_statements;
+ statement | parameter_types | exec_count 
+-----------+-----------------+------------
+(0 rows)
+
+set autoprepare_threshold = 1;
+select count(*) from pg_class where relname='pg_class';
+ count 
+-------
+     1
+(1 row)
+
+select * from pg_autoprepared_statements;
+                        statement                        | parameter_types | exec_count 
+---------------------------------------------------------+-----------------+------------
+ select count(*) from pg_class where relname='pg_class'; | {unknown}       |          1
+ select * from pg_autoprepared_statements;               | {}              |          1
+(2 rows)
+
+select count(*) from pg_class where relname='pg_class';
+ count 
+-------
+     1
+(1 row)
+
+select * from pg_autoprepared_statements;
+                        statement                        | parameter_types | exec_count 
+---------------------------------------------------------+-----------------+------------
+ select count(*) from pg_class where relname='pg_class'; | {unknown}       |          2
+ select * from pg_autoprepared_statements;               | {}              |          2
+(2 rows)
+
+set autoprepare_threshold = 0;
+select * from pg_autoprepared_statements;
+ statement | parameter_types | exec_count 
+-----------+-----------------+------------
+(0 rows)
+
+select count(*) from pg_class where relname='pg_class';
+ count 
+-------
+     1
+(1 row)
+
+select * from pg_autoprepared_statements;
+ statement | parameter_types | exec_count 
+-----------+-----------------+------------
+(0 rows)
+
