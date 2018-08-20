@@ -192,7 +192,7 @@ WaitEventSet *FeBeWaitSet;
 /* --------------------------------
  *		pq_configure - configure connection using port settings
  *
- * Right now only conpression is toggled in the configure.
+ * Right now only compression is toggled in the configure.
  * Function returns 0 in case of success, non-null in case of error
  * --------------------------------
  */
@@ -201,12 +201,15 @@ pq_configure(Port* port)
 {
 	if (port->use_compression)
 	{
-		char compression = 'z'; /* Request compression message */
+		char compression[2];
 		int rc;
+		compression[0] = 'z'; /* Request compression message */
+		compression[1] = zpq_algorithm();
 		/* Switch on compression at client side */
 		socket_set_nonblocking(false);
-		while ((rc = secure_write(MyProcPort, &compression, 1)) < 0 && errno == EINTR);
-		if (rc != 1)
+		while ((rc = secure_write(MyProcPort, &compression, sizeof compression)) < 0
+			   && errno == EINTR);
+		if (rc != 2)
 			return -1;
 
 		/* initialize compression */

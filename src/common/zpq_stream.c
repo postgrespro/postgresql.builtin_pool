@@ -165,6 +165,12 @@ zpq_buffered(ZpqStream *zs)
 	return zs != NULL ? zs->tx_buffered + zs->tx_not_flushed : 0;
 }
 
+char
+zpq_algorithm(void)
+{
+	return 'f';
+}
+
 #elif HAVE_LIBZ
 
 #include <malloc.h>
@@ -327,6 +333,12 @@ zpq_buffered(ZpqStream *zs)
 	return zs != NULL ? zs->tx_buffered : 0;
 }
 
+char
+zpq_algorithm(void)
+{
+	return 'z';
+}
+
 #else
 
 ZpqStream*
@@ -363,6 +375,12 @@ size_t
 zpq_buffered(ZpqStream *zs)
 {
 	return 0;
+}
+
+char
+zpq_algorithm(void)
+{
+	return '0';
 }
 
 #endif

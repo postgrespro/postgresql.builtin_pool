@@ -3451,6 +3451,16 @@ CompressionOk (B)
 </listitem>
 
 </varlistentry>
+<varlistentry>
+<term>
+        Byte1
+</term>
+<listitem>
+<para>
+        Used compression algorithm. Right now the following streaming compression algorithms are supported: 'f' - Facebook zstd, 'z' - zlib.
+</para>
+</listitem>
+</varlistentry>
 </variablelist>
 
 </para>

@@ -24,5 +24,6 @@ ssize_t zpq_write(ZpqStream* zs, void const* buf, size_t size, size_t* processed
 char const* zpq_error(ZpqStream* zs);
 size_t zpq_buffered(ZpqStream* zs);
 void zpq_free(ZpqStream* zs);
+char zpq_algorithm(void);
 
 #endif

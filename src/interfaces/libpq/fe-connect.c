@@ -326,7 +326,7 @@ static const internalPQconninfoOption PQconninfoOptions[] = {
 		"Replication", "D", 5,
 	offsetof(struct pg_conn, replication)},
 
-	{"compression", "COMPRESSION", "0", NULL,
+	{"compression", "COMPRESSION", NULL, NULL,
 		"Libpq-compression", "Z", 1,
 	offsetof(struct pg_conn, compression)},
 
@@ -2668,6 +2668,16 @@ keep_going:						/* We will come back to here until there is
 
 					if (beresp == 'z') /* Switch on compression */
 					{
+						char algorithm;
+						pqGetc(&algorithm, conn);
+						if (zpq_algorithm() != algorithm)
+						{
+							appendPQExpBuffer(&conn->errorMessage,
+											  libpq_gettext(
+												  "server and client were configured with different libpq compression algorithms: %c vs. %c\n"),
+											  algorithm, zpq_algorithm());
+							goto error_return;
+						}
 						/* mark byte consumed */
 						conn->inStart = conn->inCursor;
 						Assert(!conn->zstream);
