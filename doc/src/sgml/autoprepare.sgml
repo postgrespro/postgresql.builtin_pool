@@ -1,0 +1,62 @@
+<!-- doc/src/sgml/autoprepare.sgml -->
+
+ <chapter id="autoprepare">
+  <title>Autoprepared statements</title>
+
+  <indexterm zone="autoprepare">
+   <primary>autoprepared statements</primary>
+  </indexterm>
+
+  <para>
+    <productname>PostgreSQL</productname> makes it possible <firstterm>prepare</firstterm>
+    frequently used statements to eliminate cost of their compilation
+    and optimization on each execution of the query. On simple queries
+    (like ones in <filename>pgbench -S</filename>) using prepared statements
+    increase performance more than two times.
+  </para>
+
+  <para>
+    Unfortunately not all database applications are using prepared statements
+    and, moreover, it is not always possible. For example, in case of using
+    <productname>pgbouncer</productname> or any other session pooler,
+    there is no session state (transactions of one client may be executed at different
+    backends) and so prepared statements can not be used.
+  </para>
+
+  <para>
+    Autoprepare mode allows to overcome this limitation.
+    In this mode Postgres tries to generalize executed statements
+    and build parameterized plan for them. Speed of execution of
+    autoprepared statements is almost the same as of explicitly
+    prepared statements.
+  </para>
+
+  <para>
+    By default autoprepare mode is switched off. To enable it, assign non-zero
+    value to GUC variable <varname>autoprepare_tthreshold</varname>.
+    This variable specified minimal number of times the statement should be
+    executed before it is autoprepared. Please notice that, despite to the
+    value of this parameter, Postgres makes a decision about using
+    generalized plan vs. customized execution plans based on the results
+    of comparison of average time of five customized plans with
+    time of generalized plan.
+  </para>
+
+  <para>
+    If number of different statements issued by application is large enough,
+    then autopreparing all of them can cause memory overflow
+    (especially if there are many active clients, because prepared statements cache
+    is local to the backend). To prevent growth of backend's memory because of
+    autoprepared cache, it is possible to limit number of autoprepared statements
+    by setting <varname>autoprepare_limit</varname> GUC variable. LRU strategy will be used
+    to keep in memory most frequently used queries.
+  </para>
+
+  <para>
+    It is possible to inspect autoprepared queries in the backend using
+    <literal>pg_autoprepared_statements</literal> view. It shows original text of the
+    query, types of the extracted parameters (replacing literals) and
+    query execution counter.
+  </para>
+
+ </chapter>
