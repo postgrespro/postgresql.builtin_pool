@@ -4668,6 +4668,8 @@ static int plan_cache_match_fn(const void *key1, const void *key2, Size keysize)
 size_t autoprepare_hits;
 size_t autoprepare_misses;
 size_t autoprepare_cached_plans;
+size_t autoprepare_used_memory;
+
 
 /*
  * Context for raw_expression_tree_mutator
@@ -4937,10 +4939,21 @@ prepare_error_callback(void *arg)
 		(void)errposition(pos);
 	}
 }
+
+
+static Size
+get_memory_context_size(MemoryContext ctx)
+{
+	MemoryContextCounters counters = {0};
+	ctx->methods->stats(ctx, NULL, NULL, &counters);
+	return counters.totalspace;
+}
+
 /*
  * Try to generalize query, find cached plan for it and execute
  */
-static bool exec_cached_query(const char *query_string, List *parsetree_list)
+static bool
+exec_cached_query(const char *query_string, List *parsetree_list)
 {
 	int				  n_params;
 	plan_cache_entry *entry;
@@ -5024,7 +5037,9 @@ static bool exec_cached_query(const char *query_string, List *parsetree_list)
 	if (!found)
 	{
 		/* Check number of cached queries */
-		if (++autoprepare_cached_plans > autoprepare_limit && autoprepare_limit != 0)
+		autoprepare_cached_plans += 1;
+		while ((autoprepare_cached_plans > autoprepare_limit && autoprepare_limit != 0)
+			|| (autoprepare_memory_limit && autoprepare_used_memory > (size_t)autoprepare_memory_limit*1024))
 		{
 			/* Drop least recently accessed query */
 			plan_cache_entry* victim = dlist_container(plan_cache_entry, lru, plan_cache_lru.head.prev);
@@ -5032,9 +5047,13 @@ static bool exec_cached_query(const char *query_string, List *parsetree_list)
 			dlist_delete(&victim->lru);
 			if (victim->plan)
 			{
+				if (autoprepare_memory_limit)
+					autoprepare_used_memory -= get_memory_context_size(victim->plan->context);
 				DropCachedPlan(victim->plan);
 			}
 			hash_search(plan_cache_hash, victim, HASH_REMOVE, NULL);
+			if (autoprepare_memory_limit)
+				autoprepare_used_memory -= get_memory_context_size(victim_context);
 			MemoryContextDelete(victim_context);
 			autoprepare_cached_plans -= 1;
 		}
@@ -5048,6 +5067,8 @@ static bool exec_cached_query(const char *query_string, List *parsetree_list)
 		entry->parse_tree = copyObject(pattern.parse_tree);
 		entry->param_types = palloc(n_params*sizeof(Oid));
 		memcpy(entry->param_types, pattern.param_types, n_params*sizeof(Oid));
+		if (autoprepare_memory_limit)
+			autoprepare_used_memory += get_memory_context_size(entry->context);
 	}
 	else
 	{
@@ -5055,6 +5076,8 @@ static bool exec_cached_query(const char *query_string, List *parsetree_list)
 		if (entry->plan != NULL && !entry->plan->is_valid)
 		{
 			/* Drop invalidated plan: it will be reconstructed later */
+			if (autoprepare_memory_limit)
+				autoprepare_used_memory -= get_memory_context_size(entry->plan->context);
 			DropCachedPlan(entry->plan);
 			entry->plan = NULL;
 		}
@@ -5172,6 +5195,8 @@ static bool exec_cached_query(const char *query_string, List *parsetree_list)
 		CHECK_FOR_INTERRUPTS();
 
 		SaveCachedPlan(psrc);
+		if (autoprepare_memory_limit)
+			autoprepare_used_memory += get_memory_context_size(psrc->context);
 
 		/*
 		 * We do NOT close the open transaction command here; that only happens
@@ -5366,6 +5391,7 @@ void ResetAutoprepareCache(void)
 		MemoryContextReset(plan_cache_context);
 		dlist_init(&plan_cache_lru);
 		autoprepare_cached_plans = 0;
+		autoprepare_used_memory = 0;
 		plan_cache_hash = 0;
 	}
 }

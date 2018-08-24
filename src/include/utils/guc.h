@@ -255,6 +255,7 @@ extern int	log_temp_files;
 
 extern int  autoprepare_threshold;
 extern int  autoprepare_limit;
+extern int  autoprepare_memory_limit;
 
 extern int	temp_file_limit;
 

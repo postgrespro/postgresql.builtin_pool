@@ -486,6 +486,7 @@ int			tcp_keepalives_count;
 
 int         autoprepare_threshold;
 int         autoprepare_limit;
+int         autoprepare_memory_limit;
 
 /*
  * SSL renegotiation was been removed in PostgreSQL 9.5, but we tolerate it
@@ -2152,6 +2153,17 @@ static struct config_int ConfigureNamesInt[] =
 		},
 		&autoprepare_limit,
 		113, 0, INT_MAX,
+		NULL, NULL, NULL
+	},
+	{
+		{"autoprepare_memory_limit", PGC_USERSET, QUERY_TUNING_OTHER,
+		 gettext_noop("Maximal size of memory used by autoprepared queries."),
+		 gettext_noop("0 means that there is no memory limit. Calculating memory used by prepared queries adds somme extra overhead, "
+					  "so non-zero value of this parameter may cause some slowdown. autoprepare_limit is much faster way to limit number of autoprepared statements"),
+		 GUC_UNIT_KB
+		},
+		&autoprepare_memory_limit,
+		0, 0, INT_MAX,
 		NULL, NULL, NULL
 	},
 
