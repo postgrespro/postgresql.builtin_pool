@@ -72,6 +72,7 @@ extern void on_shmem_exit(pg_on_exit_callback function, Datum arg);
 extern void before_shmem_exit(pg_on_exit_callback function, Datum arg);
 extern void cancel_before_shmem_exit(pg_on_exit_callback function, Datum arg);
 extern void on_exit_reset(void);
+extern void on_shmem_exit_reset(void);
 
 /* ipci.c */
 extern PGDLLIMPORT shmem_startup_hook_type shmem_startup_hook;

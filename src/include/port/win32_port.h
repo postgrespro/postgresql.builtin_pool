@@ -447,6 +447,7 @@ extern int	pgkill(int pid, int sig);
 #define select(n, r, w, e, timeout) pgwin32_select(n, r, w, e, timeout)
 #define recv(s, buf, len, flags) pgwin32_recv(s, buf, len, flags)
 #define send(s, buf, len, flags) pgwin32_send(s, buf, len, flags)
+#define socketpair(af, type, protocol, socks) pgwin32_socketpair(af, type, protocol, socks)
 
 SOCKET		pgwin32_socket(int af, int type, int protocol);
 int			pgwin32_bind(SOCKET s, struct sockaddr *addr, int addrlen);
@@ -456,6 +457,7 @@ int			pgwin32_connect(SOCKET s, const struct sockaddr *name, int namelen);
 int			pgwin32_select(int nfds, fd_set *readfs, fd_set *writefds, fd_set *exceptfds, const struct timeval *timeout);
 int			pgwin32_recv(SOCKET s, char *buf, int len, int flags);
 int			pgwin32_send(SOCKET s, const void *buf, int len, int flags);
+int         pgwin32_socketpair(int domain, int type, int protocol, SOCKET socks[2]);
 
 const char *pgwin32_socket_strerror(int err);
 int			pgwin32_waitforsinglesocket(SOCKET s, int what, int timeout);

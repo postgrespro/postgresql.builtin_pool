@@ -76,6 +76,7 @@ struct WaitEventSet
 {
 	int			nevents;		/* number of registered events */
 	int			nevents_space;	/* maximum number of events in this set */
+	int         free_events;    /* L1-list of free events linked by "pos" and terminated by -1*/
 
 	/*
 	 * Array, of nevents_space length, storing the definition of events this
@@ -129,9 +130,9 @@ static void drainSelfPipe(void);
 #if defined(WAIT_USE_EPOLL)
 static void WaitEventAdjustEpoll(WaitEventSet *set, WaitEvent *event, int action);
 #elif defined(WAIT_USE_POLL)
-static void WaitEventAdjustPoll(WaitEventSet *set, WaitEvent *event);
+static void WaitEventAdjustPoll(WaitEventSet *set, WaitEvent *event, bool remove);
 #elif defined(WAIT_USE_WIN32)
-static void WaitEventAdjustWin32(WaitEventSet *set, WaitEvent *event);
+static void WaitEventAdjustWin32(WaitEventSet *set, WaitEvent *event, bool remove);
 #endif
 
 static inline int WaitEventSetWaitBlock(WaitEventSet *set, int cur_timeout,
@@ -562,6 +563,7 @@ CreateWaitEventSet(MemoryContext context, int nevents)
 
 	set->latch = NULL;
 	set->nevents_space = nevents;
+	set->free_events = -1;
 
 #if defined(WAIT_USE_EPOLL)
 #ifdef EPOLL_CLOEXEC
@@ -667,9 +669,11 @@ AddWaitEventToSet(WaitEventSet *set, uint32 events, pgsocket fd, Latch *latch,
 				  void *user_data)
 {
 	WaitEvent  *event;
+	int free_event;
 
 	/* not enough space */
-	Assert(set->nevents < set->nevents_space);
+	if (set->nevents == set->nevents_space)
+		return -1;
 
 	if (latch)
 	{
@@ -690,8 +694,19 @@ AddWaitEventToSet(WaitEventSet *set, uint32 events, pgsocket fd, Latch *latch,
 	if (fd == PGINVALID_SOCKET && (events & WL_SOCKET_MASK))
 		elog(ERROR, "cannot wait on socket event without a socket");
 
-	event = &set->events[set->nevents];
-	event->pos = set->nevents++;
+	free_event = set->free_events;
+	if (free_event >= 0)
+	{
+		event = &set->events[free_event];
+		set->free_events = event->pos;
+		event->pos = free_event;
+	}
+	else
+	{
+		event = &set->events[set->nevents];
+		event->pos = set->nevents;
+	}
+	set->nevents += 1;
 	event->fd = fd;
 	event->events = events;
 	event->user_data = user_data;
@@ -718,12 +733,35 @@ AddWaitEventToSet(WaitEventSet *set, uint32 events, pgsocket fd, Latch *latch,
 #if defined(WAIT_USE_EPOLL)
 	WaitEventAdjustEpoll(set, event, EPOLL_CTL_ADD);
 #elif defined(WAIT_USE_POLL)
-	WaitEventAdjustPoll(set, event);
+	WaitEventAdjustPoll(set, event, false);
 #elif defined(WAIT_USE_WIN32)
-	WaitEventAdjustWin32(set, event);
+	WaitEventAdjustWin32(set, event, false);
 #endif
 
 	return event->pos;
+}
+
+/*
+ * Remove event with specified socket descriptor
+ */
+void DeleteWaitEventFromSet(WaitEventSet *set, pgsocket fd)
+{
+	int i, n = set->nevents;
+	for (i = 0; i < n; i++)
+	{
+		WaitEvent  *event = &set->events[i];
+		if (event->fd == fd)
+		{
+#if defined(WAIT_USE_EPOLL)
+			WaitEventAdjustEpoll(set, event, EPOLL_CTL_DEL);
+#elif defined(WAIT_USE_POLL)
+			WaitEventAdjustPoll(set, event, true);
+#elif defined(WAIT_USE_WIN32)
+			WaitEventAdjustWin32(set, event, true);
+#endif
+			break;
+		}
+	}
 }
 
 /*
@@ -774,9 +812,9 @@ ModifyWaitEvent(WaitEventSet *set, int pos, uint32 events, Latch *latch)
 #if defined(WAIT_USE_EPOLL)
 	WaitEventAdjustEpoll(set, event, EPOLL_CTL_MOD);
 #elif defined(WAIT_USE_POLL)
-	WaitEventAdjustPoll(set, event);
+	WaitEventAdjustPoll(set, event, false);
 #elif defined(WAIT_USE_WIN32)
-	WaitEventAdjustWin32(set, event);
+	WaitEventAdjustWin32(set, event, false);
 #endif
 }
 
@@ -822,19 +860,38 @@ WaitEventAdjustEpoll(WaitEventSet *set, WaitEvent *event, int action)
 	 * requiring that, and actually it makes the code simpler...
 	 */
 	rc = epoll_ctl(set->epoll_fd, action, event->fd, &epoll_ev);
-
+	Assert(rc >= 0);
 	if (rc < 0)
 		ereport(ERROR,
 				(errcode_for_socket_access(),
 				 errmsg("epoll_ctl() failed: %m")));
+
+	if (action == EPOLL_CTL_DEL)
+	{
+		int pos = event->pos;
+		event->fd = PGINVALID_SOCKET;
+		set->nevents -= 1;
+		event->pos = set->free_events;
+		set->free_events = pos;
+	}
 }
 #endif
 
 #if defined(WAIT_USE_POLL)
 static void
-WaitEventAdjustPoll(WaitEventSet *set, WaitEvent *event)
+WaitEventAdjustPoll(WaitEventSet *set, WaitEvent *event, bool remove)
 {
-	struct pollfd *pollfd = &set->pollfds[event->pos];
+	int pos = event->pos;
+	struct pollfd *pollfd = &set->pollfds[pos];
+
+	if (remove)
+	{
+		set->nevents -= 1;
+		*pollfd = set->pollfds[set->nevents];
+		set->events[pos] = set->events[set->nevents];
+		event->pos = pos;
+		return;
+	}
 
 	pollfd->revents = 0;
 	pollfd->fd = event->fd;
@@ -865,9 +922,25 @@ WaitEventAdjustPoll(WaitEventSet *set, WaitEvent *event)
 
 #if defined(WAIT_USE_WIN32)
 static void
-WaitEventAdjustWin32(WaitEventSet *set, WaitEvent *event)
+WaitEventAdjustWin32(WaitEventSet *set, WaitEvent *event, bool remove)
 {
-	HANDLE	   *handle = &set->handles[event->pos + 1];
+	int pos = event->pos;
+	HANDLE	   *handle = &set->handles[pos + 1];
+
+	if (remove)
+	{
+		Assert(event->fd != PGINVALID_SOCKET);
+
+		if (*handle != WSA_INVALID_EVENT)
+			WSACloseEvent(*handle);
+
+		set->nevents -= 1;
+		set->events[pos] = set->events[set->nevents];
+		*handle = set->handles[set->nevents + 1];
+		set->handles[set->nevents + 1] = WSA_INVALID_EVENT;
+		event->pos = pos;
+		return;
+	}
 
 	if (event->events == WL_LATCH_SET)
 	{
@@ -880,7 +953,7 @@ WaitEventAdjustWin32(WaitEventSet *set, WaitEvent *event)
 	}
 	else
 	{
-		int			flags = FD_CLOSE;	/* always check for errors/EOF */
+		int flags = FD_CLOSE;	/* always check for errors/EOF */
 
 		if (event->events & WL_SOCKET_READABLE)
 			flags |= FD_READ;
@@ -897,8 +970,8 @@ WaitEventAdjustWin32(WaitEventSet *set, WaitEvent *event)
 					 WSAGetLastError());
 		}
 		if (WSAEventSelect(event->fd, *handle, flags) != 0)
-			elog(ERROR, "failed to set up event for socket: error code %u",
-				 WSAGetLastError());
+			elog(ERROR, "failed to set up event for socket %p: error code %u",
+				 event->fd, WSAGetLastError());
 
 		Assert(event->fd != PGINVALID_SOCKET);
 	}
@@ -1296,7 +1369,7 @@ WaitEventSetWaitBlock(WaitEventSet *set, int cur_timeout,
 	{
 		if (cur_event->reset)
 		{
-			WaitEventAdjustWin32(set, cur_event);
+			WaitEventAdjustWin32(set, cur_event, false);
 			cur_event->reset = false;
 		}
 

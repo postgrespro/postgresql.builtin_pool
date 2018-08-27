@@ -13,7 +13,7 @@
  * copy is aborted by an ereport(ERROR), we need to close out the copy so that
  * the frontend gets back into sync.  Therefore, these routines have to be
  * aware of COPY OUT state.  (New COPY-OUT is message-based and does *not*
- * set the DoingCopyOut flag.)
+ * set the is_doing_copyout flag.)
  *
  * NOTE: generally, it's a bad idea to emit outgoing messages directly with
  * pq_putbytes(), especially if the message would require multiple calls
@@ -87,12 +87,14 @@
 #ifdef _MSC_VER					/* mstcpip.h is missing on mingw */
 #include <mstcpip.h>
 #endif
+#include <execinfo.h>
 
 #include "common/ip.h"
 #include "libpq/libpq.h"
 #include "miscadmin.h"
 #include "port/pg_bswap.h"
 #include "storage/ipc.h"
+#include "storage/proc.h"
 #include "utils/guc.h"
 #include "utils/memutils.h"
 
@@ -134,23 +136,6 @@ static List *sock_paths = NIL;
 #define PQ_SEND_BUFFER_SIZE 8192
 #define PQ_RECV_BUFFER_SIZE 8192
 
-static char *PqSendBuffer;
-static int	PqSendBufferSize;	/* Size send buffer */
-static int	PqSendPointer;		/* Next index to store a byte in PqSendBuffer */
-static int	PqSendStart;		/* Next index to send a byte in PqSendBuffer */
-
-static char PqRecvBuffer[PQ_RECV_BUFFER_SIZE];
-static int	PqRecvPointer;		/* Next index to read a byte from PqRecvBuffer */
-static int	PqRecvLength;		/* End of data available in PqRecvBuffer */
-
-/*
- * Message status
- */
-static bool PqCommBusy;			/* busy sending data to the client */
-static bool PqCommReadingMsg;	/* in the middle of reading a message */
-static bool DoingCopyOut;		/* in old-protocol COPY OUT processing */
-
-
 /* Internal functions */
 static void socket_comm_reset(void);
 static void socket_close(int code, Datum arg);
@@ -181,28 +166,55 @@ static PQcommMethods PqCommSocketMethods = {
 	socket_endcopyout
 };
 
+/* These variables used to be global */
+struct PQcommState {
+	Port		   *port;
+	MemoryContext	mcxt;
+
+	/* Message status */
+	bool	is_busy;			/* busy sending data to the client */
+	bool	is_reading;			/* in the middle of reading a message */
+	bool	is_doing_copyout;	/* in old-protocol COPY OUT processing */
+	char   *send_buf;
+
+	int		send_bufsize;	/* Size send buffer */
+	int		send_offset;	/* Next index to store a byte in send_buf */
+	int		send_start;		/* Next index to send a byte in send_buf */
+
+	char	recv_buf[PQ_RECV_BUFFER_SIZE];
+	int		recv_offset;	/* Next index to read a byte from pqstate->recv_buf */
+	int		recv_len;		/* End of data available in pqstate->recv_buf */
+
+	/* Wait events set */
+	WaitEventSet *wait_events;
+};
+
+static struct PQcommState *pqstate = NULL;
 PQcommMethods *PqCommMethods = &PqCommSocketMethods;
 
-WaitEventSet *FeBeWaitSet;
-
-
-/* --------------------------------
- *		pq_init - initialize libpq at backend startup
- * --------------------------------
+/*
+ * Create common wait event for a backend
  */
-void
-pq_init(void)
+WaitEventSet *
+pq_create_backend_event_set(MemoryContext mcxt, Port *port,
+							bool onlySock)
 {
-	/* initialize state variables */
-	PqSendBufferSize = PQ_SEND_BUFFER_SIZE;
-	PqSendBuffer = MemoryContextAlloc(TopMemoryContext, PqSendBufferSize);
-	PqSendPointer = PqSendStart = PqRecvPointer = PqRecvLength = 0;
-	PqCommBusy = false;
-	PqCommReadingMsg = false;
-	DoingCopyOut = false;
+	WaitEventSet *result;
+	int				nevents = onlySock ? 1 : 3;
 
-	/* set up process-exit hook to close the socket */
-	on_proc_exit(socket_close, 0);
+	result = CreateWaitEventSet(mcxt, nevents);
+
+	AddWaitEventToSet(result, WL_SOCKET_WRITEABLE, port->sock,
+					  NULL, NULL);
+
+	if (!onlySock)
+	{
+		AddWaitEventToSet(result, WL_LATCH_SET, -1, MyLatch, NULL);
+		AddWaitEventToSet(result, WL_POSTMASTER_DEATH, -1, NULL, NULL);
+
+		/* set up process-exit hook to close the socket */
+		on_proc_exit(socket_close, 0);
+	}
 
 	/*
 	 * In backends (as soon as forked) we operate the underlying socket in
@@ -215,16 +227,65 @@ pq_init(void)
 	 * infinite recursion.
 	 */
 #ifndef WIN32
-	if (!pg_set_noblock(MyProcPort->sock))
+	if (!pg_set_noblock(port->sock))
 		ereport(COMMERROR,
 				(errmsg("could not set socket to nonblocking mode: %m")));
 #endif
 
-	FeBeWaitSet = CreateWaitEventSet(TopMemoryContext, 3);
-	AddWaitEventToSet(FeBeWaitSet, WL_SOCKET_WRITEABLE, MyProcPort->sock,
-					  NULL, NULL);
-	AddWaitEventToSet(FeBeWaitSet, WL_LATCH_SET, -1, MyLatch, NULL);
-	AddWaitEventToSet(FeBeWaitSet, WL_POSTMASTER_DEATH, -1, NULL, NULL);
+	return result;
+}
+
+/* --------------------------------
+ *		pq_init - initialize libpq at backend startup
+ * --------------------------------
+ */
+void *
+pq_init(MemoryContext mcxt)
+{
+	struct PQcommState *state =
+		MemoryContextAllocZero(mcxt, sizeof(struct PQcommState));
+
+	/* initialize state variables */
+	state->mcxt = mcxt;
+
+	state->send_bufsize = PQ_SEND_BUFFER_SIZE;
+	state->send_buf = MemoryContextAlloc(mcxt, state->send_bufsize);
+	state->send_offset = state->send_start = state->recv_offset = state->recv_len = 0;
+	state->is_busy = false;
+	state->is_reading = false;
+	state->is_doing_copyout = false;
+
+	state->wait_events = NULL;
+	return (void *) state;
+}
+
+void
+pq_set_current_state(void *state, Port *port, WaitEventSet *set)
+{
+	pqstate = (struct PQcommState *) state;
+
+	if (pqstate)
+	{
+		pq_reset();
+		pqstate->port = port;
+		pqstate->wait_events = set;
+	}
+}
+
+WaitEventSet *
+pq_get_current_waitset(void)
+{
+	return pqstate ? pqstate->wait_events : NULL;
+}
+
+void
+pq_reset(void)
+{
+	pqstate->send_offset = pqstate->send_start = 0;
+	pqstate->recv_offset = pqstate->recv_len = 0;
+	pqstate->is_busy = false;
+	pqstate->is_reading = false;
+	pqstate->is_doing_copyout = false;
 }
 
 /* --------------------------------
@@ -239,7 +300,7 @@ static void
 socket_comm_reset(void)
 {
 	/* Do not throw away pending data, but do reset the busy flag */
-	PqCommBusy = false;
+	pqstate->is_busy = false;
 	/* We can abort any old-style COPY OUT, too */
 	pq_endcopyout(true);
 }
@@ -255,8 +316,8 @@ socket_comm_reset(void)
 static void
 socket_close(int code, Datum arg)
 {
-	/* Nothing to do in a standalone backend, where MyProcPort is NULL. */
-	if (MyProcPort != NULL)
+	/* Nothing to do in a standalone backend, where pqstate->port is NULL. */
+	if (pqstate->port != NULL)
 	{
 #if defined(ENABLE_GSS) || defined(ENABLE_SSPI)
 #ifdef ENABLE_GSS
@@ -267,11 +328,11 @@ socket_close(int code, Datum arg)
 		 * BackendInitialize(), because pg_GSS_recvauth() makes first use of
 		 * "ctx" and "cred".
 		 */
-		if (MyProcPort->gss->ctx != GSS_C_NO_CONTEXT)
-			gss_delete_sec_context(&min_s, &MyProcPort->gss->ctx, NULL);
+		if (pqstate->port->gss->ctx != GSS_C_NO_CONTEXT)
+			gss_delete_sec_context(&min_s, &pqstate->port->gss->ctx, NULL);
 
-		if (MyProcPort->gss->cred != GSS_C_NO_CREDENTIAL)
-			gss_release_cred(&min_s, &MyProcPort->gss->cred);
+		if (pqstate->port->gss->cred != GSS_C_NO_CREDENTIAL)
+			gss_release_cred(&min_s, &pqstate->port->gss->cred);
 #endif							/* ENABLE_GSS */
 
 		/*
@@ -279,14 +340,14 @@ socket_close(int code, Datum arg)
 		 * postmaster child free this, doing so is safe when interrupting
 		 * BackendInitialize().
 		 */
-		free(MyProcPort->gss);
+		free(pqstate->port->gss);
 #endif							/* ENABLE_GSS || ENABLE_SSPI */
 
 		/*
 		 * Cleanly shut down SSL layer.  Nowhere else does a postmaster child
 		 * call this, so this is safe when interrupting BackendInitialize().
 		 */
-		secure_close(MyProcPort);
+		secure_close(pqstate->port);
 
 		/*
 		 * Formerly we did an explicit close() here, but it seems better to
@@ -298,7 +359,7 @@ socket_close(int code, Datum arg)
 		 * We do set sock to PGINVALID_SOCKET to prevent any further I/O,
 		 * though.
 		 */
-		MyProcPort->sock = PGINVALID_SOCKET;
+		pqstate->port->sock = PGINVALID_SOCKET;
 	}
 }
 
@@ -921,12 +982,12 @@ RemoveSocketFiles(void)
 static void
 socket_set_nonblocking(bool nonblocking)
 {
-	if (MyProcPort == NULL)
+	if (pqstate->port == NULL)
 		ereport(ERROR,
 				(errcode(ERRCODE_CONNECTION_DOES_NOT_EXIST),
 				 errmsg("there is no client connection")));
 
-	MyProcPort->noblock = nonblocking;
+	pqstate->port->noblock = nonblocking;
 }
 
 /* --------------------------------
@@ -938,30 +999,30 @@ socket_set_nonblocking(bool nonblocking)
 static int
 pq_recvbuf(void)
 {
-	if (PqRecvPointer > 0)
+	if (pqstate->recv_offset > 0)
 	{
-		if (PqRecvLength > PqRecvPointer)
+		if (pqstate->recv_len > pqstate->recv_offset)
 		{
 			/* still some unread data, left-justify it in the buffer */
-			memmove(PqRecvBuffer, PqRecvBuffer + PqRecvPointer,
-					PqRecvLength - PqRecvPointer);
-			PqRecvLength -= PqRecvPointer;
-			PqRecvPointer = 0;
+			memmove(pqstate->recv_buf, pqstate->recv_buf + pqstate->recv_offset,
+					pqstate->recv_len - pqstate->recv_offset);
+			pqstate->recv_len -= pqstate->recv_offset;
+			pqstate->recv_offset = 0;
 		}
 		else
-			PqRecvLength = PqRecvPointer = 0;
+			pqstate->recv_len = pqstate->recv_offset = 0;
 	}
 
 	/* Ensure that we're in blocking mode */
 	socket_set_nonblocking(false);
 
-	/* Can fill buffer from PqRecvLength and upwards */
+	/* Can fill buffer from pqstate->recv_len and upwards */
 	for (;;)
 	{
 		int			r;
 
-		r = secure_read(MyProcPort, PqRecvBuffer + PqRecvLength,
-						PQ_RECV_BUFFER_SIZE - PqRecvLength);
+		r = secure_read(pqstate->port, pqstate->recv_buf + pqstate->recv_len,
+						PQ_RECV_BUFFER_SIZE - pqstate->recv_len);
 
 		if (r < 0)
 		{
@@ -987,7 +1048,7 @@ pq_recvbuf(void)
 			return EOF;
 		}
 		/* r contains number of bytes read, so just incr length */
-		PqRecvLength += r;
+		pqstate->recv_len += r;
 		return 0;
 	}
 }
@@ -999,14 +1060,14 @@ pq_recvbuf(void)
 int
 pq_getbyte(void)
 {
-	Assert(PqCommReadingMsg);
+	Assert(pqstate->is_reading);
 
-	while (PqRecvPointer >= PqRecvLength)
+	while (pqstate->recv_offset >= pqstate->recv_len)
 	{
 		if (pq_recvbuf())		/* If nothing in buffer, then recv some */
 			return EOF;			/* Failed to recv data */
 	}
-	return (unsigned char) PqRecvBuffer[PqRecvPointer++];
+	return (unsigned char) pqstate->recv_buf[pqstate->recv_offset++];
 }
 
 /* --------------------------------
@@ -1018,14 +1079,25 @@ pq_getbyte(void)
 int
 pq_peekbyte(void)
 {
-	Assert(PqCommReadingMsg);
+	Assert(pqstate->is_reading);
 
-	while (PqRecvPointer >= PqRecvLength)
+	while (pqstate->recv_offset >= pqstate->recv_len)
 	{
 		if (pq_recvbuf())		/* If nothing in buffer, then recv some */
 			return EOF;			/* Failed to recv data */
 	}
-	return (unsigned char) PqRecvBuffer[PqRecvPointer];
+	return (unsigned char) pqstate->recv_buf[pqstate->recv_offset];
+}
+
+/* --------------------------------
+ *		pq_available_bytes	- get number of buffered bytes available for reading.
+ *
+ * --------------------------------
+ */
+int
+pq_available_bytes(void)
+{
+	return pqstate->recv_len - pqstate->recv_offset;
 }
 
 /* --------------------------------
@@ -1041,18 +1113,18 @@ pq_getbyte_if_available(unsigned char *c)
 {
 	int			r;
 
-	Assert(PqCommReadingMsg);
+	Assert(pqstate->is_reading);
 
-	if (PqRecvPointer < PqRecvLength)
+	if (pqstate->recv_offset < pqstate->recv_len)
 	{
-		*c = PqRecvBuffer[PqRecvPointer++];
+		*c = pqstate->recv_buf[pqstate->recv_offset++];
 		return 1;
 	}
 
 	/* Put the socket into non-blocking mode */
 	socket_set_nonblocking(true);
 
-	r = secure_read(MyProcPort, c, 1);
+	r = secure_read(pqstate->port, c, 1);
 	if (r < 0)
 	{
 		/*
@@ -1095,20 +1167,20 @@ pq_getbytes(char *s, size_t len)
 {
 	size_t		amount;
 
-	Assert(PqCommReadingMsg);
+	Assert(pqstate->is_reading);
 
 	while (len > 0)
 	{
-		while (PqRecvPointer >= PqRecvLength)
+		while (pqstate->recv_offset >= pqstate->recv_len)
 		{
 			if (pq_recvbuf())	/* If nothing in buffer, then recv some */
 				return EOF;		/* Failed to recv data */
 		}
-		amount = PqRecvLength - PqRecvPointer;
+		amount = pqstate->recv_len - pqstate->recv_offset;
 		if (amount > len)
 			amount = len;
-		memcpy(s, PqRecvBuffer + PqRecvPointer, amount);
-		PqRecvPointer += amount;
+		memcpy(s, pqstate->recv_buf + pqstate->recv_offset, amount);
+		pqstate->recv_offset += amount;
 		s += amount;
 		len -= amount;
 	}
@@ -1129,19 +1201,19 @@ pq_discardbytes(size_t len)
 {
 	size_t		amount;
 
-	Assert(PqCommReadingMsg);
+	Assert(pqstate->is_reading);
 
 	while (len > 0)
 	{
-		while (PqRecvPointer >= PqRecvLength)
+		while (pqstate->recv_offset >= pqstate->recv_len)
 		{
 			if (pq_recvbuf())	/* If nothing in buffer, then recv some */
 				return EOF;		/* Failed to recv data */
 		}
-		amount = PqRecvLength - PqRecvPointer;
+		amount = pqstate->recv_len - pqstate->recv_offset;
 		if (amount > len)
 			amount = len;
-		PqRecvPointer += amount;
+		pqstate->recv_offset += amount;
 		len -= amount;
 	}
 	return 0;
@@ -1167,35 +1239,35 @@ pq_getstring(StringInfo s)
 {
 	int			i;
 
-	Assert(PqCommReadingMsg);
+	Assert(pqstate->is_reading);
 
 	resetStringInfo(s);
 
 	/* Read until we get the terminating '\0' */
 	for (;;)
 	{
-		while (PqRecvPointer >= PqRecvLength)
+		while (pqstate->recv_offset >= pqstate->recv_len)
 		{
 			if (pq_recvbuf())	/* If nothing in buffer, then recv some */
 				return EOF;		/* Failed to recv data */
 		}
 
-		for (i = PqRecvPointer; i < PqRecvLength; i++)
+		for (i = pqstate->recv_offset; i < pqstate->recv_len; i++)
 		{
-			if (PqRecvBuffer[i] == '\0')
+			if (pqstate->recv_buf[i] == '\0')
 			{
 				/* include the '\0' in the copy */
-				appendBinaryStringInfo(s, PqRecvBuffer + PqRecvPointer,
-									   i - PqRecvPointer + 1);
-				PqRecvPointer = i + 1;	/* advance past \0 */
+				appendBinaryStringInfo(s, pqstate->recv_buf + pqstate->recv_offset,
+									   i - pqstate->recv_offset + 1);
+				pqstate->recv_offset = i + 1;	/* advance past \0 */
 				return 0;
 			}
 		}
 
 		/* If we're here we haven't got the \0 in the buffer yet. */
-		appendBinaryStringInfo(s, PqRecvBuffer + PqRecvPointer,
-							   PqRecvLength - PqRecvPointer);
-		PqRecvPointer = PqRecvLength;
+		appendBinaryStringInfo(s, pqstate->recv_buf + pqstate->recv_offset,
+							   pqstate->recv_len - pqstate->recv_offset);
+		pqstate->recv_offset = pqstate->recv_len;
 	}
 }
 
@@ -1213,12 +1285,12 @@ pq_startmsgread(void)
 	 * There shouldn't be a read active already, but let's check just to be
 	 * sure.
 	 */
-	if (PqCommReadingMsg)
+	if (pqstate->is_reading)
 		ereport(FATAL,
 				(errcode(ERRCODE_PROTOCOL_VIOLATION),
 				 errmsg("terminating connection because protocol synchronization was lost")));
 
-	PqCommReadingMsg = true;
+	pqstate->is_reading = true;
 }
 
 
@@ -1233,9 +1305,9 @@ pq_startmsgread(void)
 void
 pq_endmsgread(void)
 {
-	Assert(PqCommReadingMsg);
+	Assert(pqstate->is_reading);
 
-	PqCommReadingMsg = false;
+	pqstate->is_reading = false;
 }
 
 /* --------------------------------
@@ -1249,7 +1321,7 @@ pq_endmsgread(void)
 bool
 pq_is_reading_msg(void)
 {
-	return PqCommReadingMsg;
+	return pqstate->is_reading;
 }
 
 /* --------------------------------
@@ -1273,7 +1345,7 @@ pq_getmessage(StringInfo s, int maxlen)
 {
 	int32		len;
 
-	Assert(PqCommReadingMsg);
+	Assert(pqstate->is_reading);
 
 	resetStringInfo(s);
 
@@ -1318,7 +1390,7 @@ pq_getmessage(StringInfo s, int maxlen)
 						 errmsg("incomplete message from client")));
 
 			/* we discarded the rest of the message so we're back in sync. */
-			PqCommReadingMsg = false;
+			pqstate->is_reading = false;
 			PG_RE_THROW();
 		}
 		PG_END_TRY();
@@ -1337,7 +1409,7 @@ pq_getmessage(StringInfo s, int maxlen)
 	}
 
 	/* finished reading the message. */
-	PqCommReadingMsg = false;
+	pqstate->is_reading = false;
 
 	return 0;
 }
@@ -1355,13 +1427,13 @@ pq_putbytes(const char *s, size_t len)
 	int			res;
 
 	/* Should only be called by old-style COPY OUT */
-	Assert(DoingCopyOut);
+	Assert(pqstate->is_doing_copyout);
 	/* No-op if reentrant call */
-	if (PqCommBusy)
+	if (pqstate->is_busy)
 		return 0;
-	PqCommBusy = true;
+	pqstate->is_busy = true;
 	res = internal_putbytes(s, len);
-	PqCommBusy = false;
+	pqstate->is_busy = false;
 	return res;
 }
 
@@ -1373,22 +1445,23 @@ internal_putbytes(const char *s, size_t len)
 	while (len > 0)
 	{
 		/* If buffer is full, then flush it out */
-		if (PqSendPointer >= PqSendBufferSize)
+		if (pqstate->send_offset >= pqstate->send_bufsize)
 		{
 			socket_set_nonblocking(false);
 			if (internal_flush())
 				return EOF;
 		}
-		amount = PqSendBufferSize - PqSendPointer;
+		amount = pqstate->send_bufsize - pqstate->send_offset;
 		if (amount > len)
 			amount = len;
-		memcpy(PqSendBuffer + PqSendPointer, s, amount);
-		PqSendPointer += amount;
+		memcpy(pqstate->send_buf + pqstate->send_offset, s, amount);
+		pqstate->send_offset += amount;
 		s += amount;
 		len -= amount;
 	}
 	return 0;
 }
+
 
 /* --------------------------------
  *		socket_flush		- flush pending output
@@ -1401,13 +1474,17 @@ socket_flush(void)
 {
 	int			res;
 
-	/* No-op if reentrant call */
-	if (PqCommBusy)
+	if (pqstate->port->sock == PGINVALID_SOCKET)
 		return 0;
-	PqCommBusy = true;
+
+	/* No-op if reentrant call */
+	if (pqstate->is_busy)
+		return 0;
+
+	pqstate->is_busy = true;
 	socket_set_nonblocking(false);
 	res = internal_flush();
-	PqCommBusy = false;
+	pqstate->is_busy = false;
 	return res;
 }
 
@@ -1423,14 +1500,14 @@ internal_flush(void)
 {
 	static int	last_reported_send_errno = 0;
 
-	char	   *bufptr = PqSendBuffer + PqSendStart;
-	char	   *bufend = PqSendBuffer + PqSendPointer;
+	char	   *bufptr = pqstate->send_buf + pqstate->send_start;
+	char	   *bufend = pqstate->send_buf + pqstate->send_offset;
 
 	while (bufptr < bufend)
 	{
 		int			r;
 
-		r = secure_write(MyProcPort, bufptr, bufend - bufptr);
+		r = secure_write(pqstate->port, bufptr, bufend - bufptr);
 
 		if (r <= 0)
 		{
@@ -1470,7 +1547,7 @@ internal_flush(void)
 			 * flag that'll cause the next CHECK_FOR_INTERRUPTS to terminate
 			 * the connection.
 			 */
-			PqSendStart = PqSendPointer = 0;
+			pqstate->send_start = pqstate->send_offset = 0;
 			ClientConnectionLost = 1;
 			InterruptPending = 1;
 			return EOF;
@@ -1478,10 +1555,10 @@ internal_flush(void)
 
 		last_reported_send_errno = 0;	/* reset after any successful send */
 		bufptr += r;
-		PqSendStart += r;
+		pqstate->send_start += r;
 	}
 
-	PqSendStart = PqSendPointer = 0;
+	pqstate->send_start = pqstate->send_offset = 0;
 	return 0;
 }
 
@@ -1496,20 +1573,23 @@ socket_flush_if_writable(void)
 {
 	int			res;
 
+	if (pqstate->port->sock == PGINVALID_SOCKET)
+		return 0;
+
 	/* Quick exit if nothing to do */
-	if (PqSendPointer == PqSendStart)
+	if (pqstate->send_offset == pqstate->send_start)
 		return 0;
 
 	/* No-op if reentrant call */
-	if (PqCommBusy)
+	if (pqstate->is_busy)
 		return 0;
 
 	/* Temporarily put the socket into non-blocking mode */
 	socket_set_nonblocking(true);
 
-	PqCommBusy = true;
+	pqstate->is_busy = true;
 	res = internal_flush();
-	PqCommBusy = false;
+	pqstate->is_busy = false;
 	return res;
 }
 
@@ -1520,7 +1600,7 @@ socket_flush_if_writable(void)
 static bool
 socket_is_send_pending(void)
 {
-	return (PqSendStart < PqSendPointer);
+	return (pqstate->send_start < pqstate->send_offset);
 }
 
 /* --------------------------------
@@ -1559,9 +1639,9 @@ socket_is_send_pending(void)
 static int
 socket_putmessage(char msgtype, const char *s, size_t len)
 {
-	if (DoingCopyOut || PqCommBusy)
+	if (pqstate->is_doing_copyout || pqstate->is_busy)
 		return 0;
-	PqCommBusy = true;
+	pqstate->is_busy = true;
 	if (msgtype)
 		if (internal_putbytes(&msgtype, 1))
 			goto fail;
@@ -1575,11 +1655,11 @@ socket_putmessage(char msgtype, const char *s, size_t len)
 	}
 	if (internal_putbytes(s, len))
 		goto fail;
-	PqCommBusy = false;
+	pqstate->is_busy = false;
 	return 0;
 
 fail:
-	PqCommBusy = false;
+	pqstate->is_busy = false;
 	return EOF;
 }
 
@@ -1599,11 +1679,11 @@ socket_putmessage_noblock(char msgtype, const char *s, size_t len)
 	 * Ensure we have enough space in the output buffer for the message header
 	 * as well as the message itself.
 	 */
-	required = PqSendPointer + 1 + 4 + len;
-	if (required > PqSendBufferSize)
+	required = pqstate->send_offset + 1 + 4 + len;
+	if (required > pqstate->send_bufsize)
 	{
-		PqSendBuffer = repalloc(PqSendBuffer, required);
-		PqSendBufferSize = required;
+		pqstate->send_buf = repalloc(pqstate->send_buf, required);
+		pqstate->send_bufsize = required;
 	}
 	res = pq_putmessage(msgtype, s, len);
 	Assert(res == 0);			/* should not fail when the message fits in
@@ -1619,7 +1699,7 @@ socket_putmessage_noblock(char msgtype, const char *s, size_t len)
 static void
 socket_startcopyout(void)
 {
-	DoingCopyOut = true;
+	pqstate->is_doing_copyout = true;
 }
 
 /* --------------------------------
@@ -1635,12 +1715,12 @@ socket_startcopyout(void)
 static void
 socket_endcopyout(bool errorAbort)
 {
-	if (!DoingCopyOut)
+	if (!pqstate->is_doing_copyout)
 		return;
 	if (errorAbort)
 		pq_putbytes("\n\n\\.\n", 5);
 	/* in non-error case, copy.c will have emitted the terminator line */
-	DoingCopyOut = false;
+	pqstate->is_doing_copyout = false;
 }
 
 /*

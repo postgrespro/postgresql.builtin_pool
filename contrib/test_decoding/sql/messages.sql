@@ -23,6 +23,8 @@ SELECT data FROM pg_logical_slot_get_changes('regression_slot', NULL, NULL, 'for
 
 -- test db filtering
 \set prevdb :DBNAME
+show session_pool_size;
+show session_pool_ports;
 \c template1
 
 SELECT 'otherdb1' FROM pg_logical_emit_message(false, 'test', 'otherdb1');

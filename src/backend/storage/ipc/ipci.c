@@ -28,6 +28,7 @@
 #include "postmaster/bgworker_internals.h"
 #include "postmaster/bgwriter.h"
 #include "postmaster/postmaster.h"
+#include "postmaster/connpool.h"
 #include "replication/logicallauncher.h"
 #include "replication/slot.h"
 #include "replication/walreceiver.h"
@@ -150,6 +151,7 @@ CreateSharedMemoryAndSemaphores(bool makePrivate, int port)
 		size = add_size(size, SyncScanShmemSize());
 		size = add_size(size, AsyncShmemSize());
 		size = add_size(size, BackendRandomShmemSize());
+		size = add_size(size, ConnPoolShmemSize());
 #ifdef EXEC_BACKEND
 		size = add_size(size, ShmemBackendArraySize());
 #endif
@@ -270,6 +272,11 @@ CreateSharedMemoryAndSemaphores(bool makePrivate, int port)
 	SyncScanShmemInit();
 	AsyncShmemInit();
 	BackendRandomShmemInit();
+
+	/*
+	 * Set up connection pool workers
+	 */
+	ConnectionPoolWorkersInit();
 
 #ifdef EXEC_BACKEND
 

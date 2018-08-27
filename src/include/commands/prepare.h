@@ -56,5 +56,6 @@ extern TupleDesc FetchPreparedStatementResultDesc(PreparedStatement *stmt);
 extern List *FetchPreparedStatementTargetList(PreparedStatement *stmt);
 
 extern void DropAllPreparedStatements(void);
+extern void DropSessionPreparedStatements(uint32 sessionId);
 
 #endif							/* PREPARE_H */

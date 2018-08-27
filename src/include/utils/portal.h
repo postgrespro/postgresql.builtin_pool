@@ -202,6 +202,7 @@ typedef struct PortalData
 
 
 /* Prototypes for functions in utils/mmgr/portalmem.c */
+HTAB *CreatePortalsHashTable(MemoryContext mcxt);
 extern void EnablePortalManager(void);
 extern bool PreCommit_Portals(bool isPrepare);
 extern void AtAbort_Portals(void);

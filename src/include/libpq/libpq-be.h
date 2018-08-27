@@ -66,6 +66,7 @@ typedef struct
 #include "datatype/timestamp.h"
 #include "libpq/hba.h"
 #include "libpq/pqcomm.h"
+#include "storage/latch.h"
 
 
 typedef enum CAC_state
@@ -137,6 +138,12 @@ typedef struct Port
 	char	   *user_name;
 	char	   *cmdline_options;
 	List	   *guc_options;
+
+	/*
+	 * libpq communication state
+	 */
+	void			*pqcomm_state;
+	WaitEventSet	*pqcomm_waitset;
 
 	/*
 	 * Information that needs to be held during the authentication cycle.

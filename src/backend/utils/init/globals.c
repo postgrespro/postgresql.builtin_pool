@@ -128,7 +128,9 @@ int			max_parallel_maintenance_workers = 2;
  * register background workers.
  */
 int			NBuffers = 1000;
+int			SessionPoolSize = 0;
 int			MaxConnections = 90;
+int			MaxSessions = 1000;
 int			max_worker_processes = 8;
 int			max_parallel_workers = 8;
 int			MaxBackends = 0;
@@ -147,3 +149,6 @@ int			VacuumCostBalance = 0;	/* working state for vacuum */
 bool		VacuumCostActive = false;
 
 double		vacuum_cleanup_index_scale_factor;
+
+bool        RestartPoolerOnReload = false;
+char       *DedicatedDatabases;

@@ -176,6 +176,8 @@ extern int WaitLatch(volatile Latch *latch, int wakeEvents, long timeout,
 extern int WaitLatchOrSocket(volatile Latch *latch, int wakeEvents,
 				  pgsocket sock, long timeout, uint32 wait_event_info);
 
+extern void DeleteWaitEventFromSet(WaitEventSet *set, pgsocket fd);
+
 /*
  * Unix implementation uses SIGUSR1 for inter-process signaling.
  * Win32 doesn't need this.

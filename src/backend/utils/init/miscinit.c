@@ -250,19 +250,6 @@ ChangeToDataDir(void)
  * convenient way to do it.
  * ----------------------------------------------------------------
  */
-static Oid	AuthenticatedUserId = InvalidOid;
-static Oid	SessionUserId = InvalidOid;
-static Oid	OuterUserId = InvalidOid;
-static Oid	CurrentUserId = InvalidOid;
-
-/* We also have to remember the superuser state of some of these levels */
-static bool AuthenticatedUserIsSuperuser = false;
-static bool SessionUserIsSuperuser = false;
-
-static int	SecurityRestrictionContext = 0;
-
-/* We also remember if a SET ROLE is currently active */
-static bool SetRoleIsActive = false;
 
 /*
  * Initialize the basic environment for a postmaster child
@@ -345,13 +332,15 @@ InitStandaloneProcess(const char *argv0)
 void
 SwitchToSharedLatch(void)
 {
+	WaitEventSet *waitset;
 	Assert(MyLatch == &LocalLatchData);
 	Assert(MyProc != NULL);
 
 	MyLatch = &MyProc->procLatch;
 
-	if (FeBeWaitSet)
-		ModifyWaitEvent(FeBeWaitSet, 1, WL_LATCH_SET, MyLatch);
+	waitset = pq_get_current_waitset();
+	if (waitset)
+		ModifyWaitEvent(waitset, 1, WL_LATCH_SET, MyLatch);
 
 	/*
 	 * Set the shared latch as the local one might have been set. This
@@ -364,13 +353,15 @@ SwitchToSharedLatch(void)
 void
 SwitchBackToLocalLatch(void)
 {
+	WaitEventSet *waitset;
 	Assert(MyLatch != &LocalLatchData);
 	Assert(MyProc != NULL && MyLatch == &MyProc->procLatch);
 
 	MyLatch = &LocalLatchData;
 
-	if (FeBeWaitSet)
-		ModifyWaitEvent(FeBeWaitSet, 1, WL_LATCH_SET, MyLatch);
+	waitset = pq_get_current_waitset();
+	if (waitset)
+		ModifyWaitEvent(waitset, 1, WL_LATCH_SET, MyLatch);
 
 	SetLatch(MyLatch);
 }
@@ -434,6 +425,8 @@ SetSessionUserId(Oid userid, bool is_superuser)
 	/* We force the effective user IDs to match, too */
 	OuterUserId = userid;
 	CurrentUserId = userid;
+
+	SysCacheInvalidate(AUTHOID, 0);
 }
 
 /*

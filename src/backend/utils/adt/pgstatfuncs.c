@@ -875,6 +875,17 @@ pg_backend_pid(PG_FUNCTION_ARGS)
 	PG_RETURN_INT32(MyProcPid);
 }
 
+Datum
+pg_session_id(PG_FUNCTION_ARGS)
+{
+	char	*s;
+	if (ActiveSession)
+		s = psprintf("%d.%u", MyProcPid, ActiveSession->id);
+	else
+		s = psprintf("%d", MyProcPid);
+
+	PG_RETURN_TEXT_P(CStringGetTextDatum(s));
+}
 
 Datum
 pg_stat_get_backend_pid(PG_FUNCTION_ARGS)

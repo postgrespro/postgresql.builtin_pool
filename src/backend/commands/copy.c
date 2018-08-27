@@ -2447,7 +2447,7 @@ CopyFrom(CopyState cstate)
 		 * registers the snapshot it uses.
 		 */
 		InvalidateCatalogSnapshot();
-		if (!ThereAreNoPriorRegisteredSnapshots() || !ThereAreNoReadyPortals())
+		if (!ThereAreNoPriorRegisteredSnapshots() || (SessionPoolSize == 0 && !ThereAreNoReadyPortals()))
 			ereport(ERROR,
 					(errcode(ERRCODE_INVALID_TRANSACTION_STATE),
 					 errmsg("cannot perform FREEZE because of prior transaction activity")));

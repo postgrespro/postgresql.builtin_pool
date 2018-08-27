@@ -90,8 +90,6 @@ static HTAB *seqhashtab = NULL; /* hash table for SeqTable items */
  * last_used_seq is updated by nextval() to point to the last used
  * sequence.
  */
-static SeqTableData *last_used_seq = NULL;
-
 static void fill_seq_with_data(Relation rel, HeapTuple tuple);
 static Relation lock_and_open_sequence(SeqTable seq);
 static void create_seq_hashtable(void);

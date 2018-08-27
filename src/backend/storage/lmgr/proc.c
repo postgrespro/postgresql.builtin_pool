@@ -597,6 +597,15 @@ InitAuxiliaryProcess(void)
 }
 
 /*
+ * Generate unique session ID.
+ */
+uint32
+CreateSessionId(void)
+{
+	return ++SessionPool->sessionCount;
+}
+
+/*
  * Record the PID and PGPROC structures for the Startup process, for use in
  * ProcSendSignal().  See comments there for further explanation.
  */

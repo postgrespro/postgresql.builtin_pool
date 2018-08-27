@@ -40,6 +40,7 @@
 #include "access/printtup.h"
 #include "access/xact.h"
 #include "catalog/pg_type.h"
+#include "catalog/namespace.h"
 #include "commands/async.h"
 #include "commands/prepare.h"
 #include "executor/spi.h"
@@ -77,8 +78,11 @@
 #include "utils/snapmgr.h"
 #include "utils/timeout.h"
 #include "utils/timestamp.h"
+#include "utils/builtins.h"
+#include "utils/varlena.h"
+#include "utils/inval.h"
+#include "utils/catcache.h"
 #include "mb/pg_wchar.h"
-
 
 /* ----------------
  *		global variables
@@ -99,6 +103,41 @@ int			max_stack_depth = 100;
 
 /* wait N seconds to allow attach from a debugger */
 int			PostAuthDelay = 0;
+
+/* Local socket for redirecting sessions to the backends */
+pgsocket SessionPoolSock = PGINVALID_SOCKET;
+
+/* Pointer to pool of sessions */
+BackendSessionPool	   *SessionPool = NULL;
+
+/* Pointer to the active session */
+SessionContext		   *ActiveSession;
+SessionContext		    DefaultContext;
+bool					IsDedicatedBackend = false;
+
+#define SessionVariable(type,name,init)  type name = init;
+#include "storage/sessionvars.h"
+
+static void SaveSessionVariables(SessionContext* session)
+{
+	if (session != NULL)
+	{
+#define SessionVariable(type,name,init) session->name = name;
+#include "storage/sessionvars.h"
+	}
+}
+
+static void LoadSessionVariables(SessionContext* session)
+{
+#define SessionVariable(type,name,init) name = session->name;
+#include "storage/sessionvars.h"
+}
+
+static void InitializeSessionVariables(SessionContext* session)
+{
+#define SessionVariable(type,name,init) session->name = DefaultContext.name;
+#include "storage/sessionvars.h"
+}
 
 
 
@@ -171,6 +210,8 @@ static ProcSignalReason RecoveryConflictReason;
 static MemoryContext row_description_context = NULL;
 static StringInfoData row_description_buf;
 
+static bool IdleInTransactionSessionError;
+
 /* ----------------------------------------------------------------
  *		decls for routines only used in this file
  * ----------------------------------------------------------------
@@ -196,6 +237,8 @@ static void log_disconnections(int code, Datum arg);
 static void enable_statement_timeout(void);
 static void disable_statement_timeout(void);
 
+static void DeleteSession(SessionContext *session);
+static void ResetCurrentSession(void);
 
 /* ----------------------------------------------------------------
  *		routines to obtain user input
@@ -1234,10 +1277,6 @@ exec_parse_message(const char *query_string,	/* string to execute */
 	bool		save_log_statement_stats = log_statement_stats;
 	char		msec_str[32];
 
-	/*
-	 * Report query to various monitoring facilities.
-	 */
-	debug_query_string = query_string;
 
 	pgstat_report_activity(STATE_RUNNING, query_string);
 
@@ -2930,9 +2969,29 @@ ProcessInterrupts(void)
 		LockErrorCleanup();
 		/* don't send to client, we already know the connection to be dead. */
 		whereToSendOutput = DestNone;
-		ereport(FATAL,
-				(errcode(ERRCODE_CONNECTION_FAILURE),
-				 errmsg("connection to client lost")));
+
+		if (ActiveSession)
+		{
+			Port *port = ActiveSession->port;
+			DeleteWaitEventFromSet(SessionPool->waitEvents, port->sock);
+
+			elog(LOG, "Lost connection on session %d in backend %d", MyProcPort->sock, MyProcPid);
+
+			closesocket(port->sock);
+			port->sock = PGINVALID_SOCKET;
+
+			MyProcPort = NULL;
+
+			StartTransactionCommand();
+			UserAbortTransactionBlock();
+			CommitTransactionCommand();
+
+			ResetCurrentSession();
+		}
+		else
+			ereport(FATAL,
+					(errcode(ERRCODE_CONNECTION_FAILURE),
+					 errmsg("connection to client lost")));
 	}
 
 	/*
@@ -3043,9 +3102,20 @@ ProcessInterrupts(void)
 	{
 		/* Has the timeout setting changed since last we looked? */
 		if (IdleInTransactionSessionTimeout > 0)
-			ereport(FATAL,
-					(errcode(ERRCODE_IDLE_IN_TRANSACTION_SESSION_TIMEOUT),
-					 errmsg("terminating connection due to idle-in-transaction timeout")));
+		{
+			if (ActiveSession)
+			{
+				IdleInTransactionSessionTimeoutPending = false;
+				IdleInTransactionSessionError = true;
+				ereport(ERROR,
+						(errcode(ERRCODE_IDLE_IN_TRANSACTION_SESSION_TIMEOUT),
+						 errmsg("canceling current transaction due to idle-in-transaction timeout")));
+			}
+			else
+				ereport(FATAL,
+						(errcode(ERRCODE_IDLE_IN_TRANSACTION_SESSION_TIMEOUT),
+						 errmsg("terminating connection due to idle-in-transaction timeout")));
+		}
 		else
 			IdleInTransactionSessionTimeoutPending = false;
 
@@ -3605,6 +3675,97 @@ process_postgres_switches(int argc, char *argv[], GucContext ctx,
 #endif
 }
 
+#define ACTIVE_SESSION_MAGIC  0xDEFA1234U
+#define REMOVED_SESSION_MAGIC 0xDEADDEEDU
+
+static SessionContext *
+CreateSession(void)
+{
+	SessionContext *session = (SessionContext *)
+		MemoryContextAllocZero(SessionPool->mcxt, sizeof(SessionContext));
+
+	session->memory = AllocSetContextCreate(SessionPool->mcxt,
+		"SessionMemoryContext", ALLOCSET_DEFAULT_SIZES);
+	session->prepared_queries = NULL;
+	session->id = CreateSessionId();
+	session->portals = CreatePortalsHashTable(session->memory);
+	session->magic = ACTIVE_SESSION_MAGIC;
+	return session;
+}
+
+static void
+SwitchToSession(SessionContext *session)
+{
+	/* epoll may return even for already closed session if socket is still openned.
+	 * From epoll documentation:
+	 * Q6  Will closing a file descriptor cause it to be removed from all epoll sets automatically?
+	 *
+     * A6  Yes, but be aware of the following point.  A file descriptor is a reference to an open file description (see
+     *     open(2)).  Whenever a descriptor is duplicated via dup(2), dup2(2), fcntl(2) F_DUPFD, or fork(2), a new file
+     *     descriptor referring to the same open file description is created.  An open file  description  continues  to
+     *     exist  until  all  file  descriptors referring to it have been closed.  A file descriptor is removed from an
+     *     epoll set only after all the file descriptors referring to the underlying open file  description  have  been
+     *     closed  (or  before  if  the descriptor is explicitly removed using epoll_ctl(2) EPOLL_CTL_DEL).  This means
+     *     that even after a file descriptor that is part of an epoll set has been closed, events may be  reported  for
+     *     that  file  descriptor  if  other  file descriptors referring to the same underlying file description remain
+     *     open.
+     *
+     *     Using this check for valid magic field we try to ignore such events.
+	 */
+	if (ActiveSession == session || session->magic != ACTIVE_SESSION_MAGIC)
+		return;
+
+	SaveSessionVariables(ActiveSession);
+	RestoreSessionGUCs(ActiveSession);
+	ActiveSession = session;
+
+	MyProcPort = ActiveSession->port;
+	SetTempNamespaceState(ActiveSession->tempNamespace,
+						  ActiveSession->tempToastNamespace);
+	pq_set_current_state(session->port->pqcomm_state, session->port,
+						 session->eventSet);
+	whereToSendOutput = DestRemote;
+
+	RestoreSessionGUCs(ActiveSession);
+	LoadSessionVariables(ActiveSession);
+}
+
+static void
+ResetCurrentSession(void)
+{
+	if (!ActiveSession)
+		return;
+
+	whereToSendOutput = DestNone;
+	DeleteSession(ActiveSession);
+	pq_set_current_state(NULL, NULL, NULL);
+	SetTempNamespaceState(InvalidOid, InvalidOid);
+	ActiveSession = NULL;
+}
+
+/*
+ * Free all memory associated with session and delete session object itself.
+ */
+static void
+DeleteSession(SessionContext *session)
+{
+	elog(DEBUG1, "Delete session %p, id=%u,  memory context=%p",
+			session, session->id, session->memory);
+
+	if (OidIsValid(session->tempNamespace))
+		ResetTempTableNamespace(session->tempNamespace);
+
+	DropAllPreparedStatements();
+	FreeWaitEventSet(session->eventSet);
+	RestoreSessionGUCs(session);
+	ReleaseSessionGUCs(session);
+	MemoryContextDelete(session->memory);
+	session->magic = REMOVED_SESSION_MAGIC;
+	pfree(session);
+
+	on_shmem_exit_reset();
+	pgstat_report_stat(true);
+}
 
 /* ----------------------------------------------------------------
  * PostgresMain
@@ -3654,6 +3815,33 @@ PostgresMain(int argc, char *argv[],
 					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 					 errmsg("%s: no database nor user name specified",
 							progname)));
+	}
+
+	/* Serve all conections to "postgres" database by dedicated backends */
+	if (IsDedicatedBackend)
+	{
+		SessionPoolSize = 0;
+		closesocket(SessionPoolSock);
+		SessionPoolSock = PGINVALID_SOCKET;
+	}
+
+	if (IsUnderPostmaster && !IsDedicatedBackend)
+	{
+		elog(DEBUG1, "Session pooling is active on %s database", dbname);
+
+		/* Initialize sessions pool for this backend */
+		Assert(SessionPool == NULL);
+		SessionPool = (BackendSessionPool *) MemoryContextAllocZero(
+				TopMemoryContext, sizeof(BackendSessionPool));
+		SessionPool->mcxt = AllocSetContextCreate(TopMemoryContext,
+			"SessionPoolContext", ALLOCSET_DEFAULT_SIZES);
+
+		/* Save the original backend port here */
+		SessionPool->backendPort = MyProcPort;
+
+		ActiveSession = CreateSession();
+		ActiveSession->port = MyProcPort;
+		ActiveSession->eventSet = pq_get_current_waitset();
 	}
 
 	/* Acquire configuration parameters, unless inherited from postmaster */
@@ -3784,7 +3972,7 @@ PostgresMain(int argc, char *argv[],
 	 * ... else we'd need to copy the Port data first.  Also, subsidiary data
 	 * such as the username isn't lost either; see ProcessStartupPacket().
 	 */
-	if (PostmasterContext)
+	if (PostmasterContext && SessionPoolSize == 0)
 	{
 		MemoryContextDelete(PostmasterContext);
 		PostmasterContext = NULL;
@@ -3922,7 +4110,8 @@ PostgresMain(int argc, char *argv[],
 		pq_comm_reset();
 
 		/* Report the error to the client and/or server log */
-		EmitErrorReport();
+		if (MyProcPort)
+			EmitErrorReport();
 
 		/*
 		 * Make sure debug_query_string gets reset before we possibly clobber
@@ -3982,13 +4171,26 @@ PostgresMain(int argc, char *argv[],
 		 * messages from the client, so there isn't much we can do with the
 		 * connection anymore.
 		 */
-		if (pq_is_reading_msg())
+		if (pq_is_reading_msg() && !ActiveSession)
 			ereport(FATAL,
 					(errcode(ERRCODE_PROTOCOL_VIOLATION),
 					 errmsg("terminating connection because protocol synchronization was lost")));
 
 		/* Now we can allow interrupts again */
 		RESUME_INTERRUPTS();
+
+		if (ActiveSession)
+		{
+			if (IdleInTransactionSessionError || (IsAbortedTransactionBlockState() && pq_is_reading_msg()))
+			{
+				StartTransactionCommand();
+				UserAbortTransactionBlock();
+				CommitTransactionCommand();
+				IdleInTransactionSessionError = false;
+			}
+			if (pq_is_reading_msg())
+				goto CloseSession;
+		}
 	}
 
 	/* We can now handle ereport(ERROR) */
@@ -3997,10 +4199,30 @@ PostgresMain(int argc, char *argv[],
 	if (!ignore_till_sync)
 		send_ready_for_query = true;	/* initially, or after error */
 
+
+	/* Initialize wait event set if we're using sessions pool */
+	if (SessionPool && SessionPool->waitEvents == NULL)
+	{
+		/* Construct wait event set if not constructed yet */
+		SessionPool->waitEvents = CreateWaitEventSet(SessionPool->mcxt, MaxSessions + 3);
+		/* Add event to detect postmaster death */
+		AddWaitEventToSet(SessionPool->waitEvents, WL_POSTMASTER_DEATH,
+				PGINVALID_SOCKET, NULL, ActiveSession);
+		/* Add event for backends latch */
+		AddWaitEventToSet(SessionPool->waitEvents, WL_LATCH_SET,
+				PGINVALID_SOCKET, MyLatch, ActiveSession);
+		/* Add event for accepting new sessions */
+		AddWaitEventToSet(SessionPool->waitEvents, WL_SOCKET_READABLE,
+				SessionPoolSock, NULL, ActiveSession);
+		/* Add event for current session */
+		AddWaitEventToSet(SessionPool->waitEvents, WL_SOCKET_READABLE,
+				ActiveSession->port->sock, NULL, ActiveSession);
+		SaveSessionVariables(&DefaultContext);
+	}
+
 	/*
 	 * Non-error queries loop here.
 	 */
-
 	for (;;)
 	{
 		/*
@@ -4076,6 +4298,130 @@ PostgresMain(int argc, char *argv[],
 
 			ReadyForQuery(whereToSendOutput);
 			send_ready_for_query = false;
+
+			/*
+			 * Here we perform multiplexing of client sessions if session pooling is enabled.
+			 * As far as we perform transaction level pooling,
+			 * rescheduling is done only when we are not in transaction.
+			 */
+			if (SessionPoolSock != PGINVALID_SOCKET
+					&& !IsTransactionState()
+					&& !IsAbortedTransactionBlockState()
+					&& pq_available_bytes() == 0)
+			{
+				WaitEvent ready_client;
+
+ChooseSession:
+				DoingCommandRead = true;
+				/* Select which client session is ready to send new query */
+				if (WaitEventSetWait(SessionPool->waitEvents, -1,
+							&ready_client, 1, PG_WAIT_CLIENT) != 1)
+				{
+					/* TODO: do some error recovery here */
+					elog(FATAL, "Failed to poll client sessions");
+				}
+				CHECK_FOR_INTERRUPTS();
+				DoingCommandRead = false;
+
+				if (ready_client.events & WL_POSTMASTER_DEATH)
+					ereport(FATAL,
+							(errcode(ERRCODE_ADMIN_SHUTDOWN),
+							 errmsg("terminating connection due to unexpected postmaster exit")));
+
+				if (ready_client.events & WL_LATCH_SET)
+				{
+					ResetLatch(MyLatch);
+					ProcessClientReadInterrupt(true);
+					goto ChooseSession;
+				}
+
+				if (ready_client.fd == SessionPoolSock)
+				{
+					/* Here we handle case of attaching new session */
+					SessionContext* session;
+					StringInfoData buf;
+					Port*    port;
+					pgsocket sock;
+					MemoryContext oldcontext;
+
+					sock = pg_recv_sock(SessionPoolSock);
+					if (sock == PGINVALID_SOCKET)
+						elog(ERROR, "Failed to receive session socket: %m");
+
+					session = CreateSession();
+
+					/* Initialize port and wait event set for this session */
+					oldcontext = MemoryContextSwitchTo(session->memory);
+					MyProcPort = port = palloc(sizeof(Port));
+					memcpy(port, SessionPool->backendPort, sizeof(Port));
+
+					/*
+					 * Receive the startup packet (which might turn out to be
+					 * a cancel request packet).
+					 */
+					port->sock = sock;
+					port->pqcomm_state = pq_init(session->memory);
+
+					session->port = port;
+					session->eventSet =
+						pq_create_backend_event_set(session->memory, port, false);
+					pq_set_current_state(session->port->pqcomm_state,
+										 port,
+										 session->eventSet);
+					whereToSendOutput = DestRemote;
+
+					MemoryContextSwitchTo(oldcontext);
+
+					if (AddWaitEventToSet(SessionPool->waitEvents, WL_SOCKET_READABLE,
+								sock, NULL, session) < 0)
+					{
+						elog(WARNING, "Too much pooled sessions: %d", MaxSessions);
+						DeleteSession(session);
+						ActiveSession = NULL;
+						closesocket(sock);
+						goto ChooseSession;
+					}
+
+					elog(DEBUG1, "Start new session %d in backend %d "
+						"for database %s user %s", (int)sock, MyProcPid,
+						port->database_name, port->user_name);
+
+					SaveSessionVariables(ActiveSession);
+					RestoreSessionGUCs(ActiveSession);
+					ActiveSession = session;
+					InitializeSessionVariables(session);
+					LoadSessionVariables(session);
+					SetCurrentStatementStartTimestamp();
+					StartTransactionCommand();
+					PerformAuthentication(MyProcPort);
+					process_settings(MyDatabaseId, GetSessionUserId());
+					CommitTransactionCommand();
+					SetTempNamespaceState(InvalidOid, InvalidOid);
+
+					/*
+					 * Send GUC options to the client
+					 */
+					BeginReportingGUCOptions();
+
+					/*
+					 * Send this backend's cancellation info to the frontend.
+					 */
+					pq_beginmessage(&buf, 'K');
+					pq_sendint(&buf, (int32) MyProcPid, 4);
+					pq_sendint(&buf, (int32) MyCancelKey, 4);
+					pq_endmessage(&buf);
+
+					/* Need not flush since ReadyForQuery will do it. */
+					send_ready_for_query = true;
+
+					continue;
+				}
+				else
+				{
+					SessionContext* session = (SessionContext *) ready_client.user_data;
+					SwitchToSession(session);
+				}
+			}
 		}
 
 		/*
@@ -4118,6 +4464,8 @@ PostgresMain(int argc, char *argv[],
 		 */
 		if (ConfigReloadPending)
 		{
+			if (ActiveSession && RestartPoolerOnReload)
+				proc_exit(0);
 			ConfigReloadPending = false;
 			ProcessConfigFile(PGC_SIGHUP);
 		}
@@ -4355,6 +4703,46 @@ PostgresMain(int argc, char *argv[],
 				 * it will fail to be called during other backend-shutdown
 				 * scenarios.
 				 */
+
+				if (SessionPool)
+				{
+CloseSession:
+					/* In case of session pooling close the session, but do not terminate the backend
+					 * even if there are not more sessions in this backend.
+					 * The reason for keeping backend alive is to prevent redundant process launches if
+					 * some client repeatedly open/close connection to the database.
+					 * Maximal number of launched backends in case of connection pooling is intended to be
+					 * optimal for this system and workload, so there are no reasons to try to reduce this number
+					 * when there are no active sessions.
+					 */
+					if (MyProcPort)
+					{
+						elog(DEBUG1, "Closing session %d in backend %d", MyProcPort->sock, MyProcPid);
+
+						DeleteWaitEventFromSet(SessionPool->waitEvents, MyProcPort->sock);
+
+						pq_getmsgend(&input_message);
+						if (pq_is_reading_msg())
+							pq_endmsgread();
+
+						closesocket(MyProcPort->sock);
+						MyProcPort->sock = PGINVALID_SOCKET;
+						MyProcPort = NULL;
+					}
+
+					if (ActiveSession)
+					{
+						StartTransactionCommand();
+						UserAbortTransactionBlock();
+						CommitTransactionCommand();
+
+						ResetCurrentSession();
+					}
+
+					/* Need to perform rescheduling to some other session or accept new session */
+					goto ChooseSession;
+				}
+				elog(DEBUG1, "Terminate backend %d", MyProcPid);
 				proc_exit(0);
 
 			case 'd':			/* copy data */

@@ -144,7 +144,9 @@ extern void GetTempNamespaceState(Oid *tempNamespaceId,
 					  Oid *tempToastNamespaceId);
 extern void SetTempNamespaceState(Oid tempNamespaceId,
 					  Oid tempToastNamespaceId);
-extern void ResetTempTableNamespace(void);
+
+struct SessionContext;
+extern void ResetTempTableNamespace(Oid npc);
 
 extern OverrideSearchPath *GetOverrideSearchPath(MemoryContext context);
 extern OverrideSearchPath *CopyOverrideSearchPath(OverrideSearchPath *path);

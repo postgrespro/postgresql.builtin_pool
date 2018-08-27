@@ -395,6 +395,12 @@ extern Size EstimateGUCStateSpace(void);
 extern void SerializeGUCState(Size maxsize, char *start_address);
 extern void RestoreGUCState(void *gucstate);
 
+/* Session polling support function */
+struct SessionContext;
+extern void RestoreSessionGUCs(struct SessionContext* session);
+extern void ReleaseSessionGUCs(struct SessionContext* session);
+
+
 /* Support for messages reported from GUC check hooks */
 
 extern PGDLLIMPORT char *GUC_check_errmsg_string;

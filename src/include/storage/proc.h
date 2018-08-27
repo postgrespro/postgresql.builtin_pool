@@ -21,6 +21,7 @@
 #include "storage/lock.h"
 #include "storage/pg_sema.h"
 #include "storage/proclist_types.h"
+#include "utils/guc_tables.h"
 
 /*
  * Each backend advertises up to PGPROC_MAX_CACHED_SUBXIDS TransactionIds
@@ -276,6 +277,57 @@ extern PGDLLIMPORT PROC_HDR *ProcGlobal;
 
 extern PGPROC *PreparedXactProcs;
 
+typedef struct SessionGUC
+{
+	struct SessionGUC	   *next;
+	config_var_value		saved;
+	struct config_generic  *var;
+} SessionGUC;
+
+/*
+ * Information associated with client session.
+ */
+typedef struct SessionContext
+{
+	uint32          magic;              /* Magic to validate content of session object */
+	uint32			id;					/* session identifier, unique across many backends */
+	/* Memory context used for global session data (instead of TopMemoryContext) */
+	MemoryContext	memory;
+	struct Port*	port;				/* connection port */
+	Oid				tempNamespace;		/* temporary namespace */
+	Oid				tempToastNamespace;	/* temporary toast namespace */
+	SessionGUC	   *gucs;				/* session local GUCs */
+	WaitEventSet   *eventSet;			/* Wait set for the session */
+	HTAB		   *prepared_queries;	/* Session prepared queries */
+	HTAB		   *portals;			/* Session portals */
+	void		   *userId;				/* Current role state */
+	#define SessionVariable(type,name,init)  type name;
+	#include "storage/sessionvars.h"
+} SessionContext;
+
+#define SessionVariable(type,name,init)  extern type name;
+#include "storage/sessionvars.h"
+
+typedef struct Port Port;
+typedef struct BackendSessionPool
+{
+	MemoryContext	mcxt;
+
+	WaitEventSet   *waitEvents;		/* Set of all sessions sockets */
+	uint32			sessionCount;   /* Number of sessions */
+
+	/*
+	 * Reference to the original port of this backend created when this backend
+	 * was launched. Session using this port may be already terminated,
+	 * but since it is allocated in TopMemoryContext, its content is still
+	 * valid and is used as template for ports of new sessions
+	 */
+	Port		   *backendPort;
+} BackendSessionPool;
+
+extern PGDLLIMPORT SessionContext		*ActiveSession;
+extern PGDLLIMPORT BackendSessionPool	*SessionPool;
+
 /* Accessor for PGPROC given a pgprocno. */
 #define GetPGProcByNumber(n) (&ProcGlobal->allProcs[(n)])
 
@@ -295,7 +347,7 @@ extern int	StatementTimeout;
 extern int	LockTimeout;
 extern int	IdleInTransactionSessionTimeout;
 extern bool log_lock_waits;
-
+extern bool IsDedicatedBackend;
 
 /*
  * Function Prototypes
@@ -321,6 +373,7 @@ extern void ProcLockWakeup(LockMethod lockMethodTable, LOCK *lock);
 extern void CheckDeadLockAlert(void);
 extern bool IsWaitingForLock(void);
 extern void LockErrorCleanup(void);
+extern uint32 CreateSessionId(void);
 
 extern void ProcWaitForSignal(uint32 wait_event_info);
 extern void ProcSendSignal(int pid);

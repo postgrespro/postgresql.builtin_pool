@@ -31,9 +31,11 @@
 #define STACK_DEPTH_SLOP (512 * 1024L)
 
 extern CommandDest whereToSendOutput;
+
 extern PGDLLIMPORT const char *debug_query_string;
 extern int	max_stack_depth;
 extern int	PostAuthDelay;
+extern pgsocket SessionPoolSock;
 
 /* GUC-configurable parameters */
 

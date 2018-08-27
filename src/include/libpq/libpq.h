@@ -60,7 +60,12 @@ extern int	StreamConnection(pgsocket server_fd, Port *port);
 extern void StreamClose(pgsocket sock);
 extern void TouchSocketFiles(void);
 extern void RemoveSocketFiles(void);
-extern void pq_init(void);
+extern void *pq_init(MemoryContext mcxt);
+extern void pq_reset(void);
+extern void pq_set_current_state(void *state, Port *port, WaitEventSet *set);
+extern WaitEventSet *pq_get_current_waitset(void);
+extern WaitEventSet *pq_create_backend_event_set(MemoryContext mcxt,
+												 Port *port, bool onlySock);
 extern int	pq_getbytes(char *s, size_t len);
 extern int	pq_getstring(StringInfo s);
 extern void pq_startmsgread(void);
@@ -71,6 +76,7 @@ extern int	pq_getbyte(void);
 extern int	pq_peekbyte(void);
 extern int	pq_getbyte_if_available(unsigned char *c);
 extern int	pq_putbytes(const char *s, size_t len);
+extern int  pq_available_bytes(void);
 
 /*
  * prototypes for functions in be-secure.c
@@ -95,8 +101,6 @@ extern ssize_t secure_raw_read(Port *port, void *ptr, size_t len);
 extern ssize_t secure_raw_write(Port *port, const void *ptr, size_t len);
 
 extern bool ssl_loaded_verify_locations;
-
-extern WaitEventSet *FeBeWaitSet;
 
 /* GUCs */
 extern char *SSLCipherSuites;

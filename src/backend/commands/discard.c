@@ -45,7 +45,7 @@ DiscardCommand(DiscardStmt *stmt, bool isTopLevel)
 			break;
 
 		case DISCARD_TEMP:
-			ResetTempTableNamespace();
+			ResetTempTableNamespace(InvalidOid);
 			break;
 
 		default:
@@ -73,6 +73,6 @@ DiscardAll(bool isTopLevel)
 	Async_UnlistenAll();
 	LockReleaseAll(USER_LOCKMETHOD, true);
 	ResetPlanCache();
-	ResetTempTableNamespace();
+	ResetTempTableNamespace(InvalidOid);
 	ResetSequenceCaches();
 }

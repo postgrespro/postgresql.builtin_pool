@@ -62,6 +62,10 @@ extern Size ShmemBackendArraySize(void);
 extern void ShmemBackendArrayAllocation(void);
 #endif
 
+struct Port;
+extern int	ProcessStartupPacket(struct Port *port, bool SSLdone,
+						MemoryContext memctx, int errlevel);
+
 /*
  * Note: MAX_BACKENDS is limited to 2^18-1 because that's the width reserved
  * for buffer references in buf_internals.h.  This limitation could be lifted

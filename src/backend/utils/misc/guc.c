@@ -59,6 +59,7 @@
 #include "postmaster/autovacuum.h"
 #include "postmaster/bgworker_internals.h"
 #include "postmaster/bgwriter.h"
+#include "postmaster/connpool.h"
 #include "postmaster/postmaster.h"
 #include "postmaster/syslogger.h"
 #include "postmaster/walwriter.h"
@@ -587,6 +588,8 @@ const char *const config_group_names[] =
 	gettext_noop("Connections and Authentication / Authentication"),
 	/* CONN_AUTH_SSL */
 	gettext_noop("Connections and Authentication / SSL"),
+	/* CONN_POOLING */
+	gettext_noop("Connections and Authentication / Connection Pooling"),
 	/* RESOURCES */
 	gettext_noop("Resource Usage"),
 	/* RESOURCES_MEM */
@@ -1188,6 +1191,16 @@ static struct config_bool ConfigureNamesBool[] =
 		},
 		&restart_after_crash,
 		true,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"restart_pooler_on_reload", PGC_SIGHUP, CONN_POOLING,
+		 gettext_noop("Restart session pool workers on pg_reload_conf()."),
+		 NULL,
+		},
+		&RestartPoolerOnReload,
+		false,
 		NULL, NULL, NULL
 	},
 
@@ -1998,8 +2011,41 @@ static struct config_int ConfigureNamesInt[] =
 		check_maxconnections, NULL, NULL
 	},
 
+ 	{
+		{"max_sessions", PGC_POSTMASTER, CONN_POOLING,
+			gettext_noop("Sets the maximum number of client session."),
+			gettext_noop("Maximal number of client sessions which can be handled by one backend if session pooling is switched on. "
+						 "So maximal number of client connections is session_pool_size*max_sessions")
+		},
+		&MaxSessions,
+		1000, 1, INT_MAX,
+		NULL, NULL, NULL
+	},
+
 	{
-		/* see max_connections and max_wal_senders */
+		{"session_pool_size", PGC_POSTMASTER, CONN_POOLING,
+			gettext_noop("Sets number of backends serving client sessions."),
+			gettext_noop("If non-zero then session pooling will be used: "
+						 "client connections will be redirected to one of the backends and maximal number of backends is determined by this parameter."
+						 "Launched backend are never terminated even in case of no active sessions.")
+		},
+		&SessionPoolSize,
+		10, 0, INT_MAX,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"connection_pool_workers", PGC_POSTMASTER, CONN_POOLING,
+		 gettext_noop("Number of connection pool workers"),
+		 NULL,
+	    },
+		&NumConnPoolWorkers,
+		2, 0, MAX_CONNPOOL_WORKERS,
+		NULL, NULL, NULL
+	},
+
+	{
+	/* see max_connections and max_wal_senders */
 		{"superuser_reserved_connections", PGC_POSTMASTER, CONN_AUTH_SETTINGS,
 			gettext_noop("Sets the number of connection slots reserved for superusers."),
 			NULL
@@ -3340,13 +3386,23 @@ static struct config_string ConfigureNamesString[] =
 
 	{
 		{"temp_tablespaces", PGC_USERSET, CLIENT_CONN_STATEMENT,
-			gettext_noop("Sets the tablespace(s) to use for temporary tables and sort files."),
-			NULL,
-			GUC_LIST_INPUT | GUC_LIST_QUOTE
+		    gettext_noop("Sets the tablespace(s) to use for temporary tables and sort files."),
+		    NULL,
+		    GUC_LIST_INPUT | GUC_LIST_QUOTE
 		},
 		&temp_tablespaces,
 		"",
 		check_temp_tablespaces, assign_temp_tablespaces, NULL
+	},
+
+	{
+		{"dedicated_databases", PGC_USERSET, CONN_POOLING,
+			gettext_noop("Set of databases for which session pooling is disabled."),
+			NULL,
+			GUC_LIST_INPUT | GUC_LIST_QUOTE
+		},
+		&DedicatedDatabases,
+		"template0, template1, postgres"
 	},
 
 	{
@@ -5346,6 +5402,164 @@ NewGUCNestLevel(void)
 }
 
 /*
+ * Save changed variables after SET command.
+ * It's important to restore variables as we add them to the list.
+ */
+static void
+SaveSessionGUCs(SessionContext *session,
+				struct config_generic *gconf,
+				config_var_value *prior_val)
+{
+	SessionGUC	*sg;
+
+	/* Find needed GUC in active session */
+	for (sg = session->gucs;
+			sg != NULL && sg->var != gconf; sg = sg->next);
+
+	if (sg != NULL)
+		/* already there */
+		return;
+
+	sg = MemoryContextAllocZero(session->memory, sizeof(SessionGUC));
+	sg->var = gconf;
+	sg->saved.extra = prior_val->extra;
+
+	switch (gconf->vartype)
+	{
+		case PGC_BOOL:
+			sg->saved.val.boolval = prior_val->val.boolval;
+			break;
+		case PGC_INT:
+			sg->saved.val.intval = prior_val->val.intval;
+			break;
+		case PGC_REAL:
+			sg->saved.val.realval = prior_val->val.realval;
+			break;
+		case PGC_STRING:
+			sg->saved.val.stringval = prior_val->val.stringval;
+			break;
+		case PGC_ENUM:
+			sg->saved.val.enumval = prior_val->val.enumval;
+			break;
+	}
+
+	if (session->gucs)
+	{
+		SessionGUC	*latest;
+
+		/* Move to end of the list */
+		for (latest = session->gucs;
+				latest->next != NULL; latest = latest->next);
+		latest->next = sg;
+	}
+	else
+		session->gucs = sg;
+}
+
+/*
+ * Set GUCs for this session
+ */
+void
+RestoreSessionGUCs(SessionContext* session)
+{
+	SessionGUC	*sg;
+	bool save_reporting_enabled;
+
+	if (session == NULL)
+		return;
+
+	save_reporting_enabled = reporting_enabled;
+	reporting_enabled = false;
+
+	for (sg = session->gucs; sg != NULL; sg = sg->next)
+	{
+		void	*saved_extra = sg->saved.extra;
+		void	*old_extra = sg->var->extra;
+
+		/* restore extra */
+		sg->var->extra = saved_extra;
+		sg->saved.extra = old_extra;
+
+		/* restore actual values */
+		switch (sg->var->vartype)
+		{
+			case PGC_BOOL:
+			{
+				struct config_bool *conf = (struct config_bool *)sg->var;
+				bool oldval = *conf->variable;
+				*conf->variable = sg->saved.val.boolval;
+				if (conf->assign_hook)
+					conf->assign_hook(sg->saved.val.boolval, saved_extra);
+
+				sg->saved.val.boolval = oldval;
+				break;
+			}
+			case PGC_INT:
+			{
+				struct config_int *conf = (struct config_int*) sg->var;
+				int oldval = *conf->variable;
+				*conf->variable = sg->saved.val.intval;
+				if (conf->assign_hook)
+					conf->assign_hook(sg->saved.val.intval, saved_extra);
+				sg->saved.val.intval = oldval;
+				break;
+			}
+			case PGC_REAL:
+			{
+				struct config_real *conf = (struct config_real*) sg->var;
+				double oldval = *conf->variable;
+				*conf->variable = sg->saved.val.realval;
+				if (conf->assign_hook)
+					conf->assign_hook(sg->saved.val.realval, saved_extra);
+				sg->saved.val.realval = oldval;
+				break;
+			}
+			case PGC_STRING:
+			{
+				struct config_string *conf = (struct config_string*) sg->var;
+				char* oldval = *conf->variable;
+				*conf->variable = sg->saved.val.stringval;
+				if (conf->assign_hook)
+					conf->assign_hook(sg->saved.val.stringval, saved_extra);
+				sg->saved.val.stringval = oldval;
+				break;
+			}
+			case PGC_ENUM:
+			{
+				struct config_enum *conf = (struct config_enum*) sg->var;
+				int oldval = *conf->variable;
+				*conf->variable = sg->saved.val.enumval;
+				if (conf->assign_hook)
+					conf->assign_hook(sg->saved.val.enumval, saved_extra);
+				sg->saved.val.enumval = oldval;
+				break;
+			}
+		}
+	}
+	reporting_enabled = save_reporting_enabled;
+}
+
+/*
+ * Deallocate memory for session GUCs
+ */
+void
+ReleaseSessionGUCs(SessionContext* session)
+{
+	SessionGUC* sg;
+	for (sg = session->gucs; sg != NULL; sg = sg->next)
+	{
+		if (sg->saved.extra)
+			set_extra_field(sg->var, &sg->saved.extra, NULL);
+
+		if (sg->var->vartype == PGC_STRING)
+		{
+			struct config_string* conf = (struct config_string*)sg->var;
+			set_string_field(conf, &sg->saved.val.stringval, NULL);
+		}
+	}
+}
+
+/*
  * Do GUC processing at transaction or subtransaction commit or abort, or
  * when exiting a function that has proconfig settings, or when undoing a
  * transient assignment to some GUC variables.  (The name is thus a bit of
@@ -5413,8 +5627,10 @@ AtEOXact_GUC(bool isCommit, int nestLevel)
 					restoreMasked = true;
 				else if (stack->state == GUC_SET)
 				{
-					/* we keep the current active value */
-					discard_stack_value(gconf, &stack->prior);
+					if (ActiveSession)
+						SaveSessionGUCs(ActiveSession, gconf, &stack->prior);
+					else
+						discard_stack_value(gconf, &stack->prior);
 				}
 				else			/* must be GUC_LOCAL */
 					restorePrior = true;
@@ -5440,8 +5656,8 @@ AtEOXact_GUC(bool isCommit, int nestLevel)
 
 					case GUC_SET:
 						/* next level always becomes SET */
-						discard_stack_value(gconf, &stack->prior);
-						if (prev->state == GUC_SET_LOCAL)
+					    discard_stack_value(gconf, &stack->prior);
+					    if (prev->state == GUC_SET_LOCAL)
 							discard_stack_value(gconf, &prev->masked);
 						prev->state = GUC_SET;
 						break;

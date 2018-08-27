@@ -868,7 +868,8 @@ pgstat_report_stat(bool force)
 			PgStat_TableEntry *this_ent;
 
 			/* Shouldn't have any pending transaction-dependent counts */
-			Assert(entry->trans == NULL);
+			if (entry->trans != NULL)
+				continue;
 
 			/*
 			 * Ignore entries that didn't accumulate any actual counts, such

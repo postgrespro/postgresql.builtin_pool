@@ -30,9 +30,11 @@
 #include "parser/parse_expr.h"
 #include "parser/parse_type.h"
 #include "rewrite/rewriteHandler.h"
+#include "storage/proc.h"
 #include "tcop/pquery.h"
 #include "tcop/utility.h"
 #include "utils/builtins.h"
+#include "utils/memutils.h"
 #include "utils/snapmgr.h"
 #include "utils/timestamp.h"
 
@@ -43,9 +45,7 @@
  * The keys for this hash table are the arguments to PREPARE and EXECUTE
  * (statement names); the entries are PreparedStatement structs.
  */
-static HTAB *prepared_queries = NULL;
-
-static void InitQueryHashTable(void);
+static HTAB *InitQueryHashTable(MemoryContext mcxt);
 static ParamListInfo EvaluateParams(PreparedStatement *pstmt, List *params,
 			   const char *queryString, EState *estate);
 static Datum build_regtype_array(Oid *param_types, int num_params);
@@ -427,20 +427,43 @@ EvaluateParams(PreparedStatement *pstmt, List *params,
 /*
  * Initialize query hash table upon first use.
  */
-static void
-InitQueryHashTable(void)
+static HTAB *
+InitQueryHashTable(MemoryContext mcxt)
 {
-	HASHCTL		hash_ctl;
+	HTAB		   *res;
+	MemoryContext	old_mcxt;
+	HASHCTL			hash_ctl;
 
 	MemSet(&hash_ctl, 0, sizeof(hash_ctl));
 
 	hash_ctl.keysize = NAMEDATALEN;
 	hash_ctl.entrysize = sizeof(PreparedStatement);
+	hash_ctl.hcxt = mcxt;
 
-	prepared_queries = hash_create("Prepared Queries",
-								   32,
-								   &hash_ctl,
-								   HASH_ELEM);
+	old_mcxt = MemoryContextSwitchTo(mcxt);
+	res = hash_create("Prepared Queries", 32, &hash_ctl, HASH_ELEM | HASH_CONTEXT);
+	MemoryContextSwitchTo(old_mcxt);
+
+	return res;
+}
+
+static HTAB *
+get_prepared_queries_htab(bool init)
+{
+	static HTAB *prepared_queries = NULL;
+
+	if (ActiveSession)
+	{
+		if (init && !ActiveSession->prepared_queries)
+			ActiveSession->prepared_queries = InitQueryHashTable(ActiveSession->memory);
+		return ActiveSession->prepared_queries;
+	}
+
+	/* Initialize the global hash table, if necessary */
+	if (init && !prepared_queries)
+		prepared_queries = InitQueryHashTable(TopMemoryContext);
+
+	return prepared_queries;
 }
 
 /*
@@ -458,12 +481,9 @@ StorePreparedStatement(const char *stmt_name,
 	TimestampTz cur_ts = GetCurrentStatementStartTimestamp();
 	bool		found;
 
-	/* Initialize the hash table, if necessary */
-	if (!prepared_queries)
-		InitQueryHashTable();
 
 	/* Add entry to hash table */
-	entry = (PreparedStatement *) hash_search(prepared_queries,
+	entry = (PreparedStatement *) hash_search(get_prepared_queries_htab(true),
 											  stmt_name,
 											  HASH_ENTER,
 											  &found);
@@ -495,13 +515,14 @@ PreparedStatement *
 FetchPreparedStatement(const char *stmt_name, bool throwError)
 {
 	PreparedStatement *entry;
+	HTAB			  *queries = get_prepared_queries_htab(false);
 
 	/*
 	 * If the hash table hasn't been initialized, it can't be storing
 	 * anything, therefore it couldn't possibly store our plan.
 	 */
-	if (prepared_queries)
-		entry = (PreparedStatement *) hash_search(prepared_queries,
+	if (queries)
+		entry = (PreparedStatement *) hash_search(queries,
 												  stmt_name,
 												  HASH_FIND,
 												  NULL);
@@ -579,7 +600,11 @@ DeallocateQuery(DeallocateStmt *stmt)
 void
 DropPreparedStatement(const char *stmt_name, bool showError)
 {
-	PreparedStatement *entry;
+	PreparedStatement	*entry;
+	HTAB				*queries = get_prepared_queries_htab(false);
+
+	if (!queries)
+		return;
 
 	/* Find the query's hash table entry; raise error if wanted */
 	entry = FetchPreparedStatement(stmt_name, showError);
@@ -590,7 +615,7 @@ DropPreparedStatement(const char *stmt_name, bool showError)
 		DropCachedPlan(entry->plansource);
 
 		/* Now we can remove the hash table entry */
-		hash_search(prepared_queries, entry->stmt_name, HASH_REMOVE, NULL);
+		hash_search(queries, entry->stmt_name, HASH_REMOVE, NULL);
 	}
 }
 
@@ -602,20 +627,21 @@ DropAllPreparedStatements(void)
 {
 	HASH_SEQ_STATUS seq;
 	PreparedStatement *entry;
+	HTAB			  *queries = get_prepared_queries_htab(false);
 
 	/* nothing cached */
-	if (!prepared_queries)
+	if (!queries)
 		return;
 
 	/* walk over cache */
-	hash_seq_init(&seq, prepared_queries);
+	hash_seq_init(&seq, queries);
 	while ((entry = hash_seq_search(&seq)) != NULL)
 	{
 		/* Release the plancache entry */
 		DropCachedPlan(entry->plansource);
 
 		/* Now we can remove the hash table entry */
-		hash_search(prepared_queries, entry->stmt_name, HASH_REMOVE, NULL);
+		hash_search(queries, entry->stmt_name, HASH_REMOVE, NULL);
 	}
 }
 
@@ -710,10 +736,11 @@ Datum
 pg_prepared_statement(PG_FUNCTION_ARGS)
 {
 	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
-	TupleDesc	tupdesc;
+	TupleDesc		tupdesc;
 	Tuplestorestate *tupstore;
-	MemoryContext per_query_ctx;
-	MemoryContext oldcontext;
+	MemoryContext	per_query_ctx;
+	MemoryContext	oldcontext;
+	HTAB		   *queries;
 
 	/* check to see if caller supports us returning a tuplestore */
 	if (rsinfo == NULL || !IsA(rsinfo, ReturnSetInfo))
@@ -757,13 +784,13 @@ pg_prepared_statement(PG_FUNCTION_ARGS)
 	/* generate junk in short-term context */
 	MemoryContextSwitchTo(oldcontext);
 
-	/* hash table might be uninitialized */
-	if (prepared_queries)
+	queries = get_prepared_queries_htab(false);
+	if (queries)
 	{
 		HASH_SEQ_STATUS hash_seq;
 		PreparedStatement *prep_stmt;
 
-		hash_seq_init(&hash_seq, prepared_queries);
+		hash_seq_init(&hash_seq, queries);
 		while ((prep_stmt = hash_seq_search(&hash_seq)) != NULL)
 		{
 			Datum		values[5];

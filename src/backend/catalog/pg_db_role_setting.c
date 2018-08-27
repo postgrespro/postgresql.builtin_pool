@@ -16,6 +16,7 @@
 #include "catalog/indexing.h"
 #include "catalog/objectaccess.h"
 #include "catalog/pg_db_role_setting.h"
+#include "storage/proc.h"
 #include "utils/fmgroids.h"
 #include "utils/rel.h"
 #include "utils/tqual.h"

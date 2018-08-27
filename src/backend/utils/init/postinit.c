@@ -62,10 +62,8 @@
 #include "utils/timeout.h"
 #include "utils/tqual.h"
 
-
 static HeapTuple GetDatabaseTuple(const char *dbname);
 static HeapTuple GetDatabaseTupleByOid(Oid dboid);
-static void PerformAuthentication(Port *port);
 static void CheckMyDatabase(const char *name, bool am_superuser, bool override_allow_connections);
 static void InitCommunication(void);
 static void ShutdownPostgres(int code, Datum arg);
@@ -74,7 +72,6 @@ static void LockTimeoutHandler(void);
 static void IdleInTransactionSessionTimeoutHandler(void);
 static bool ThereIsAtLeastOneRole(void);
 static void process_startup_options(Port *port, bool am_superuser);
-static void process_settings(Oid databaseid, Oid roleid);
 
 
 /*** InitPostgres support ***/
@@ -180,7 +177,7 @@ GetDatabaseTupleByOid(Oid dboid)
  *
  * returns: nothing.  Will not return at all if there's any failure.
  */
-static void
+void
 PerformAuthentication(Port *port)
 {
 	/* This should be set already, but let's make sure */
@@ -1126,7 +1123,7 @@ process_startup_options(Port *port, bool am_superuser)
  * We try specific settings for the database/role combination, as well as
  * general for this database and for this user.
  */
-static void
+void
 process_settings(Oid databaseid, Oid roleid)
 {
 	Relation	relsetting;

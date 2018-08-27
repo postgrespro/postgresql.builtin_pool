@@ -24,6 +24,7 @@
 #include "catalog/pg_authid.h"
 #include "utils/inval.h"
 #include "utils/syscache.h"
+#include "storage/proc.h"
 #include "miscadmin.h"
 
 
@@ -33,8 +34,6 @@
  * the status of the last requested roleid.  The cache can be flushed
  * at need by watching for cache update events on pg_authid.
  */
-static Oid	last_roleid = InvalidOid;	/* InvalidOid == cache not valid */
-static bool last_roleid_is_super = false;
 static bool roleid_callback_registered = false;
 
 static void RoleidCallback(Datum arg, int cacheid, uint32 hashvalue);

@@ -144,6 +144,7 @@ secure_read(Port *port, void *ptr, size_t len)
 {
 	ssize_t		n;
 	int			waitfor;
+	WaitEventSet	*waitset = pq_get_current_waitset();
 
 retry:
 #ifdef USE_SSL
@@ -166,9 +167,9 @@ retry:
 
 		Assert(waitfor);
 
-		ModifyWaitEvent(FeBeWaitSet, 0, waitfor, NULL);
+		ModifyWaitEvent(waitset, 0, waitfor, NULL);
 
-		WaitEventSetWait(FeBeWaitSet, -1 /* no timeout */ , &event, 1,
+		WaitEventSetWait(waitset, -1 /* no timeout */ , &event, 1,
 						 WAIT_EVENT_CLIENT_READ);
 
 		/*
@@ -247,6 +248,7 @@ secure_write(Port *port, void *ptr, size_t len)
 {
 	ssize_t		n;
 	int			waitfor;
+	WaitEventSet	*waitset = pq_get_current_waitset();
 
 retry:
 	waitfor = 0;
@@ -268,9 +270,9 @@ retry:
 
 		Assert(waitfor);
 
-		ModifyWaitEvent(FeBeWaitSet, 0, waitfor, NULL);
+		ModifyWaitEvent(waitset, 0, waitfor, NULL);
 
-		WaitEventSetWait(FeBeWaitSet, -1 /* no timeout */ , &event, 1,
+		WaitEventSetWait(waitset, -1 /* no timeout */ , &event, 1,
 						 WAIT_EVENT_CLIENT_WRITE);
 
 		/* See comments in secure_read. */
