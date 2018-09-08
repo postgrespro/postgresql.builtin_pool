@@ -63,6 +63,7 @@
 #include "storage/proc.h"
 #include "storage/procarray.h"
 #include "storage/reinit.h"
+#include "storage/snapfs.h"
 #include "storage/smgr.h"
 #include "storage/spin.h"
 #include "utils/backend_random.h"
@@ -712,7 +713,7 @@ static WALInsertLockPadded *WALInsertLocks = NULL;
 /*
  * We maintain an image of pg_control in shared memory.
  */
-static ControlFileData *ControlFile = NULL;
+ControlFileData *ControlFile = NULL;
 
 /*
  * Calculate the amount of space left on the page after 'endptr'. Beware
@@ -4493,6 +4494,10 @@ WriteControlFile(void)
 
 	ControlFile->float4ByVal = FLOAT4PASSBYVAL;
 	ControlFile->float8ByVal = FLOAT8PASSBYVAL;
+
+	ControlFile->oldest_snapshot = 1;
+	ControlFile->recent_snapshot = SFS_INVALID_SNAPSHOT;
+	ControlFile->active_snapshot = SFS_INVALID_SNAPSHOT;
 
 	/* Contents are protected with a CRC */
 	INIT_CRC32C(ControlFile->crc);

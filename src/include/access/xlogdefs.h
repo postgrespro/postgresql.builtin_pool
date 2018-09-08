@@ -45,6 +45,11 @@ typedef uint64 XLogSegNo;
 typedef uint32 TimeLineID;
 
 /*
+ * Identifier of snapshot created by snapfs
+ */
+typedef uint32 SnapshotId;
+
+/*
  * Replication origin id - this is located in this file to avoid having to
  * include origin.h in a bunch of xlog related places.
  */

@@ -3069,6 +3069,32 @@ DropDatabaseBuffers(Oid dbid)
 	}
 }
 
+/* ---------------------------------------------------------------------
+ *		DropSharedBuffers
+ *
+ *		This function removes all the buffers in the buffer cache. for a
+ *		Dirty pages are simply dropped, without	bothering to write them out first.  
+ * --------------------------------------------------------------------
+ */
+void
+DropSharedBuffers(void)
+{
+	int			i;
+
+	/*
+	 * We needn't consider local buffers, since by assumption the target
+	 * database isn't our own.
+	 */
+
+	for (i = 0; i < NBuffers; i++)
+	{
+		BufferDesc *bufHdr = GetBufferDescriptor(i);
+
+		LockBufHdr(bufHdr);
+		InvalidateBuffer(bufHdr);	/* releases spinlock */
+	}
+}
+
 /* -----------------------------------------------------------------
  *		PrintBufferDescs
  *

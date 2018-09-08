@@ -195,6 +195,7 @@ extern void DropRelFileNodeBuffers(RelFileNodeBackend rnode,
 					   ForkNumber forkNum, BlockNumber firstDelBlock);
 extern void DropRelFileNodesAllBuffers(RelFileNodeBackend *rnodes, int nnodes);
 extern void DropDatabaseBuffers(Oid dbid);
+extern void DropSharedBuffers(void);
 
 #define RelationGetNumberOfBlocks(reln) \
 	RelationGetNumberOfBlocksInFork(reln, MAIN_FORKNUM)

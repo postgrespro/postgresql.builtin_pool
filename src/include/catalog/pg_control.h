@@ -19,9 +19,8 @@
 #include "pgtime.h"				/* for pg_time_t */
 #include "port/pg_crc32c.h"
 
-
 /* Version identifier for this pg_control format */
-#define PG_CONTROL_VERSION	1100
+#define PG_CONTROL_VERSION	1200
 
 /* Nonce key length, see below */
 #define MOCK_AUTH_NONCE_LEN		32
@@ -226,6 +225,11 @@ typedef struct ControlFileData
 	 * failed at an early stage.
 	 */
 	char		mock_authentication_nonce[MOCK_AUTH_NONCE_LEN];
+
+	/* Field used by snapshot manager */
+	SnapshotId  oldest_snapshot;
+    SnapshotId  recent_snapshot;
+    SnapshotId  active_snapshot;
 
 	/* CRC of all above ... MUST BE LAST! */
 	pg_crc32c	crc;

@@ -216,9 +216,9 @@ typedef struct CheckpointStatsData
 									 * entire sync phase. */
 } CheckpointStatsData;
 
-extern CheckpointStatsData CheckpointStats;
-
 struct XLogRecData;
+
+extern CheckpointStatsData CheckpointStats;
 
 extern XLogRecPtr XLogInsertRecord(struct XLogRecData *rdata,
 				 XLogRecPtr fpw_lsn,

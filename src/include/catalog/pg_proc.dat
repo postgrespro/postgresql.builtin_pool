@@ -10206,4 +10206,30 @@
   proisstrict => 'f', prorettype => 'bool', proargtypes => 'oid int4 int4 any',
   proargmodes => '{i,i,i,v}', prosrc => 'satisfies_hash_partition' },
 
+# snapfs functions
+{ oid => '6015', descr => 'create snapshot',
+  proname => 'pg_make_snapshot', provolatile => 'v',
+  proisstrict => 't', prorettype => 'int4', proargtypes => '',
+  prosrc => 'pg_make_snapshot' },
+
+{ oid => '6016', descr => 'remove snapshot',
+  proname => 'pg_remove_snapshot', provolatile => 'v',
+  proisstrict => 't', prorettype => 'void', proargtypes => 'int4',
+  prosrc => 'pg_remove_snapshot' },
+
+{ oid => '6017', descr => 'recover to snapshot',
+  proname => 'pg_recover_to_snapshot', provolatile => 'v',
+  proisstrict => 't', prorettype => 'void', proargtypes => 'int4',
+  prosrc => 'pg_recover_to_snapshot' },
+
+{ oid => '6018', descr => 'switch to snapshot',
+  proname => 'pg_switch_to_snapshot', provolatile => 'v',
+  proisstrict => 't', prorettype => 'void', proargtypes => 'int4',
+  prosrc => 'pg_switch_to_snapshot' },
+
+{ oid => '6019', descr => 'set backend snapshot',
+  proname => 'pg_set_backend_snapshot', provolatile => 'v',
+  proisstrict => 't', prorettype => 'void', proargtypes => 'int4',
+  prosrc => 'pg_set_backend_snapshot' },
+
 ]

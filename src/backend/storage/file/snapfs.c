@@ -1,5 +1,41 @@
-SfsState * sfs_state;
-sfs_snapshot_id sfs_current_snapshot;
+/*-------------------------------------------------------------------------
+ *
+ * snapfs.c
+ *	  File system snapshots providing fast recovery
+ *
+ * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1994, Regents of the University of California
+ *
+ * IDENTIFICATION
+ *	  src/backend/storage/file/snapfs.c
+ *
+ *-------------------------------------------------------------------------
+ */
+
+#include "postgres.h"
+
+#include <sys/file.h>
+#include <sys/param.h>
+#include <sys/stat.h>
+#ifndef WIN32
+#include <sys/mman.h>
+#endif
+#include <unistd.h>
+#include <fcntl.h>
+
+#include "miscadmin.h"
+#include "access/xact.h"
+#include "access/xlog.h"
+#include "common/file_perm.h"
+#include "storage/fd.h"
+#include "storage/snapfs.h"
+#include "storage/bufmgr.h"
+#include "utils/catcache.h"
+#include "utils/fmgrprotos.h"
+#include "utils/relcache.h"
+
+
+SnapshotId sfs_backend_snapshot;
 
 int
 sfs_msync(SnapshotMap * map)
@@ -25,7 +61,7 @@ sfs_mmap(int md)
 
 #ifdef WIN32
 	{
-		HANDLE		mh = CreateSnapshotMapping(_get_osfhandle(md), NULL, PAGE_READWRITE,
+		HANDLE		mh = CreateSnapshotMapping((HANDLE)_get_osfhandle(md), NULL, PAGE_READWRITE,
 										   0, (DWORD) sizeof(SnapshotMap), NULL);
 
 		if (mh == NULL)
@@ -101,40 +137,77 @@ sfs_write_file(int fd, void const *data, uint32 size)
 }
 
 void
-sfs_set_backend_snapshot(sfs_snaphot_id snap_id)
+sfs_switch_to_snapshot(SnapshotId snap_id)
 {
-	if (snap_id < sfs_state->oldest_snapshot || snap_id > sfs_state->recent_snapshot)
+	if (snap_id != SFS_INVALID_SNAPSHOT
+		&& (snap_id < ControlFile->oldest_snapshot || snap_id > ControlFile->recent_snapshot))
 		elog(ERROR, "Invalid snapshot %d, existed snapshots %d..%d",
-			 snap_id < sfs_state->oldest_snapshot, sfs_state->recent_snapshot);
+			 snap_id, ControlFile->oldest_snapshot, ControlFile->recent_snapshot);
 
-	sfs_current_snapshot = snap_id;
-	/* TODO: disable shared buffers and invalidate cache */
-}
+	ControlFile->active_snapshot = snap_id;
+	UpdateControlFile();
 
-sfs_snapshot_id
-sfs_make_snapshot(void)
-{
-	/* TODO: do checkpoint */
-	/* TODO: wait completion of all active transactions */
-	/* TODO: disable CLOG truncations */
-	return ++sfs_state->recent_snapshot;
-}
-
-size_t
-sfs_shmem_size(void)
-{
-	return sizeof(SfsState);
+	DropSharedBuffers();
+	ResetCatalogCaches();
+	RelationCacheInvalidate();
 }
 
 void
-sfs_initialize(void)
+sfs_set_backend_snapshot(SnapshotId snap_id)
 {
-	bool		found;
-	sfs_state = (CfsState *) ShmemInitStruct("SFS Control", sfs_shmem_size(), &found);
-	if (!found)
-	{
-		/* TODO: read from disk */
-		sfs_state->oldest_snapshot = 0;
-		sfs_state->recent_snapshot = -1;
-	}
+	if (snap_id != SFS_INVALID_SNAPSHOT
+		&& (snap_id < ControlFile->oldest_snapshot || snap_id > ControlFile->recent_snapshot))
+		elog(ERROR, "Invalid snapshot %d, existed snapshots %d..%d",
+			 snap_id, ControlFile->oldest_snapshot, ControlFile->recent_snapshot);
+
+	sfs_backend_snapshot = snap_id;
+
+	/* TODO: replace shared cache with private backend cache */
+	ResetCatalogCaches();
+	RelationCacheInvalidate();
+}
+
+SnapshotId
+sfs_make_snapshot(void)
+{
+	SnapshotId snap_id;
+	/* TODO: do checkpoint */
+	/* TODO: wait completion of all active transactions */
+	/* TODO: disable CLOG truncations */
+	snap_id = ++ControlFile->recent_snapshot;
+	UpdateControlFile();
+	return snap_id;
+}
+
+Datum pg_make_snapshot(PG_FUNCTION_ARGS)
+{
+	PG_RETURN_INT32(sfs_make_snapshot());
+}
+
+Datum pg_remove_snapshot(PG_FUNCTION_ARGS)
+{
+	SnapshotId snap_id = PG_GETARG_INT32(0);
+	sfs_remove_snapshot(snap_id);
+	PG_RETURN_VOID();
+}
+
+Datum pg_recover_to_snapshot(PG_FUNCTION_ARGS)
+{
+	SnapshotId snap_id = PG_GETARG_INT32(0);
+	sfs_recover_to_snapshot(snap_id);
+	PG_RETURN_VOID();
+}
+
+Datum pg_switch_to_snapshot(PG_FUNCTION_ARGS)
+{
+	SnapshotId snap_id = PG_GETARG_INT32(0);
+	sfs_switch_to_snapshot(snap_id);
+	PG_RETURN_VOID();
+}
+
+Datum pg_set_backend_snapshot(PG_FUNCTION_ARGS)
+{
+	SnapshotId snap_id = PG_GETARG_INT32(0);
+	sfs_set_backend_snapshot(snap_id);
+	PG_RETURN_VOID();
 }
