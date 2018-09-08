@@ -195,6 +195,10 @@ typedef struct vfd
 	/* NB: fileName is malloc'd, and must be free'd when closing the VFD */
 	int			fileFlags;		/* open(2) flags for (re)opening the file */
 	mode_t		fileMode;		/* mode to pass to open(2) */
+	int         snap_fd;        /* snapshot file descriptor */
+	int         snap_md;        /* snapshot map file descriptor */
+	SnapshotMap* snap_ma;       /* snapshot map */
+	sfs_snapshot_id snap_id;    /* snapshot identifier */
 } Vfd;
 
 /*
@@ -1017,6 +1021,59 @@ Delete(File file)
 	DO_DB(_dump_lru());
 }
 
+static
+bool OpenSnapshotFiles(Vfd *vfdP, sfs_snapshot_id snap_id, bool create)
+{
+	char* file_name = psprintf("%s.snap.%d", vfdP->fileName, snap_id);
+	int flags = create ? (O_RDWR|O_CREAT|PG_BINARY) : (O_RDWR|PG_BINARY);
+	nfile += 2;
+	/* Close excess kernel FDs. */
+	ReleaseLruFiles();
+
+	vfdP->snap_fd = BasicOpenFile(file_name, flags);
+	if (vfdP->snap_fd < 0)
+	{
+		if (!create && errno == ENOENT)
+		{
+			pfree(file_name);
+			return false;
+		}
+		elog(ERROR, "[SFS] Failed to create snapshot file %s: %m", file_name);
+	}
+	pfree(file_name);
+
+	char* file_name = psprintf("%s.snapmap.%d", vfdP->fileName, snap_id);
+	vfdP->snap_md = BasicOpenFile(file_name, flags);
+	if (vfdP->snap_md < 0)
+		elog(ERROR, "[SFS] Failed to create snapshot map file %s: %m", file_name);
+
+	vfdP->snap_map = sfs_mmap(vfdP->snap_md);
+	if (vfdP->snap_map == MAP_FAILED)
+		elog(ERROR, "[SFS] Failed to map snapshot map file %s: %m", file_name);
+	pfree(file_name);
+
+	vfdP->snap_id = snap_id;
+}
+
+
+static
+void CloseSnapshotFiles(Vfd *vfdP)
+{
+	if (!sfs_unmmap(vfdP->snap_map))
+		elog(LOG, "[SFS] Failed to unmap file: %m");
+
+	if (close(vfdP->snap_fd))
+		elog(LOG, "[SFS] Failed to close snapshot file: %m");
+
+	if (close(vfdP->snap_md))
+		elog(LOG, "[SFS] Failed to close snapshot map file: %m");
+
+	vfdP->snap_fd = VFD_CLOSED;
+	vfdP->snap_md = VFD_CLOSED;
+	vfdP->snap_id = SFS_INVALID_SNAPSHOT;
+}
+
+
 static void
 LruDelete(File file)
 {
@@ -1054,6 +1111,11 @@ LruDelete(File file)
 	vfdP->fd = VFD_CLOSED;
 	--nfile;
 
+	if (vfdP->snap_fd != VFD_CLOSED)
+	{
+		CloseSnapshotFiles(vfdP);
+		nfile -= 2;
+	}
 	/* delete the vfd record from the LRU ring */
 	Delete(file);
 }
@@ -1227,6 +1289,8 @@ AllocateVfd(void)
 			MemSet((char *) &(VfdCache[i]), 0, sizeof(Vfd));
 			VfdCache[i].nextFree = i + 1;
 			VfdCache[i].fd = VFD_CLOSED;
+			VfdCache[i].snap_fd = VFD_CLOSED;
+			VfdCache[i].snap_md = VFD_CLOSED;
 		}
 		VfdCache[newCacheSize - 1].nextFree = 0;
 		VfdCache[0].nextFree = SizeVfdCache;
@@ -1759,6 +1823,12 @@ FileClose(File file)
 		--nfile;
 		vfdP->fd = VFD_CLOSED;
 
+		if (vfdP->snap_fd != VFD_CLOSED)
+		{
+			CloseSnapshotFiles(vfdP);
+			nfile -= 2;
+		}
+
 		/* remove the file from the lru ring */
 		Delete(file);
 	}
@@ -1902,8 +1972,49 @@ FileRead(File file, char *buffer, int amount, uint32 wait_event_info)
 
 	vfdP = &VfdCache[file];
 
+	if (sfs_current_snapshot != SFS_INVALID_SNAPSHOT)
+	{
+		sfs_snapshot_id snap_id;
+
+		if (sfs_current_snapshot < sfs_state->oldest_snapshot || sfs_current_snapshot > sfs_state->recent_snapshot)
+			elog(ERROR, "Snapshot %d is not valid any more", sfs_current_snapshot);
+
+		for (snap_id = sfs_current_snapshot; snap_id <= sfs_state->recent_snapshot; snap_id++)
+		{
+			if (vfdP->snap_id != snap_id)
+			{
+				sfs_segment_offs_t offs;
+				if (vfdP->snap_fd >= 0)
+					CloseSnapshotFiles(vfdP);
+				if (!OpenSnapshotFiles(vfdP, snap_id, false))
+					continue;
+
+				offs = vfdP->snap_map[vfdP->seekPos/BLCKSZ];
+				if (offs)
+				{
+					offs -= 1;
+					Assert(amount <= BLCKSZ);
+
+					pgstat_report_wait_start(wait_event_info);
+
+					if (lseek(vfdP->snap_fd, offs, SEEK_SET) != offs)
+						elog(ERROR, "[SFS] Could not seek file: %m");
+
+					if (!sfs_read_file(vfdP->snap_fd, buffer, amount))
+						elog(ERROR, "[SFS] Field to read snapshot file: %m");
+
+					pgstat_report_wait_end();
+					vfdP->seekPos += amount;
+					return amount;
+				}
+			}
+		}
+	}
 retry:
 	pgstat_report_wait_start(wait_event_info);
+
+
+
 	returnCode = read(vfdP->fd, buffer, amount);
 	pgstat_report_wait_end();
 
@@ -2002,6 +2113,35 @@ FileWrite(File file, char *buffer, int amount, uint32 wait_event_info)
 						 errmsg("temporary file size exceeds temp_file_limit (%dkB)",
 								temp_file_limit)));
 		}
+	}
+	else if (sfs_state->recent_snapshot >= sfs_state->oldest_snapshot)
+	{
+		char orig_block[BLCKSZ];
+		int block_no = vfdP->seekPos/BLCKSZ;
+		sfs_segment_offs_t snap_offs;
+
+		if (sfs_current_snapshot >= 0)
+			elog(ERROR, "Write is prohibited in snapshot");
+
+		if (vfdP->snap_fd < 0)
+			OpenSnapshotFiles(vfdP, sfs_state->recent_snapshot, true);
+
+		if (!vfdP->snap_map->offs[block_no])
+			vfdP->snap_map->offs[block_no] = pg_atomic_fetch_add_u32(&vfdP->snap_map->size) + 1;
+
+		if (!sfs_read_file(vfdP->fd, orig_block, BLCKSZ))
+			elog(ERROR, "[SFS] Could not read file: %m");
+
+		if (lseek(vfdP->fd, vfdP->seekPos, SEEK_SET) != vfdP->seekPos)
+			elog(ERROR, "[SFS] Could not seek file: %m");
+
+		snap_offs = (vfdP->snap_map->offs[block_no] - 1)*BLCKSZ;
+		if (lseek(vfdP->snap_fd, snap_offs, SEEK_SET) != snap_offs)
+			elog(ERROR, "[SFS] Could not seek file: %m");
+
+		if (!sfs_write_file(vfdP->snap_fd, orig_block, BLCKSZ))
+			elog(ERROR, "[SFS] Could not write file: %m");
+
 	}
 
 retry:
@@ -3572,3 +3712,110 @@ MakePGDirectory(const char *directoryName)
 {
 	return mkdir(directoryName, pg_dir_create_mode);
 }
+
+
+static void
+walk_data_dir(void (*action) (const char *fname, bool isdir, int elevel), int elevel)
+{
+	walkdir("base", action, false, elevel);
+	walkdir("pg_tblspc", action, true, elevel);
+}
+
+static void
+sfs_remove_snapshot_file(const char *fname, bool isdir, int elevel)
+{
+	if (!isdir)
+	{
+		sfs_snapshot_id snap_id;
+		for (snap_id = sfs_state->oldest_snapshot; snap_id <= sfs_current_snapshot; snap_id++)
+		{
+			char* snap_file = dsprintf("%s.snap.%d", fname, snap_id);
+			(void)unlink(snap_file);
+			pfree(snap_file);
+
+			snap_file = dsprintf("%s.snapmap.%d", fname, snap_id);
+			(void)unlink(snap_file);
+			pfree(snap_file);
+		}
+	}
+}
+
+static void
+sfs_recover_snapshot_file(const char *fname, bool isdir, int elevel)
+{
+	if (!isdir)
+	{
+		sfs_snapshot_id snap_id;
+
+		for (snap_id = sfs_current_snapshot; snap_id >= sfs_state->oldest_snapshot; snap_id--)
+		{
+			char* snap_file = dsprintf("%s.snap.%d", fname, snap_id);
+			struct stat statbuf;
+
+			if (stat(snap_path, &statbuf) == 0 && S_ISREG(statbuf.st_mode))
+			{
+				File file = PathNameOpenFile(fname, O_RDONLY);
+				Vfd* vfdP = &VfdCache[file];
+				int i;
+
+				OpenSnapshotFiles(vfdP, snap_no, false);
+
+				for (i = 0; i < RELSEG_SIZE; i++)
+				{
+					offs_t offs = fdP->snap_map.offs[i] - 1;
+					if (offs)
+					{
+						char orig_block[BLCKSZ];
+						offs -= 1;
+						if (lseek(vfdP->snap_fd, offs, SEEK_SET) != offs)
+							elog(ERROR, "[SFS] Could not seek file: %m");
+
+						if (!sfs_read_file(vfdP->snap_fd, orig_block, BLCKSZ))
+							elog(ERROR, "[SFS] Could not read file: %m");
+
+						offs = i*BLCKSZ;
+						if (lseek(vfdP->fd, offs, SEEK_SET) != offs)
+							elog(ERROR, "[SFS] Could not seek file: %m");
+
+						if (!sfs_write_file(vfdP->fd, orig_block, BLCKSZ))
+							elog(ERROR, "[SFS] Could not write file: %m");
+					}
+				}
+
+				FileClose(file);
+			}
+		}
+	}
+}
+
+void
+sfs_remove_snapshot(sfs_snaphot_id snap_id)
+{
+	if (snap_id < sfs_state->oldest_snapshot || snap_id > sfs_state->recent_snapshot)
+		elog(ERROR, "Invalid snapshot %d, existed snapshots %d..%d",
+			 snap_id < sfs_state->oldest_snapshot, sfs_state->recent_snapshot);
+
+	sfs_current_snapshot = snap_id;
+	walk_data_dir(sfs_remove_snapshot_file, ERROR);
+	sfs_current_snapshot = SFS_INVALID_SNAPSHOT;
+
+	sfs_state->oldest_snapshot = snap_id + 1;
+}
+
+void
+sfs_recover_to_snapshot(sfs_snaphot_id snap_id)
+{
+	if (snap_id < sfs_state->oldest_snapshot || snap_id > sfs_state->recent_snapshot)
+		elog(ERROR, "Invalid snapshot %d, existed snapshots %d..%d",
+			 snap_id < sfs_state->oldest_snapshot, sfs_state->recent_snapshot);
+
+	if (sfs_current_snapshot != SFS_INVALID_SNAPSHOT)
+		elog(ERROR, "Can not perform operatoin inside snapshot");
+
+	sfs_current_snapshot = snap_id;
+	walk_data_dir(sfs_recover_snapshot_file, ERROR);
+	sfs_current_snapshot = SFS_INVALID_SNAPSHOT;
+
+	sfs_state->oldest_snapshot = snap_id + 1;
+}
+
