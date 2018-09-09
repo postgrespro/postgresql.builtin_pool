@@ -51,7 +51,8 @@ extern void sfs_set_backend_snapshot(SnapshotId sid);
  */
 
 #define SFS_KEEPING_SNAPSHOT() (ControlFile->recent_snapshot >= ControlFile->oldest_snapshot)
-
+#define SFS_IN_SNAPSHOT()      (sfs_backend_snapshot != SFS_INVALID_SNAPSHOT || ControlFile->active_snapshot != SFS_INVALID_SNAPSHOT)
+	
 typedef uint32 sfs_segment_offs_t; /* segment size can not be greateer than 1Gb, so 4 bytes is enough */
 
 

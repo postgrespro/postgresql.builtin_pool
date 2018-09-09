@@ -90,9 +90,8 @@
 #include "storage/fd.h"
 #include "storage/ipc.h"
 #include "storage/snapfs.h"
-#include "utils/catcache.h"
 #include "utils/guc.h"
-#include "utils/relcache.h"
+#include "utils/inval.h"
 #include "utils/resowner_private.h"
 
 
@@ -2162,7 +2161,7 @@ FileWrite(File file, char *buffer, int amount, uint32 wait_event_info)
 	{
 		int block_no = vfdP->seekPos/BLCKSZ;
 
-		if (sfs_backend_snapshot != SFS_INVALID_SNAPSHOT || ControlFile->active_snapshot != SFS_INVALID_SNAPSHOT)
+		if (SFS_IN_SNAPSHOT())
 			elog(ERROR, "Write is prohibited in snapshot");
 
 		OpenSnapshotFiles(vfdP, ControlFile->recent_snapshot, true);
@@ -3905,7 +3904,7 @@ sfs_recover_to_snapshot(SnapshotId snap_id)
 		elog(ERROR, "Invalid snapshot %d, existed snapshots %d..%d",
 			 snap_id, ControlFile->oldest_snapshot, ControlFile->recent_snapshot);
 
-	if (sfs_backend_snapshot != SFS_INVALID_SNAPSHOT || ControlFile->active_snapshot != SFS_INVALID_SNAPSHOT)
+	if (SFS_IN_SNAPSHOT())
 		elog(ERROR, "Can not perform operation inside snapshot");
 
 	sfs_current_snapshot = snap_id;
@@ -3915,7 +3914,6 @@ sfs_recover_to_snapshot(SnapshotId snap_id)
 	UpdateControlFile();
 
 	DropSharedBuffers();
-	ResetCatalogCaches();
-	RelationCacheInvalidate();
+	InvalidateSystemCaches();
 }
 

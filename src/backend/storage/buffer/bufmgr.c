@@ -47,6 +47,7 @@
 #include "storage/ipc.h"
 #include "storage/proc.h"
 #include "storage/smgr.h"
+#include "storage/snapfs.h"
 #include "storage/standby.h"
 #include "utils/rel.h"
 #include "utils/resowner_private.h"
@@ -708,7 +709,16 @@ ReadBuffer_common(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 	Block		bufBlock;
 	bool		found;
 	bool		isExtend;
-	bool		isLocalBuf = SmgrIsTemp(smgr);
+	bool		isLocalBuf;
+
+	if (SFS_KEEPING_SNAPSHOT())
+	{
+		/* Do not use shared buffers: treat all relations as local */
+		isLocalBuf = true;
+		smgr->smgr_rnode.backend = MyBackendId;
+	}
+	else
+		isLocalBuf = SmgrIsTemp(smgr);
 
 	*hit = false;
 

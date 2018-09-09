@@ -30,9 +30,8 @@
 #include "storage/fd.h"
 #include "storage/snapfs.h"
 #include "storage/bufmgr.h"
-#include "utils/catcache.h"
+#include "utils/inval.h"
 #include "utils/fmgrprotos.h"
-#include "utils/relcache.h"
 
 
 SnapshotId sfs_backend_snapshot;
@@ -148,8 +147,7 @@ sfs_switch_to_snapshot(SnapshotId snap_id)
 	UpdateControlFile();
 
 	DropSharedBuffers();
-	ResetCatalogCaches();
-	RelationCacheInvalidate();
+	InvalidateSystemCaches();
 }
 
 void
@@ -163,8 +161,7 @@ sfs_set_backend_snapshot(SnapshotId snap_id)
 	sfs_backend_snapshot = snap_id;
 
 	/* TODO: replace shared cache with private backend cache */
-	ResetCatalogCaches();
-	RelationCacheInvalidate();
+	InvalidateSystemCaches();
 }
 
 SnapshotId

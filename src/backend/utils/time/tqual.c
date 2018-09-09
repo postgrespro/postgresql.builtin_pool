@@ -71,6 +71,7 @@
 #include "access/xlog.h"
 #include "storage/bufmgr.h"
 #include "storage/procarray.h"
+#include "storage/snapfs.h"
 #include "utils/builtins.h"
 #include "utils/combocid.h"
 #include "utils/snapmgr.h"
@@ -117,7 +118,7 @@ static inline void
 SetHintBits(HeapTupleHeader tuple, Buffer buffer,
 			uint16 infomask, TransactionId xid)
 {
-	if (TransactionIdIsValid(xid))
+	if (TransactionIdIsValid(xid) && !SFS_IN_SNAPSHOT())
 	{
 		/* NB: xid must be known committed here! */
 		XLogRecPtr	commitLSN = TransactionIdGetCommitLSN(xid);
