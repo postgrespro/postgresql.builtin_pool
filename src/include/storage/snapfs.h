@@ -52,7 +52,7 @@ extern void sfs_set_backend_snapshot(SnapshotId sid);
 
 #define SFS_KEEPING_SNAPSHOT() (ControlFile->recent_snapshot >= ControlFile->oldest_snapshot)
 #define SFS_IN_SNAPSHOT()      (sfs_backend_snapshot != SFS_INVALID_SNAPSHOT || ControlFile->active_snapshot != SFS_INVALID_SNAPSHOT)
-	
+
 typedef uint32 sfs_segment_offs_t; /* segment size can not be greateer than 1Gb, so 4 bytes is enough */
 
 
@@ -70,7 +70,7 @@ extern SnapshotMap * sfs_mmap(int md);
 extern int sfs_msync(SnapshotMap * map);
 
 /* Safe file IO functions */
-extern bool sfs_read_file(int fd, void *data, uint32 size);
+extern int  sfs_read_file(int fd, void *data, uint32 size);
 extern bool sfs_write_file(int fd, void const *data, uint32 size);
 
 extern struct ControlFileData *ControlFile;

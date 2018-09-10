@@ -27,6 +27,7 @@
 #include "access/xact.h"
 #include "access/xlog.h"
 #include "common/file_perm.h"
+#include "postmaster/bgwriter.h"
 #include "storage/fd.h"
 #include "storage/snapfs.h"
 #include "storage/bufmgr.h"
@@ -34,7 +35,7 @@
 #include "utils/fmgrprotos.h"
 
 
-SnapshotId sfs_backend_snapshot;
+SnapshotId sfs_backend_snapshot = SFS_INVALID_SNAPSHOT;
 
 int
 sfs_msync(SnapshotMap * map)
@@ -90,7 +91,7 @@ sfs_munmap(SnapshotMap * map)
 /*
  * Safe read of file
  */
-bool
+int
 sfs_read_file(int fd, void *data, uint32 size)
 {
 	uint32		offs = 0;
@@ -101,14 +102,14 @@ sfs_read_file(int fd, void *data, uint32 size)
 
 		if (rc <= 0)
 		{
-			if (errno != EINTR)
-				return false;
+			if (rc == 0 || errno != EINTR)
+				return rc;
 		}
 		else
 			offs += rc;
 	} while (offs < size);
 
-	return true;
+	return size;
 }
 
 /*
@@ -143,6 +144,10 @@ sfs_switch_to_snapshot(SnapshotId snap_id)
 		elog(ERROR, "Invalid snapshot %d, existed snapshots %d..%d",
 			 snap_id, ControlFile->oldest_snapshot, ControlFile->recent_snapshot);
 
+	if (!SFS_IN_SNAPSHOT())
+		RequestCheckpoint(CHECKPOINT_IMMEDIATE | CHECKPOINT_FORCE | CHECKPOINT_WAIT
+						  | CHECKPOINT_FLUSH_ALL);
+
 	ControlFile->active_snapshot = snap_id;
 	UpdateControlFile();
 
@@ -160,7 +165,6 @@ sfs_set_backend_snapshot(SnapshotId snap_id)
 
 	sfs_backend_snapshot = snap_id;
 
-	/* TODO: replace shared cache with private backend cache */
 	InvalidateSystemCaches();
 }
 
@@ -168,9 +172,9 @@ SnapshotId
 sfs_make_snapshot(void)
 {
 	SnapshotId snap_id;
-	/* TODO: do checkpoint */
-	/* TODO: wait completion of all active transactions */
-	/* TODO: disable CLOG truncations */
+	/* TODO: wait completion of all active transactions and prevent start of new one */
+	RequestCheckpoint(CHECKPOINT_IMMEDIATE | CHECKPOINT_FORCE | CHECKPOINT_WAIT
+					  | CHECKPOINT_FLUSH_ALL);
 	snap_id = ++ControlFile->recent_snapshot;
 	UpdateControlFile();
 	return snap_id;

@@ -42,6 +42,7 @@
 #include "pgstat.h"
 #include "pg_trace.h"
 #include "storage/proc.h"
+#include "storage/snapfs.h"
 
 /*
  * Defines for CLOG page sizes.  A page is the same BLCKSZ as is used
@@ -906,6 +907,10 @@ void
 TruncateCLOG(TransactionId oldestXact, Oid oldestxid_datoid)
 {
 	int			cutoffPage;
+
+	/* Can not truncate CLOG if we are keeping snapshots */
+	if (SFS_KEEPING_SNAPSHOT())
+		return;
 
 	/*
 	 * The cutoff point is the start of the segment containing oldestXact. We

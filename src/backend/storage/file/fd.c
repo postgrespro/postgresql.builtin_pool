@@ -988,7 +988,7 @@ tryAgain:
 static
 void CloseSnapshotFiles(Vfd *vfdP)
 {
-	if (!sfs_munmap(vfdP->snap_map))
+	if (sfs_munmap(vfdP->snap_map))
 		elog(LOG, "[SFS] Failed to unmap file: %m");
 
 	if (close(vfdP->snap_fd))
@@ -2028,7 +2028,7 @@ FileRead(File file, char *buffer, int amount, uint32 wait_event_info)
 		if (current_snapshot < ControlFile->oldest_snapshot || current_snapshot > ControlFile->recent_snapshot)
 			elog(ERROR, "Snapshot %d is not valid any more", current_snapshot);
 
-		/* Look for ariginal page in the active or any subsequent snapshots */
+		/* Look for original page in the active or any subsequent snapshots */
 		for (snap_id = current_snapshot; snap_id <= ControlFile->recent_snapshot; snap_id++)
 		{
 			sfs_segment_offs_t offs;
@@ -2047,7 +2047,7 @@ FileRead(File file, char *buffer, int amount, uint32 wait_event_info)
 				if (lseek(vfdP->snap_fd, offs, SEEK_SET) != offs)
 					elog(ERROR, "[SFS] Could not seek file: %m");
 
-				if (!sfs_read_file(vfdP->snap_fd, buffer, amount))
+				if (sfs_read_file(vfdP->snap_fd, buffer, amount) != amount)
 					elog(ERROR, "[SFS] Field to read snapshot file: %m");
 
 				pgstat_report_wait_end();
@@ -2170,11 +2170,15 @@ FileWrite(File file, char *buffer, int amount, uint32 wait_event_info)
 		{
 			sfs_segment_offs_t snap_offs = pg_atomic_fetch_add_u32(&vfdP->snap_map->size, 1)*BLCKSZ;
 			char orig_block[BLCKSZ];
+			int rc;
 
 			vfdP->snap_map->offs[block_no] = snap_offs + 1;
 
-			if (!sfs_read_file(vfdP->fd, orig_block, BLCKSZ))
+			rc = sfs_read_file(vfdP->fd, orig_block, BLCKSZ);
+			if (rc < 0)
 				elog(ERROR, "[SFS] Could not read file: %m");
+			else if (rc == 0)
+				memset(orig_block, 0, BLCKSZ);
 
 			if (lseek(vfdP->fd, vfdP->seekPos, SEEK_SET) != vfdP->seekPos)
 				elog(ERROR, "[SFS] Could not seek file: %m");
@@ -2271,7 +2275,7 @@ FileSync(File file, uint32 wait_event_info)
 	returnCode = pg_fsync(vfdP->fd);
 
 	/* If keeping snahot sync snapshot files as well */
-	if (returnCode == 0 && OpenSnapshotFiles(vfdP, ControlFile->recent_snapshot, false))
+	if (returnCode == 0 && SFS_IN_SNAPSHOT() && OpenSnapshotFiles(vfdP, ControlFile->recent_snapshot, false))
 		returnCode = SyncSnapshotFiles(vfdP);
 
 	pgstat_report_wait_end();
@@ -2387,12 +2391,12 @@ FileTruncate(File file, off_t offset, uint32 wait_event_info)
 		off_t fileSize;
 		off_t block_offs;
 
-		Assert((offset & BLCKSZ) == 0);
+		Assert((offset & (BLCKSZ-1)) == 0);
 
 		OpenSnapshotFiles(vfdP, ControlFile->recent_snapshot, true);
 
 		fileSize = lseek(vfdP->fd, 0, SEEK_END);
-		if (fileSize <  0)
+		if (fileSize < 0)
 			elog(ERROR, "[SFS] Could not get file size: %m");
 
 		if (lseek(vfdP->fd, offset, SEEK_SET) != offset)
@@ -2402,14 +2406,18 @@ FileTruncate(File file, off_t offset, uint32 wait_event_info)
 		{
 			int block_no = block_offs/BLCKSZ;
 			char orig_block[BLCKSZ];
+			int rc;
 
 			if (!vfdP->snap_map->offs[block_no]) /* This block was not saved yet in this snapshot */
 			{
 				sfs_segment_offs_t snap_offs = pg_atomic_fetch_add_u32(&vfdP->snap_map->size, 1)*BLCKSZ;
 				vfdP->snap_map->offs[block_no] = snap_offs + 1;
 
-				if (!sfs_read_file(vfdP->fd, orig_block, BLCKSZ))
+				rc = sfs_read_file(vfdP->fd, orig_block, BLCKSZ);
+				if (rc < 0)
 					elog(ERROR, "[SFS] Could not read file: %m");
+				else if (rc == 0)
+					memset(orig_block, 0, BLCKSZ);
 
 				if (lseek(vfdP->snap_fd, snap_offs, SEEK_SET) != snap_offs)
 					elog(ERROR, "[SFS] Could not seek file: %m");
@@ -3817,17 +3825,17 @@ sfs_remove_snapshot_file(const char *fname, bool isdir, int elevel)
 {
 	if (!isdir)
 	{
-		SnapshotId snap_id;
-		/* Remove all snapshot files preceeding or equal specified snapshot */
-		for (snap_id = ControlFile->oldest_snapshot; snap_id <= sfs_current_snapshot; snap_id++)
+		char* suf = strstr(fname, ".snap");
+		if (suf != NULL)
 		{
-			char* snap_file = psprintf("%s.snap.%d", fname, snap_id);
-			(void)unlink(snap_file); /* ok if file not exists */
-			pfree(snap_file);
-
-			snap_file = psprintf("%s.snapmap.%d", fname, snap_id);
-			(void)unlink(snap_file); /* ok if file not exists */
-			pfree(snap_file);
+			int snap_id;
+			if ((sscanf(suf + 5, ".%d", &snap_id) == 1 ||
+				 sscanf(suf + 5, "map.%d", &snap_id) == 1)
+				&& snap_id <= sfs_current_snapshot)
+			{
+				if (unlink(fname) != 0)
+					elog(elevel, "Failed to remove file %s: %m", fname);
+			}
 		}
 	}
 }
@@ -3839,15 +3847,15 @@ sfs_recover_snapshot_file(const char *fname, bool isdir, int elevel)
 	{
 		SnapshotId snap_id;
 
-		/* Copy saved pages from snapshot files preceeding or equal specified snapshot */
-		for (snap_id = sfs_current_snapshot; snap_id >= ControlFile->oldest_snapshot; snap_id--)
+		/* Copy saved pages from snapshots files following or equal specified snapshot */
+		for (snap_id = ControlFile->recent_snapshot; snap_id >= sfs_current_snapshot; snap_id--)
 		{
 			char* snap_file = psprintf("%s.snap.%d", fname, snap_id);
 			struct stat statbuf;
 
 			if (stat(snap_file, &statbuf) == 0 && S_ISREG(statbuf.st_mode))
 			{
-				File file = PathNameOpenFile(fname, O_RDONLY);
+				File file = PathNameOpenFile(fname, O_RDWR);
 				Vfd* vfdP = &VfdCache[file];
 				int i;
 
@@ -3865,7 +3873,7 @@ sfs_recover_snapshot_file(const char *fname, bool isdir, int elevel)
 						if (lseek(vfdP->snap_fd, offs, SEEK_SET) != offs)
 							elog(ERROR, "[SFS] Could not seek file: %m");
 
-						if (!sfs_read_file(vfdP->snap_fd, orig_block, BLCKSZ))
+						if (sfs_read_file(vfdP->snap_fd, orig_block, BLCKSZ) != BLCKSZ)
 							elog(ERROR, "[SFS] Could not read file: %m");
 
 						if (lseek(vfdP->fd, i*BLCKSZ, SEEK_SET) != i*BLCKSZ)
@@ -3891,7 +3899,7 @@ sfs_remove_snapshot(SnapshotId snap_id)
 			 snap_id, ControlFile->oldest_snapshot, ControlFile->recent_snapshot);
 
 	sfs_current_snapshot = snap_id;
-	walk_data_dir(sfs_remove_snapshot_file, ERROR);
+	walk_data_dir(sfs_remove_snapshot_file, LOG);
 
 	ControlFile->oldest_snapshot = snap_id + 1;
 	UpdateControlFile();
@@ -3907,10 +3915,13 @@ sfs_recover_to_snapshot(SnapshotId snap_id)
 	if (SFS_IN_SNAPSHOT())
 		elog(ERROR, "Can not perform operation inside snapshot");
 
+	RequestCheckpoint(CHECKPOINT_IMMEDIATE | CHECKPOINT_FORCE | CHECKPOINT_WAIT
+					  | CHECKPOINT_FLUSH_ALL);
+
 	sfs_current_snapshot = snap_id;
 	walk_data_dir(sfs_recover_snapshot_file, ERROR);
 
-	ControlFile->oldest_snapshot = snap_id + 1;
+	ControlFile->recent_snapshot = snap_id - 1;
 	UpdateControlFile();
 
 	DropSharedBuffers();

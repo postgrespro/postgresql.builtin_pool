@@ -347,3 +347,41 @@ pg_control_init(PG_FUNCTION_ARGS)
 
 	PG_RETURN_DATUM(HeapTupleGetDatum(htup));
 }
+
+Datum
+pg_control_snapshot(PG_FUNCTION_ARGS)
+{
+	Datum		values[3];
+	bool		nulls[3] = {false};
+	TupleDesc	tupdesc;
+	HeapTuple	htup;
+	ControlFileData *ControlFile;
+	bool		crc_ok;
+
+	/*
+	 * Construct a tuple descriptor for the result row.  This must match this
+	 * function's pg_proc entry!
+	 */
+	tupdesc = CreateTemplateTupleDesc(3, false);
+	TupleDescInitEntry(tupdesc, (AttrNumber) 1, "oldest_snapshot",
+					   INT4OID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber) 2, "recent_snapshot",
+					   INT4OID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber) 3, "active_snapshot",
+					   INT4OID, -1, 0);
+	tupdesc = BlessTupleDesc(tupdesc);
+
+	/* read the control file */
+	ControlFile = get_controlfile(DataDir, NULL, &crc_ok);
+	if (!crc_ok)
+		ereport(ERROR,
+				(errmsg("calculated CRC checksum does not match value stored in file")));
+
+	values[0] = Int32GetDatum(ControlFile->oldest_snapshot);
+	values[1] = Int32GetDatum(ControlFile->recent_snapshot);
+	values[2] = Int32GetDatum(ControlFile->active_snapshot);
+
+	htup = heap_form_tuple(tupdesc, values, nulls);
+
+	PG_RETURN_DATUM(HeapTupleGetDatum(htup));
+}

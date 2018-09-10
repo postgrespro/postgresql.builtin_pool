@@ -744,6 +744,9 @@ GuessControlValues(void)
 	ControlFile.loblksize = LOBLKSIZE;
 	ControlFile.float4ByVal = FLOAT4PASSBYVAL;
 	ControlFile.float8ByVal = FLOAT8PASSBYVAL;
+	ControlFile.oldest_snapshot = 1;
+	ControlFile.recent_snapshot = 0;
+	ControlFile.active_snapshot = 0;
 
 	/*
 	 * XXX eventually, should try to grovel through old XLOG to develop more
@@ -836,6 +839,12 @@ PrintControlValues(bool guessed)
 		   (ControlFile.float8ByVal ? _("by value") : _("by reference")));
 	printf(_("Data page checksum version:           %u\n"),
 		   ControlFile.data_checksum_version);
+	printf(_("Oldest snapshot:           %u\n"),
+		   ControlFile.oldest_snapshot);
+	printf(_("Recent snapshot:           %u\n"),
+		   ControlFile.recent_snapshot);
+	printf(_("Active snapshot:           %u\n"),
+		   ControlFile.active_snapshot);
 }
 
 

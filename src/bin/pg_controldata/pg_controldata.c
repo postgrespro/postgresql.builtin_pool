@@ -340,5 +340,11 @@ main(int argc, char *argv[])
 		   ControlFile->data_checksum_version);
 	printf(_("Mock authentication nonce:            %s\n"),
 		   mock_auth_nonce_str);
+	printf(_("Oldest snapshot:           %u\n"),
+		   ControlFile->oldest_snapshot);
+	printf(_("Recent snapshot:           %u\n"),
+		   ControlFile->recent_snapshot);
+	printf(_("Active snapshot:           %u\n"),
+		   ControlFile->active_snapshot);
 	return 0;
 }

@@ -10232,4 +10232,12 @@
   proisstrict => 't', prorettype => 'void', proargtypes => 'int4',
   prosrc => 'pg_set_backend_snapshot' },
 
+{ oid => '6020',
+  descr => 'pg_controldata snapshot state information as a function',
+  proname => 'pg_control_snapshot', provolatile => 'v', prorettype => 'record',
+  proargtypes => '', proallargtypes => '{int4,int4,int4}',
+  proargmodes => '{o,o,o}',
+  proargnames => '{oldest_snapshot,recent_snapshot,active_snapshot}',
+  prosrc => 'pg_control_snapshot' },
+
 ]

@@ -65,6 +65,7 @@
 #include "storage/lmgr.h"
 #include "storage/predicate.h"
 #include "storage/procarray.h"
+#include "storage/snapfs.h"
 #include "storage/smgr.h"
 #include "storage/spin.h"
 #include "storage/standby.h"

@@ -200,6 +200,7 @@
 #include "storage/predicate_internals.h"
 #include "storage/proc.h"
 #include "storage/procarray.h"
+#include "storage/snapfs.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
 #include "utils/tqual.h"

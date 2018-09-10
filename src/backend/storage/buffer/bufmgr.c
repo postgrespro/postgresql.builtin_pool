@@ -36,6 +36,7 @@
 #include "access/xlog.h"
 #include "catalog/catalog.h"
 #include "catalog/storage.h"
+#include "catalog/pg_tablespace_d.h"
 #include "executor/instrument.h"
 #include "lib/binaryheap.h"
 #include "miscadmin.h"
@@ -711,7 +712,7 @@ ReadBuffer_common(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 	bool		isExtend;
 	bool		isLocalBuf;
 
-	if (SFS_KEEPING_SNAPSHOT())
+	if (sfs_backend_snapshot != SFS_INVALID_SNAPSHOT && smgr->smgr_rnode.node.spcNode != GLOBALTABLESPACE_OID)
 	{
 		/* Do not use shared buffers: treat all relations as local */
 		isLocalBuf = true;
