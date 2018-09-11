@@ -86,6 +86,7 @@
 #include "common/file_perm.h"
 #include "pgstat.h"
 #include "portability/mem.h"
+#include "postmaster/bgwriter.h"
 #include "storage/bufmgr.h"
 #include "storage/fd.h"
 #include "storage/ipc.h"
@@ -2028,6 +2029,8 @@ FileRead(File file, char *buffer, int amount, uint32 wait_event_info)
 		if (current_snapshot < ControlFile->oldest_snapshot || current_snapshot > ControlFile->recent_snapshot)
 			elog(ERROR, "Snapshot %d is not valid any more", current_snapshot);
 
+		Assert(!FilePosIsUnknown(vfdP->seekPos));
+
 		/* Look for original page in the active or any subsequent snapshots */
 		for (snap_id = current_snapshot; snap_id <= ControlFile->recent_snapshot; snap_id++)
 		{
@@ -2051,7 +2054,6 @@ FileRead(File file, char *buffer, int amount, uint32 wait_event_info)
 					elog(ERROR, "[SFS] Field to read snapshot file: %m");
 
 				pgstat_report_wait_end();
-				vfdP->seekPos += amount;
 				return amount;
 			}
 		}
@@ -3841,6 +3843,26 @@ sfs_remove_snapshot_file(const char *fname, bool isdir, int elevel)
 }
 
 static void
+sfs_remove_applied_snapshot_file(const char *fname, bool isdir, int elevel)
+{
+	if (!isdir)
+	{
+		char* suf = strstr(fname, ".snap");
+		if (suf != NULL)
+		{
+			int snap_id;
+			if ((sscanf(suf + 5, ".%d", &snap_id) == 1 ||
+				 sscanf(suf + 5, "map.%d", &snap_id) == 1)
+				&& snap_id >= sfs_current_snapshot)
+			{
+				if (unlink(fname) != 0)
+					elog(elevel, "Failed to remove file %s: %m", fname);
+			}
+		}
+	}
+}
+
+static void
 sfs_recover_snapshot_file(const char *fname, bool isdir, int elevel)
 {
 	if (!isdir)
@@ -3923,6 +3945,9 @@ sfs_recover_to_snapshot(SnapshotId snap_id)
 
 	ControlFile->recent_snapshot = snap_id - 1;
 	UpdateControlFile();
+
+	SyncDataDirectory();
+	walk_data_dir(sfs_remove_applied_snapshot_file, LOG);
 
 	DropSharedBuffers();
 	InvalidateSystemCaches();

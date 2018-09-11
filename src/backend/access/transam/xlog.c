@@ -4941,6 +4941,12 @@ LocalProcessControlFile(bool reset)
 	Assert(reset || ControlFile == NULL);
 	ControlFile = palloc(sizeof(ControlFileData));
 	ReadControlFile();
+	if ((int)sfs_active_snapshot >= 0
+		&& sfs_active_snapshot != ControlFile->active_snapshot)
+	{
+		ControlFile->active_snapshot = sfs_active_snapshot;
+		UpdateControlFile();
+	}
 }
 
 /*

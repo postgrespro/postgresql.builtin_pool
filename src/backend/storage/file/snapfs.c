@@ -36,6 +36,7 @@
 
 
 SnapshotId sfs_backend_snapshot = SFS_INVALID_SNAPSHOT;
+SnapshotId sfs_active_snapshot;
 
 int
 sfs_msync(SnapshotMap * map)

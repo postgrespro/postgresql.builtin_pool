@@ -75,6 +75,7 @@
 #include "storage/pg_shmem.h"
 #include "storage/proc.h"
 #include "storage/predicate.h"
+#include "storage/snapfs.h"
 #include "tcop/tcopprot.h"
 #include "tsearch/ts_cache.h"
 #include "utils/builtins.h"
@@ -3061,6 +3062,16 @@ static struct config_int ConfigureNamesInt[] =
 		},
 		&gin_pending_list_limit,
 		4096, 64, MAX_KILOBYTES,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"active_snapshot", PGC_POSTMASTER, FILE_LOCATIONS,
+			gettext_noop("Sets active snapfs snapshot."),
+			NULL,
+		},
+		&sfs_active_snapshot,
+		-1, -1, INT_MAX,
 		NULL, NULL, NULL
 	},
 

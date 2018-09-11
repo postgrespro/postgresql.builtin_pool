@@ -3091,11 +3091,10 @@ void
 DropSharedBuffers(void)
 {
 	int			i;
+	RelFileNode rnode;
 
-	/*
-	 * We needn't consider local buffers, since by assumption the target
-	 * database isn't our own.
-	 */
+	rnode.relNode = InvalidOid; /* drop all local buffers */
+	DropRelFileNodeAllLocalBuffers(rnode);
 
 	for (i = 0; i < NBuffers; i++)
 	{

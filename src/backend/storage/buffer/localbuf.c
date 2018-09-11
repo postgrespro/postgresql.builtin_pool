@@ -377,7 +377,8 @@ DropRelFileNodeAllLocalBuffers(RelFileNode rnode)
 		buf_state = pg_atomic_read_u32(&bufHdr->state);
 
 		if ((buf_state & BM_TAG_VALID) &&
-			RelFileNodeEquals(bufHdr->tag.rnode, rnode))
+			(rnode.relNode == InvalidOid
+			 || RelFileNodeEquals(bufHdr->tag.rnode, rnode)))
 		{
 			if (LocalRefCount[i] != 0)
 				elog(ERROR, "block %u of %s is still referenced (local %u)",
