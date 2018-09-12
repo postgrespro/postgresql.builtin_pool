@@ -264,3 +264,10 @@ Datum pg_set_backend_snapshot(PG_FUNCTION_ARGS)
 	sfs_set_backend_snapshot(snap_id);
 	PG_RETURN_VOID();
 }
+
+Datum pg_get_snapshot_size(PG_FUNCTION_ARGS)
+{
+	SnapshotId snap_id = PG_GETARG_INT32(0);
+	int64 size = sfs_get_snapshot_size(snap_id);
+	PG_RETURN_INT64(size);
+}

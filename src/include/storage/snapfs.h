@@ -47,6 +47,11 @@ extern void sfs_switch_to_snapshot(SnapshotId sid);
 extern void sfs_set_backend_snapshot(SnapshotId sid);
 
 /*
+ * Get snapshot size (number of modified pages)
+ */
+extern int64 sfs_get_snapshot_size(SnapshotId sid);
+
+/*
  * Iternal functions and variables
  */
 

@@ -3913,6 +3913,38 @@ sfs_recover_snapshot_file(const char *fname, bool isdir, int elevel)
 	}
 }
 
+static SnapshotId sfs_snapshot_size;
+
+static void
+sfs_snapshot_file_size(const char *fname, bool isdir, int elevel)
+{
+	if (!isdir)
+	{
+		char* suf = strstr(fname, ".snap.");
+		if (suf != NULL)
+		{
+			int snap_id;
+			if (sscanf(suf + 6, "%d", &snap_id) == 1
+				&& snap_id == sfs_current_snapshot)
+			{
+				struct stat fst;
+				if (!stat(fname, &fst))
+					elog(elevel, "[SFS] Failed to stat snapshot file %s: %m", fname);
+				sfs_snapshot_size += fst.st_size;
+			}
+		}
+	}
+}
+
+int64
+sfs_get_snapshot_size(SnapshotId snap_id)
+{
+	sfs_snapshot_size = 0;
+	sfs_current_snapshot = snap_id;
+	walk_data_dir(sfs_snapshot_file_size, LOG);
+	return sfs_snapshot_size;
+}
+
 void
 sfs_remove_snapshot(SnapshotId snap_id)
 {
@@ -3957,3 +3989,5 @@ sfs_recover_to_snapshot(SnapshotId snap_id)
 	sfs_unlock_database();
 }
 
+int64
+sfs_get_shapshot_size(SnapshotId sid);
