@@ -3937,6 +3937,8 @@ sfs_recover_to_snapshot(SnapshotId snap_id)
 	if (SFS_IN_SNAPSHOT())
 		elog(ERROR, "Can not perform operation inside snapshot");
 
+	sfs_lock_database();
+
 	RequestCheckpoint(CHECKPOINT_IMMEDIATE | CHECKPOINT_FORCE | CHECKPOINT_WAIT
 					  | CHECKPOINT_FLUSH_ALL);
 
@@ -3951,5 +3953,7 @@ sfs_recover_to_snapshot(SnapshotId snap_id)
 
 	DropSharedBuffers();
 	InvalidateSystemCaches();
+
+	sfs_unlock_database();
 }
 

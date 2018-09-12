@@ -29,6 +29,8 @@
 #include "common/file_perm.h"
 #include "postmaster/bgwriter.h"
 #include "storage/fd.h"
+#include "storage/lwlock.h"
+#include "storage/procarray.h"
 #include "storage/snapfs.h"
 #include "storage/bufmgr.h"
 #include "utils/inval.h"
@@ -145,6 +147,8 @@ sfs_switch_to_snapshot(SnapshotId snap_id)
 		elog(ERROR, "Invalid snapshot %d, existed snapshots %d..%d",
 			 snap_id, ControlFile->oldest_snapshot, ControlFile->recent_snapshot);
 
+	sfs_lock_database();
+
 	if (!SFS_IN_SNAPSHOT())
 		RequestCheckpoint(CHECKPOINT_IMMEDIATE | CHECKPOINT_FORCE | CHECKPOINT_WAIT
 						  | CHECKPOINT_FLUSH_ALL);
@@ -154,6 +158,8 @@ sfs_switch_to_snapshot(SnapshotId snap_id)
 
 	DropSharedBuffers();
 	InvalidateSystemCaches();
+
+	sfs_unlock_database();
 }
 
 void
@@ -173,12 +179,57 @@ SnapshotId
 sfs_make_snapshot(void)
 {
 	SnapshotId snap_id;
-	/* TODO: wait completion of all active transactions and prevent start of new one */
+
+	sfs_lock_database();
+
 	RequestCheckpoint(CHECKPOINT_IMMEDIATE | CHECKPOINT_FORCE | CHECKPOINT_WAIT
 					  | CHECKPOINT_FLUSH_ALL);
 	snap_id = ++ControlFile->recent_snapshot;
 	UpdateControlFile();
+
+	sfs_unlock_database();
+
 	return snap_id;
+}
+
+/*
+ * Prohibit any database updates
+ */
+void
+sfs_lock_database(void)
+{
+	TransactionId myXid = GetCurrentTransactionId();
+	bool standalone = false;
+
+	/* Prevent assignment Xids to transaction and
+	 * so delay start of any new update transactions
+	 */
+	LWLockAcquire(XidGenLock, LW_SHARED);
+
+	/* Wait completion of all active tranasction except own */
+	do
+	{
+		RunningTransactions running = GetRunningTransactionData();
+		if (running->xcnt == 1)
+		{
+			Assert(running->xids[0] == myXid);
+			standalone = true;
+		}
+		/* Release locks set by GetRunningTransactionData */
+		LWLockRelease(ProcArrayLock);
+		LWLockRelease(XidGenLock);
+
+		/* Wait for one second */
+		if (!standalone)
+			pg_usleep(USECS_PER_SEC);
+
+	} while (!standalone);
+}
+
+void
+sfs_unlock_database(void)
+{
+	LWLockRelease(XidGenLock);
 }
 
 Datum pg_make_snapshot(PG_FUNCTION_ARGS)

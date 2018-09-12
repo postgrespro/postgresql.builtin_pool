@@ -74,6 +74,10 @@ extern int sfs_msync(SnapshotMap * map);
 extern int  sfs_read_file(int fd, void *data, uint32 size);
 extern bool sfs_write_file(int fd, void const *data, uint32 size);
 
+/* Provide exclusive access to databae */
+extern void sfs_lock_database(void);
+extern void sfs_unlock_database(void);
+
 extern struct ControlFileData *ControlFile;
 
 #endif
