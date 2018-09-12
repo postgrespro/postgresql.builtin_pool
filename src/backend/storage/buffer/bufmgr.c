@@ -716,7 +716,6 @@ ReadBuffer_common(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 	{
 		/* Do not use shared buffers: treat all relations as local */
 		isLocalBuf = true;
-		smgr->smgr_rnode.backend = MyBackendId;
 	}
 	else
 		isLocalBuf = SmgrIsTemp(smgr);
