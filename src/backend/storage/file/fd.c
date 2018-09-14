@@ -3952,6 +3952,9 @@ sfs_remove_snapshot(SnapshotId snap_id)
 		elog(ERROR, "Invalid snapshot %d, existed snapshots %d..%d",
 			 snap_id, ControlFile->oldest_snapshot, ControlFile->recent_snapshot);
 
+	if (SFS_IN_SNAPSHOT())
+		elog(ERROR, "Can not perform operation inside snapshot");
+
 	sfs_current_snapshot = snap_id;
 	walk_data_dir(sfs_remove_snapshot_file, LOG);
 

@@ -53,6 +53,7 @@
 #include "storage/procarray.h"
 #include "storage/sinvaladt.h"
 #include "storage/smgr.h"
+#include "storage/snapfs.h"
 #include "utils/builtins.h"
 #include "utils/catcache.h"
 #include "utils/combocid.h"
@@ -400,7 +401,11 @@ GetCurrentTransactionId(void)
 	TransactionState s = CurrentTransactionState;
 
 	if (!TransactionIdIsValid(s->transactionId))
+	{
+		if (SFS_IN_SNAPSHOT())
+			elog(ERROR, "Updates are prohibited in snapshot");
 		AssignTransactionId(s);
+	}
 	return s->transactionId;
 }
 

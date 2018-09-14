@@ -198,7 +198,6 @@ sfs_make_snapshot(void)
 void
 sfs_lock_database(void)
 {
-	TransactionId myXid = GetCurrentTransactionId();
 	bool standalone = false;
 
 	/* Prevent assignment Xids to transaction and
@@ -210,9 +209,9 @@ sfs_lock_database(void)
 	do
 	{
 		RunningTransactions running = GetRunningTransactionData();
-		if (running->xcnt == 1)
+		if (running->xcnt <= 1)
 		{
-			Assert(running->xids[0] == myXid);
+			Assert(running->xcnt == 0 || running->xids[0] == GetCurrentTransactionIdIfAny());
 			standalone = true;
 		}
 		/* Release locks set by GetRunningTransactionData */
