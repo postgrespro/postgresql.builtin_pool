@@ -35,6 +35,7 @@
 #include "storage/bufmgr.h"
 #include "storage/relfilenode.h"
 #include "storage/smgr.h"
+#include "storage/snapfs.h"
 #include "utils/hsearch.h"
 #include "utils/memutils.h"
 #include "pg_trace.h"
@@ -427,28 +428,43 @@ mdunlinkfork(RelFileNodeBackend rnode, ForkNumber forkNum, bool isRedo)
 	}
 	else
 	{
-		/* truncate(2) would be easier here, but Windows hasn't got it */
-		int			fd;
-
-		fd = OpenTransientFile(path, O_RDWR | PG_BINARY);
-		if (fd >= 0)
+		if (SFS_KEEPING_SNAPSHOT())
 		{
-			int			save_errno;
-
-			ret = ftruncate(fd, 0);
-			save_errno = errno;
-			CloseTransientFile(fd);
-			errno = save_errno;
+			File file = PathNameOpenFile(path,  O_RDWR | PG_BINARY);
+			if (file >= 0)
+			{
+				if (FileTruncate(file, 0, WAIT_EVENT_DATA_FILE_TRUNCATE) < 0)
+					ereport(WARNING,
+							(errcode_for_file_access(),
+							 errmsg("could not truncate file \"%s\": %m", path)));
+				FileClose(file);
+			}
 		}
 		else
-			ret = -1;
-		if (ret < 0 && errno != ENOENT)
-			ereport(WARNING,
-					(errcode_for_file_access(),
-					 errmsg("could not truncate file \"%s\": %m", path)));
+		{
+			/* truncate(2) would be easier here, but Windows hasn't got it */
+			int			fd;
 
-		/* Register request to unlink first segment later */
-		register_unlink(rnode);
+			fd = OpenTransientFile(path, O_RDWR | PG_BINARY);
+			if (fd >= 0)
+			{
+				int			save_errno;
+
+				ret = ftruncate(fd, 0);
+				save_errno = errno;
+				CloseTransientFile(fd);
+				errno = save_errno;
+			}
+			else
+				ret = -1;
+			if (ret < 0 && errno != ENOENT)
+				ereport(WARNING,
+						(errcode_for_file_access(),
+						 errmsg("could not truncate file \"%s\": %m", path)));
+
+			/* Register request to unlink first segment later */
+			register_unlink(rnode);
+		}
 	}
 
 	/*

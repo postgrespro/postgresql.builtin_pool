@@ -139,13 +139,25 @@ sfs_write_file(int fd, void const *data, uint32 size)
 	return true;
 }
 
+
+void
+sfs_check_snapshot(SnapshotId snap_id)
+{
+	if (snap_id < ControlFile->oldest_snapshot || snap_id > ControlFile->recent_snapshot)
+	{
+		if (!SFS_KEEPING_SNAPSHOT())
+			elog(ERROR, "Not keeping any snapshot");
+		else
+			elog(ERROR, "Invalid snapshot %d, existed snapshots %d..%d",
+				 snap_id, ControlFile->oldest_snapshot, ControlFile->recent_snapshot);
+	}
+}
+
 void
 sfs_switch_to_snapshot(SnapshotId snap_id)
 {
-	if (snap_id != SFS_INVALID_SNAPSHOT
-		&& (snap_id < ControlFile->oldest_snapshot || snap_id > ControlFile->recent_snapshot))
-		elog(ERROR, "Invalid snapshot %d, existed snapshots %d..%d",
-			 snap_id, ControlFile->oldest_snapshot, ControlFile->recent_snapshot);
+	if (snap_id != SFS_INVALID_SNAPSHOT)
+		sfs_check_snapshot(snap_id);
 
 	sfs_lock_database();
 
@@ -165,10 +177,8 @@ sfs_switch_to_snapshot(SnapshotId snap_id)
 void
 sfs_set_backend_snapshot(SnapshotId snap_id)
 {
-	if (snap_id != SFS_INVALID_SNAPSHOT
-		&& (snap_id < ControlFile->oldest_snapshot || snap_id > ControlFile->recent_snapshot))
-		elog(ERROR, "Invalid snapshot %d, existed snapshots %d..%d",
-			 snap_id, ControlFile->oldest_snapshot, ControlFile->recent_snapshot);
+	if (snap_id != SFS_INVALID_SNAPSHOT)
+		sfs_check_snapshot(snap_id);
 
 	sfs_backend_snapshot = snap_id;
 
@@ -231,6 +241,10 @@ sfs_unlock_database(void)
 	LWLockRelease(XidGenLock);
 }
 
+/*
+ * SQL interface to snapshots
+ */
+
 Datum pg_make_snapshot(PG_FUNCTION_ARGS)
 {
 	PG_RETURN_INT32(sfs_make_snapshot());
@@ -269,4 +283,9 @@ Datum pg_get_snapshot_size(PG_FUNCTION_ARGS)
 	SnapshotId snap_id = PG_GETARG_INT32(0);
 	int64 size = sfs_get_snapshot_size(snap_id);
 	PG_RETURN_INT64(size);
+}
+
+Datum pg_get_backend_snapshot(PG_FUNCTION_ARGS)
+{
+	PG_RETURN_INT32(sfs_backend_snapshot);
 }

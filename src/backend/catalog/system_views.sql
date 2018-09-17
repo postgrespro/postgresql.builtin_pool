@@ -1165,6 +1165,12 @@ REVOKE EXECUTE ON FUNCTION pg_stat_file(text,boolean) FROM public;
 REVOKE EXECUTE ON FUNCTION pg_ls_dir(text) FROM public;
 REVOKE EXECUTE ON FUNCTION pg_ls_dir(text,boolean,boolean) FROM public;
 
+REVOKE EXECUTE ON FUNCTION pg_switch_to_snapshot(int4) FROM public;
+REVOKE EXECUTE ON FUNCTION pg_recover_to_snapshot(int4) FROM public;
+REVOKE EXECUTE ON FUNCTION pg_remove_snapshot(int4) FROM public;
+REVOKE EXECUTE ON FUNCTION pg_make_snapshot() FROM public;
+
+
 --
 -- We also set up some things as accessible to standard roles.
 --

@@ -2354,7 +2354,31 @@ FileSeek(File file, off_t offset, int whence)
 				break;
 		}
 	}
+	if (whence == SEEK_END)
+	{
+		SnapshotId  snap_id;
+		SnapshotId  current_snapshot = sfs_backend_snapshot != SFS_INVALID_SNAPSHOT ? sfs_backend_snapshot : ControlFile->active_snapshot;
+		if (current_snapshot != SFS_INVALID_SNAPSHOT)
+		{
+			if (current_snapshot < ControlFile->oldest_snapshot || current_snapshot > ControlFile->recent_snapshot)
+				elog(ERROR, "Snapshot %d is not valid any more", current_snapshot);
+			/* Look for original page in the active or any subsequent snapshots */
+			for (snap_id = current_snapshot; snap_id <= ControlFile->recent_snapshot; snap_id++)
+			{
+				int i;
 
+				if (!OpenSnapshotFiles(vfdP, snap_id, false))
+					continue;
+
+				for (i = 0; i < RELSEG_SIZE; i++)
+				{
+					sfs_segment_offs_t offs = vfdP->snap_map->offs[i];
+					if (offs >= vfdP->seekPos)
+						vfdP->seekPos = offs +  BLCKSZ - 1;
+				}
+			}
+		}
+	}
 	return vfdP->seekPos;
 }
 
@@ -2404,7 +2428,7 @@ FileTruncate(File file, off_t offset, uint32 wait_event_info)
 		if (lseek(vfdP->fd, offset, SEEK_SET) != offset)
 			elog(ERROR, "[SFS] Could not seek file: %m");
 
-		for (block_offs = offset; block_offs < offset; block_offs += BLCKSZ)
+		for (block_offs = offset; block_offs < fileSize; block_offs += BLCKSZ)
 		{
 			int block_no = block_offs/BLCKSZ;
 			char orig_block[BLCKSZ];
@@ -3948,9 +3972,7 @@ sfs_get_snapshot_size(SnapshotId snap_id)
 void
 sfs_remove_snapshot(SnapshotId snap_id)
 {
-	if (snap_id < ControlFile->oldest_snapshot || snap_id > ControlFile->recent_snapshot)
-		elog(ERROR, "Invalid snapshot %d, existed snapshots %d..%d",
-			 snap_id, ControlFile->oldest_snapshot, ControlFile->recent_snapshot);
+	sfs_check_snapshot(snap_id);
 
 	if (SFS_IN_SNAPSHOT())
 		elog(ERROR, "Can not perform operation inside snapshot");
@@ -3965,9 +3987,7 @@ sfs_remove_snapshot(SnapshotId snap_id)
 void
 sfs_recover_to_snapshot(SnapshotId snap_id)
 {
-	if (snap_id < ControlFile->oldest_snapshot || snap_id > ControlFile->recent_snapshot)
-		elog(ERROR, "Invalid snapshot %d, existed snapshots %d..%d",
-			 snap_id, ControlFile->oldest_snapshot, ControlFile->recent_snapshot);
+	sfs_check_snapshot(snap_id);
 
 	if (SFS_IN_SNAPSHOT())
 		elog(ERROR, "Can not perform operation inside snapshot");
