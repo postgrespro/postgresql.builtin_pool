@@ -38,6 +38,7 @@
 #include "storage/lmgr.h"
 #include "storage/proc.h"
 #include "storage/smgr.h"
+#include "storage/snapfs.h"
 #include "utils/acl.h"
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
@@ -587,6 +588,9 @@ nextval_internal(Oid relid, bool check_permissions)
 				rescnt = 0;
 	bool		cycle;
 	bool		logit = false;
+
+	if (SFS_IN_SNAPSHOT())
+		elog(ERROR, "Can not update sequences in snapshot");
 
 	/* open and lock sequence */
 	init_sequence(relid, &elm, &seqrel);
