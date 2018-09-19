@@ -1001,6 +1001,7 @@ void CloseSnapshotFiles(Vfd *vfdP)
 	vfdP->snap_fd = VFD_CLOSED;
 	vfdP->snap_md = VFD_CLOSED;
 	vfdP->snap_id = SFS_INVALID_SNAPSHOT;
+	nfile -= 2;
 }
 
 static bool
@@ -1150,10 +1151,8 @@ LruDelete(File file)
 	--nfile;
 
 	if (vfdP->snap_fd != VFD_CLOSED)
-	{
 		CloseSnapshotFiles(vfdP);
-		nfile -= 2;
-	}
+
 	/* delete the vfd record from the LRU ring */
 	Delete(file);
 }
@@ -1863,10 +1862,7 @@ FileClose(File file)
 		vfdP->fd = VFD_CLOSED;
 
 		if (vfdP->snap_fd != VFD_CLOSED)
-		{
 			CloseSnapshotFiles(vfdP);
-			nfile -= 2;
-		}
 
 		/* remove the file from the lru ring */
 		Delete(file);
