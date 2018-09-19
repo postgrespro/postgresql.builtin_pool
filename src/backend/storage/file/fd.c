@@ -4004,6 +4004,7 @@ sfs_recover_to_snapshot(SnapshotId snap_id)
 
 	DropSharedBuffers();
 	InvalidateSystemCaches();
+	CacheInvalidateRelcacheAll();
 
 	sfs_unlock_database();
 }
