@@ -582,7 +582,10 @@ LocalExecuteInvalidationMessage(SharedInvalidationMessage *msg)
 			int			i;
 
 			if (msg->rc.relId == InvalidOid)
+			{
+				ResetCatalogCaches();
 				RelationCacheInvalidate();
+			}
 			else
 				RelationCacheInvalidateEntry(msg->rc.relId);
 
