@@ -118,7 +118,10 @@ static inline void
 SetHintBits(HeapTupleHeader tuple, Buffer buffer,
 			uint16 infomask, TransactionId xid)
 {
-	if (TransactionIdIsValid(xid) && !SFS_IN_SNAPSHOT())
+	if (SFS_IN_SNAPSHOT())
+		return;
+
+	if (TransactionIdIsValid(xid))
 	{
 		/* NB: xid must be known committed here! */
 		XLogRecPtr	commitLSN = TransactionIdGetCommitLSN(xid);

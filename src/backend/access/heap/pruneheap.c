@@ -23,6 +23,7 @@
 #include "miscadmin.h"
 #include "pgstat.h"
 #include "storage/bufmgr.h"
+#include "storage/snapfs.h"
 #include "utils/snapmgr.h"
 #include "utils/rel.h"
 #include "utils/tqual.h"
@@ -76,6 +77,10 @@ heap_page_prune_opt(Relation relation, Buffer buffer)
 	Page		page = BufferGetPage(buffer);
 	Size		minfree;
 	TransactionId OldestXmin;
+
+	/* We can not modify pages in snapshot */
+	if (SFS_IN_SNAPSHOT())
+		return;
 
 	/*
 	 * We can't write WAL in recovery mode, so there's no point trying to

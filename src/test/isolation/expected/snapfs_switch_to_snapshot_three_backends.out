@@ -1,0 +1,123 @@
+Parsed test spec with 3 sessions
+
+starting permutation: s1_sel_r s3_make_sn s1_update_1 s3_make_sn s1_update_2 s1_sel_r s2_sel_r s3_sw_1 s1_sel_r s2_sel_r s3_sw_2 s1_sel_r s2_sel_r s3_sw_3 s1_sel_r s2_sel_r s3_sw_0 s1_sel_r s2_sel_r
+step s1_sel_r: 
+	select "name" from t1 where id = 566;
+
+name           
+
+000000566      
+step s3_make_sn: 
+	select pg_make_snapshot();
+
+pg_make_snapshot
+
+2              
+step s1_update_1: 
+	update t1 set "name" = "name" || '_update_1';
+
+step s3_make_sn: 
+	select pg_make_snapshot();
+
+pg_make_snapshot
+
+3              
+step s1_update_2: 
+	update t1 set "name" = "name" || '_update_2';
+
+step s1_sel_r: 
+	select "name" from t1 where id = 566;
+
+name           
+
+000000566_update_1_update_2
+step s2_sel_r: 
+	select "name" from t1 where id = 566;
+
+name           
+
+000000566_update_1_update_2
+step s3_sw_1: 
+	select pg_switch_to_snapshot( ( select recent_snapshot - 2 from pg_control_snapshot() ) );
+	select pg_control_snapshot();
+
+pg_switch_to_snapshot
+
+               
+pg_control_snapshot
+
+(1,3,1)        
+step s1_sel_r: 
+	select "name" from t1 where id = 566;
+
+ERROR:  could not open relation with OID 16385
+step s2_sel_r: 
+	select "name" from t1 where id = 566;
+
+ERROR:  could not open relation with OID 16385
+step s3_sw_2: 
+	select pg_switch_to_snapshot( ( select recent_snapshot - 1 from pg_control_snapshot() ) );
+	select pg_control_snapshot();
+
+pg_switch_to_snapshot
+
+               
+pg_control_snapshot
+
+(1,3,2)        
+step s1_sel_r: 
+	select "name" from t1 where id = 566;
+
+name           
+
+000000566      
+step s2_sel_r: 
+	select "name" from t1 where id = 566;
+
+name           
+
+000000566      
+step s3_sw_3: 
+	select pg_switch_to_snapshot( ( select recent_snapshot from pg_control_snapshot() ) );
+	select pg_control_snapshot();
+
+pg_switch_to_snapshot
+
+               
+pg_control_snapshot
+
+(1,3,3)        
+step s1_sel_r: 
+	select "name" from t1 where id = 566;
+
+name           
+
+000000566_update_1
+step s2_sel_r: 
+	select "name" from t1 where id = 566;
+
+name           
+
+000000566_update_1
+step s3_sw_0: 
+	select pg_switch_to_snapshot( 0 );
+	select pg_control_snapshot();
+
+pg_switch_to_snapshot
+
+               
+pg_control_snapshot
+
+(1,3,0)        
+step s1_sel_r: 
+	select "name" from t1 where id = 566;
+
+name           
+
+000000566_update_1_update_2
+step s2_sel_r: 
+	select "name" from t1 where id = 566;
+
+name           
+
+000000566_update_1_update_2

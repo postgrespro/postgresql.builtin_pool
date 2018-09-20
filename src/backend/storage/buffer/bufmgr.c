@@ -1466,6 +1466,9 @@ MarkBufferDirty(Buffer buffer)
 	if (!BufferIsValid(buffer))
 		elog(ERROR, "bad buffer ID: %d", buffer);
 
+	if (SFS_IN_SNAPSHOT())
+		elog(ERROR, "Write buffer is prohibited in snapshot");
+
 	if (BufferIsLocal(buffer))
 	{
 		MarkLocalBufferDirty(buffer);
@@ -3418,6 +3421,9 @@ MarkBufferDirtyHint(Buffer buffer, bool buffer_std)
 
 	if (!BufferIsValid(buffer))
 		elog(ERROR, "bad buffer ID: %d", buffer);
+
+	if (SFS_IN_SNAPSHOT())
+		elog(ERROR, "Setting hints is prohibited in snapshot");
 
 	if (BufferIsLocal(buffer))
 	{
