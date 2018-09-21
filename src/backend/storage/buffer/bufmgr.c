@@ -3085,18 +3085,16 @@ DropDatabaseBuffers(Oid dbid)
 /* ---------------------------------------------------------------------
  *		DropSharedBuffers
  *
- *		This function removes all the buffers in the buffer cache. for a
- *		Dirty pages are simply dropped, without	bothering to write them out first.  
+ *		This function removes all the buffers in the buffer cache.
+ *		Dirty pages are simply dropped, without	bothering to write them out first.
  * --------------------------------------------------------------------
  */
 void
 DropSharedBuffers(void)
 {
 	int			i;
-	RelFileNode rnode;
 
-	rnode.relNode = InvalidOid; /* drop all local buffers */
-	DropRelFileNodeAllLocalBuffers(rnode);
+	DropLocalBuffers();
 
 	for (i = 0; i < NBuffers; i++)
 	{
@@ -3105,6 +3103,20 @@ DropSharedBuffers(void)
 		LockBufHdr(bufHdr);
 		InvalidateBuffer(bufHdr);	/* releases spinlock */
 	}
+}
+
+/* ---------------------------------------------------------------------
+ *		DropLocalBuffers
+ *
+ *		This function removes all local buffers in the buffer cache.
+ * --------------------------------------------------------------------
+ */
+void
+DropLocalBuffers(void)
+{
+	RelFileNode rnode;
+	rnode.relNode = InvalidOid; /* drop all local buffers */
+	DropRelFileNodeAllLocalBuffers(rnode);
 }
 
 /* -----------------------------------------------------------------

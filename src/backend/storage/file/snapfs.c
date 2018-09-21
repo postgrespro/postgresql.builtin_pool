@@ -184,8 +184,8 @@ sfs_set_backend_snapshot(SnapshotId snap_id)
 
 	sfs_backend_snapshot = snap_id;
 
+	DropLocalBuffers();
 	InvalidateSystemCaches();
-	CacheInvalidateRelcacheAll();
 }
 
 SnapshotId
