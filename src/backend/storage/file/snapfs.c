@@ -24,6 +24,7 @@
 #include <fcntl.h>
 
 #include "miscadmin.h"
+#include "access/transam.h"
 #include "access/xact.h"
 #include "access/xlog.h"
 #include "common/file_perm.h"
@@ -211,7 +212,7 @@ void
 sfs_lock_database(void)
 {
 	bool standalone = false;
-
+	TransactionId myXid = GetCurrentTransactionIdIfAny();
 	/* Prevent assignment Xids to transaction and
 	 * so delay start of any new update transactions
 	 */
@@ -221,11 +222,8 @@ sfs_lock_database(void)
 	do
 	{
 		RunningTransactions running = GetRunningTransactionData();
-		if (running->xcnt <= 1)
-		{
-			Assert(running->xcnt == 0 || running->xids[0] == GetCurrentTransactionIdIfAny());
-			standalone = true;
-		}
+		standalone = (TransactionIdIsValid(myXid) && running->xcnt == 1) || (!TransactionIdIsValid(myXid) && running->xcnt == 0);
+
 		/* Release locks set by GetRunningTransactionData */
 		LWLockRelease(ProcArrayLock);
 		LWLockRelease(XidGenLock);
