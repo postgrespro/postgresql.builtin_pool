@@ -1,3 +1,6 @@
+# Base checks of making and switching the snapshots
+# We are using three backends: read-write, read, snapshot.
+
 setup
 {
 	select 0 from pg_make_snapshot();
