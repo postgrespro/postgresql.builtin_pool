@@ -52,6 +52,11 @@ extern void sfs_set_backend_snapshot(SnapshotId sid);
 extern int64 sfs_get_snapshot_size(SnapshotId sid);
 
 /*
+ * Get snapshot timestamp (time of first database modification in this snapshot)
+ */
+extern TimestampTz sfs_get_snapshot_timestamp(SnapshotId sid);
+
+/*
  * Iternal functions and variables
  */
 

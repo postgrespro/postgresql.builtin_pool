@@ -10251,4 +10251,10 @@
   prorettype => 'int4', proargtypes => '',
   prosrc => 'pg_get_backend_snapshot' },
 
+{ oid => '6023',
+  descr => 'get snapshot timestamp',
+  proname => 'pg_get_snapshot_timestamp', provolatile => 'v',
+  proisstrict => 't', prorettype => 'timestamptz', proargtypes => 'int4',
+  prosrc => 'pg_get_snapshot_timestamp' },
+
 ]
