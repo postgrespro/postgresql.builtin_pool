@@ -1,8 +1,6 @@
 test: snapfs_switch_to_snapshot_three_backends
-test: snapfs_switch_to_snapshot_temp_table
-test: snapfs_switch_to_snapshot_temp_table_2
 test: snapfs_switch_to_snapshot_sequence
 test: snapfs_revert_to_snapshot_sequence
 test: snapfs_set_backend_snapshot_sequence
-test: snapfs_switch_to_snapshot_transaction_1
-test: snapfs_switch_to_snapshot_transaction_2
+test: snapfs_switch_to_snapshot_temp_table
+test: snapfs_switch_to_snapshot_temp_table_2

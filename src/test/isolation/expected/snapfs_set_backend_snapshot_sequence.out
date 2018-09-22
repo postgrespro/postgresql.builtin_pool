@@ -1,0 +1,393 @@
+Parsed test spec with 2 sessions
+
+starting permutation: s1_mk_sn s1_seq_n s2_seq_n s1_mk_sn s1_seq_n s2_seq_n s1_mk_sn s1_seq_n s2_seq_n s1_sb_sn_1 s1_seq_n s2_seq_n s1_seq_c s2_seq_c s1_sb_sn_2 s1_seq_n s2_seq_n s1_seq_c s2_seq_c s1_sb_sn_3 s1_seq_n s2_seq_n s1_seq_c s2_seq_c s1_sb_sn_4 s1_seq_n s2_seq_n s1_seq_c s2_seq_c s1_sb_sn_0 s1_seq_n s2_seq_n s1_seq_c s2_seq_c
+step s1_mk_sn: 
+	select 1 as "make_snapshot" from pg_make_snapshot();
+
+make_snapshot  
+
+1              
+step s1_seq_n: 
+	select nextval( 'seq1' );
+
+nextval        
+
+1              
+step s2_seq_n: 
+	select nextval( 'seq1' );
+
+nextval        
+
+2              
+step s1_mk_sn: 
+	select 1 as "make_snapshot" from pg_make_snapshot();
+
+make_snapshot  
+
+1              
+step s1_seq_n: 
+	select nextval( 'seq1' );
+
+nextval        
+
+3              
+step s2_seq_n: 
+	select nextval( 'seq1' );
+
+nextval        
+
+4              
+step s1_mk_sn: 
+	select 1 as "make_snapshot" from pg_make_snapshot();
+
+make_snapshot  
+
+1              
+step s1_seq_n: 
+	select nextval( 'seq1' );
+
+nextval        
+
+5              
+step s2_seq_n: 
+	select nextval( 'seq1' );
+
+nextval        
+
+6              
+step s1_sb_sn_1: 
+	select pg_set_backend_snapshot( ( select recent_snapshot - 3 from pg_control_snapshot() ) );
+
+pg_set_backend_snapshot
+
+               
+step s1_seq_n: 
+	select nextval( 'seq1' );
+
+ERROR:  relation "seq1" does not exist
+step s2_seq_n: 
+	select nextval( 'seq1' );
+
+nextval        
+
+7              
+step s1_seq_c: 
+	select currval( 'seq1' );
+
+ERROR:  relation "seq1" does not exist
+step s2_seq_c: 
+	select currval( 'seq1' );
+
+currval        
+
+7              
+step s1_sb_sn_2: 
+	select pg_set_backend_snapshot( ( select recent_snapshot - 2 from pg_control_snapshot() ) );
+
+pg_set_backend_snapshot
+
+               
+step s1_seq_n: 
+	select nextval( 'seq1' );
+
+ERROR:  Can not update sequences in snapshot
+step s2_seq_n: 
+	select nextval( 'seq1' );
+
+nextval        
+
+8              
+step s1_seq_c: 
+	select currval( 'seq1' );
+
+currval        
+
+5              
+step s2_seq_c: 
+	select currval( 'seq1' );
+
+currval        
+
+8              
+step s1_sb_sn_3: 
+	select pg_set_backend_snapshot( ( select recent_snapshot - 1 from pg_control_snapshot() ) );
+
+pg_set_backend_snapshot
+
+               
+step s1_seq_n: 
+	select nextval( 'seq1' );
+
+ERROR:  Can not update sequences in snapshot
+step s2_seq_n: 
+	select nextval( 'seq1' );
+
+nextval        
+
+9              
+step s1_seq_c: 
+	select currval( 'seq1' );
+
+currval        
+
+5              
+step s2_seq_c: 
+	select currval( 'seq1' );
+
+currval        
+
+9              
+step s1_sb_sn_4: 
+	select pg_set_backend_snapshot( ( select recent_snapshot from pg_control_snapshot() ) );
+
+pg_set_backend_snapshot
+
+               
+step s1_seq_n: 
+	select nextval( 'seq1' );
+
+ERROR:  Can not update sequences in snapshot
+step s2_seq_n: 
+	select nextval( 'seq1' );
+
+nextval        
+
+10             
+step s1_seq_c: 
+	select currval( 'seq1' );
+
+currval        
+
+5              
+step s2_seq_c: 
+	select currval( 'seq1' );
+
+currval        
+
+10             
+step s1_sb_sn_0: 
+	select pg_set_backend_snapshot( 0 );
+
+pg_set_backend_snapshot
+
+               
+step s1_seq_n: 
+	select nextval( 'seq1' );
+
+nextval        
+
+11             
+step s2_seq_n: 
+	select nextval( 'seq1' );
+
+nextval        
+
+12             
+step s1_seq_c: 
+	select currval( 'seq1' );
+
+currval        
+
+11             
+step s2_seq_c: 
+	select currval( 'seq1' );
+
+currval        
+
+12             
+
+starting permutation: s1_mk_sn s1_seq_n s2_seq_n s1_mk_sn s1_seq_n s2_seq_n s1_mk_sn s1_seq_n s2_seq_n s1_sb_sn_4 s1_seq_n s2_seq_n s1_seq_c s2_seq_c s1_sb_sn_3 s1_seq_n s2_seq_n s1_seq_c s2_seq_c s1_sb_sn_2 s1_seq_n s2_seq_n s1_seq_c s2_seq_c s1_sb_sn_1 s1_seq_n s2_seq_n s1_seq_c s2_seq_c s1_sb_sn_0 s1_seq_n s2_seq_n s1_seq_c s2_seq_c
+step s1_mk_sn: 
+	select 1 as "make_snapshot" from pg_make_snapshot();
+
+make_snapshot  
+
+1              
+step s1_seq_n: 
+	select nextval( 'seq1' );
+
+nextval        
+
+1              
+step s2_seq_n: 
+	select nextval( 'seq1' );
+
+nextval        
+
+2              
+step s1_mk_sn: 
+	select 1 as "make_snapshot" from pg_make_snapshot();
+
+make_snapshot  
+
+1              
+step s1_seq_n: 
+	select nextval( 'seq1' );
+
+nextval        
+
+3              
+step s2_seq_n: 
+	select nextval( 'seq1' );
+
+nextval        
+
+4              
+step s1_mk_sn: 
+	select 1 as "make_snapshot" from pg_make_snapshot();
+
+make_snapshot  
+
+1              
+step s1_seq_n: 
+	select nextval( 'seq1' );
+
+nextval        
+
+5              
+step s2_seq_n: 
+	select nextval( 'seq1' );
+
+nextval        
+
+6              
+step s1_sb_sn_4: 
+	select pg_set_backend_snapshot( ( select recent_snapshot from pg_control_snapshot() ) );
+
+pg_set_backend_snapshot
+
+               
+step s1_seq_n: 
+	select nextval( 'seq1' );
+
+ERROR:  Can not update sequences in snapshot
+step s2_seq_n: 
+	select nextval( 'seq1' );
+
+nextval        
+
+7              
+step s1_seq_c: 
+	select currval( 'seq1' );
+
+currval        
+
+5              
+step s2_seq_c: 
+	select currval( 'seq1' );
+
+currval        
+
+7              
+step s1_sb_sn_3: 
+	select pg_set_backend_snapshot( ( select recent_snapshot - 1 from pg_control_snapshot() ) );
+
+pg_set_backend_snapshot
+
+               
+step s1_seq_n: 
+	select nextval( 'seq1' );
+
+ERROR:  Can not update sequences in snapshot
+step s2_seq_n: 
+	select nextval( 'seq1' );
+
+nextval        
+
+8              
+step s1_seq_c: 
+	select currval( 'seq1' );
+
+currval        
+
+5              
+step s2_seq_c: 
+	select currval( 'seq1' );
+
+currval        
+
+8              
+step s1_sb_sn_2: 
+	select pg_set_backend_snapshot( ( select recent_snapshot - 2 from pg_control_snapshot() ) );
+
+pg_set_backend_snapshot
+
+               
+step s1_seq_n: 
+	select nextval( 'seq1' );
+
+ERROR:  Can not update sequences in snapshot
+step s2_seq_n: 
+	select nextval( 'seq1' );
+
+nextval        
+
+9              
+step s1_seq_c: 
+	select currval( 'seq1' );
+
+currval        
+
+5              
+step s2_seq_c: 
+	select currval( 'seq1' );
+
+currval        
+
+9              
+step s1_sb_sn_1: 
+	select pg_set_backend_snapshot( ( select recent_snapshot - 3 from pg_control_snapshot() ) );
+
+pg_set_backend_snapshot
+
+               
+step s1_seq_n: 
+	select nextval( 'seq1' );
+
+ERROR:  relation "seq1" does not exist
+step s2_seq_n: 
+	select nextval( 'seq1' );
+
+nextval        
+
+10             
+step s1_seq_c: 
+	select currval( 'seq1' );
+
+ERROR:  relation "seq1" does not exist
+step s2_seq_c: 
+	select currval( 'seq1' );
+
+currval        
+
+10             
+step s1_sb_sn_0: 
+	select pg_set_backend_snapshot( 0 );
+
+pg_set_backend_snapshot
+
+               
+step s1_seq_n: 
+	select nextval( 'seq1' );
+
+nextval        
+
+11             
+step s2_seq_n: 
+	select nextval( 'seq1' );
+
+nextval        
+
+12             
+step s1_seq_c: 
+	select currval( 'seq1' );
+
+currval        
+
+11             
+step s2_seq_c: 
+	select currval( 'seq1' );
+
+currval        
+
+12             
