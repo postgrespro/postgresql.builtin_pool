@@ -293,6 +293,10 @@ Datum pg_get_backend_snapshot(PG_FUNCTION_ARGS)
 Datum pg_get_snapshot_timestamp(PG_FUNCTION_ARGS)
 {
 	SnapshotId snap_id = PG_GETARG_INT32(0);
-	PG_RETURN_TIMESTAMPTZ(sfs_get_snapshot_timestamp(snap_id));
+    time_t t = sfs_get_snapshot_timestamp(snap_id);
+	if (t == (time_t)-1)
+		PG_RETURN_NULL();
+	else
+		PG_RETURN_TIMESTAMPTZ(time_t_to_timestamptz(t));
 }
 

@@ -3960,6 +3960,7 @@ sfs_snapshot_file_size(const char *fname, bool isdir, int elevel)
 int64
 sfs_get_snapshot_size(SnapshotId snap_id)
 {
+	sfs_check_snapshot(snap_id);
 	sfs_snapshot_size = 0;
 	sfs_current_snapshot = snap_id;
 	walk_data_dir(sfs_snapshot_file_size, LOG);
@@ -3991,13 +3992,14 @@ sfs_snapshot_file_time(const char *fname, bool isdir, int elevel)
 	}
 }
 
-TimestampTz
+time_t
 sfs_get_snapshot_timestamp(SnapshotId snap_id)
 {
+	sfs_check_snapshot(snap_id);
 	sfs_snapshot_time = -1;
 	sfs_current_snapshot = snap_id;
 	walk_data_dir(sfs_snapshot_file_time, LOG);
-	return time_t_to_timestamptz((time_t)sfs_snapshot_time);
+	return sfs_snapshot_time;
 }
 
 void

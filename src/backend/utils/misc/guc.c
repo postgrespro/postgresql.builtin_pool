@@ -3070,7 +3070,7 @@ static struct config_int ConfigureNamesInt[] =
 			gettext_noop("Sets active snapfs snapshot."),
 			NULL,
 		},
-		&sfs_active_snapshot,
+		(int*)&sfs_active_snapshot,
 		-1, -1, INT_MAX,
 		NULL, NULL, NULL
 	},
