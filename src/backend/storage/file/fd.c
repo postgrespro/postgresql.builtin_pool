@@ -2024,8 +2024,10 @@ FileRead(File file, char *buffer, int amount, uint32 wait_event_info)
 	if (current_snapshot != SFS_INVALID_SNAPSHOT)
 	{
 		if (current_snapshot < ControlFile->oldest_snapshot || current_snapshot > ControlFile->recent_snapshot)
+		{
+			sfs_backend_snapshot = SFS_INVALID_SNAPSHOT;
 			elog(ERROR, "Snapshot %d is not valid any more", current_snapshot);
-
+		}
 		Assert(!FilePosIsUnknown(vfdP->seekPos));
 
 		/* Look for original page in the active or any subsequent snapshots */
@@ -2358,7 +2360,10 @@ FileSeek(File file, off_t offset, int whence)
 		if (current_snapshot != SFS_INVALID_SNAPSHOT)
 		{
 			if (current_snapshot < ControlFile->oldest_snapshot || current_snapshot > ControlFile->recent_snapshot)
+			{
+				sfs_backend_snapshot = SFS_INVALID_SNAPSHOT;
 				elog(ERROR, "Snapshot %d is not valid any more", current_snapshot);
+			}
 			/* Look for original page in the active or any subsequent snapshots */
 			for (snap_id = current_snapshot; snap_id <= ControlFile->recent_snapshot; snap_id++)
 			{
