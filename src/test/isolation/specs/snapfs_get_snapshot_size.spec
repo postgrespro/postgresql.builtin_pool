@@ -1,5 +1,3 @@
-# The recent just created snapshot cannot be older than 1 minute :)
-
 teardown {
 	select pg_remove_snapshot( ( select recent_snapshot from pg_control_snapshot() ) );
 	drop table foo;
@@ -8,8 +6,9 @@ teardown {
 session "s1"
 step "s1_mk_sn" {
 	select 1 as "make_snapshot" from pg_make_snapshot();
+	select pg_get_snapshot_size( ( select recent_snapshot from pg_control_snapshot() ) );
 	create table foo as select 'test_data';
-	select ( now() - ( select pg_get_snapshot_timestamp( ( select recent_snapshot from pg_control_snapshot() ) ) ) ) between '0 sec'::interval and '1 min'::interval as "timestamp_check"
+	select pg_get_snapshot_size( ( select recent_snapshot from pg_control_snapshot() ) ) > 0 as size_not_zero;
 }
 
 permutation "s1_mk_sn"

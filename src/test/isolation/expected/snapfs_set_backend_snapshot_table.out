@@ -1,0 +1,102 @@
+Parsed test spec with 2 sessions
+
+starting permutation: s1_mk_sn s1_tab_i s2_tab_i s1_mk_sn s2_tab_u s1_tab_s s2_tab_s s1_sb_sn_1 s1_tab_s s2_tab_s s1_sb_sn_2 s2_tab_u s1_tab_s s2_tab_s s1_sb_sn_0 s2_tab_u s1_tab_s s2_tab_s
+step s1_mk_sn: 
+	select 1 as "make_snapshot" from pg_make_snapshot();
+
+make_snapshot  
+
+1              
+step s1_tab_i: 
+	insert into foo ( name ) values ( 'some_text_sess_1' );
+
+step s2_tab_i: 
+	insert into foo ( name ) values ( 'some_text_sess_2' );
+
+step s1_mk_sn: 
+	select 1 as "make_snapshot" from pg_make_snapshot();
+
+make_snapshot  
+
+1              
+step s2_tab_u: 
+	update foo set name = name || '_upd_sess_2';
+
+step s1_tab_s: 
+	select * from foo;
+
+id             name           
+
+1              some_text_sess_1_upd_sess_2
+2              some_text_sess_2_upd_sess_2
+step s2_tab_s: 
+	select * from foo;
+
+id             name           
+
+1              some_text_sess_1_upd_sess_2
+2              some_text_sess_2_upd_sess_2
+step s1_sb_sn_1: 
+	select pg_set_backend_snapshot( ( select recent_snapshot - 1 from pg_control_snapshot() ) );
+
+pg_set_backend_snapshot
+
+               
+step s1_tab_s: 
+	select * from foo;
+
+id             name           
+
+step s2_tab_s: 
+	select * from foo;
+
+id             name           
+
+1              some_text_sess_1_upd_sess_2
+2              some_text_sess_2_upd_sess_2
+step s1_sb_sn_2: 
+	select pg_set_backend_snapshot( ( select recent_snapshot from pg_control_snapshot() ) );
+
+pg_set_backend_snapshot
+
+               
+step s2_tab_u: 
+	update foo set name = name || '_upd_sess_2';
+
+step s1_tab_s: 
+	select * from foo;
+
+id             name           
+
+1              some_text_sess_1
+2              some_text_sess_2
+step s2_tab_s: 
+	select * from foo;
+
+id             name           
+
+1              some_text_sess_1_upd_sess_2_upd_sess_2
+2              some_text_sess_2_upd_sess_2_upd_sess_2
+step s1_sb_sn_0: 
+	select pg_set_backend_snapshot( 0 );
+
+pg_set_backend_snapshot
+
+               
+step s2_tab_u: 
+	update foo set name = name || '_upd_sess_2';
+
+step s1_tab_s: 
+	select * from foo;
+
+id             name           
+
+1              some_text_sess_1_upd_sess_2_upd_sess_2_upd_sess_2
+2              some_text_sess_2_upd_sess_2_upd_sess_2_upd_sess_2
+step s2_tab_s: 
+	select * from foo;
+
+id             name           
+
+1              some_text_sess_1_upd_sess_2_upd_sess_2_upd_sess_2
+2              some_text_sess_2_upd_sess_2_upd_sess_2_upd_sess_2

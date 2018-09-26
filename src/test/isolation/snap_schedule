@@ -3,5 +3,7 @@ test: snapfs_switch_to_snapshot_sequence
 test: snapfs_revert_to_snapshot_sequence
 test: snapfs_set_backend_snapshot_sequence
 test: snapfs_get_snapshot_timestamp
+test: snapfs_revert_to_snapshot_table
+test: snapfs_switch_to_snapshot_table
 test: snapfs_switch_to_snapshot_temp_table
 test: snapfs_switch_to_snapshot_temp_table_2

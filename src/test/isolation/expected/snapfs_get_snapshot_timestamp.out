@@ -12,6 +12,3 @@ make_snapshot
 timestamp_check
 
 t              
-pg_remove_snapshot
-
-               
