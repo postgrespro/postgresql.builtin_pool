@@ -16,6 +16,3 @@ pg_get_snapshot_size
 size_not_zero  
 
 t              
-pg_remove_snapshot
-
-               
