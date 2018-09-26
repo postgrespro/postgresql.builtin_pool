@@ -1,7 +1,7 @@
 test: snapfs_switch_to_snapshot_three_backends
 test: snapfs_switch_to_snapshot_sequence
-test: snapfs_revert_to_snapshot_sequence
-test: snapfs_revert_to_snapshot_table
+test: snapfs_recover_to_snapshot_sequence
+test: snapfs_recover_to_snapshot_table
 test: snapfs_set_backend_snapshot_sequence
 test: snapfs_set_backend_snapshot_table
 test: snapfs_get_snapshot_size
