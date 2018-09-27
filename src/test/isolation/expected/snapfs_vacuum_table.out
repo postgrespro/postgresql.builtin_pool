@@ -1,0 +1,413 @@
+Parsed test spec with 3 sessions
+
+starting permutation: s3_mk_sn s1_del s3_mk_sn s2_v s1_ins s3_mk_sn s1_upd s1_sel s2_sel s3_sw_1 s1_sel s2_sel s3_sw_2 s1_sel s2_sel s3_sw_3 s1_sel s2_sel s3_sw_0 s1_sel s2_sel
+step s3_mk_sn: 
+	select 1 from pg_make_snapshot();
+
+?column?       
+
+1              
+step s1_del: 
+	delete from t1;
+
+step s3_mk_sn: 
+	select 1 from pg_make_snapshot();
+
+?column?       
+
+1              
+step s2_v: 
+	vacuum t1;
+
+step s1_ins: 
+	insert into t1
+	select generate_series as id, trim( to_char( generate_series, '000000' ) ) || '_new' as "name"
+  from generate_series( 1, 100000 );
+
+step s3_mk_sn: 
+	select 1 from pg_make_snapshot();
+
+?column?       
+
+1              
+step s1_upd: 
+	update t1 set name = name || '_upd';
+
+step s1_sel: 
+	select * from ( select count(*) as cnt, avg( id )::float as avg from t1 ) as part1 left join ( select * from t1 where id = 566 ) as part2 on ( 1 = 1 );
+
+cnt            avg            id             name           
+
+100000         50000.5        566            000566_new_upd 
+step s2_sel: 
+	select * from ( select count(*) as cnt, avg( id )::float as avg from t1 ) as part1 left join ( select * from t1 where id = 566 ) as part2 on ( 1 = 1 );
+
+cnt            avg            id             name           
+
+100000         50000.5        566            000566_new_upd 
+step s3_sw_1: 
+	select pg_switch_to_snapshot( ( select recent_snapshot - 2 from pg_control_snapshot() ) );
+
+pg_switch_to_snapshot
+
+               
+step s1_sel: 
+	select * from ( select count(*) as cnt, avg( id )::float as avg from t1 ) as part1 left join ( select * from t1 where id = 566 ) as part2 on ( 1 = 1 );
+
+cnt            avg            id             name           
+
+100000         50000.5        566            000566         
+step s2_sel: 
+	select * from ( select count(*) as cnt, avg( id )::float as avg from t1 ) as part1 left join ( select * from t1 where id = 566 ) as part2 on ( 1 = 1 );
+
+cnt            avg            id             name           
+
+100000         50000.5        566            000566         
+step s3_sw_2: 
+	select pg_switch_to_snapshot( ( select recent_snapshot - 1 from pg_control_snapshot() ) );
+
+pg_switch_to_snapshot
+
+               
+step s1_sel: 
+	select * from ( select count(*) as cnt, avg( id )::float as avg from t1 ) as part1 left join ( select * from t1 where id = 566 ) as part2 on ( 1 = 1 );
+
+cnt            avg            id             name           
+
+0                                                           
+step s2_sel: 
+	select * from ( select count(*) as cnt, avg( id )::float as avg from t1 ) as part1 left join ( select * from t1 where id = 566 ) as part2 on ( 1 = 1 );
+
+cnt            avg            id             name           
+
+0                                                           
+step s3_sw_3: 
+	select pg_switch_to_snapshot( ( select recent_snapshot from pg_control_snapshot() ) );
+
+pg_switch_to_snapshot
+
+               
+step s1_sel: 
+	select * from ( select count(*) as cnt, avg( id )::float as avg from t1 ) as part1 left join ( select * from t1 where id = 566 ) as part2 on ( 1 = 1 );
+
+cnt            avg            id             name           
+
+100000         50000.5        566            000566_new     
+step s2_sel: 
+	select * from ( select count(*) as cnt, avg( id )::float as avg from t1 ) as part1 left join ( select * from t1 where id = 566 ) as part2 on ( 1 = 1 );
+
+cnt            avg            id             name           
+
+100000         50000.5        566            000566_new     
+step s3_sw_0: 
+	select pg_switch_to_snapshot( 0 );
+
+pg_switch_to_snapshot
+
+               
+step s1_sel: 
+	select * from ( select count(*) as cnt, avg( id )::float as avg from t1 ) as part1 left join ( select * from t1 where id = 566 ) as part2 on ( 1 = 1 );
+
+cnt            avg            id             name           
+
+100000         50000.5        566            000566_new_upd 
+step s2_sel: 
+	select * from ( select count(*) as cnt, avg( id )::float as avg from t1 ) as part1 left join ( select * from t1 where id = 566 ) as part2 on ( 1 = 1 );
+
+cnt            avg            id             name           
+
+100000         50000.5        566            000566_new_upd 
+
+starting permutation: s3_mk_sn s1_del s3_mk_sn s2_v s1_ins s3_mk_sn s1_upd s1_sel s2_sel s1_sb_1 s1_sel s2_sel s1_sb_2 s1_sel s2_sel s1_sb_3 s1_sel s2_sel s1_sb_0 s1_sel s2_sel
+step s3_mk_sn: 
+	select 1 from pg_make_snapshot();
+
+?column?       
+
+1              
+step s1_del: 
+	delete from t1;
+
+step s3_mk_sn: 
+	select 1 from pg_make_snapshot();
+
+?column?       
+
+1              
+step s2_v: 
+	vacuum t1;
+
+step s1_ins: 
+	insert into t1
+	select generate_series as id, trim( to_char( generate_series, '000000' ) ) || '_new' as "name"
+  from generate_series( 1, 100000 );
+
+step s3_mk_sn: 
+	select 1 from pg_make_snapshot();
+
+?column?       
+
+1              
+step s1_upd: 
+	update t1 set name = name || '_upd';
+
+step s1_sel: 
+	select * from ( select count(*) as cnt, avg( id )::float as avg from t1 ) as part1 left join ( select * from t1 where id = 566 ) as part2 on ( 1 = 1 );
+
+cnt            avg            id             name           
+
+100000         50000.5        566            000566_new_upd 
+step s2_sel: 
+	select * from ( select count(*) as cnt, avg( id )::float as avg from t1 ) as part1 left join ( select * from t1 where id = 566 ) as part2 on ( 1 = 1 );
+
+cnt            avg            id             name           
+
+100000         50000.5        566            000566_new_upd 
+step s1_sb_1: 
+	select pg_set_backend_snapshot( ( select recent_snapshot - 2 from pg_control_snapshot() ) );
+
+pg_set_backend_snapshot
+
+               
+step s1_sel: 
+	select * from ( select count(*) as cnt, avg( id )::float as avg from t1 ) as part1 left join ( select * from t1 where id = 566 ) as part2 on ( 1 = 1 );
+
+cnt            avg            id             name           
+
+67519          43308.5968838401566            000566         
+step s2_sel: 
+	select * from ( select count(*) as cnt, avg( id )::float as avg from t1 ) as part1 left join ( select * from t1 where id = 566 ) as part2 on ( 1 = 1 );
+
+cnt            avg            id             name           
+
+100000         50000.5        566            000566_new_upd 
+step s1_sb_2: 
+	select pg_set_backend_snapshot( ( select recent_snapshot - 1 from pg_control_snapshot() ) );
+
+pg_set_backend_snapshot
+
+               
+step s1_sel: 
+	select * from ( select count(*) as cnt, avg( id )::float as avg from t1 ) as part1 left join ( select * from t1 where id = 566 ) as part2 on ( 1 = 1 );
+
+cnt            avg            id             name           
+
+46077          37386.2242333485                              
+step s2_sel: 
+	select * from ( select count(*) as cnt, avg( id )::float as avg from t1 ) as part1 left join ( select * from t1 where id = 566 ) as part2 on ( 1 = 1 );
+
+cnt            avg            id             name           
+
+100000         50000.5        566            000566_new_upd 
+step s1_sb_3: 
+	select pg_set_backend_snapshot( ( select recent_snapshot from pg_control_snapshot() ) );
+
+pg_set_backend_snapshot
+
+               
+step s1_sel: 
+	select * from ( select count(*) as cnt, avg( id )::float as avg from t1 ) as part1 left join ( select * from t1 where id = 566 ) as part2 on ( 1 = 1 );
+
+cnt            avg            id             name           
+
+100000         50000.5        566            000566_new     
+step s2_sel: 
+	select * from ( select count(*) as cnt, avg( id )::float as avg from t1 ) as part1 left join ( select * from t1 where id = 566 ) as part2 on ( 1 = 1 );
+
+cnt            avg            id             name           
+
+100000         50000.5        566            000566_new_upd 
+step s1_sb_0: 
+	select pg_set_backend_snapshot( 0 );
+
+pg_set_backend_snapshot
+
+               
+step s1_sel: 
+	select * from ( select count(*) as cnt, avg( id )::float as avg from t1 ) as part1 left join ( select * from t1 where id = 566 ) as part2 on ( 1 = 1 );
+
+cnt            avg            id             name           
+
+100000         50000.5        566            000566_new_upd 
+step s2_sel: 
+	select * from ( select count(*) as cnt, avg( id )::float as avg from t1 ) as part1 left join ( select * from t1 where id = 566 ) as part2 on ( 1 = 1 );
+
+cnt            avg            id             name           
+
+100000         50000.5        566            000566_new_upd 
+
+starting permutation: s3_mk_sn s1_del s3_mk_sn s2_v s1_ins s3_mk_sn s1_upd s1_sel s2_sel s3_rc_sn s1_sel s2_sel s3_rc_sn s1_sel s2_sel s3_rc_sn s1_sel s2_sel s3_mk_sn
+step s3_mk_sn: 
+	select 1 from pg_make_snapshot();
+
+?column?       
+
+1              
+step s1_del: 
+	delete from t1;
+
+step s3_mk_sn: 
+	select 1 from pg_make_snapshot();
+
+?column?       
+
+1              
+step s2_v: 
+	vacuum t1;
+
+step s1_ins: 
+	insert into t1
+	select generate_series as id, trim( to_char( generate_series, '000000' ) ) || '_new' as "name"
+  from generate_series( 1, 100000 );
+
+step s3_mk_sn: 
+	select 1 from pg_make_snapshot();
+
+?column?       
+
+1              
+step s1_upd: 
+	update t1 set name = name || '_upd';
+
+step s1_sel: 
+	select * from ( select count(*) as cnt, avg( id )::float as avg from t1 ) as part1 left join ( select * from t1 where id = 566 ) as part2 on ( 1 = 1 );
+
+cnt            avg            id             name           
+
+100000         50000.5        566            000566_new_upd 
+step s2_sel: 
+	select * from ( select count(*) as cnt, avg( id )::float as avg from t1 ) as part1 left join ( select * from t1 where id = 566 ) as part2 on ( 1 = 1 );
+
+cnt            avg            id             name           
+
+100000         50000.5        566            000566_new_upd 
+step s3_rc_sn: 
+  select pg_recover_to_snapshot( ( select recent_snapshot from pg_control_snapshot() ) );
+
+pg_recover_to_snapshot
+
+               
+step s1_sel: 
+	select * from ( select count(*) as cnt, avg( id )::float as avg from t1 ) as part1 left join ( select * from t1 where id = 566 ) as part2 on ( 1 = 1 );
+
+cnt            avg            id             name           
+
+100000         50000.5        566            000566_new     
+step s2_sel: 
+	select * from ( select count(*) as cnt, avg( id )::float as avg from t1 ) as part1 left join ( select * from t1 where id = 566 ) as part2 on ( 1 = 1 );
+
+cnt            avg            id             name           
+
+100000         50000.5        566            000566_new     
+step s3_rc_sn: 
+  select pg_recover_to_snapshot( ( select recent_snapshot from pg_control_snapshot() ) );
+
+pg_recover_to_snapshot
+
+               
+step s1_sel: 
+	select * from ( select count(*) as cnt, avg( id )::float as avg from t1 ) as part1 left join ( select * from t1 where id = 566 ) as part2 on ( 1 = 1 );
+
+cnt            avg            id             name           
+
+0                                                           
+step s2_sel: 
+	select * from ( select count(*) as cnt, avg( id )::float as avg from t1 ) as part1 left join ( select * from t1 where id = 566 ) as part2 on ( 1 = 1 );
+
+cnt            avg            id             name           
+
+0                                                           
+step s3_rc_sn: 
+  select pg_recover_to_snapshot( ( select recent_snapshot from pg_control_snapshot() ) );
+
+pg_recover_to_snapshot
+
+               
+step s1_sel: 
+	select * from ( select count(*) as cnt, avg( id )::float as avg from t1 ) as part1 left join ( select * from t1 where id = 566 ) as part2 on ( 1 = 1 );
+
+cnt            avg            id             name           
+
+100000         50000.5        566            000566         
+step s2_sel: 
+	select * from ( select count(*) as cnt, avg( id )::float as avg from t1 ) as part1 left join ( select * from t1 where id = 566 ) as part2 on ( 1 = 1 );
+
+cnt            avg            id             name           
+
+100000         50000.5        566            000566         
+step s3_mk_sn: 
+	select 1 from pg_make_snapshot();
+
+?column?       
+
+1              
+
+starting permutation: s3_mk_sn s1_del s3_mk_sn s2_v s1_ins s3_mk_sn s1_upd s1_sel s2_sel s3_rc_sn_1 s1_sel s2_sel s3_mk_sn
+step s3_mk_sn: 
+	select 1 from pg_make_snapshot();
+
+?column?       
+
+1              
+step s1_del: 
+	delete from t1;
+
+step s3_mk_sn: 
+	select 1 from pg_make_snapshot();
+
+?column?       
+
+1              
+step s2_v: 
+	vacuum t1;
+
+step s1_ins: 
+	insert into t1
+	select generate_series as id, trim( to_char( generate_series, '000000' ) ) || '_new' as "name"
+  from generate_series( 1, 100000 );
+
+step s3_mk_sn: 
+	select 1 from pg_make_snapshot();
+
+?column?       
+
+1              
+step s1_upd: 
+	update t1 set name = name || '_upd';
+
+step s1_sel: 
+	select * from ( select count(*) as cnt, avg( id )::float as avg from t1 ) as part1 left join ( select * from t1 where id = 566 ) as part2 on ( 1 = 1 );
+
+cnt            avg            id             name           
+
+100000         50000.5        566            000566_new_upd 
+step s2_sel: 
+	select * from ( select count(*) as cnt, avg( id )::float as avg from t1 ) as part1 left join ( select * from t1 where id = 566 ) as part2 on ( 1 = 1 );
+
+cnt            avg            id             name           
+
+100000         50000.5        566            000566_new_upd 
+step s3_rc_sn_1: 
+  select pg_recover_to_snapshot( ( select recent_snapshot - 2 from pg_control_snapshot() ) );
+
+pg_recover_to_snapshot
+
+               
+step s1_sel: 
+	select * from ( select count(*) as cnt, avg( id )::float as avg from t1 ) as part1 left join ( select * from t1 where id = 566 ) as part2 on ( 1 = 1 );
+
+cnt            avg            id             name           
+
+100000         50000.5        566            000566         
+step s2_sel: 
+	select * from ( select count(*) as cnt, avg( id )::float as avg from t1 ) as part1 left join ( select * from t1 where id = 566 ) as part2 on ( 1 = 1 );
+
+cnt            avg            id             name           
+
+100000         50000.5        566            000566         
+step s3_mk_sn: 
+	select 1 from pg_make_snapshot();
+
+?column?       
+
+1              
