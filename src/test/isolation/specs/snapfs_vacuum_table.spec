@@ -87,5 +87,6 @@ step "s3_rc_sn_1" {
 
 permutation "s3_mk_sn" "s1_del" "s3_mk_sn" "s2_v" "s1_ins" "s3_mk_sn" "s1_upd" "s1_sel" "s2_sel" "s3_sw_1" "s1_sel" "s2_sel" "s3_sw_2" "s1_sel" "s2_sel" "s3_sw_3" "s1_sel" "s2_sel" "s3_sw_0" "s1_sel" "s2_sel"
 permutation "s3_mk_sn" "s1_del" "s3_mk_sn" "s2_v" "s1_ins" "s3_mk_sn" "s1_upd" "s1_sel" "s2_sel" "s1_sb_1" "s1_sel" "s2_sel" "s1_sb_2" "s1_sel" "s2_sel" "s1_sb_3" "s1_sel" "s2_sel" "s1_sb_0" "s1_sel" "s2_sel"
+permutation "s3_mk_sn" "s1_del" "s3_mk_sn" "s2_v" "s1_ins" "s3_mk_sn" "s1_upd" "s1_sel" "s2_sel" "s2_sb_1" "s1_sel" "s2_sel" "s2_sb_2" "s1_sel" "s2_sel" "s2_sb_3" "s1_sel" "s2_sel" "s2_sb_0" "s1_sel" "s2_sel"
 permutation "s3_mk_sn" "s1_del" "s3_mk_sn" "s2_v" "s1_ins" "s3_mk_sn" "s1_upd" "s1_sel" "s2_sel" "s3_rc_sn" "s1_sel" "s2_sel" "s3_rc_sn" "s1_sel" "s2_sel" "s3_rc_sn" "s1_sel" "s2_sel" "s3_mk_sn"
 permutation "s3_mk_sn" "s1_del" "s3_mk_sn" "s2_v" "s1_ins" "s3_mk_sn" "s1_upd" "s1_sel" "s2_sel" "s3_rc_sn_1" "s1_sel" "s2_sel" "s3_mk_sn"
