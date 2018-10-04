@@ -55,7 +55,8 @@ pg_switch_to_snapshot
 step s1_sel: 
 	select "name" from tmp1 where id = 566;
 
-ERROR:  could not open file "base/16827/t6_16858": No such file or directory
+name           
+
 step s1_sw_sn_3: 
 	select pg_switch_to_snapshot( ( select recent_snapshot - 1 from pg_control_snapshot() ) );
 
@@ -65,7 +66,8 @@ pg_switch_to_snapshot
 step s1_sel: 
 	select "name" from tmp1 where id = 566;
 
-ERROR:  could not open file "base/16827/t6_16858": No such file or directory
+name           
+
 step s1_sw_sn_4: 
 	select pg_switch_to_snapshot( ( select recent_snapshot from pg_control_snapshot() ) );
 

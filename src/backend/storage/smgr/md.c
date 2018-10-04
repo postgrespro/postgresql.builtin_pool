@@ -411,34 +411,35 @@ static void
 mdunlinkfork(RelFileNodeBackend rnode, ForkNumber forkNum, bool isRedo)
 {
 	char	   *path;
-	int			ret;
+	int			ret = -1;
 
 	path = relpath(rnode, forkNum);
 
-	/*
-	 * Delete or truncate the first segment.
-	 */
-	if (isRedo || forkNum != MAIN_FORKNUM || RelFileNodeBackendIsTemp(rnode))
+	if (SFS_KEEPING_SNAPSHOT())
 	{
-		ret = unlink(path);
-		if (ret < 0 && errno != ENOENT)
-			ereport(WARNING,
-					(errcode_for_file_access(),
-					 errmsg("could not remove file \"%s\": %m", path)));
+		File file = PathNameOpenFile(path,  O_RDWR | PG_BINARY);
+		if (file >= 0)
+		{
+			ret = FileTruncate(file, 0, WAIT_EVENT_DATA_FILE_TRUNCATE);
+			if (ret < 0)
+				ereport(WARNING,
+						(errcode_for_file_access(),
+						 errmsg("could not truncate file \"%s\": %m", path)));
+			FileClose(file);
+		}
 	}
 	else
 	{
-		if (SFS_KEEPING_SNAPSHOT())
+		/*
+		 * Delete or truncate the first segment.
+		 */
+		if (isRedo || forkNum != MAIN_FORKNUM || RelFileNodeBackendIsTemp(rnode))
 		{
-			File file = PathNameOpenFile(path,  O_RDWR | PG_BINARY);
-			if (file >= 0)
-			{
-				if (FileTruncate(file, 0, WAIT_EVENT_DATA_FILE_TRUNCATE) < 0)
-					ereport(WARNING,
-							(errcode_for_file_access(),
-							 errmsg("could not truncate file \"%s\": %m", path)));
-				FileClose(file);
-			}
+			ret = unlink(path);
+			if (ret < 0 && errno != ENOENT)
+				ereport(WARNING,
+						(errcode_for_file_access(),
+						 errmsg("could not remove file \"%s\": %m", path)));
 		}
 		else
 		{
@@ -455,8 +456,7 @@ mdunlinkfork(RelFileNodeBackend rnode, ForkNumber forkNum, bool isRedo)
 				CloseTransientFile(fd);
 				errno = save_errno;
 			}
-			else
-				ret = -1;
+
 			if (ret < 0 && errno != ENOENT)
 				ereport(WARNING,
 						(errcode_for_file_access(),
