@@ -10,3 +10,4 @@ test: snapfs_switch_to_snapshot_table
 test: snapfs_truncate_table
 test: snapfs_switch_to_snapshot_temp_table
 test: snapfs_switch_to_snapshot_temp_table_2
+test: snapfs_vacuum_table

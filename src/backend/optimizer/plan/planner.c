@@ -53,6 +53,7 @@
 #include "parser/parse_agg.h"
 #include "rewrite/rewriteManip.h"
 #include "storage/dsm_impl.h"
+#include "storage/snapfs.h"
 #include "utils/rel.h"
 #include "utils/selfuncs.h"
 #include "utils/lsyscache.h"
@@ -338,6 +339,7 @@ standard_planner(Query *parse, int cursorOptions, ParamListInfo boundParams)
 		parse->commandType == CMD_SELECT &&
 		!parse->hasModifyingCTE &&
 		max_parallel_workers_per_gather > 0 &&
+		!SFS_IN_SNAPSHOT() &&
 		!IsParallelWorker() &&
 		!IsolationIsSerializable())
 	{

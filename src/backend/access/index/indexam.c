@@ -78,6 +78,7 @@
 #include "storage/bufmgr.h"
 #include "storage/lmgr.h"
 #include "storage/predicate.h"
+#include "storage/snapfs.h"
 #include "utils/snapmgr.h"
 #include "utils/tqual.h"
 
@@ -634,7 +635,7 @@ index_fetch_heap(IndexScanDesc scan)
 	 * recovery because it may violate MVCC to do so.  See comments in
 	 * RelationGetIndexScan().
 	 */
-	if (!scan->xactStartedInRecovery)
+	if (!scan->xactStartedInRecovery && !SFS_IN_SNAPSHOT())
 		scan->kill_prior_tuple = all_dead;
 
 	return NULL;
