@@ -82,9 +82,7 @@ step "s3_sw_0" {
 	select pg_switch_to_snapshot( 0 );
 }
 step "s3_sw_1" {
-	select pg_control_snapshot();
 	select pg_switch_to_snapshot( ( select recent_snapshot - 2 from pg_control_snapshot() ) );
-	select pg_control_snapshot();
 }
 step "s3_sw_2" {
 	select pg_switch_to_snapshot( ( select recent_snapshot - 1 from pg_control_snapshot() ) );
@@ -102,22 +100,19 @@ step "s3_rc_sn_1" {
 step "s3_rc_sn_2" {
   select pg_recover_to_snapshot( ( select recent_snapshot - 1 from pg_control_snapshot() ) );
 }
-step "s3_control_sn" {
-	select * from pg_control_snapshot();
-}
 
 #permutation "s3_mk_sn" "s1_g_1" "s3_mk_sn" "s1_g_2" "s1_g_3" "s1_r_1" "s3_mk_sn" "s1_r_2" "s3_sw_1" "s1_check" "s2_check" "s3_sw_2" "s1_check" "s2_check" "s3_sw_3" "s1_check" "s2_check" "s3_sw_0" "s1_check" "s2_check" 
 #permutation "s3_mk_sn" "s1_g_1" "s3_mk_sn" "s1_g_2" "s1_g_3" "s1_r_1" "s3_mk_sn" "s1_r_2" "s1_sb_1" "s1_check" "s2_check" "s1_sb_2" "s1_check" "s2_check" "s1_sb_3" "s1_check" "s2_check" "s1_sb_0" "s1_check" "s2_check" 
 #permutation "s3_mk_sn" "s1_g_1" "s3_mk_sn" "s1_g_2" "s1_g_3" "s1_r_1" "s3_mk_sn" "s1_r_2" "s2_sb_1" "s1_check" "s2_check" "s2_sb_2" "s1_check" "s2_check" "s2_sb_3" "s1_check" "s2_check" "s2_sb_0" "s1_check" "s2_check" 
 #permutation "s3_mk_sn" "s1_g_1" "s3_mk_sn" "s1_g_2" "s1_g_3" "s1_r_1" "s3_mk_sn" "s1_r_2" "s3_rc_sn_2" "s1_check" "s2_check"
-#permutation "s3_mk_sn" "s1_g_1" "s3_mk_sn" "s1_g_2" "s1_g_3" "s1_r_1" "s3_mk_sn" "s1_r_2" "s3_control_sn" "s3_rc_sn_2" "s1_check" "s2_check" "s3_control_sn"
+#permutation "s3_mk_sn" "s1_g_1" "s3_mk_sn" "s1_g_2" "s1_g_3" "s1_r_1" "s3_mk_sn" "s1_r_2" "s3_rc_sn_2" "s1_check" "s2_check" "s3_control_sn"
 #permutation "s3_mk_sn" "s1_g_1" "s3_mk_sn" "s1_g_2" "s1_g_3" "s1_r_1" "s3_mk_sn" "s1_r_2" "s3_rc_sn" "s1_check" "s2_check" "s3_rc_sn" "s1_check" "s2_check" "s3_rc_sn" "s1_check" "s2_check" "s3_mk_sn"
 
 #permutation "s3_mk_sn" "s1_g_1" "s3_mk_sn" "s1_g_2" "s1_g_3" "s1_r_1" "s3_mk_sn" "s1_r_2" "s3_sw_1" "s1_check"
-#permutation "s3_mk_sn" "s1_g_1" "s3_mk_sn" "s1_g_2" "s1_g_3" "s1_r_1" "s3_mk_sn" "s1_r_2" "s3_control_sn" "s3_rc_sn_2" "s1_check" "s3_control_sn"
+#permutation "s3_mk_sn" "s1_g_1" "s3_mk_sn" "s1_g_2" "s1_g_3" "s1_r_1" "s3_mk_sn" "s1_r_2" "s3_rc_sn_2" "s1_check"
 
 permutation "s3_mk_sn" "s1_check" "s1_g_1" "s1_check" "s3_sw_3" "s1_check"
-permutation "s3_mk_sn" "s1_g_1" "s3_mk_sn" "s1_g_2" "s3_mk_sn" "s3_control_sn" "s3_rc_sn_2" "s1_check" "s3_control_sn"
+permutation "s3_mk_sn" "s1_g_1" "s3_mk_sn" "s1_g_2" "s3_mk_sn" "s3_rc_sn_2" "s1_check"
 permutation "s3_mk_sn" "s1_check" "s1_g_1" "s1_check" "s3_sw_3" "s1_check"
-permutation "s3_mk_sn" "s1_g_1" "s3_mk_sn" "s1_g_2" "s3_mk_sn" "s3_control_sn" "s3_rc_sn" "s1_check" "s3_control_sn"
+permutation "s3_mk_sn" "s1_g_1" "s3_mk_sn" "s1_g_2" "s3_mk_sn" "s3_rc_sn" "s1_check"
 permutation "s3_mk_sn" "s1_check" "s1_g_1" "s1_check" "s3_sw_3" "s1_check"
