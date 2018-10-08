@@ -122,6 +122,10 @@ analyze_rel(Oid relid, RangeVar *relation, int options,
 	BlockNumber relpages = 0;
 	bool		rel_lock = true;
 
+	/* Can update statistic in snapshot */
+	if (SFS_INSNAPSHOT())
+		return;
+
 	/* Select logging level */
 	if (options & VACOPT_VERBOSE)
 		elevel = INFO;
