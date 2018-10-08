@@ -712,7 +712,7 @@ ReadBuffer_common(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 	bool		isExtend;
 	bool		isLocalBuf;
 
-	if (sfs_backend_snapshot != SFS_INVALID_SNAPSHOT && smgr->smgr_rnode.node.spcNode != GLOBALTABLESPACE_OID)
+	if (sfs_backend_snapshot != SFS_INVALID_SNAPSHOT)
 	{
 		/* Do not use shared buffers: treat all relations as local */
 		isLocalBuf = true;

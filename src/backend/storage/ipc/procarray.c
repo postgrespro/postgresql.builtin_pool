@@ -807,9 +807,12 @@ ProcArrayApplyRecoveryInfo(RunningTransactions running)
 		/*
 		 * Add the sorted snapshot into KnownAssignedXids
 		 */
-		for (i = 0; i < nxids; i++)
-			KnownAssignedXidsAdd(xids[i], xids[i], true);
-
+		KnownAssignedXidsAdd(xids[0], xids[0], true);
+		for (i = 1; i < nxids; i++)
+		{
+			if (xids[i] != xids[i-1])
+				KnownAssignedXidsAdd(xids[i], xids[i], true);
+		}
 		KnownAssignedXidsDisplay(trace_recovery(DEBUG3));
 	}
 
