@@ -1,4 +1,4 @@
-# Vacuum checks
+# Views checks
 # We are using three backends: read-write, read, snapshot.
 
 setup {
@@ -64,9 +64,6 @@ step "s2_sel_v1" {
 step "s2_sel_v2" {
 	select * from v2 order by id;
 }
-step "s2_v" {
-	vacuum t1;
-}
 step "s2_sb_0" {
 	select pg_set_backend_snapshot( 0 );
 }
@@ -102,7 +99,12 @@ step "s3_rc_sn" {
 step "s3_rc_sn_1" {
   select pg_recover_to_snapshot( ( select recent_snapshot - 2 from pg_control_snapshot() ) );
 }
+step "s3_rc_sn_2" {
+  select pg_recover_to_snapshot( ( select recent_snapshot - 1 from pg_control_snapshot() ) );
+}
 
-#permutation "s3_mk_sn" "s1_cr_v1" "s1_ins" "s3_mk_sn" "s1_d_v1" "s1_upd" "s1_cr_v2" "s3_mk_sn" "s1_r_v2" "s1_del" "s3_sw_1" "s1_cr_v1" "s1_sel_v1" "s1_sel_v2" "s2_sel_v1" "s2_sel_v2" "s3_sw_2" "s1_sel_v1" "s1_sel_v2" "s2_sel_v1" "s2_sel_v2" "s3_sw_3" "s1_sel_v1" "s1_sel_v2" "s2_sel_v1" "s2_sel_v2" "s3_sw_0" "s1_sel_v1" "s1_sel_v2" "s2_sel_v1" "s2_sel_v2"
+permutation "s3_mk_sn" "s1_cr_v1" "s1_ins" "s3_mk_sn" "s1_d_v1" "s1_upd" "s1_cr_v2" "s3_mk_sn" "s1_r_v2" "s1_del" "s3_sw_1" "s1_cr_v1" "s1_sel_v1" "s1_sel_v2" "s2_sel_v1" "s2_sel_v2" "s3_sw_2" "s1_sel_v1" "s1_sel_v2" "s2_sel_v1" "s2_sel_v2" "s3_sw_3" "s1_sel_v1" "s1_sel_v2" "s2_sel_v1" "s2_sel_v2" "s3_sw_0" "s1_sel_v1" "s1_sel_v2" "s2_sel_v1" "s2_sel_v2"
 permutation "s3_mk_sn" "s1_cr_v1" "s1_ins" "s3_mk_sn" "s1_d_v1" "s1_upd" "s1_cr_v2" "s3_mk_sn" "s1_r_v2" "s1_del" "s1_sb_1" "s1_cr_v1" "s1_sel_v1" "s1_sel_v2" "s2_sel_v1" "s2_sel_v2" "s1_sb_2" "s1_sel_v1" "s1_sel_v2" "s2_sel_v1" "s2_sel_v2" "s1_sb_3" "s1_sel_v1" "s1_sel_v2" "s2_sel_v1" "s2_sel_v2" "s1_sb_0" "s1_sel_v1" "s1_sel_v2" "s2_sel_v1" "s2_sel_v2"
-#permutation "s3_mk_sn" "s1_cr_v1" "s1_ins" "s3_mk_sn" "s1_d_v1" "s1_upd" "s1_cr_v2" "s3_mk_sn" "s1_r_v2" "s1_del" "s2_sb_1" "s1_cr_v1" "s1_sel_v1" "s1_sel_v2" "s2_sel_v1" "s2_sel_v2" "s2_sb_2" "s1_sel_v1" "s1_sel_v2" "s2_sel_v1" "s2_sel_v2" "s2_sb_3" "s1_sel_v1" "s1_sel_v2" "s2_sel_v1" "s2_sel_v2" "s2_sb_0" "s1_sel_v1" "s1_sel_v2" "s2_sel_v1" "s2_sel_v2"
+permutation "s3_mk_sn" "s1_cr_v1" "s1_ins" "s3_mk_sn" "s1_d_v1" "s1_upd" "s1_cr_v2" "s3_mk_sn" "s1_r_v2" "s1_del" "s2_sb_1" "s1_cr_v1" "s1_sel_v1" "s1_sel_v2" "s2_sel_v1" "s2_sel_v2" "s2_sb_2" "s1_sel_v1" "s1_sel_v2" "s2_sel_v1" "s2_sel_v2" "s2_sb_3" "s1_sel_v1" "s1_sel_v2" "s2_sel_v1" "s2_sel_v2" "s2_sb_0" "s1_sel_v1" "s1_sel_v2" "s2_sel_v1" "s2_sel_v2"
+permutation "s3_mk_sn" "s1_cr_v1" "s1_ins" "s3_mk_sn" "s1_d_v1" "s1_upd" "s1_cr_v2" "s3_mk_sn" "s1_r_v2" "s1_del" "s3_rc_sn_2" "s1_sel_v1" "s1_sel_v2" "s2_sel_v1" "s2_sel_v2"
+permutation "s3_mk_sn" "s1_cr_v1" "s1_ins" "s3_mk_sn" "s1_d_v1" "s1_upd" "s1_cr_v2" "s3_mk_sn" "s1_r_v2" "s1_del" "s3_rc_sn" "s1_sel_v1" "s1_sel_v2" "s2_sel_v1" "s2_sel_v2" "s3_rc_sn" "s1_sel_v1" "s1_sel_v2" "s2_sel_v1" "s2_sel_v2" "s3_rc_sn" "s1_sel_v1" "s1_sel_v2" "s2_sel_v1" "s2_sel_v2" "s3_mk_sn"

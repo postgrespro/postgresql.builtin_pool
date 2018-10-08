@@ -1,0 +1,754 @@
+Parsed test spec with 3 sessions
+
+starting permutation: s3_mk_sn s1_cr_v1 s1_ins s3_mk_sn s1_d_v1 s1_upd s1_cr_v2 s3_mk_sn s1_r_v2 s1_del s3_sw_1 s1_cr_v1 s1_sel_v1 s1_sel_v2 s2_sel_v1 s2_sel_v2 s3_sw_2 s1_sel_v1 s1_sel_v2 s2_sel_v1 s2_sel_v2 s3_sw_3 s1_sel_v1 s1_sel_v2 s2_sel_v1 s2_sel_v2 s3_sw_0 s1_sel_v1 s1_sel_v2 s2_sel_v1 s2_sel_v2
+step s3_mk_sn: 
+	select 1 from pg_make_snapshot();
+
+?column?       
+
+1              
+step s1_cr_v1: 
+	create or replace view v1 as ( select *, 'v1' as "view" from ( select count(*) as cnt, avg( id )::float as avg from t1 ) as part1 left join ( select * from t1 where id between 564 and 568 ) as part2 on ( 1 = 1 ) );
+
+step s1_ins: 
+	insert into t1
+	select generate_series as id, trim( to_char( generate_series, '000000' ) ) || '_new' as "name"
+  from generate_series( 100001, 150000 );
+
+step s3_mk_sn: 
+	select 1 from pg_make_snapshot();
+
+?column?       
+
+1              
+step s1_d_v1: 
+	drop view v1;
+
+step s1_upd: 
+	update t1 set name = name || '_upd' where id % 4 = 0;
+
+step s1_cr_v2: 
+	create or replace view v2 as ( select *, 'v2' as "view" from ( select count(*) as cnt, avg( id )::float as avg from t1 ) as part1 left join ( select * from t1 where id between 1564 and 1568 ) as part2 on ( 1 = 1 ) )
+
+step s3_mk_sn: 
+	select 1 from pg_make_snapshot();
+
+?column?       
+
+1              
+step s1_r_v2: 
+	create or replace view v2 as ( select *, 'v2_replaced' as "view" from ( select count(*) as cnt, avg( id )::float as avg from t1 ) as part1 left join ( select * from t1 where id between 2564 and 2568 ) as part2 on ( 1 = 1 ) )
+
+step s1_del: 
+	delete from t1 where id % 4 = 1;
+
+step s3_sw_1: 
+	select pg_switch_to_snapshot( ( select recent_snapshot - 2 from pg_control_snapshot() ) );
+
+pg_switch_to_snapshot
+
+               
+step s1_cr_v1: 
+	create or replace view v1 as ( select *, 'v1' as "view" from ( select count(*) as cnt, avg( id )::float as avg from t1 ) as part1 left join ( select * from t1 where id between 564 and 568 ) as part2 on ( 1 = 1 ) );
+
+ERROR:  Updates are prohibited in snapshot
+step s1_sel_v1: 
+	select * from v1 order by id;
+
+ERROR:  relation "v1" does not exist
+step s1_sel_v2: 
+	select * from v2 order by id;
+
+ERROR:  relation "v2" does not exist
+step s2_sel_v1: 
+	select * from v1 order by id;
+
+ERROR:  relation "v1" does not exist
+step s2_sel_v2: 
+	select * from v2 order by id;
+
+ERROR:  relation "v2" does not exist
+step s3_sw_2: 
+	select pg_switch_to_snapshot( ( select recent_snapshot - 1 from pg_control_snapshot() ) );
+
+pg_switch_to_snapshot
+
+               
+step s1_sel_v1: 
+	select * from v1 order by id;
+
+cnt            avg            id             name           view           
+
+150000         75000.5        564            000564         v1             
+150000         75000.5        565            000565         v1             
+150000         75000.5        566            000566         v1             
+150000         75000.5        567            000567         v1             
+150000         75000.5        568            000568         v1             
+step s1_sel_v2: 
+	select * from v2 order by id;
+
+ERROR:  relation "v2" does not exist
+step s2_sel_v1: 
+	select * from v1 order by id;
+
+cnt            avg            id             name           view           
+
+150000         75000.5        564            000564         v1             
+150000         75000.5        565            000565         v1             
+150000         75000.5        566            000566         v1             
+150000         75000.5        567            000567         v1             
+150000         75000.5        568            000568         v1             
+step s2_sel_v2: 
+	select * from v2 order by id;
+
+ERROR:  relation "v2" does not exist
+step s3_sw_3: 
+	select pg_switch_to_snapshot( ( select recent_snapshot from pg_control_snapshot() ) );
+
+pg_switch_to_snapshot
+
+               
+step s1_sel_v1: 
+	select * from v1 order by id;
+
+ERROR:  relation "v1" does not exist
+step s1_sel_v2: 
+	select * from v2 order by id;
+
+cnt            avg            id             name           view           
+
+150000         75000.5        1564           001564_upd     v2             
+150000         75000.5        1565           001565         v2             
+150000         75000.5        1566           001566         v2             
+150000         75000.5        1567           001567         v2             
+150000         75000.5        1568           001568_upd     v2             
+step s2_sel_v1: 
+	select * from v1 order by id;
+
+ERROR:  relation "v1" does not exist
+step s2_sel_v2: 
+	select * from v2 order by id;
+
+cnt            avg            id             name           view           
+
+150000         75000.5        1564           001564_upd     v2             
+150000         75000.5        1565           001565         v2             
+150000         75000.5        1566           001566         v2             
+150000         75000.5        1567           001567         v2             
+150000         75000.5        1568           001568_upd     v2             
+step s3_sw_0: 
+	select pg_switch_to_snapshot( 0 );
+
+pg_switch_to_snapshot
+
+               
+step s1_sel_v1: 
+	select * from v1 order by id;
+
+ERROR:  relation "v1" does not exist
+step s1_sel_v2: 
+	select * from v2 order by id;
+
+cnt            avg            id             name           view           
+
+112500         75001          2564           002564_upd     v2_replaced    
+112500         75001          2566           002566         v2_replaced    
+112500         75001          2567           002567         v2_replaced    
+112500         75001          2568           002568_upd     v2_replaced    
+step s2_sel_v1: 
+	select * from v1 order by id;
+
+ERROR:  relation "v1" does not exist
+step s2_sel_v2: 
+	select * from v2 order by id;
+
+cnt            avg            id             name           view           
+
+112500         75001          2564           002564_upd     v2_replaced    
+112500         75001          2566           002566         v2_replaced    
+112500         75001          2567           002567         v2_replaced    
+112500         75001          2568           002568_upd     v2_replaced    
+
+starting permutation: s3_mk_sn s1_cr_v1 s1_ins s3_mk_sn s1_d_v1 s1_upd s1_cr_v2 s3_mk_sn s1_r_v2 s1_del s1_sb_1 s1_cr_v1 s1_sel_v1 s1_sel_v2 s2_sel_v1 s2_sel_v2 s1_sb_2 s1_sel_v1 s1_sel_v2 s2_sel_v1 s2_sel_v2 s1_sb_3 s1_sel_v1 s1_sel_v2 s2_sel_v1 s2_sel_v2 s1_sb_0 s1_sel_v1 s1_sel_v2 s2_sel_v1 s2_sel_v2
+step s3_mk_sn: 
+	select 1 from pg_make_snapshot();
+
+?column?       
+
+1              
+step s1_cr_v1: 
+	create or replace view v1 as ( select *, 'v1' as "view" from ( select count(*) as cnt, avg( id )::float as avg from t1 ) as part1 left join ( select * from t1 where id between 564 and 568 ) as part2 on ( 1 = 1 ) );
+
+step s1_ins: 
+	insert into t1
+	select generate_series as id, trim( to_char( generate_series, '000000' ) ) || '_new' as "name"
+  from generate_series( 100001, 150000 );
+
+step s3_mk_sn: 
+	select 1 from pg_make_snapshot();
+
+?column?       
+
+1              
+step s1_d_v1: 
+	drop view v1;
+
+step s1_upd: 
+	update t1 set name = name || '_upd' where id % 4 = 0;
+
+step s1_cr_v2: 
+	create or replace view v2 as ( select *, 'v2' as "view" from ( select count(*) as cnt, avg( id )::float as avg from t1 ) as part1 left join ( select * from t1 where id between 1564 and 1568 ) as part2 on ( 1 = 1 ) )
+
+step s3_mk_sn: 
+	select 1 from pg_make_snapshot();
+
+?column?       
+
+1              
+step s1_r_v2: 
+	create or replace view v2 as ( select *, 'v2_replaced' as "view" from ( select count(*) as cnt, avg( id )::float as avg from t1 ) as part1 left join ( select * from t1 where id between 2564 and 2568 ) as part2 on ( 1 = 1 ) )
+
+step s1_del: 
+	delete from t1 where id % 4 = 1;
+
+step s1_sb_1: 
+	select pg_set_backend_snapshot( ( select recent_snapshot - 2 from pg_control_snapshot() ) );
+
+pg_set_backend_snapshot
+
+               
+step s1_cr_v1: 
+	create or replace view v1 as ( select *, 'v1' as "view" from ( select count(*) as cnt, avg( id )::float as avg from t1 ) as part1 left join ( select * from t1 where id between 564 and 568 ) as part2 on ( 1 = 1 ) );
+
+ERROR:  Updates are prohibited in snapshot
+step s1_sel_v1: 
+	select * from v1 order by id;
+
+ERROR:  relation "v1" does not exist
+step s1_sel_v2: 
+	select * from v2 order by id;
+
+ERROR:  relation "v2" does not exist
+step s2_sel_v1: 
+	select * from v1 order by id;
+
+ERROR:  relation "v1" does not exist
+step s2_sel_v2: 
+	select * from v2 order by id;
+
+cnt            avg            id             name           view           
+
+112500         75001          2564           002564_upd     v2_replaced    
+112500         75001          2566           002566         v2_replaced    
+112500         75001          2567           002567         v2_replaced    
+112500         75001          2568           002568_upd     v2_replaced    
+step s1_sb_2: 
+	select pg_set_backend_snapshot( ( select recent_snapshot - 1 from pg_control_snapshot() ) );
+
+pg_set_backend_snapshot
+
+               
+step s1_sel_v1: 
+	select * from v1 order by id;
+
+cnt            avg            id             name           view           
+
+150000         75000.5        564            000564         v1             
+150000         75000.5        565            000565         v1             
+150000         75000.5        566            000566         v1             
+150000         75000.5        567            000567         v1             
+150000         75000.5        568            000568         v1             
+step s1_sel_v2: 
+	select * from v2 order by id;
+
+ERROR:  relation "v2" does not exist
+step s2_sel_v1: 
+	select * from v1 order by id;
+
+ERROR:  relation "v1" does not exist
+step s2_sel_v2: 
+	select * from v2 order by id;
+
+cnt            avg            id             name           view           
+
+112500         75001          2564           002564_upd     v2_replaced    
+112500         75001          2566           002566         v2_replaced    
+112500         75001          2567           002567         v2_replaced    
+112500         75001          2568           002568_upd     v2_replaced    
+step s1_sb_3: 
+	select pg_set_backend_snapshot( ( select recent_snapshot from pg_control_snapshot() ) );
+
+pg_set_backend_snapshot
+
+               
+step s1_sel_v1: 
+	select * from v1 order by id;
+
+ERROR:  relation "v1" does not exist
+step s1_sel_v2: 
+	select * from v2 order by id;
+
+cnt            avg            id             name           view           
+
+150000         75000.5        1564           001564_upd     v2             
+150000         75000.5        1565           001565         v2             
+150000         75000.5        1566           001566         v2             
+150000         75000.5        1567           001567         v2             
+150000         75000.5        1568           001568_upd     v2             
+step s2_sel_v1: 
+	select * from v1 order by id;
+
+ERROR:  relation "v1" does not exist
+step s2_sel_v2: 
+	select * from v2 order by id;
+
+cnt            avg            id             name           view           
+
+112500         75001          2564           002564_upd     v2_replaced    
+112500         75001          2566           002566         v2_replaced    
+112500         75001          2567           002567         v2_replaced    
+112500         75001          2568           002568_upd     v2_replaced    
+step s1_sb_0: 
+	select pg_set_backend_snapshot( 0 );
+
+pg_set_backend_snapshot
+
+               
+step s1_sel_v1: 
+	select * from v1 order by id;
+
+ERROR:  relation "v1" does not exist
+step s1_sel_v2: 
+	select * from v2 order by id;
+
+cnt            avg            id             name           view           
+
+112500         75001          2564           002564_upd     v2_replaced    
+112500         75001          2566           002566         v2_replaced    
+112500         75001          2567           002567         v2_replaced    
+112500         75001          2568           002568_upd     v2_replaced    
+step s2_sel_v1: 
+	select * from v1 order by id;
+
+ERROR:  relation "v1" does not exist
+step s2_sel_v2: 
+	select * from v2 order by id;
+
+cnt            avg            id             name           view           
+
+112500         75001          2564           002564_upd     v2_replaced    
+112500         75001          2566           002566         v2_replaced    
+112500         75001          2567           002567         v2_replaced    
+112500         75001          2568           002568_upd     v2_replaced    
+
+starting permutation: s3_mk_sn s1_cr_v1 s1_ins s3_mk_sn s1_d_v1 s1_upd s1_cr_v2 s3_mk_sn s1_r_v2 s1_del s2_sb_1 s1_cr_v1 s1_sel_v1 s1_sel_v2 s2_sel_v1 s2_sel_v2 s2_sb_2 s1_sel_v1 s1_sel_v2 s2_sel_v1 s2_sel_v2 s2_sb_3 s1_sel_v1 s1_sel_v2 s2_sel_v1 s2_sel_v2 s2_sb_0 s1_sel_v1 s1_sel_v2 s2_sel_v1 s2_sel_v2
+step s3_mk_sn: 
+	select 1 from pg_make_snapshot();
+
+?column?       
+
+1              
+step s1_cr_v1: 
+	create or replace view v1 as ( select *, 'v1' as "view" from ( select count(*) as cnt, avg( id )::float as avg from t1 ) as part1 left join ( select * from t1 where id between 564 and 568 ) as part2 on ( 1 = 1 ) );
+
+step s1_ins: 
+	insert into t1
+	select generate_series as id, trim( to_char( generate_series, '000000' ) ) || '_new' as "name"
+  from generate_series( 100001, 150000 );
+
+step s3_mk_sn: 
+	select 1 from pg_make_snapshot();
+
+?column?       
+
+1              
+step s1_d_v1: 
+	drop view v1;
+
+step s1_upd: 
+	update t1 set name = name || '_upd' where id % 4 = 0;
+
+step s1_cr_v2: 
+	create or replace view v2 as ( select *, 'v2' as "view" from ( select count(*) as cnt, avg( id )::float as avg from t1 ) as part1 left join ( select * from t1 where id between 1564 and 1568 ) as part2 on ( 1 = 1 ) )
+
+step s3_mk_sn: 
+	select 1 from pg_make_snapshot();
+
+?column?       
+
+1              
+step s1_r_v2: 
+	create or replace view v2 as ( select *, 'v2_replaced' as "view" from ( select count(*) as cnt, avg( id )::float as avg from t1 ) as part1 left join ( select * from t1 where id between 2564 and 2568 ) as part2 on ( 1 = 1 ) )
+
+step s1_del: 
+	delete from t1 where id % 4 = 1;
+
+step s2_sb_1: 
+	select pg_set_backend_snapshot( ( select recent_snapshot - 2 from pg_control_snapshot() ) );
+
+pg_set_backend_snapshot
+
+               
+step s1_cr_v1: 
+	create or replace view v1 as ( select *, 'v1' as "view" from ( select count(*) as cnt, avg( id )::float as avg from t1 ) as part1 left join ( select * from t1 where id between 564 and 568 ) as part2 on ( 1 = 1 ) );
+
+step s1_sel_v1: 
+	select * from v1 order by id;
+
+cnt            avg            id             name           view           
+
+112500         75001          564            000564_upd     v1             
+112500         75001          566            000566         v1             
+112500         75001          567            000567         v1             
+112500         75001          568            000568_upd     v1             
+step s1_sel_v2: 
+	select * from v2 order by id;
+
+cnt            avg            id             name           view           
+
+112500         75001          2564           002564_upd     v2_replaced    
+112500         75001          2566           002566         v2_replaced    
+112500         75001          2567           002567         v2_replaced    
+112500         75001          2568           002568_upd     v2_replaced    
+step s2_sel_v1: 
+	select * from v1 order by id;
+
+ERROR:  relation "v1" does not exist
+step s2_sel_v2: 
+	select * from v2 order by id;
+
+ERROR:  relation "v2" does not exist
+step s2_sb_2: 
+	select pg_set_backend_snapshot( ( select recent_snapshot - 1 from pg_control_snapshot() ) );
+
+pg_set_backend_snapshot
+
+               
+step s1_sel_v1: 
+	select * from v1 order by id;
+
+cnt            avg            id             name           view           
+
+112500         75001          564            000564_upd     v1             
+112500         75001          566            000566         v1             
+112500         75001          567            000567         v1             
+112500         75001          568            000568_upd     v1             
+step s1_sel_v2: 
+	select * from v2 order by id;
+
+cnt            avg            id             name           view           
+
+112500         75001          2564           002564_upd     v2_replaced    
+112500         75001          2566           002566         v2_replaced    
+112500         75001          2567           002567         v2_replaced    
+112500         75001          2568           002568_upd     v2_replaced    
+step s2_sel_v1: 
+	select * from v1 order by id;
+
+cnt            avg            id             name           view           
+
+150000         75000.5        564            000564         v1             
+150000         75000.5        565            000565         v1             
+150000         75000.5        566            000566         v1             
+150000         75000.5        567            000567         v1             
+150000         75000.5        568            000568         v1             
+step s2_sel_v2: 
+	select * from v2 order by id;
+
+ERROR:  relation "v2" does not exist
+step s2_sb_3: 
+	select pg_set_backend_snapshot( ( select recent_snapshot from pg_control_snapshot() ) );
+
+pg_set_backend_snapshot
+
+               
+step s1_sel_v1: 
+	select * from v1 order by id;
+
+cnt            avg            id             name           view           
+
+112500         75001          564            000564_upd     v1             
+112500         75001          566            000566         v1             
+112500         75001          567            000567         v1             
+112500         75001          568            000568_upd     v1             
+step s1_sel_v2: 
+	select * from v2 order by id;
+
+cnt            avg            id             name           view           
+
+112500         75001          2564           002564_upd     v2_replaced    
+112500         75001          2566           002566         v2_replaced    
+112500         75001          2567           002567         v2_replaced    
+112500         75001          2568           002568_upd     v2_replaced    
+step s2_sel_v1: 
+	select * from v1 order by id;
+
+ERROR:  relation "v1" does not exist
+step s2_sel_v2: 
+	select * from v2 order by id;
+
+cnt            avg            id             name           view           
+
+150000         75000.5        1564           001564_upd     v2             
+150000         75000.5        1565           001565         v2             
+150000         75000.5        1566           001566         v2             
+150000         75000.5        1567           001567         v2             
+150000         75000.5        1568           001568_upd     v2             
+step s2_sb_0: 
+	select pg_set_backend_snapshot( 0 );
+
+pg_set_backend_snapshot
+
+               
+step s1_sel_v1: 
+	select * from v1 order by id;
+
+cnt            avg            id             name           view           
+
+112500         75001          564            000564_upd     v1             
+112500         75001          566            000566         v1             
+112500         75001          567            000567         v1             
+112500         75001          568            000568_upd     v1             
+step s1_sel_v2: 
+	select * from v2 order by id;
+
+cnt            avg            id             name           view           
+
+112500         75001          2564           002564_upd     v2_replaced    
+112500         75001          2566           002566         v2_replaced    
+112500         75001          2567           002567         v2_replaced    
+112500         75001          2568           002568_upd     v2_replaced    
+step s2_sel_v1: 
+	select * from v1 order by id;
+
+cnt            avg            id             name           view           
+
+112500         75001          564            000564_upd     v1             
+112500         75001          566            000566         v1             
+112500         75001          567            000567         v1             
+112500         75001          568            000568_upd     v1             
+step s2_sel_v2: 
+	select * from v2 order by id;
+
+cnt            avg            id             name           view           
+
+112500         75001          2564           002564_upd     v2_replaced    
+112500         75001          2566           002566         v2_replaced    
+112500         75001          2567           002567         v2_replaced    
+112500         75001          2568           002568_upd     v2_replaced    
+
+starting permutation: s3_mk_sn s1_cr_v1 s1_ins s3_mk_sn s1_d_v1 s1_upd s1_cr_v2 s3_mk_sn s1_r_v2 s1_del s3_rc_sn_2 s1_sel_v1 s1_sel_v2 s2_sel_v1 s2_sel_v2
+step s3_mk_sn: 
+	select 1 from pg_make_snapshot();
+
+?column?       
+
+1              
+step s1_cr_v1: 
+	create or replace view v1 as ( select *, 'v1' as "view" from ( select count(*) as cnt, avg( id )::float as avg from t1 ) as part1 left join ( select * from t1 where id between 564 and 568 ) as part2 on ( 1 = 1 ) );
+
+step s1_ins: 
+	insert into t1
+	select generate_series as id, trim( to_char( generate_series, '000000' ) ) || '_new' as "name"
+  from generate_series( 100001, 150000 );
+
+step s3_mk_sn: 
+	select 1 from pg_make_snapshot();
+
+?column?       
+
+1              
+step s1_d_v1: 
+	drop view v1;
+
+step s1_upd: 
+	update t1 set name = name || '_upd' where id % 4 = 0;
+
+step s1_cr_v2: 
+	create or replace view v2 as ( select *, 'v2' as "view" from ( select count(*) as cnt, avg( id )::float as avg from t1 ) as part1 left join ( select * from t1 where id between 1564 and 1568 ) as part2 on ( 1 = 1 ) )
+
+step s3_mk_sn: 
+	select 1 from pg_make_snapshot();
+
+?column?       
+
+1              
+step s1_r_v2: 
+	create or replace view v2 as ( select *, 'v2_replaced' as "view" from ( select count(*) as cnt, avg( id )::float as avg from t1 ) as part1 left join ( select * from t1 where id between 2564 and 2568 ) as part2 on ( 1 = 1 ) )
+
+step s1_del: 
+	delete from t1 where id % 4 = 1;
+
+step s3_rc_sn_2: 
+  select pg_recover_to_snapshot( ( select recent_snapshot - 1 from pg_control_snapshot() ) );
+
+pg_recover_to_snapshot
+
+               
+step s1_sel_v1: 
+	select * from v1 order by id;
+
+cnt            avg            id             name           view           
+
+150000         75000.5        564            000564         v1             
+150000         75000.5        565            000565         v1             
+150000         75000.5        566            000566         v1             
+150000         75000.5        567            000567         v1             
+150000         75000.5        568            000568         v1             
+step s1_sel_v2: 
+	select * from v2 order by id;
+
+ERROR:  relation "v2" does not exist
+step s2_sel_v1: 
+	select * from v1 order by id;
+
+cnt            avg            id             name           view           
+
+150000         75000.5        564            000564         v1             
+150000         75000.5        565            000565         v1             
+150000         75000.5        566            000566         v1             
+150000         75000.5        567            000567         v1             
+150000         75000.5        568            000568         v1             
+step s2_sel_v2: 
+	select * from v2 order by id;
+
+ERROR:  relation "v2" does not exist
+
+starting permutation: s3_mk_sn s1_cr_v1 s1_ins s3_mk_sn s1_d_v1 s1_upd s1_cr_v2 s3_mk_sn s1_r_v2 s1_del s3_rc_sn s1_sel_v1 s1_sel_v2 s2_sel_v1 s2_sel_v2 s3_rc_sn s1_sel_v1 s1_sel_v2 s2_sel_v1 s2_sel_v2 s3_rc_sn s1_sel_v1 s1_sel_v2 s2_sel_v1 s2_sel_v2 s3_mk_sn
+step s3_mk_sn: 
+	select 1 from pg_make_snapshot();
+
+?column?       
+
+1              
+step s1_cr_v1: 
+	create or replace view v1 as ( select *, 'v1' as "view" from ( select count(*) as cnt, avg( id )::float as avg from t1 ) as part1 left join ( select * from t1 where id between 564 and 568 ) as part2 on ( 1 = 1 ) );
+
+step s1_ins: 
+	insert into t1
+	select generate_series as id, trim( to_char( generate_series, '000000' ) ) || '_new' as "name"
+  from generate_series( 100001, 150000 );
+
+step s3_mk_sn: 
+	select 1 from pg_make_snapshot();
+
+?column?       
+
+1              
+step s1_d_v1: 
+	drop view v1;
+
+step s1_upd: 
+	update t1 set name = name || '_upd' where id % 4 = 0;
+
+step s1_cr_v2: 
+	create or replace view v2 as ( select *, 'v2' as "view" from ( select count(*) as cnt, avg( id )::float as avg from t1 ) as part1 left join ( select * from t1 where id between 1564 and 1568 ) as part2 on ( 1 = 1 ) )
+
+step s3_mk_sn: 
+	select 1 from pg_make_snapshot();
+
+?column?       
+
+1              
+step s1_r_v2: 
+	create or replace view v2 as ( select *, 'v2_replaced' as "view" from ( select count(*) as cnt, avg( id )::float as avg from t1 ) as part1 left join ( select * from t1 where id between 2564 and 2568 ) as part2 on ( 1 = 1 ) )
+
+step s1_del: 
+	delete from t1 where id % 4 = 1;
+
+step s3_rc_sn: 
+  select pg_recover_to_snapshot( ( select recent_snapshot from pg_control_snapshot() ) );
+
+pg_recover_to_snapshot
+
+               
+step s1_sel_v1: 
+	select * from v1 order by id;
+
+ERROR:  relation "v1" does not exist
+step s1_sel_v2: 
+	select * from v2 order by id;
+
+cnt            avg            id             name           view           
+
+150000         75000.5        1564           001564_upd     v2             
+150000         75000.5        1565           001565         v2             
+150000         75000.5        1566           001566         v2             
+150000         75000.5        1567           001567         v2             
+150000         75000.5        1568           001568_upd     v2             
+step s2_sel_v1: 
+	select * from v1 order by id;
+
+ERROR:  relation "v1" does not exist
+step s2_sel_v2: 
+	select * from v2 order by id;
+
+cnt            avg            id             name           view           
+
+150000         75000.5        1564           001564_upd     v2             
+150000         75000.5        1565           001565         v2             
+150000         75000.5        1566           001566         v2             
+150000         75000.5        1567           001567         v2             
+150000         75000.5        1568           001568_upd     v2             
+step s3_rc_sn: 
+  select pg_recover_to_snapshot( ( select recent_snapshot from pg_control_snapshot() ) );
+
+pg_recover_to_snapshot
+
+               
+step s1_sel_v1: 
+	select * from v1 order by id;
+
+cnt            avg            id             name           view           
+
+150000         75000.5        564            000564         v1             
+150000         75000.5        565            000565         v1             
+150000         75000.5        566            000566         v1             
+150000         75000.5        567            000567         v1             
+150000         75000.5        568            000568         v1             
+step s1_sel_v2: 
+	select * from v2 order by id;
+
+ERROR:  relation "v2" does not exist
+step s2_sel_v1: 
+	select * from v1 order by id;
+
+cnt            avg            id             name           view           
+
+150000         75000.5        564            000564         v1             
+150000         75000.5        565            000565         v1             
+150000         75000.5        566            000566         v1             
+150000         75000.5        567            000567         v1             
+150000         75000.5        568            000568         v1             
+step s2_sel_v2: 
+	select * from v2 order by id;
+
+ERROR:  relation "v2" does not exist
+step s3_rc_sn: 
+  select pg_recover_to_snapshot( ( select recent_snapshot from pg_control_snapshot() ) );
+
+pg_recover_to_snapshot
+
+               
+step s1_sel_v1: 
+	select * from v1 order by id;
+
+ERROR:  relation "v1" does not exist
+step s1_sel_v2: 
+	select * from v2 order by id;
+
+ERROR:  relation "v2" does not exist
+step s2_sel_v1: 
+	select * from v1 order by id;
+
+ERROR:  relation "v1" does not exist
+step s2_sel_v2: 
+	select * from v2 order by id;
+
+ERROR:  relation "v2" does not exist
+step s3_mk_sn: 
+	select 1 from pg_make_snapshot();
+
+?column?       
+
+1              
