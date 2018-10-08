@@ -124,7 +124,7 @@ analyze_rel(Oid relid, RangeVar *relation, int options,
 	bool		rel_lock = true;
 
 	/* Can update statistic in snapshot */
-	if (SFS_INSNAPSHOT())
+	if (SFS_IN_SNAPSHOT())
 		return;
 
 	/* Select logging level */
