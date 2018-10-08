@@ -8,7 +8,6 @@ test: snapfs_get_snapshot_size
 test: snapfs_get_snapshot_timestamp
 test: snapfs_switch_to_snapshot_table
 test: snapfs_truncate_table
-test: snapfs_switch_to_snapshot_temp_table
-test: snapfs_switch_to_snapshot_temp_table_2
+test: snapfs_temp_table
 test: snapfs_vacuum_table
 test: snapfs_view
