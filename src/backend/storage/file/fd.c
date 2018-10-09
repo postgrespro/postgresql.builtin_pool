@@ -3843,6 +3843,7 @@ static void
 walk_data_dir(void (*action) (const char *fname, bool isdir, int elevel), int elevel)
 {
 	walkdir("base", action, false, elevel);
+	walkdir("global", action, false, elevel);
 	walkdir("pg_tblspc", action, true, elevel);
 }
 
@@ -3895,7 +3896,7 @@ sfs_recover_snapshot_file(const char *fname, bool isdir, int elevel)
 	{
 		SnapshotId snap_id;
 
-		/* Copy saved pages from snapshots files following or equal specified snapshot */
+		/* Copy saved pages from snapshot files following or equal specified snapshot */
 		for (snap_id = ControlFile->recent_snapshot; snap_id >= sfs_current_snapshot; snap_id--)
 		{
 			char* snap_file = psprintf("%s.snap.%d", fname, snap_id);
@@ -3903,7 +3904,7 @@ sfs_recover_snapshot_file(const char *fname, bool isdir, int elevel)
 
 			if (stat(snap_file, &statbuf) == 0 && S_ISREG(statbuf.st_mode))
 			{
-				File file = PathNameOpenFile(fname, O_RDWR);
+				File file = PathNameOpenFile(fname, O_RDWR|O_CREAT|PG_BINARY);
 				Vfd* vfdP = &VfdCache[file];
 				int i;
 
