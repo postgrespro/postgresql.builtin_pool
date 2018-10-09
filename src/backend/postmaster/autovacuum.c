@@ -93,6 +93,7 @@
 #include "storage/procsignal.h"
 #include "storage/sinvaladt.h"
 #include "storage/smgr.h"
+#include "storage/snapfs.h"
 #include "tcop/tcopprot.h"
 #include "utils/fmgroids.h"
 #include "utils/fmgrprotos.h"
@@ -1957,7 +1958,11 @@ do_autovacuum(void)
 	bool		found_concurrent_worker = false;
 	int			i;
 
-	/*
+	/* Do not perform autovacuum in snapshot */
+	if (!SFS_IN_SNAPSHOT())
+		return;
+
+    /*
 	 * StartTransactionCommand and CommitTransactionCommand will automatically
 	 * switch to other contexts.  We need this one to keep the list of
 	 * relations to vacuum/analyze across transactions.

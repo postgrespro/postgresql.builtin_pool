@@ -62,6 +62,13 @@ step s1_check:
 
 grantee        grantor        privilege_type tableowner     
 
+test_owner     test_owner     DELETE         test_owner     
+test_owner     test_owner     INSERT         test_owner     
+test_owner     test_owner     REFERENCES     test_owner     
+test_owner     test_owner     SELECT         test_owner     
+test_owner     test_owner     TRIGGER        test_owner     
+test_owner     test_owner     TRUNCATE       test_owner     
+test_owner     test_owner     UPDATE         test_owner     
 cnt            
 
 10             
@@ -182,6 +189,13 @@ step s1_check:
 
 grantee        grantor        privilege_type tableowner     
 
+test_owner     test_owner     DELETE         test_owner     
+test_owner     test_owner     INSERT         test_owner     
+test_owner     test_owner     REFERENCES     test_owner     
+test_owner     test_owner     SELECT         test_owner     
+test_owner     test_owner     TRIGGER        test_owner     
+test_owner     test_owner     TRUNCATE       test_owner     
+test_owner     test_owner     UPDATE         test_owner     
 cnt            
 
 10             
