@@ -14,7 +14,7 @@ step "s1_cr" {
 	create index t1_id_idx on t1 ( id );
 }
 step "s1_sel" {
-	select * from t1;
+	select * from t1 order by id;
 }
 step "s1_upd" {
 	update t1 set name = name || '_upd' where id % 4 = 0;
@@ -45,7 +45,7 @@ step "s1_sb_3" {
 
 session "s2"
 step "s2_sel" {
-	select * from t1;
+	select * from t1 order by id;
 }
 step "s2_sb_0" {
 	select pg_set_backend_snapshot( 0 );

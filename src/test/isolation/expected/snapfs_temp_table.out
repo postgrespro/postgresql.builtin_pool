@@ -41,11 +41,11 @@ pg_switch_to_snapshot
 
                
 step s1_sel: 
-	select * from t1;
+	select * from t1 order by id;
 
 ERROR:  relation "t1" does not exist
 step s2_sel: 
-	select * from t1;
+	select * from t1 order by id;
 
 ERROR:  relation "t1" does not exist
 step s3_sw_2: 
@@ -55,12 +55,12 @@ pg_switch_to_snapshot
 
                
 step s1_sel: 
-	select * from t1;
+	select * from t1 order by id;
 
 id             name           
 
 step s2_sel: 
-	select * from t1;
+	select * from t1 order by id;
 
 ERROR:  relation "t1" does not exist
 step s3_sw_3: 
@@ -70,12 +70,12 @@ pg_switch_to_snapshot
 
                
 step s1_sel: 
-	select * from t1;
+	select * from t1 order by id;
 
 id             name           
 
 step s2_sel: 
-	select * from t1;
+	select * from t1 order by id;
 
 ERROR:  relation "t1" does not exist
 step s3_sw_0: 
@@ -85,11 +85,11 @@ pg_switch_to_snapshot
 
                
 step s1_sel: 
-	select * from t1;
+	select * from t1 order by id;
 
 ERROR:  relation "t1" does not exist
 step s2_sel: 
-	select * from t1;
+	select * from t1 order by id;
 
 ERROR:  relation "t1" does not exist
 
@@ -134,11 +134,11 @@ pg_set_backend_snapshot
 
                
 step s1_sel: 
-	select * from t1;
+	select * from t1 order by id;
 
 ERROR:  relation "t1" does not exist
 step s2_sel: 
-	select * from t1;
+	select * from t1 order by id;
 
 ERROR:  relation "t1" does not exist
 step s1_sb_2: 
@@ -148,12 +148,12 @@ pg_set_backend_snapshot
 
                
 step s1_sel: 
-	select * from t1;
+	select * from t1 order by id;
 
 id             name           
 
 step s2_sel: 
-	select * from t1;
+	select * from t1 order by id;
 
 ERROR:  relation "t1" does not exist
 step s1_sb_3: 
@@ -163,12 +163,12 @@ pg_set_backend_snapshot
 
                
 step s1_sel: 
-	select * from t1;
+	select * from t1 order by id;
 
 id             name           
 
 step s2_sel: 
-	select * from t1;
+	select * from t1 order by id;
 
 ERROR:  relation "t1" does not exist
 step s1_sb_0: 
@@ -178,11 +178,11 @@ pg_set_backend_snapshot
 
                
 step s1_sel: 
-	select * from t1;
+	select * from t1 order by id;
 
 ERROR:  relation "t1" does not exist
 step s2_sel: 
-	select * from t1;
+	select * from t1 order by id;
 
 ERROR:  relation "t1" does not exist
 
@@ -227,11 +227,11 @@ pg_set_backend_snapshot
 
                
 step s1_sel: 
-	select * from t1;
+	select * from t1 order by id;
 
 ERROR:  relation "t1" does not exist
 step s2_sel: 
-	select * from t1;
+	select * from t1 order by id;
 
 ERROR:  relation "t1" does not exist
 step s2_sb_2: 
@@ -241,11 +241,11 @@ pg_set_backend_snapshot
 
                
 step s1_sel: 
-	select * from t1;
+	select * from t1 order by id;
 
 ERROR:  relation "t1" does not exist
 step s2_sel: 
-	select * from t1;
+	select * from t1 order by id;
 
 ERROR:  relation "t1" does not exist
 step s2_sb_3: 
@@ -255,11 +255,11 @@ pg_set_backend_snapshot
 
                
 step s1_sel: 
-	select * from t1;
+	select * from t1 order by id;
 
 ERROR:  relation "t1" does not exist
 step s2_sel: 
-	select * from t1;
+	select * from t1 order by id;
 
 ERROR:  relation "t1" does not exist
 step s2_sb_0: 
@@ -269,11 +269,11 @@ pg_set_backend_snapshot
 
                
 step s1_sel: 
-	select * from t1;
+	select * from t1 order by id;
 
 ERROR:  relation "t1" does not exist
 step s2_sel: 
-	select * from t1;
+	select * from t1 order by id;
 
 ERROR:  relation "t1" does not exist
 
@@ -318,12 +318,12 @@ pg_recover_to_snapshot
 
                
 step s1_sel: 
-	select * from t1;
+	select * from t1 order by id;
 
 id             name           
 
 step s2_sel: 
-	select * from t1;
+	select * from t1 order by id;
 
 ERROR:  relation "t1" does not exist
 step s3_rc_sn: 
@@ -333,12 +333,12 @@ pg_recover_to_snapshot
 
                
 step s1_sel: 
-	select * from t1;
+	select * from t1 order by id;
 
 id             name           
 
 step s2_sel: 
-	select * from t1;
+	select * from t1 order by id;
 
 ERROR:  relation "t1" does not exist
 step s3_rc_sn: 
@@ -348,11 +348,11 @@ pg_recover_to_snapshot
 
                
 step s1_sel: 
-	select * from t1;
+	select * from t1 order by id;
 
 ERROR:  relation "t1" does not exist
 step s2_sel: 
-	select * from t1;
+	select * from t1 order by id;
 
 ERROR:  relation "t1" does not exist
 step s3_mk_sn: 
@@ -403,12 +403,12 @@ pg_recover_to_snapshot
 
                
 step s1_sel: 
-	select * from t1;
+	select * from t1 order by id;
 
 id             name           
 
 step s2_sel: 
-	select * from t1;
+	select * from t1 order by id;
 
 ERROR:  relation "t1" does not exist
 step s3_mk_sn: 
