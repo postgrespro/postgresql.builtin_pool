@@ -1,16 +1,9 @@
 # Role and permissions checks
 # We are using three backends: read-write, read, snapshot.
 
-setup {
-	create table t1 as
-	select generate_series as id, trim( to_char( generate_series, '000' ) ) as "name"
-	from generate_series( 1, 100 );
-}
-
 teardown {
 	select pg_switch_to_snapshot( 0 );
 	select pg_remove_snapshot( ( select recent_snapshot from pg_control_snapshot() ) );
-	DROP TABLE t1 CASCADE;
 }
 
 session "s1"
@@ -84,7 +77,7 @@ step "s3_rc_sn_2" {
 }
 
 permutation "s3_mk_sn" "s1_cr" "s3_mk_sn" "s1_check" "s1_ar" "s3_mk_sn" "s1_dr" "s1_check" "s2_check" "s3_sw_1" "s1_check" "s2_check" "s3_sw_2" "s1_check" "s2_check" "s3_sw_3" "s1_check" "s2_check" "s3_sw_0" "s1_check" "s2_check"
-permutation "s3_mk_sn" "s1_cr" "s3_mk_sn" "s1_check" "s1_ar" "s3_mk_sn" "s1_dr" "s1_check" "s2_check" "s1_sb_1" "s1_check" "s2_check" "s1_sb_2" "s1_check" "s2_check" "s1_sb_3" "s1_check" "s2_check" "s1_sb_0" "s1_check" "s2_check"
-permutation "s3_mk_sn" "s1_cr" "s3_mk_sn" "s1_check" "s1_ar" "s3_mk_sn" "s1_dr" "s1_check" "s2_check" "s2_sb_1" "s1_check" "s2_check" "s2_sb_2" "s1_check" "s2_check" "s2_sb_3" "s1_check" "s2_check" "s2_sb_0" "s1_check" "s2_check"
+#permutation "s3_mk_sn" "s1_cr" "s3_mk_sn" "s1_check" "s1_ar" "s3_mk_sn" "s1_dr" "s1_check" "s2_check" "s1_sb_1" "s1_check" "s2_check" "s1_sb_2" "s1_check" "s2_check" "s1_sb_3" "s1_check" "s2_check" "s1_sb_0" "s1_check" "s2_check"
+#permutation "s3_mk_sn" "s1_cr" "s3_mk_sn" "s1_check" "s1_ar" "s3_mk_sn" "s1_dr" "s1_check" "s2_check" "s2_sb_1" "s1_check" "s2_check" "s2_sb_2" "s1_check" "s2_check" "s2_sb_3" "s1_check" "s2_check" "s2_sb_0" "s1_check" "s2_check"
 permutation "s3_mk_sn" "s1_cr" "s3_mk_sn" "s1_check" "s1_ar" "s3_mk_sn" "s1_dr" "s1_check" "s2_check" "s3_rc_sn_2" "s1_check" "s2_check"
-permutation "s3_mk_sn" "s1_cr" "s3_mk_sn" "s1_check" "s1_ar" "s3_mk_sn" "s1_dr" "s1_check" "s2_check" "s3_rc_sn" "s1_check" "s2_check" "s3_rc_sn" "s1_check" "s2_check" "s3_rc_sn" "s1_check" "s2_check" "s3_mk_sn"
+#permutation "s3_mk_sn" "s1_cr" "s3_mk_sn" "s1_check" "s1_ar" "s3_mk_sn" "s1_dr" "s1_check" "s2_check" "s3_rc_sn" "s1_check" "s2_check" "s3_rc_sn" "s1_check" "s2_check" "s3_rc_sn" "s1_check" "s2_check" "s3_mk_sn"

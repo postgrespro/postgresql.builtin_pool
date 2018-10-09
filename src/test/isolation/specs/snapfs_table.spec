@@ -1,4 +1,4 @@
-# Making and updating temp table before and after the snapshot.
+# Making and updating table before and after the snapshot.
 
 teardown {
  select pg_switch_to_snapshot( 0 );
@@ -8,7 +8,7 @@ teardown {
 
 session "s1"
 step "s1_cr" {
-	create temp table t1 as
+	create table t1 as
   select generate_series as id, trim( to_char( generate_series, '000' ) ) as "name"
   from generate_series( 1, 10 );
 	create index t1_id_idx on t1 ( id );
@@ -17,7 +17,7 @@ step "s1_sel" {
 	select * from t1 order by id;
 }
 step "s1_upd" {
-	update t1 set name = name || '_upd' where id % 4 = 0;
+	update t1 set name = name || '_upd_sess1' where id % 4 = 0;
 }
 step "s1_del" {
 	delete from t1 where id % 4 = 1;
@@ -46,6 +46,9 @@ step "s1_sb_3" {
 session "s2"
 step "s2_sel" {
 	select * from t1 order by id;
+}
+step "s2_upd" {
+	update t1 set name = name || '_upd_sess2' where id % 4 = 2;
 }
 step "s2_sb_0" {
 	select pg_set_backend_snapshot( 0 );
@@ -86,8 +89,8 @@ step "s3_rc_sn_2" {
   select pg_recover_to_snapshot( ( select recent_snapshot - 1 from pg_control_snapshot() ) );
 }
 
-permutation "s3_mk_sn" "s1_cr" "s1_upd" "s3_mk_sn" "s1_del" "s3_mk_sn" "s1_dr" "s3_sw_1" "s1_sel" "s2_sel" "s3_sw_2" "s1_sel" "s2_sel" "s3_sw_3" "s1_sel" "s2_sel" "s3_sw_0" "s1_sel" "s2_sel"
-permutation "s3_mk_sn" "s1_cr" "s1_upd" "s3_mk_sn" "s1_del" "s3_mk_sn" "s1_dr" "s1_sb_1" "s1_sel" "s2_sel" "s1_sb_2" "s1_sel" "s2_sel" "s1_sb_3" "s1_sel" "s2_sel" "s1_sb_0" "s1_sel" "s2_sel"
-permutation "s3_mk_sn" "s1_cr" "s1_upd" "s3_mk_sn" "s1_del" "s3_mk_sn" "s1_dr" "s2_sb_1" "s1_sel" "s2_sel" "s2_sb_2" "s1_sel" "s2_sel" "s2_sb_3" "s1_sel" "s2_sel" "s2_sb_0" "s1_sel" "s2_sel"
-permutation "s3_mk_sn" "s1_cr" "s1_upd" "s3_mk_sn" "s1_del" "s3_mk_sn" "s1_dr" "s3_rc_sn" "s1_sel" "s2_sel" "s3_rc_sn" "s1_sel" "s2_sel" "s3_rc_sn" "s1_sel" "s2_sel" "s3_mk_sn"
-permutation "s3_mk_sn" "s1_cr" "s1_upd" "s3_mk_sn" "s1_del" "s3_mk_sn" "s1_dr" "s3_rc_sn_2" "s1_sel" "s2_sel" "s3_mk_sn"
+permutation "s3_mk_sn" "s1_cr" "s1_upd" "s2_upd" "s3_mk_sn" "s1_del" "s3_mk_sn" "s1_dr" "s3_sw_1" "s1_sel" "s2_sel" "s3_sw_2" "s1_sel" "s2_sel" "s3_sw_3" "s1_sel" "s2_sel" "s3_sw_0" "s1_sel" "s2_sel"
+permutation "s3_mk_sn" "s1_cr" "s1_upd" "s2_upd" "s3_mk_sn" "s1_del" "s3_mk_sn" "s1_dr" "s1_sb_1" "s1_sel" "s2_sel" "s1_sb_2" "s1_sel" "s2_sel" "s1_sb_3" "s1_sel" "s2_sel" "s1_sb_0" "s1_sel" "s2_sel"
+permutation "s3_mk_sn" "s1_cr" "s1_upd" "s2_upd" "s3_mk_sn" "s1_del" "s3_mk_sn" "s1_dr" "s2_sb_1" "s1_sel" "s2_sel" "s2_sb_2" "s1_sel" "s2_sel" "s2_sb_3" "s1_sel" "s2_sel" "s2_sb_0" "s1_sel" "s2_sel"
+permutation "s3_mk_sn" "s1_cr" "s1_upd" "s2_upd" "s3_mk_sn" "s1_del" "s3_mk_sn" "s1_dr" "s3_rc_sn" "s1_sel" "s2_sel" "s3_rc_sn" "s1_sel" "s2_sel" "s3_rc_sn" "s1_sel" "s2_sel" "s3_mk_sn"
+permutation "s3_mk_sn" "s1_cr" "s1_upd" "s2_upd" "s3_mk_sn" "s1_del" "s3_mk_sn" "s1_dr" "s3_rc_sn_2" "s1_sel" "s2_sel" "s3_mk_sn"
