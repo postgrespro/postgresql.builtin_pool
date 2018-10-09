@@ -1,0 +1,1563 @@
+Parsed test spec with 3 sessions
+
+starting permutation: s1_cr_i1 s3_mk_sn s1_cr_i2 s1_ins s1_cr_i3 s3_mk_sn s1_upd s2_upd s1_del s3_mk_sn s1_dr_i1 s1_dr_i2 s1_dr_i3 s3_sw_1 s1_check s2_check s3_sw_2 s1_check s2_check s3_sw_3 s1_check s2_check s3_sw_0 s1_check s2_check
+step s1_cr_i1: 
+	create unique index t1_id_idx on t1 ( id );
+
+step s3_mk_sn: 
+	select 1 from pg_make_snapshot();
+
+?column?       
+
+1              
+step s1_cr_i2: 
+	create index t1_name_idx on t1 ( name );
+
+step s1_ins: 
+	insert into t1
+	select generate_series as id, trim( to_char( generate_series, '00000' ) ) || '_new' as "name"
+  from generate_series( 10001, 100010 );
+
+step s1_cr_i3: 
+	create index t1_id4_idx on t1 ( ( id % 4 ) );
+
+step s3_mk_sn: 
+	select 1 from pg_make_snapshot();
+
+?column?       
+
+1              
+step s1_upd: 
+	update t1 set name = name || '_upd_sess1' where id % 4 = 0;
+
+step s2_upd: 
+	update t1 set name = name || '_upd_sess2' where id % 4 = 2;
+
+step s1_del: 
+	delete from t1 where id % 4 = 1;
+
+step s3_mk_sn: 
+	select 1 from pg_make_snapshot();
+
+?column?       
+
+1              
+step s1_dr_i1: 
+	drop index t1_id_idx;
+
+step s1_dr_i2: 
+	drop index t1_name_idx;
+
+step s1_dr_i3: 
+	drop index t1_id4_idx;
+
+step s3_sw_1: 
+	select pg_switch_to_snapshot( ( select recent_snapshot - 2 from pg_control_snapshot() ) );
+
+pg_switch_to_snapshot
+
+               
+step s1_check: 
+	select * from pg_indexes where tablename = 't1';
+	analyse t1;
+	select * from t1 where id % 4 = 3 order by field_to_sort limit 10;
+	select * from t1 order by field_to_sort limit 10 offset 5550;
+	select * from t1 where id = 5555;
+
+schemaname     tablename      indexname      tablespace     indexdef       
+
+public         t1             t1_id_idx                     CREATE UNIQUE INDEX t1_id_idx ON public.t1 USING btree (id)
+id             name           field_to_sort  
+
+3              00003          3              
+7              00007          7              
+11             00011          11             
+15             00015          15             
+19             00019          19             
+23             00023          23             
+27             00027          27             
+31             00031          31             
+35             00035          35             
+39             00039          39             
+id             name           field_to_sort  
+
+5551           05551          5551           
+5552           05552          5552           
+5553           05553          5553           
+5554           05554          5554           
+5555           05555          5555           
+5556           05556          5556           
+5557           05557          5557           
+5558           05558          5558           
+5559           05559          5559           
+5560           05560          5560           
+id             name           field_to_sort  
+
+5555           05555          5555           
+step s2_check: 
+	select * from pg_indexes where tablename = 't1';
+	analyse t1;
+	select * from t1 where id % 4 = 3 order by field_to_sort limit 10;
+	select * from t1 order by field_to_sort limit 10 offset 5550;
+	select * from t1 where id = 5555;
+
+schemaname     tablename      indexname      tablespace     indexdef       
+
+public         t1             t1_id_idx                     CREATE UNIQUE INDEX t1_id_idx ON public.t1 USING btree (id)
+id             name           field_to_sort  
+
+3              00003          3              
+7              00007          7              
+11             00011          11             
+15             00015          15             
+19             00019          19             
+23             00023          23             
+27             00027          27             
+31             00031          31             
+35             00035          35             
+39             00039          39             
+id             name           field_to_sort  
+
+5551           05551          5551           
+5552           05552          5552           
+5553           05553          5553           
+5554           05554          5554           
+5555           05555          5555           
+5556           05556          5556           
+5557           05557          5557           
+5558           05558          5558           
+5559           05559          5559           
+5560           05560          5560           
+id             name           field_to_sort  
+
+5555           05555          5555           
+step s3_sw_2: 
+	select pg_switch_to_snapshot( ( select recent_snapshot - 1 from pg_control_snapshot() ) );
+
+pg_switch_to_snapshot
+
+               
+step s1_check: 
+	select * from pg_indexes where tablename = 't1';
+	analyse t1;
+	select * from t1 where id % 4 = 3 order by field_to_sort limit 10;
+	select * from t1 order by field_to_sort limit 10 offset 5550;
+	select * from t1 where id = 5555;
+
+schemaname     tablename      indexname      tablespace     indexdef       
+
+public         t1             t1_id_idx                     CREATE UNIQUE INDEX t1_id_idx ON public.t1 USING btree (id)
+public         t1             t1_name_idx                   CREATE INDEX t1_name_idx ON public.t1 USING btree (name)
+public         t1             t1_id4_idx                    CREATE INDEX t1_id4_idx ON public.t1 USING btree (((id % 4)))
+id             name           field_to_sort  
+
+3              00003          3              
+7              00007          7              
+11             00011          11             
+15             00015          15             
+19             00019          19             
+23             00023          23             
+27             00027          27             
+31             00031          31             
+35             00035          35             
+39             00039          39             
+id             name           field_to_sort  
+
+5551           05551          5551           
+5552           05552          5552           
+5553           05553          5553           
+5554           05554          5554           
+5555           05555          5555           
+5556           05556          5556           
+5557           05557          5557           
+5558           05558          5558           
+5559           05559          5559           
+5560           05560          5560           
+id             name           field_to_sort  
+
+5555           05555          5555           
+step s2_check: 
+	select * from pg_indexes where tablename = 't1';
+	analyse t1;
+	select * from t1 where id % 4 = 3 order by field_to_sort limit 10;
+	select * from t1 order by field_to_sort limit 10 offset 5550;
+	select * from t1 where id = 5555;
+
+schemaname     tablename      indexname      tablespace     indexdef       
+
+public         t1             t1_id_idx                     CREATE UNIQUE INDEX t1_id_idx ON public.t1 USING btree (id)
+public         t1             t1_name_idx                   CREATE INDEX t1_name_idx ON public.t1 USING btree (name)
+public         t1             t1_id4_idx                    CREATE INDEX t1_id4_idx ON public.t1 USING btree (((id % 4)))
+id             name           field_to_sort  
+
+3              00003          3              
+7              00007          7              
+11             00011          11             
+15             00015          15             
+19             00019          19             
+23             00023          23             
+27             00027          27             
+31             00031          31             
+35             00035          35             
+39             00039          39             
+id             name           field_to_sort  
+
+5551           05551          5551           
+5552           05552          5552           
+5553           05553          5553           
+5554           05554          5554           
+5555           05555          5555           
+5556           05556          5556           
+5557           05557          5557           
+5558           05558          5558           
+5559           05559          5559           
+5560           05560          5560           
+id             name           field_to_sort  
+
+5555           05555          5555           
+step s3_sw_3: 
+	select pg_switch_to_snapshot( ( select recent_snapshot from pg_control_snapshot() ) );
+
+pg_switch_to_snapshot
+
+               
+step s1_check: 
+	select * from pg_indexes where tablename = 't1';
+	analyse t1;
+	select * from t1 where id % 4 = 3 order by field_to_sort limit 10;
+	select * from t1 order by field_to_sort limit 10 offset 5550;
+	select * from t1 where id = 5555;
+
+schemaname     tablename      indexname      tablespace     indexdef       
+
+public         t1             t1_id_idx                     CREATE UNIQUE INDEX t1_id_idx ON public.t1 USING btree (id)
+public         t1             t1_name_idx                   CREATE INDEX t1_name_idx ON public.t1 USING btree (name)
+public         t1             t1_id4_idx                    CREATE INDEX t1_id4_idx ON public.t1 USING btree (((id % 4)))
+id             name           field_to_sort  
+
+3              00003          3              
+7              00007          7              
+11             00011          11             
+15             00015          15             
+19             00019          19             
+23             00023          23             
+27             00027          27             
+31             00031          31             
+35             00035          35             
+39             00039          39             
+id             name           field_to_sort  
+
+7402           07402_upd_sess27402           
+7403           07403          7403           
+7404           07404_upd_sess17404           
+7406           07406_upd_sess27406           
+7407           07407          7407           
+7408           07408_upd_sess17408           
+7410           07410_upd_sess27410           
+7411           07411          7411           
+7412           07412_upd_sess17412           
+7414           07414_upd_sess27414           
+id             name           field_to_sort  
+
+5555           05555          5555           
+step s2_check: 
+	select * from pg_indexes where tablename = 't1';
+	analyse t1;
+	select * from t1 where id % 4 = 3 order by field_to_sort limit 10;
+	select * from t1 order by field_to_sort limit 10 offset 5550;
+	select * from t1 where id = 5555;
+
+schemaname     tablename      indexname      tablespace     indexdef       
+
+public         t1             t1_id_idx                     CREATE UNIQUE INDEX t1_id_idx ON public.t1 USING btree (id)
+public         t1             t1_name_idx                   CREATE INDEX t1_name_idx ON public.t1 USING btree (name)
+public         t1             t1_id4_idx                    CREATE INDEX t1_id4_idx ON public.t1 USING btree (((id % 4)))
+id             name           field_to_sort  
+
+3              00003          3              
+7              00007          7              
+11             00011          11             
+15             00015          15             
+19             00019          19             
+23             00023          23             
+27             00027          27             
+31             00031          31             
+35             00035          35             
+39             00039          39             
+id             name           field_to_sort  
+
+7402           07402_upd_sess27402           
+7403           07403          7403           
+7404           07404_upd_sess17404           
+7406           07406_upd_sess27406           
+7407           07407          7407           
+7408           07408_upd_sess17408           
+7410           07410_upd_sess27410           
+7411           07411          7411           
+7412           07412_upd_sess17412           
+7414           07414_upd_sess27414           
+id             name           field_to_sort  
+
+5555           05555          5555           
+step s3_sw_0: 
+	select pg_switch_to_snapshot( 0 );
+
+pg_switch_to_snapshot
+
+               
+step s1_check: 
+	select * from pg_indexes where tablename = 't1';
+	analyse t1;
+	select * from t1 where id % 4 = 3 order by field_to_sort limit 10;
+	select * from t1 order by field_to_sort limit 10 offset 5550;
+	select * from t1 where id = 5555;
+
+schemaname     tablename      indexname      tablespace     indexdef       
+
+id             name           field_to_sort  
+
+3              00003          3              
+7              00007          7              
+11             00011          11             
+15             00015          15             
+19             00019          19             
+23             00023          23             
+27             00027          27             
+31             00031          31             
+35             00035          35             
+39             00039          39             
+id             name           field_to_sort  
+
+7402           07402_upd_sess27402           
+7403           07403          7403           
+7404           07404_upd_sess17404           
+7406           07406_upd_sess27406           
+7407           07407          7407           
+7408           07408_upd_sess17408           
+7410           07410_upd_sess27410           
+7411           07411          7411           
+7412           07412_upd_sess17412           
+7414           07414_upd_sess27414           
+id             name           field_to_sort  
+
+5555           05555          5555           
+step s2_check: 
+	select * from pg_indexes where tablename = 't1';
+	analyse t1;
+	select * from t1 where id % 4 = 3 order by field_to_sort limit 10;
+	select * from t1 order by field_to_sort limit 10 offset 5550;
+	select * from t1 where id = 5555;
+
+schemaname     tablename      indexname      tablespace     indexdef       
+
+id             name           field_to_sort  
+
+3              00003          3              
+7              00007          7              
+11             00011          11             
+15             00015          15             
+19             00019          19             
+23             00023          23             
+27             00027          27             
+31             00031          31             
+35             00035          35             
+39             00039          39             
+id             name           field_to_sort  
+
+7402           07402_upd_sess27402           
+7403           07403          7403           
+7404           07404_upd_sess17404           
+7406           07406_upd_sess27406           
+7407           07407          7407           
+7408           07408_upd_sess17408           
+7410           07410_upd_sess27410           
+7411           07411          7411           
+7412           07412_upd_sess17412           
+7414           07414_upd_sess27414           
+id             name           field_to_sort  
+
+5555           05555          5555           
+
+starting permutation: s1_cr_i1 s3_mk_sn s1_cr_i2 s1_ins s1_cr_i3 s3_mk_sn s1_upd s2_upd s1_del s3_mk_sn s1_dr_i1 s1_dr_i2 s1_dr_i3 s1_sb_1 s1_check s2_check s1_sb_2 s1_check s2_check s1_sb_3 s1_check s2_check s1_sb_0 s1_check s2_check
+step s1_cr_i1: 
+	create unique index t1_id_idx on t1 ( id );
+
+step s3_mk_sn: 
+	select 1 from pg_make_snapshot();
+
+?column?       
+
+1              
+step s1_cr_i2: 
+	create index t1_name_idx on t1 ( name );
+
+step s1_ins: 
+	insert into t1
+	select generate_series as id, trim( to_char( generate_series, '00000' ) ) || '_new' as "name"
+  from generate_series( 10001, 100010 );
+
+step s1_cr_i3: 
+	create index t1_id4_idx on t1 ( ( id % 4 ) );
+
+step s3_mk_sn: 
+	select 1 from pg_make_snapshot();
+
+?column?       
+
+1              
+step s1_upd: 
+	update t1 set name = name || '_upd_sess1' where id % 4 = 0;
+
+step s2_upd: 
+	update t1 set name = name || '_upd_sess2' where id % 4 = 2;
+
+step s1_del: 
+	delete from t1 where id % 4 = 1;
+
+step s3_mk_sn: 
+	select 1 from pg_make_snapshot();
+
+?column?       
+
+1              
+step s1_dr_i1: 
+	drop index t1_id_idx;
+
+step s1_dr_i2: 
+	drop index t1_name_idx;
+
+step s1_dr_i3: 
+	drop index t1_id4_idx;
+
+step s1_sb_1: 
+	select pg_set_backend_snapshot( ( select recent_snapshot - 2 from pg_control_snapshot() ) );
+
+pg_set_backend_snapshot
+
+               
+step s1_check: 
+	select * from pg_indexes where tablename = 't1';
+	analyse t1;
+	select * from t1 where id % 4 = 3 order by field_to_sort limit 10;
+	select * from t1 order by field_to_sort limit 10 offset 5550;
+	select * from t1 where id = 5555;
+
+schemaname     tablename      indexname      tablespace     indexdef       
+
+public         t1             t1_id_idx                     CREATE UNIQUE INDEX t1_id_idx ON public.t1 USING btree (id)
+id             name           field_to_sort  
+
+3              00003          3              
+7              00007          7              
+11             00011          11             
+15             00015          15             
+19             00019          19             
+23             00023          23             
+27             00027          27             
+31             00031          31             
+35             00035          35             
+39             00039          39             
+id             name           field_to_sort  
+
+5551           05551          5551           
+5552           05552          5552           
+5553           05553          5553           
+5554           05554          5554           
+5555           05555          5555           
+5556           05556          5556           
+5557           05557          5557           
+5558           05558          5558           
+5559           05559          5559           
+5560           05560          5560           
+id             name           field_to_sort  
+
+5555           05555          5555           
+step s2_check: 
+	select * from pg_indexes where tablename = 't1';
+	analyse t1;
+	select * from t1 where id % 4 = 3 order by field_to_sort limit 10;
+	select * from t1 order by field_to_sort limit 10 offset 5550;
+	select * from t1 where id = 5555;
+
+schemaname     tablename      indexname      tablespace     indexdef       
+
+id             name           field_to_sort  
+
+3              00003          3              
+7              00007          7              
+11             00011          11             
+15             00015          15             
+19             00019          19             
+23             00023          23             
+27             00027          27             
+31             00031          31             
+35             00035          35             
+39             00039          39             
+id             name           field_to_sort  
+
+7402           07402_upd_sess27402           
+7403           07403          7403           
+7404           07404_upd_sess17404           
+7406           07406_upd_sess27406           
+7407           07407          7407           
+7408           07408_upd_sess17408           
+7410           07410_upd_sess27410           
+7411           07411          7411           
+7412           07412_upd_sess17412           
+7414           07414_upd_sess27414           
+id             name           field_to_sort  
+
+5555           05555          5555           
+step s1_sb_2: 
+	select pg_set_backend_snapshot( ( select recent_snapshot - 1 from pg_control_snapshot() ) );
+
+pg_set_backend_snapshot
+
+               
+step s1_check: 
+	select * from pg_indexes where tablename = 't1';
+	analyse t1;
+	select * from t1 where id % 4 = 3 order by field_to_sort limit 10;
+	select * from t1 order by field_to_sort limit 10 offset 5550;
+	select * from t1 where id = 5555;
+
+schemaname     tablename      indexname      tablespace     indexdef       
+
+public         t1             t1_id_idx                     CREATE UNIQUE INDEX t1_id_idx ON public.t1 USING btree (id)
+public         t1             t1_name_idx                   CREATE INDEX t1_name_idx ON public.t1 USING btree (name)
+public         t1             t1_id4_idx                    CREATE INDEX t1_id4_idx ON public.t1 USING btree (((id % 4)))
+id             name           field_to_sort  
+
+3              00003          3              
+7              00007          7              
+11             00011          11             
+15             00015          15             
+19             00019          19             
+23             00023          23             
+27             00027          27             
+31             00031          31             
+35             00035          35             
+39             00039          39             
+id             name           field_to_sort  
+
+5551           05551          5551           
+5552           05552          5552           
+5553           05553          5553           
+5554           05554          5554           
+5555           05555          5555           
+5556           05556          5556           
+5557           05557          5557           
+5558           05558          5558           
+5559           05559          5559           
+5560           05560          5560           
+id             name           field_to_sort  
+
+5555           05555          5555           
+step s2_check: 
+	select * from pg_indexes where tablename = 't1';
+	analyse t1;
+	select * from t1 where id % 4 = 3 order by field_to_sort limit 10;
+	select * from t1 order by field_to_sort limit 10 offset 5550;
+	select * from t1 where id = 5555;
+
+schemaname     tablename      indexname      tablespace     indexdef       
+
+id             name           field_to_sort  
+
+3              00003          3              
+7              00007          7              
+11             00011          11             
+15             00015          15             
+19             00019          19             
+23             00023          23             
+27             00027          27             
+31             00031          31             
+35             00035          35             
+39             00039          39             
+id             name           field_to_sort  
+
+7402           07402_upd_sess27402           
+7403           07403          7403           
+7404           07404_upd_sess17404           
+7406           07406_upd_sess27406           
+7407           07407          7407           
+7408           07408_upd_sess17408           
+7410           07410_upd_sess27410           
+7411           07411          7411           
+7412           07412_upd_sess17412           
+7414           07414_upd_sess27414           
+id             name           field_to_sort  
+
+5555           05555          5555           
+step s1_sb_3: 
+	select pg_set_backend_snapshot( ( select recent_snapshot from pg_control_snapshot() ) );
+
+pg_set_backend_snapshot
+
+               
+step s1_check: 
+	select * from pg_indexes where tablename = 't1';
+	analyse t1;
+	select * from t1 where id % 4 = 3 order by field_to_sort limit 10;
+	select * from t1 order by field_to_sort limit 10 offset 5550;
+	select * from t1 where id = 5555;
+
+schemaname     tablename      indexname      tablespace     indexdef       
+
+public         t1             t1_id_idx                     CREATE UNIQUE INDEX t1_id_idx ON public.t1 USING btree (id)
+public         t1             t1_name_idx                   CREATE INDEX t1_name_idx ON public.t1 USING btree (name)
+public         t1             t1_id4_idx                    CREATE INDEX t1_id4_idx ON public.t1 USING btree (((id % 4)))
+id             name           field_to_sort  
+
+3              00003          3              
+7              00007          7              
+11             00011          11             
+15             00015          15             
+19             00019          19             
+23             00023          23             
+27             00027          27             
+31             00031          31             
+35             00035          35             
+39             00039          39             
+id             name           field_to_sort  
+
+7402           07402_upd_sess27402           
+7403           07403          7403           
+7404           07404_upd_sess17404           
+7406           07406_upd_sess27406           
+7407           07407          7407           
+7408           07408_upd_sess17408           
+7410           07410_upd_sess27410           
+7411           07411          7411           
+7412           07412_upd_sess17412           
+7414           07414_upd_sess27414           
+id             name           field_to_sort  
+
+5555           05555          5555           
+step s2_check: 
+	select * from pg_indexes where tablename = 't1';
+	analyse t1;
+	select * from t1 where id % 4 = 3 order by field_to_sort limit 10;
+	select * from t1 order by field_to_sort limit 10 offset 5550;
+	select * from t1 where id = 5555;
+
+schemaname     tablename      indexname      tablespace     indexdef       
+
+id             name           field_to_sort  
+
+3              00003          3              
+7              00007          7              
+11             00011          11             
+15             00015          15             
+19             00019          19             
+23             00023          23             
+27             00027          27             
+31             00031          31             
+35             00035          35             
+39             00039          39             
+id             name           field_to_sort  
+
+7402           07402_upd_sess27402           
+7403           07403          7403           
+7404           07404_upd_sess17404           
+7406           07406_upd_sess27406           
+7407           07407          7407           
+7408           07408_upd_sess17408           
+7410           07410_upd_sess27410           
+7411           07411          7411           
+7412           07412_upd_sess17412           
+7414           07414_upd_sess27414           
+id             name           field_to_sort  
+
+5555           05555          5555           
+step s1_sb_0: 
+	select pg_set_backend_snapshot( 0 );
+
+pg_set_backend_snapshot
+
+               
+step s1_check: 
+	select * from pg_indexes where tablename = 't1';
+	analyse t1;
+	select * from t1 where id % 4 = 3 order by field_to_sort limit 10;
+	select * from t1 order by field_to_sort limit 10 offset 5550;
+	select * from t1 where id = 5555;
+
+schemaname     tablename      indexname      tablespace     indexdef       
+
+id             name           field_to_sort  
+
+3              00003          3              
+7              00007          7              
+11             00011          11             
+15             00015          15             
+19             00019          19             
+23             00023          23             
+27             00027          27             
+31             00031          31             
+35             00035          35             
+39             00039          39             
+id             name           field_to_sort  
+
+7402           07402_upd_sess27402           
+7403           07403          7403           
+7404           07404_upd_sess17404           
+7406           07406_upd_sess27406           
+7407           07407          7407           
+7408           07408_upd_sess17408           
+7410           07410_upd_sess27410           
+7411           07411          7411           
+7412           07412_upd_sess17412           
+7414           07414_upd_sess27414           
+id             name           field_to_sort  
+
+5555           05555          5555           
+step s2_check: 
+	select * from pg_indexes where tablename = 't1';
+	analyse t1;
+	select * from t1 where id % 4 = 3 order by field_to_sort limit 10;
+	select * from t1 order by field_to_sort limit 10 offset 5550;
+	select * from t1 where id = 5555;
+
+schemaname     tablename      indexname      tablespace     indexdef       
+
+id             name           field_to_sort  
+
+3              00003          3              
+7              00007          7              
+11             00011          11             
+15             00015          15             
+19             00019          19             
+23             00023          23             
+27             00027          27             
+31             00031          31             
+35             00035          35             
+39             00039          39             
+id             name           field_to_sort  
+
+7402           07402_upd_sess27402           
+7403           07403          7403           
+7404           07404_upd_sess17404           
+7406           07406_upd_sess27406           
+7407           07407          7407           
+7408           07408_upd_sess17408           
+7410           07410_upd_sess27410           
+7411           07411          7411           
+7412           07412_upd_sess17412           
+7414           07414_upd_sess27414           
+id             name           field_to_sort  
+
+5555           05555          5555           
+
+starting permutation: s1_cr_i1 s3_mk_sn s1_cr_i2 s1_ins s1_cr_i3 s3_mk_sn s1_upd s2_upd s1_del s3_mk_sn s1_dr_i1 s1_dr_i2 s1_dr_i3 s2_sb_1 s1_check s2_check s2_sb_2 s1_check s2_check s2_sb_3 s1_check s2_check s2_sb_0 s1_check s2_check
+step s1_cr_i1: 
+	create unique index t1_id_idx on t1 ( id );
+
+step s3_mk_sn: 
+	select 1 from pg_make_snapshot();
+
+?column?       
+
+1              
+step s1_cr_i2: 
+	create index t1_name_idx on t1 ( name );
+
+step s1_ins: 
+	insert into t1
+	select generate_series as id, trim( to_char( generate_series, '00000' ) ) || '_new' as "name"
+  from generate_series( 10001, 100010 );
+
+step s1_cr_i3: 
+	create index t1_id4_idx on t1 ( ( id % 4 ) );
+
+step s3_mk_sn: 
+	select 1 from pg_make_snapshot();
+
+?column?       
+
+1              
+step s1_upd: 
+	update t1 set name = name || '_upd_sess1' where id % 4 = 0;
+
+step s2_upd: 
+	update t1 set name = name || '_upd_sess2' where id % 4 = 2;
+
+step s1_del: 
+	delete from t1 where id % 4 = 1;
+
+step s3_mk_sn: 
+	select 1 from pg_make_snapshot();
+
+?column?       
+
+1              
+step s1_dr_i1: 
+	drop index t1_id_idx;
+
+step s1_dr_i2: 
+	drop index t1_name_idx;
+
+step s1_dr_i3: 
+	drop index t1_id4_idx;
+
+step s2_sb_1: 
+	select pg_set_backend_snapshot( ( select recent_snapshot - 2 from pg_control_snapshot() ) );
+
+pg_set_backend_snapshot
+
+               
+step s1_check: 
+	select * from pg_indexes where tablename = 't1';
+	analyse t1;
+	select * from t1 where id % 4 = 3 order by field_to_sort limit 10;
+	select * from t1 order by field_to_sort limit 10 offset 5550;
+	select * from t1 where id = 5555;
+
+schemaname     tablename      indexname      tablespace     indexdef       
+
+id             name           field_to_sort  
+
+3              00003          3              
+7              00007          7              
+11             00011          11             
+15             00015          15             
+19             00019          19             
+23             00023          23             
+27             00027          27             
+31             00031          31             
+35             00035          35             
+39             00039          39             
+id             name           field_to_sort  
+
+7402           07402_upd_sess27402           
+7403           07403          7403           
+7404           07404_upd_sess17404           
+7406           07406_upd_sess27406           
+7407           07407          7407           
+7408           07408_upd_sess17408           
+7410           07410_upd_sess27410           
+7411           07411          7411           
+7412           07412_upd_sess17412           
+7414           07414_upd_sess27414           
+id             name           field_to_sort  
+
+5555           05555          5555           
+step s2_check: 
+	select * from pg_indexes where tablename = 't1';
+	analyse t1;
+	select * from t1 where id % 4 = 3 order by field_to_sort limit 10;
+	select * from t1 order by field_to_sort limit 10 offset 5550;
+	select * from t1 where id = 5555;
+
+schemaname     tablename      indexname      tablespace     indexdef       
+
+public         t1             t1_id_idx                     CREATE UNIQUE INDEX t1_id_idx ON public.t1 USING btree (id)
+id             name           field_to_sort  
+
+3              00003          3              
+7              00007          7              
+11             00011          11             
+15             00015          15             
+19             00019          19             
+23             00023          23             
+27             00027          27             
+31             00031          31             
+35             00035          35             
+39             00039          39             
+id             name           field_to_sort  
+
+5551           05551          5551           
+5552           05552          5552           
+5553           05553          5553           
+5554           05554          5554           
+5555           05555          5555           
+5556           05556          5556           
+5557           05557          5557           
+5558           05558          5558           
+5559           05559          5559           
+5560           05560          5560           
+id             name           field_to_sort  
+
+5555           05555          5555           
+step s2_sb_2: 
+	select pg_set_backend_snapshot( ( select recent_snapshot - 1 from pg_control_snapshot() ) );
+
+pg_set_backend_snapshot
+
+               
+step s1_check: 
+	select * from pg_indexes where tablename = 't1';
+	analyse t1;
+	select * from t1 where id % 4 = 3 order by field_to_sort limit 10;
+	select * from t1 order by field_to_sort limit 10 offset 5550;
+	select * from t1 where id = 5555;
+
+schemaname     tablename      indexname      tablespace     indexdef       
+
+id             name           field_to_sort  
+
+3              00003          3              
+7              00007          7              
+11             00011          11             
+15             00015          15             
+19             00019          19             
+23             00023          23             
+27             00027          27             
+31             00031          31             
+35             00035          35             
+39             00039          39             
+id             name           field_to_sort  
+
+7402           07402_upd_sess27402           
+7403           07403          7403           
+7404           07404_upd_sess17404           
+7406           07406_upd_sess27406           
+7407           07407          7407           
+7408           07408_upd_sess17408           
+7410           07410_upd_sess27410           
+7411           07411          7411           
+7412           07412_upd_sess17412           
+7414           07414_upd_sess27414           
+id             name           field_to_sort  
+
+5555           05555          5555           
+step s2_check: 
+	select * from pg_indexes where tablename = 't1';
+	analyse t1;
+	select * from t1 where id % 4 = 3 order by field_to_sort limit 10;
+	select * from t1 order by field_to_sort limit 10 offset 5550;
+	select * from t1 where id = 5555;
+
+schemaname     tablename      indexname      tablespace     indexdef       
+
+public         t1             t1_id_idx                     CREATE UNIQUE INDEX t1_id_idx ON public.t1 USING btree (id)
+public         t1             t1_name_idx                   CREATE INDEX t1_name_idx ON public.t1 USING btree (name)
+public         t1             t1_id4_idx                    CREATE INDEX t1_id4_idx ON public.t1 USING btree (((id % 4)))
+id             name           field_to_sort  
+
+3              00003          3              
+7              00007          7              
+11             00011          11             
+15             00015          15             
+19             00019          19             
+23             00023          23             
+27             00027          27             
+31             00031          31             
+35             00035          35             
+39             00039          39             
+id             name           field_to_sort  
+
+5551           05551          5551           
+5552           05552          5552           
+5553           05553          5553           
+5554           05554          5554           
+5555           05555          5555           
+5556           05556          5556           
+5557           05557          5557           
+5558           05558          5558           
+5559           05559          5559           
+5560           05560          5560           
+id             name           field_to_sort  
+
+5555           05555          5555           
+step s2_sb_3: 
+	select pg_set_backend_snapshot( ( select recent_snapshot from pg_control_snapshot() ) );
+
+pg_set_backend_snapshot
+
+               
+step s1_check: 
+	select * from pg_indexes where tablename = 't1';
+	analyse t1;
+	select * from t1 where id % 4 = 3 order by field_to_sort limit 10;
+	select * from t1 order by field_to_sort limit 10 offset 5550;
+	select * from t1 where id = 5555;
+
+schemaname     tablename      indexname      tablespace     indexdef       
+
+id             name           field_to_sort  
+
+3              00003          3              
+7              00007          7              
+11             00011          11             
+15             00015          15             
+19             00019          19             
+23             00023          23             
+27             00027          27             
+31             00031          31             
+35             00035          35             
+39             00039          39             
+id             name           field_to_sort  
+
+7402           07402_upd_sess27402           
+7403           07403          7403           
+7404           07404_upd_sess17404           
+7406           07406_upd_sess27406           
+7407           07407          7407           
+7408           07408_upd_sess17408           
+7410           07410_upd_sess27410           
+7411           07411          7411           
+7412           07412_upd_sess17412           
+7414           07414_upd_sess27414           
+id             name           field_to_sort  
+
+5555           05555          5555           
+step s2_check: 
+	select * from pg_indexes where tablename = 't1';
+	analyse t1;
+	select * from t1 where id % 4 = 3 order by field_to_sort limit 10;
+	select * from t1 order by field_to_sort limit 10 offset 5550;
+	select * from t1 where id = 5555;
+
+schemaname     tablename      indexname      tablespace     indexdef       
+
+public         t1             t1_id_idx                     CREATE UNIQUE INDEX t1_id_idx ON public.t1 USING btree (id)
+public         t1             t1_name_idx                   CREATE INDEX t1_name_idx ON public.t1 USING btree (name)
+public         t1             t1_id4_idx                    CREATE INDEX t1_id4_idx ON public.t1 USING btree (((id % 4)))
+id             name           field_to_sort  
+
+3              00003          3              
+7              00007          7              
+11             00011          11             
+15             00015          15             
+19             00019          19             
+23             00023          23             
+27             00027          27             
+31             00031          31             
+35             00035          35             
+39             00039          39             
+id             name           field_to_sort  
+
+7402           07402_upd_sess27402           
+7403           07403          7403           
+7404           07404_upd_sess17404           
+7406           07406_upd_sess27406           
+7407           07407          7407           
+7408           07408_upd_sess17408           
+7410           07410_upd_sess27410           
+7411           07411          7411           
+7412           07412_upd_sess17412           
+7414           07414_upd_sess27414           
+id             name           field_to_sort  
+
+5555           05555          5555           
+step s2_sb_0: 
+	select pg_set_backend_snapshot( 0 );
+
+pg_set_backend_snapshot
+
+               
+step s1_check: 
+	select * from pg_indexes where tablename = 't1';
+	analyse t1;
+	select * from t1 where id % 4 = 3 order by field_to_sort limit 10;
+	select * from t1 order by field_to_sort limit 10 offset 5550;
+	select * from t1 where id = 5555;
+
+schemaname     tablename      indexname      tablespace     indexdef       
+
+id             name           field_to_sort  
+
+3              00003          3              
+7              00007          7              
+11             00011          11             
+15             00015          15             
+19             00019          19             
+23             00023          23             
+27             00027          27             
+31             00031          31             
+35             00035          35             
+39             00039          39             
+id             name           field_to_sort  
+
+7402           07402_upd_sess27402           
+7403           07403          7403           
+7404           07404_upd_sess17404           
+7406           07406_upd_sess27406           
+7407           07407          7407           
+7408           07408_upd_sess17408           
+7410           07410_upd_sess27410           
+7411           07411          7411           
+7412           07412_upd_sess17412           
+7414           07414_upd_sess27414           
+id             name           field_to_sort  
+
+5555           05555          5555           
+step s2_check: 
+	select * from pg_indexes where tablename = 't1';
+	analyse t1;
+	select * from t1 where id % 4 = 3 order by field_to_sort limit 10;
+	select * from t1 order by field_to_sort limit 10 offset 5550;
+	select * from t1 where id = 5555;
+
+schemaname     tablename      indexname      tablespace     indexdef       
+
+id             name           field_to_sort  
+
+3              00003          3              
+7              00007          7              
+11             00011          11             
+15             00015          15             
+19             00019          19             
+23             00023          23             
+27             00027          27             
+31             00031          31             
+35             00035          35             
+39             00039          39             
+id             name           field_to_sort  
+
+7402           07402_upd_sess27402           
+7403           07403          7403           
+7404           07404_upd_sess17404           
+7406           07406_upd_sess27406           
+7407           07407          7407           
+7408           07408_upd_sess17408           
+7410           07410_upd_sess27410           
+7411           07411          7411           
+7412           07412_upd_sess17412           
+7414           07414_upd_sess27414           
+id             name           field_to_sort  
+
+5555           05555          5555           
+
+starting permutation: s1_cr_i1 s3_mk_sn s1_cr_i2 s1_ins s1_cr_i3 s3_mk_sn s1_upd s2_upd s1_del s3_mk_sn s1_dr_i1 s1_dr_i2 s1_dr_i3 s3_rc_sn_2 s1_check s2_check
+step s1_cr_i1: 
+	create unique index t1_id_idx on t1 ( id );
+
+step s3_mk_sn: 
+	select 1 from pg_make_snapshot();
+
+?column?       
+
+1              
+step s1_cr_i2: 
+	create index t1_name_idx on t1 ( name );
+
+step s1_ins: 
+	insert into t1
+	select generate_series as id, trim( to_char( generate_series, '00000' ) ) || '_new' as "name"
+  from generate_series( 10001, 100010 );
+
+step s1_cr_i3: 
+	create index t1_id4_idx on t1 ( ( id % 4 ) );
+
+step s3_mk_sn: 
+	select 1 from pg_make_snapshot();
+
+?column?       
+
+1              
+step s1_upd: 
+	update t1 set name = name || '_upd_sess1' where id % 4 = 0;
+
+step s2_upd: 
+	update t1 set name = name || '_upd_sess2' where id % 4 = 2;
+
+step s1_del: 
+	delete from t1 where id % 4 = 1;
+
+step s3_mk_sn: 
+	select 1 from pg_make_snapshot();
+
+?column?       
+
+1              
+step s1_dr_i1: 
+	drop index t1_id_idx;
+
+step s1_dr_i2: 
+	drop index t1_name_idx;
+
+step s1_dr_i3: 
+	drop index t1_id4_idx;
+
+step s3_rc_sn_2: 
+  select pg_recover_to_snapshot( ( select recent_snapshot - 1 from pg_control_snapshot() ) );
+
+pg_recover_to_snapshot
+
+               
+step s1_check: 
+	select * from pg_indexes where tablename = 't1';
+	analyse t1;
+	select * from t1 where id % 4 = 3 order by field_to_sort limit 10;
+	select * from t1 order by field_to_sort limit 10 offset 5550;
+	select * from t1 where id = 5555;
+
+schemaname     tablename      indexname      tablespace     indexdef       
+
+public         t1             t1_id_idx                     CREATE UNIQUE INDEX t1_id_idx ON public.t1 USING btree (id)
+public         t1             t1_name_idx                   CREATE INDEX t1_name_idx ON public.t1 USING btree (name)
+public         t1             t1_id4_idx                    CREATE INDEX t1_id4_idx ON public.t1 USING btree (((id % 4)))
+id             name           field_to_sort  
+
+3              00003          3              
+7              00007          7              
+11             00011          11             
+15             00015          15             
+19             00019          19             
+23             00023          23             
+27             00027          27             
+31             00031          31             
+35             00035          35             
+39             00039          39             
+id             name           field_to_sort  
+
+5551           05551          5551           
+5552           05552          5552           
+5553           05553          5553           
+5554           05554          5554           
+5555           05555          5555           
+5556           05556          5556           
+5557           05557          5557           
+5558           05558          5558           
+5559           05559          5559           
+5560           05560          5560           
+id             name           field_to_sort  
+
+5555           05555          5555           
+step s2_check: 
+	select * from pg_indexes where tablename = 't1';
+	analyse t1;
+	select * from t1 where id % 4 = 3 order by field_to_sort limit 10;
+	select * from t1 order by field_to_sort limit 10 offset 5550;
+	select * from t1 where id = 5555;
+
+schemaname     tablename      indexname      tablespace     indexdef       
+
+public         t1             t1_id_idx                     CREATE UNIQUE INDEX t1_id_idx ON public.t1 USING btree (id)
+public         t1             t1_name_idx                   CREATE INDEX t1_name_idx ON public.t1 USING btree (name)
+public         t1             t1_id4_idx                    CREATE INDEX t1_id4_idx ON public.t1 USING btree (((id % 4)))
+id             name           field_to_sort  
+
+3              00003          3              
+7              00007          7              
+11             00011          11             
+15             00015          15             
+19             00019          19             
+23             00023          23             
+27             00027          27             
+31             00031          31             
+35             00035          35             
+39             00039          39             
+id             name           field_to_sort  
+
+5551           05551          5551           
+5552           05552          5552           
+5553           05553          5553           
+5554           05554          5554           
+5555           05555          5555           
+5556           05556          5556           
+5557           05557          5557           
+5558           05558          5558           
+5559           05559          5559           
+5560           05560          5560           
+id             name           field_to_sort  
+
+5555           05555          5555           
+
+starting permutation: s1_cr_i1 s3_mk_sn s1_cr_i2 s1_ins s1_cr_i3 s3_mk_sn s1_upd s2_upd s1_del s3_mk_sn s1_dr_i1 s1_dr_i2 s1_dr_i3 s3_rc_sn s1_check s2_check s3_rc_sn s1_check s2_check s3_rc_sn s1_check s2_check s3_mk_sn
+step s1_cr_i1: 
+	create unique index t1_id_idx on t1 ( id );
+
+step s3_mk_sn: 
+	select 1 from pg_make_snapshot();
+
+?column?       
+
+1              
+step s1_cr_i2: 
+	create index t1_name_idx on t1 ( name );
+
+step s1_ins: 
+	insert into t1
+	select generate_series as id, trim( to_char( generate_series, '00000' ) ) || '_new' as "name"
+  from generate_series( 10001, 100010 );
+
+step s1_cr_i3: 
+	create index t1_id4_idx on t1 ( ( id % 4 ) );
+
+step s3_mk_sn: 
+	select 1 from pg_make_snapshot();
+
+?column?       
+
+1              
+step s1_upd: 
+	update t1 set name = name || '_upd_sess1' where id % 4 = 0;
+
+step s2_upd: 
+	update t1 set name = name || '_upd_sess2' where id % 4 = 2;
+
+step s1_del: 
+	delete from t1 where id % 4 = 1;
+
+step s3_mk_sn: 
+	select 1 from pg_make_snapshot();
+
+?column?       
+
+1              
+step s1_dr_i1: 
+	drop index t1_id_idx;
+
+step s1_dr_i2: 
+	drop index t1_name_idx;
+
+step s1_dr_i3: 
+	drop index t1_id4_idx;
+
+step s3_rc_sn: 
+  select pg_recover_to_snapshot( ( select recent_snapshot from pg_control_snapshot() ) );
+
+pg_recover_to_snapshot
+
+               
+step s1_check: 
+	select * from pg_indexes where tablename = 't1';
+	analyse t1;
+	select * from t1 where id % 4 = 3 order by field_to_sort limit 10;
+	select * from t1 order by field_to_sort limit 10 offset 5550;
+	select * from t1 where id = 5555;
+
+schemaname     tablename      indexname      tablespace     indexdef       
+
+public         t1             t1_id_idx                     CREATE UNIQUE INDEX t1_id_idx ON public.t1 USING btree (id)
+public         t1             t1_name_idx                   CREATE INDEX t1_name_idx ON public.t1 USING btree (name)
+public         t1             t1_id4_idx                    CREATE INDEX t1_id4_idx ON public.t1 USING btree (((id % 4)))
+id             name           field_to_sort  
+
+3              00003          3              
+7              00007          7              
+11             00011          11             
+15             00015          15             
+19             00019          19             
+23             00023          23             
+27             00027          27             
+31             00031          31             
+35             00035          35             
+39             00039          39             
+id             name           field_to_sort  
+
+7402           07402_upd_sess27402           
+7403           07403          7403           
+7404           07404_upd_sess17404           
+7406           07406_upd_sess27406           
+7407           07407          7407           
+7408           07408_upd_sess17408           
+7410           07410_upd_sess27410           
+7411           07411          7411           
+7412           07412_upd_sess17412           
+7414           07414_upd_sess27414           
+id             name           field_to_sort  
+
+5555           05555          5555           
+step s2_check: 
+	select * from pg_indexes where tablename = 't1';
+	analyse t1;
+	select * from t1 where id % 4 = 3 order by field_to_sort limit 10;
+	select * from t1 order by field_to_sort limit 10 offset 5550;
+	select * from t1 where id = 5555;
+
+schemaname     tablename      indexname      tablespace     indexdef       
+
+public         t1             t1_id_idx                     CREATE UNIQUE INDEX t1_id_idx ON public.t1 USING btree (id)
+public         t1             t1_name_idx                   CREATE INDEX t1_name_idx ON public.t1 USING btree (name)
+public         t1             t1_id4_idx                    CREATE INDEX t1_id4_idx ON public.t1 USING btree (((id % 4)))
+id             name           field_to_sort  
+
+3              00003          3              
+7              00007          7              
+11             00011          11             
+15             00015          15             
+19             00019          19             
+23             00023          23             
+27             00027          27             
+31             00031          31             
+35             00035          35             
+39             00039          39             
+id             name           field_to_sort  
+
+7402           07402_upd_sess27402           
+7403           07403          7403           
+7404           07404_upd_sess17404           
+7406           07406_upd_sess27406           
+7407           07407          7407           
+7408           07408_upd_sess17408           
+7410           07410_upd_sess27410           
+7411           07411          7411           
+7412           07412_upd_sess17412           
+7414           07414_upd_sess27414           
+id             name           field_to_sort  
+
+5555           05555          5555           
+step s3_rc_sn: 
+  select pg_recover_to_snapshot( ( select recent_snapshot from pg_control_snapshot() ) );
+
+pg_recover_to_snapshot
+
+               
+step s1_check: 
+	select * from pg_indexes where tablename = 't1';
+	analyse t1;
+	select * from t1 where id % 4 = 3 order by field_to_sort limit 10;
+	select * from t1 order by field_to_sort limit 10 offset 5550;
+	select * from t1 where id = 5555;
+
+schemaname     tablename      indexname      tablespace     indexdef       
+
+public         t1             t1_id_idx                     CREATE UNIQUE INDEX t1_id_idx ON public.t1 USING btree (id)
+public         t1             t1_name_idx                   CREATE INDEX t1_name_idx ON public.t1 USING btree (name)
+public         t1             t1_id4_idx                    CREATE INDEX t1_id4_idx ON public.t1 USING btree (((id % 4)))
+id             name           field_to_sort  
+
+3              00003          3              
+7              00007          7              
+11             00011          11             
+15             00015          15             
+19             00019          19             
+23             00023          23             
+27             00027          27             
+31             00031          31             
+35             00035          35             
+39             00039          39             
+id             name           field_to_sort  
+
+5551           05551          5551           
+5552           05552          5552           
+5553           05553          5553           
+5554           05554          5554           
+5555           05555          5555           
+5556           05556          5556           
+5557           05557          5557           
+5558           05558          5558           
+5559           05559          5559           
+5560           05560          5560           
+id             name           field_to_sort  
+
+5555           05555          5555           
+step s2_check: 
+	select * from pg_indexes where tablename = 't1';
+	analyse t1;
+	select * from t1 where id % 4 = 3 order by field_to_sort limit 10;
+	select * from t1 order by field_to_sort limit 10 offset 5550;
+	select * from t1 where id = 5555;
+
+schemaname     tablename      indexname      tablespace     indexdef       
+
+public         t1             t1_id_idx                     CREATE UNIQUE INDEX t1_id_idx ON public.t1 USING btree (id)
+public         t1             t1_name_idx                   CREATE INDEX t1_name_idx ON public.t1 USING btree (name)
+public         t1             t1_id4_idx                    CREATE INDEX t1_id4_idx ON public.t1 USING btree (((id % 4)))
+id             name           field_to_sort  
+
+3              00003          3              
+7              00007          7              
+11             00011          11             
+15             00015          15             
+19             00019          19             
+23             00023          23             
+27             00027          27             
+31             00031          31             
+35             00035          35             
+39             00039          39             
+id             name           field_to_sort  
+
+5551           05551          5551           
+5552           05552          5552           
+5553           05553          5553           
+5554           05554          5554           
+5555           05555          5555           
+5556           05556          5556           
+5557           05557          5557           
+5558           05558          5558           
+5559           05559          5559           
+5560           05560          5560           
+id             name           field_to_sort  
+
+5555           05555          5555           
+step s3_rc_sn: 
+  select pg_recover_to_snapshot( ( select recent_snapshot from pg_control_snapshot() ) );
+
+pg_recover_to_snapshot
+
+               
+step s1_check: 
+	select * from pg_indexes where tablename = 't1';
+	analyse t1;
+	select * from t1 where id % 4 = 3 order by field_to_sort limit 10;
+	select * from t1 order by field_to_sort limit 10 offset 5550;
+	select * from t1 where id = 5555;
+
+schemaname     tablename      indexname      tablespace     indexdef       
+
+public         t1             t1_id_idx                     CREATE UNIQUE INDEX t1_id_idx ON public.t1 USING btree (id)
+id             name           field_to_sort  
+
+3              00003          3              
+7              00007          7              
+11             00011          11             
+15             00015          15             
+19             00019          19             
+23             00023          23             
+27             00027          27             
+31             00031          31             
+35             00035          35             
+39             00039          39             
+id             name           field_to_sort  
+
+5551           05551          5551           
+5552           05552          5552           
+5553           05553          5553           
+5554           05554          5554           
+5555           05555          5555           
+5556           05556          5556           
+5557           05557          5557           
+5558           05558          5558           
+5559           05559          5559           
+5560           05560          5560           
+id             name           field_to_sort  
+
+5555           05555          5555           
+step s2_check: 
+	select * from pg_indexes where tablename = 't1';
+	analyse t1;
+	select * from t1 where id % 4 = 3 order by field_to_sort limit 10;
+	select * from t1 order by field_to_sort limit 10 offset 5550;
+	select * from t1 where id = 5555;
+
+schemaname     tablename      indexname      tablespace     indexdef       
+
+public         t1             t1_id_idx                     CREATE UNIQUE INDEX t1_id_idx ON public.t1 USING btree (id)
+id             name           field_to_sort  
+
+3              00003          3              
+7              00007          7              
+11             00011          11             
+15             00015          15             
+19             00019          19             
+23             00023          23             
+27             00027          27             
+31             00031          31             
+35             00035          35             
+39             00039          39             
+id             name           field_to_sort  
+
+5551           05551          5551           
+5552           05552          5552           
+5553           05553          5553           
+5554           05554          5554           
+5555           05555          5555           
+5556           05556          5556           
+5557           05557          5557           
+5558           05558          5558           
+5559           05559          5559           
+5560           05560          5560           
+id             name           field_to_sort  
+
+5555           05555          5555           
+step s3_mk_sn: 
+	select 1 from pg_make_snapshot();
+
+?column?       
+
+1              
