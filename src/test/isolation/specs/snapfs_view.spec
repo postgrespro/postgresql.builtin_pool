@@ -11,7 +11,7 @@ setup {
 teardown {
  select pg_switch_to_snapshot( 0 );
  select pg_remove_snapshot( ( select recent_snapshot from pg_control_snapshot() ) );
- DROP TABLE t1 CASCADE;
+ DROP TABLE IF EXISTS t1 CASCADE;
 }
 
 session "s1"
