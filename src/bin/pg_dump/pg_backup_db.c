@@ -107,6 +107,7 @@ ReconnectToServer(ArchiveHandle *AH, const char *dbname, const char *username)
 	/* Start strict; later phases may override this. */
 	PQclear(ExecuteSqlQueryForSingleRow((Archive *) AH,
 										ALWAYS_SECURE_SEARCH_PATH_SQL));
+
 }
 
 /*

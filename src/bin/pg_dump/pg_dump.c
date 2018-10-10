@@ -143,7 +143,7 @@ static const CatalogId nilCatalogId = {0, 0};
 static void help(const char *progname);
 static void setup_connection(Archive *AH,
 				 const char *dumpencoding, const char *dumpsnapshot,
-				 char *use_role);
+							 char *use_role, const char* snapfs_snapshot);
 static ArchiveFormat parseArchiveFormat(const char *format, ArchiveMode *mode);
 static void expand_schema_name_patterns(Archive *fout,
 							SimpleStringList *patterns,
@@ -305,6 +305,7 @@ main(int argc, char **argv)
 	Archive    *fout;			/* the script file */
 	const char *dumpencoding = NULL;
 	const char *dumpsnapshot = NULL;
+	const char *snapfs_snapshot = NULL;
 	char	   *use_role = NULL;
 	int			numWorkers = 1;
 	trivalue	prompt_password = TRI_DEFAULT;
@@ -367,6 +368,7 @@ main(int argc, char **argv)
 		{"section", required_argument, NULL, 5},
 		{"serializable-deferrable", no_argument, &dopt.serializable_deferrable, 1},
 		{"snapshot", required_argument, NULL, 6},
+		{"snapfs-snapshot", required_argument, NULL, 8},
 		{"strict-names", no_argument, &strict_names, 1},
 		{"use-set-session-authorization", no_argument, &dopt.use_setsessauth, 1},
 		{"no-comments", no_argument, &dopt.no_comments, 1},
@@ -561,6 +563,10 @@ main(int argc, char **argv)
 				dosync = false;
 				break;
 
+			case 8:				/* snapfs-snapshot */
+				snapfs_snapshot = pg_strdup(optarg);
+				break;
+
 			default:
 				fprintf(stderr, _("Try \"%s --help\" for more information.\n"), progname);
 				exit_nicely(1);
@@ -696,7 +702,7 @@ main(int argc, char **argv)
 	 * death.
 	 */
 	ConnectDatabase(fout, dopt.dbname, dopt.pghost, dopt.pgport, dopt.username, prompt_password);
-	setup_connection(fout, dumpencoding, dumpsnapshot, use_role);
+	setup_connection(fout, dumpencoding, dumpsnapshot, use_role, snapfs_snapshot);
 
 	/*
 	 * Disable security label support if server version < v9.1.x (prevents
@@ -996,6 +1002,7 @@ help(const char *progname)
 	printf(_("  --section=SECTION            dump named section (pre-data, data, or post-data)\n"));
 	printf(_("  --serializable-deferrable    wait until the dump can run without anomalies\n"));
 	printf(_("  --snapshot=SNAPSHOT          use given snapshot for the dump\n"));
+	printf(_("  --snapfs-snapshot=SNAPSHOT   use given SNAPFS snapshot for the dump\n"));
 	printf(_("  --strict-names               require table and/or schema include patterns to\n"
 			 "                               match at least one entity each\n"));
 	printf(_("  --use-set-session-authorization\n"
@@ -1018,7 +1025,7 @@ help(const char *progname)
 
 static void
 setup_connection(Archive *AH, const char *dumpencoding,
-				 const char *dumpsnapshot, char *use_role)
+				 const char *dumpsnapshot, char *use_role, const char *snapfs_snapshot)
 {
 	DumpOptions *dopt = AH->dopt;
 	PGconn	   *conn = GetConnection(AH);
@@ -1176,6 +1183,15 @@ setup_connection(Archive *AH, const char *dumpencoding,
 
 		AH->sync_snapshot_id = get_synchronized_snapshot(AH);
 	}
+	if (snapfs_snapshot)
+		AH->snapfs_snapshot_id = pg_strdup(snapfs_snapshot);
+
+	if (AH->snapfs_snapshot_id)
+	{
+		char sql[64];
+		sprintf(sql, "select pg_set_backend_snapshot(%s)", AH->snapfs_snapshot_id);
+		PQclear(ExecuteSqlQueryForSingleRow((Archive *) AH, sql));
+	}
 }
 
 /* Set up connection for a parallel worker process */
@@ -1190,6 +1206,7 @@ setupDumpWorker(Archive *AH)
 	 */
 	setup_connection(AH,
 					 pg_encoding_to_char(AH->encoding),
+					 NULL,
 					 NULL,
 					 NULL);
 }

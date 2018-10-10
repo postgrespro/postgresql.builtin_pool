@@ -194,6 +194,7 @@ typedef struct Archive
 
 	int			numWorkers;		/* number of parallel processes */
 	char	   *sync_snapshot_id;	/* sync snapshot id for parallel operation */
+	char	   *snapfs_snapshot_id;	/* snapfs snapshot id for parallel operation */
 
 	/* info needed for string escaping */
 	int			encoding;		/* libpq code for client_encoding */
