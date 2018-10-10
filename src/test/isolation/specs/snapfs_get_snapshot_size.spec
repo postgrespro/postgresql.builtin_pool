@@ -1,6 +1,6 @@
 teardown {
 	select pg_remove_snapshot( ( select recent_snapshot from pg_control_snapshot() ) );
-	drop table foo;
+	DROP TABLE IF EXISTS foo;
 }
 
 session "s1"

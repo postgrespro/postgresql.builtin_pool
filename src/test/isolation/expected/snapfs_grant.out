@@ -1,79 +1,6 @@
 Parsed test spec with 3 sessions
 
-starting permutation: s3_mk_sn s1_check s1_g_1 s1_check s3_sw_3 s1_check
-step s3_mk_sn: 
-	select 1 from pg_make_snapshot();
-
-?column?       
-
-1              
-step s1_check: 
-	SELECT grantee, grantor, privilege_type, ( select tableowner from pg_tables where ( table_schema || '.' || table_name ) = ( schemaname || '.' || tablename ) ) FROM information_schema.role_table_grants WHERE table_name = 't1' order by grantor, grantee, privilege_type;
-	select count(*) as cnt from t1;
-
-grantee        grantor        privilege_type tableowner     
-
-test_owner     test_owner     DELETE         test_owner     
-test_owner     test_owner     INSERT         test_owner     
-test_owner     test_owner     REFERENCES     test_owner     
-test_owner     test_owner     SELECT         test_owner     
-test_owner     test_owner     TRIGGER        test_owner     
-test_owner     test_owner     TRUNCATE       test_owner     
-test_owner     test_owner     UPDATE         test_owner     
-cnt            
-
-10             
-step s1_g_1: 
-	grant select, insert, update, delete on t1 to test_role1;
-
-step s1_check: 
-	SELECT grantee, grantor, privilege_type, ( select tableowner from pg_tables where ( table_schema || '.' || table_name ) = ( schemaname || '.' || tablename ) ) FROM information_schema.role_table_grants WHERE table_name = 't1' order by grantor, grantee, privilege_type;
-	select count(*) as cnt from t1;
-
-grantee        grantor        privilege_type tableowner     
-
-test_owner     test_owner     DELETE         test_owner     
-test_owner     test_owner     INSERT         test_owner     
-test_owner     test_owner     REFERENCES     test_owner     
-test_owner     test_owner     SELECT         test_owner     
-test_owner     test_owner     TRIGGER        test_owner     
-test_owner     test_owner     TRUNCATE       test_owner     
-test_owner     test_owner     UPDATE         test_owner     
-test_role1     test_owner     DELETE         test_owner     
-test_role1     test_owner     INSERT         test_owner     
-test_role1     test_owner     SELECT         test_owner     
-test_role1     test_owner     UPDATE         test_owner     
-cnt            
-
-10             
-step s3_sw_3: 
-	select pg_switch_to_snapshot( ( select recent_snapshot from pg_control_snapshot() ) );
-	select 'СМОТРЕТЬ НИЖЕ';
-
-pg_switch_to_snapshot
-
-               
-?column?       
-
-СМОТРЕТЬ НИЖЕ
-step s1_check: 
-	SELECT grantee, grantor, privilege_type, ( select tableowner from pg_tables where ( table_schema || '.' || table_name ) = ( schemaname || '.' || tablename ) ) FROM information_schema.role_table_grants WHERE table_name = 't1' order by grantor, grantee, privilege_type;
-	select count(*) as cnt from t1;
-
-grantee        grantor        privilege_type tableowner     
-
-test_owner     test_owner     DELETE         test_owner     
-test_owner     test_owner     INSERT         test_owner     
-test_owner     test_owner     REFERENCES     test_owner     
-test_owner     test_owner     SELECT         test_owner     
-test_owner     test_owner     TRIGGER        test_owner     
-test_owner     test_owner     TRUNCATE       test_owner     
-test_owner     test_owner     UPDATE         test_owner     
-cnt            
-
-10             
-
-starting permutation: s3_mk_sn s1_g_1 s3_mk_sn s1_g_2 s3_mk_sn s3_rc_sn_2 s1_check
+starting permutation: s3_mk_sn s1_g_1 s3_mk_sn s1_g_2 s1_g_3 s1_r_1 s3_mk_sn s1_r_2 s3_sw_1 s1_check s2_check s3_sw_2 s1_check s2_check s3_sw_3 s1_check s2_check s3_sw_0 s1_check s2_check
 step s3_mk_sn: 
 	select 1 from pg_make_snapshot();
 
@@ -81,7 +8,7 @@ step s3_mk_sn:
 
 1              
 step s1_g_1: 
-	grant select, insert, update, delete on t1 to test_role1;
+	grant select, insert, update, delete on t1 to regressuser1;
 
 step s3_mk_sn: 
 	select 1 from pg_make_snapshot();
@@ -90,9 +17,15 @@ step s3_mk_sn:
 
 1              
 step s1_g_2: 
-	alter table t1 owner to test_role2;
-	revoke all on t1 from test_role2;
-	grant select, update, insert, delete on t1 to test_role2;
+	alter table t1 owner to regressuser2;
+	revoke all on t1 from regressuser2;
+	grant select, update, insert, delete on t1 to regressuser2;
+
+step s1_g_3: 
+	grant select on t1 to regressuser3;
+
+step s1_r_1: 
+	revoke delete, insert on table t1 from regressuser1;
 
 step s3_mk_sn: 
 	select 1 from pg_make_snapshot();
@@ -100,6 +33,556 @@ step s3_mk_sn:
 ?column?       
 
 1              
+step s1_r_2: 
+	revoke delete, insert, update on table t1 from regressuser2;
+
+step s3_sw_1: 
+	select pg_switch_to_snapshot( ( select recent_snapshot - 2 from pg_control_snapshot() ) );
+
+pg_switch_to_snapshot
+
+               
+step s1_check: 
+	SELECT grantee, grantor, privilege_type, ( select tableowner from pg_tables where ( table_schema || '.' || table_name ) = ( schemaname || '.' || tablename ) ) FROM information_schema.role_table_grants WHERE table_name = 't1' order by grantor, grantee, privilege_type;
+	select count(*) as cnt from t1;
+
+grantee        grantor        privilege_type tableowner     
+
+regressuser0   regressuser0   DELETE         regressuser0   
+regressuser0   regressuser0   INSERT         regressuser0   
+regressuser0   regressuser0   REFERENCES     regressuser0   
+regressuser0   regressuser0   SELECT         regressuser0   
+regressuser0   regressuser0   TRIGGER        regressuser0   
+regressuser0   regressuser0   TRUNCATE       regressuser0   
+regressuser0   regressuser0   UPDATE         regressuser0   
+cnt            
+
+10             
+step s2_check: 
+	SELECT grantee, grantor, privilege_type, ( select tableowner from pg_tables where ( table_schema || '.' || table_name ) = ( schemaname || '.' || tablename ) ) FROM information_schema.role_table_grants WHERE table_name = 't1' order by grantor, grantee, privilege_type;
+	select count(*) as cnt from t1;
+
+grantee        grantor        privilege_type tableowner     
+
+regressuser0   regressuser0   DELETE         regressuser0   
+regressuser0   regressuser0   INSERT         regressuser0   
+regressuser0   regressuser0   REFERENCES     regressuser0   
+regressuser0   regressuser0   SELECT         regressuser0   
+regressuser0   regressuser0   TRIGGER        regressuser0   
+regressuser0   regressuser0   TRUNCATE       regressuser0   
+regressuser0   regressuser0   UPDATE         regressuser0   
+cnt            
+
+10             
+step s3_sw_2: 
+	select pg_switch_to_snapshot( ( select recent_snapshot - 1 from pg_control_snapshot() ) );
+
+pg_switch_to_snapshot
+
+               
+step s1_check: 
+	SELECT grantee, grantor, privilege_type, ( select tableowner from pg_tables where ( table_schema || '.' || table_name ) = ( schemaname || '.' || tablename ) ) FROM information_schema.role_table_grants WHERE table_name = 't1' order by grantor, grantee, privilege_type;
+	select count(*) as cnt from t1;
+
+grantee        grantor        privilege_type tableowner     
+
+regressuser0   regressuser0   DELETE         regressuser0   
+regressuser0   regressuser0   INSERT         regressuser0   
+regressuser0   regressuser0   REFERENCES     regressuser0   
+regressuser0   regressuser0   SELECT         regressuser0   
+regressuser0   regressuser0   TRIGGER        regressuser0   
+regressuser0   regressuser0   TRUNCATE       regressuser0   
+regressuser0   regressuser0   UPDATE         regressuser0   
+regressuser1   regressuser0   DELETE         regressuser0   
+regressuser1   regressuser0   INSERT         regressuser0   
+regressuser1   regressuser0   SELECT         regressuser0   
+regressuser1   regressuser0   UPDATE         regressuser0   
+cnt            
+
+10             
+step s2_check: 
+	SELECT grantee, grantor, privilege_type, ( select tableowner from pg_tables where ( table_schema || '.' || table_name ) = ( schemaname || '.' || tablename ) ) FROM information_schema.role_table_grants WHERE table_name = 't1' order by grantor, grantee, privilege_type;
+	select count(*) as cnt from t1;
+
+grantee        grantor        privilege_type tableowner     
+
+regressuser0   regressuser0   DELETE         regressuser0   
+regressuser0   regressuser0   INSERT         regressuser0   
+regressuser0   regressuser0   REFERENCES     regressuser0   
+regressuser0   regressuser0   SELECT         regressuser0   
+regressuser0   regressuser0   TRIGGER        regressuser0   
+regressuser0   regressuser0   TRUNCATE       regressuser0   
+regressuser0   regressuser0   UPDATE         regressuser0   
+regressuser1   regressuser0   DELETE         regressuser0   
+regressuser1   regressuser0   INSERT         regressuser0   
+regressuser1   regressuser0   SELECT         regressuser0   
+regressuser1   regressuser0   UPDATE         regressuser0   
+cnt            
+
+10             
+step s3_sw_3: 
+	select pg_switch_to_snapshot( ( select recent_snapshot from pg_control_snapshot() ) );
+
+pg_switch_to_snapshot
+
+               
+step s1_check: 
+	SELECT grantee, grantor, privilege_type, ( select tableowner from pg_tables where ( table_schema || '.' || table_name ) = ( schemaname || '.' || tablename ) ) FROM information_schema.role_table_grants WHERE table_name = 't1' order by grantor, grantee, privilege_type;
+	select count(*) as cnt from t1;
+
+grantee        grantor        privilege_type tableowner     
+
+regressuser1   regressuser2   SELECT         regressuser2   
+regressuser1   regressuser2   UPDATE         regressuser2   
+regressuser2   regressuser2   DELETE         regressuser2   
+regressuser2   regressuser2   INSERT         regressuser2   
+regressuser2   regressuser2   SELECT         regressuser2   
+regressuser2   regressuser2   UPDATE         regressuser2   
+regressuser3   regressuser2   SELECT         regressuser2   
+cnt            
+
+10             
+step s2_check: 
+	SELECT grantee, grantor, privilege_type, ( select tableowner from pg_tables where ( table_schema || '.' || table_name ) = ( schemaname || '.' || tablename ) ) FROM information_schema.role_table_grants WHERE table_name = 't1' order by grantor, grantee, privilege_type;
+	select count(*) as cnt from t1;
+
+grantee        grantor        privilege_type tableowner     
+
+regressuser1   regressuser2   SELECT         regressuser2   
+regressuser1   regressuser2   UPDATE         regressuser2   
+regressuser2   regressuser2   DELETE         regressuser2   
+regressuser2   regressuser2   INSERT         regressuser2   
+regressuser2   regressuser2   SELECT         regressuser2   
+regressuser2   regressuser2   UPDATE         regressuser2   
+regressuser3   regressuser2   SELECT         regressuser2   
+cnt            
+
+10             
+step s3_sw_0: 
+	select pg_switch_to_snapshot( 0 );
+
+pg_switch_to_snapshot
+
+               
+step s1_check: 
+	SELECT grantee, grantor, privilege_type, ( select tableowner from pg_tables where ( table_schema || '.' || table_name ) = ( schemaname || '.' || tablename ) ) FROM information_schema.role_table_grants WHERE table_name = 't1' order by grantor, grantee, privilege_type;
+	select count(*) as cnt from t1;
+
+grantee        grantor        privilege_type tableowner     
+
+regressuser1   regressuser2   SELECT         regressuser2   
+regressuser1   regressuser2   UPDATE         regressuser2   
+regressuser2   regressuser2   SELECT         regressuser2   
+regressuser3   regressuser2   SELECT         regressuser2   
+cnt            
+
+10             
+step s2_check: 
+	SELECT grantee, grantor, privilege_type, ( select tableowner from pg_tables where ( table_schema || '.' || table_name ) = ( schemaname || '.' || tablename ) ) FROM information_schema.role_table_grants WHERE table_name = 't1' order by grantor, grantee, privilege_type;
+	select count(*) as cnt from t1;
+
+grantee        grantor        privilege_type tableowner     
+
+regressuser1   regressuser2   SELECT         regressuser2   
+regressuser1   regressuser2   UPDATE         regressuser2   
+regressuser2   regressuser2   SELECT         regressuser2   
+regressuser3   regressuser2   SELECT         regressuser2   
+cnt            
+
+10             
+
+starting permutation: s3_mk_sn s1_g_1 s3_mk_sn s1_g_2 s1_g_3 s1_r_1 s3_mk_sn s1_r_2 s1_sb_1 s1_check s2_check s1_sb_2 s1_check s2_check s1_sb_3 s1_check s2_check s1_sb_0 s1_check s2_check
+step s3_mk_sn: 
+	select 1 from pg_make_snapshot();
+
+?column?       
+
+1              
+step s1_g_1: 
+	grant select, insert, update, delete on t1 to regressuser1;
+
+step s3_mk_sn: 
+	select 1 from pg_make_snapshot();
+
+?column?       
+
+1              
+step s1_g_2: 
+	alter table t1 owner to regressuser2;
+	revoke all on t1 from regressuser2;
+	grant select, update, insert, delete on t1 to regressuser2;
+
+step s1_g_3: 
+	grant select on t1 to regressuser3;
+
+step s1_r_1: 
+	revoke delete, insert on table t1 from regressuser1;
+
+step s3_mk_sn: 
+	select 1 from pg_make_snapshot();
+
+?column?       
+
+1              
+step s1_r_2: 
+	revoke delete, insert, update on table t1 from regressuser2;
+
+step s1_sb_1: 
+	select pg_set_backend_snapshot( ( select recent_snapshot - 2 from pg_control_snapshot() ) );
+
+pg_set_backend_snapshot
+
+               
+step s1_check: 
+	SELECT grantee, grantor, privilege_type, ( select tableowner from pg_tables where ( table_schema || '.' || table_name ) = ( schemaname || '.' || tablename ) ) FROM information_schema.role_table_grants WHERE table_name = 't1' order by grantor, grantee, privilege_type;
+	select count(*) as cnt from t1;
+
+grantee        grantor        privilege_type tableowner     
+
+regressuser0   regressuser0   DELETE         regressuser0   
+regressuser0   regressuser0   INSERT         regressuser0   
+regressuser0   regressuser0   REFERENCES     regressuser0   
+regressuser0   regressuser0   SELECT         regressuser0   
+regressuser0   regressuser0   TRIGGER        regressuser0   
+regressuser0   regressuser0   TRUNCATE       regressuser0   
+regressuser0   regressuser0   UPDATE         regressuser0   
+cnt            
+
+10             
+step s2_check: 
+	SELECT grantee, grantor, privilege_type, ( select tableowner from pg_tables where ( table_schema || '.' || table_name ) = ( schemaname || '.' || tablename ) ) FROM information_schema.role_table_grants WHERE table_name = 't1' order by grantor, grantee, privilege_type;
+	select count(*) as cnt from t1;
+
+grantee        grantor        privilege_type tableowner     
+
+regressuser1   regressuser2   SELECT         regressuser2   
+regressuser1   regressuser2   UPDATE         regressuser2   
+regressuser2   regressuser2   SELECT         regressuser2   
+regressuser3   regressuser2   SELECT         regressuser2   
+cnt            
+
+10             
+step s1_sb_2: 
+	select pg_set_backend_snapshot( ( select recent_snapshot - 1 from pg_control_snapshot() ) );
+
+pg_set_backend_snapshot
+
+               
+step s1_check: 
+	SELECT grantee, grantor, privilege_type, ( select tableowner from pg_tables where ( table_schema || '.' || table_name ) = ( schemaname || '.' || tablename ) ) FROM information_schema.role_table_grants WHERE table_name = 't1' order by grantor, grantee, privilege_type;
+	select count(*) as cnt from t1;
+
+grantee        grantor        privilege_type tableowner     
+
+regressuser0   regressuser0   DELETE         regressuser0   
+regressuser0   regressuser0   INSERT         regressuser0   
+regressuser0   regressuser0   REFERENCES     regressuser0   
+regressuser0   regressuser0   SELECT         regressuser0   
+regressuser0   regressuser0   TRIGGER        regressuser0   
+regressuser0   regressuser0   TRUNCATE       regressuser0   
+regressuser0   regressuser0   UPDATE         regressuser0   
+regressuser1   regressuser0   DELETE         regressuser0   
+regressuser1   regressuser0   INSERT         regressuser0   
+regressuser1   regressuser0   SELECT         regressuser0   
+regressuser1   regressuser0   UPDATE         regressuser0   
+cnt            
+
+10             
+step s2_check: 
+	SELECT grantee, grantor, privilege_type, ( select tableowner from pg_tables where ( table_schema || '.' || table_name ) = ( schemaname || '.' || tablename ) ) FROM information_schema.role_table_grants WHERE table_name = 't1' order by grantor, grantee, privilege_type;
+	select count(*) as cnt from t1;
+
+grantee        grantor        privilege_type tableowner     
+
+regressuser1   regressuser2   SELECT         regressuser2   
+regressuser1   regressuser2   UPDATE         regressuser2   
+regressuser2   regressuser2   SELECT         regressuser2   
+regressuser3   regressuser2   SELECT         regressuser2   
+cnt            
+
+10             
+step s1_sb_3: 
+	select pg_set_backend_snapshot( ( select recent_snapshot from pg_control_snapshot() ) );
+
+pg_set_backend_snapshot
+
+               
+step s1_check: 
+	SELECT grantee, grantor, privilege_type, ( select tableowner from pg_tables where ( table_schema || '.' || table_name ) = ( schemaname || '.' || tablename ) ) FROM information_schema.role_table_grants WHERE table_name = 't1' order by grantor, grantee, privilege_type;
+	select count(*) as cnt from t1;
+
+grantee        grantor        privilege_type tableowner     
+
+regressuser1   regressuser2   SELECT         regressuser2   
+regressuser1   regressuser2   UPDATE         regressuser2   
+regressuser2   regressuser2   DELETE         regressuser2   
+regressuser2   regressuser2   INSERT         regressuser2   
+regressuser2   regressuser2   SELECT         regressuser2   
+regressuser2   regressuser2   UPDATE         regressuser2   
+regressuser3   regressuser2   SELECT         regressuser2   
+cnt            
+
+10             
+step s2_check: 
+	SELECT grantee, grantor, privilege_type, ( select tableowner from pg_tables where ( table_schema || '.' || table_name ) = ( schemaname || '.' || tablename ) ) FROM information_schema.role_table_grants WHERE table_name = 't1' order by grantor, grantee, privilege_type;
+	select count(*) as cnt from t1;
+
+grantee        grantor        privilege_type tableowner     
+
+regressuser1   regressuser2   SELECT         regressuser2   
+regressuser1   regressuser2   UPDATE         regressuser2   
+regressuser2   regressuser2   SELECT         regressuser2   
+regressuser3   regressuser2   SELECT         regressuser2   
+cnt            
+
+10             
+step s1_sb_0: 
+	select pg_set_backend_snapshot( 0 );
+
+pg_set_backend_snapshot
+
+               
+step s1_check: 
+	SELECT grantee, grantor, privilege_type, ( select tableowner from pg_tables where ( table_schema || '.' || table_name ) = ( schemaname || '.' || tablename ) ) FROM information_schema.role_table_grants WHERE table_name = 't1' order by grantor, grantee, privilege_type;
+	select count(*) as cnt from t1;
+
+grantee        grantor        privilege_type tableowner     
+
+regressuser1   regressuser2   SELECT         regressuser2   
+regressuser1   regressuser2   UPDATE         regressuser2   
+regressuser2   regressuser2   SELECT         regressuser2   
+regressuser3   regressuser2   SELECT         regressuser2   
+cnt            
+
+10             
+step s2_check: 
+	SELECT grantee, grantor, privilege_type, ( select tableowner from pg_tables where ( table_schema || '.' || table_name ) = ( schemaname || '.' || tablename ) ) FROM information_schema.role_table_grants WHERE table_name = 't1' order by grantor, grantee, privilege_type;
+	select count(*) as cnt from t1;
+
+grantee        grantor        privilege_type tableowner     
+
+regressuser1   regressuser2   SELECT         regressuser2   
+regressuser1   regressuser2   UPDATE         regressuser2   
+regressuser2   regressuser2   SELECT         regressuser2   
+regressuser3   regressuser2   SELECT         regressuser2   
+cnt            
+
+10             
+
+starting permutation: s3_mk_sn s1_g_1 s3_mk_sn s1_g_2 s1_g_3 s1_r_1 s3_mk_sn s1_r_2 s2_sb_1 s1_check s2_check s2_sb_2 s1_check s2_check s2_sb_3 s1_check s2_check s2_sb_0 s1_check s2_check
+step s3_mk_sn: 
+	select 1 from pg_make_snapshot();
+
+?column?       
+
+1              
+step s1_g_1: 
+	grant select, insert, update, delete on t1 to regressuser1;
+
+step s3_mk_sn: 
+	select 1 from pg_make_snapshot();
+
+?column?       
+
+1              
+step s1_g_2: 
+	alter table t1 owner to regressuser2;
+	revoke all on t1 from regressuser2;
+	grant select, update, insert, delete on t1 to regressuser2;
+
+step s1_g_3: 
+	grant select on t1 to regressuser3;
+
+step s1_r_1: 
+	revoke delete, insert on table t1 from regressuser1;
+
+step s3_mk_sn: 
+	select 1 from pg_make_snapshot();
+
+?column?       
+
+1              
+step s1_r_2: 
+	revoke delete, insert, update on table t1 from regressuser2;
+
+step s2_sb_1: 
+	select pg_set_backend_snapshot( ( select recent_snapshot - 2 from pg_control_snapshot() ) );
+
+pg_set_backend_snapshot
+
+               
+step s1_check: 
+	SELECT grantee, grantor, privilege_type, ( select tableowner from pg_tables where ( table_schema || '.' || table_name ) = ( schemaname || '.' || tablename ) ) FROM information_schema.role_table_grants WHERE table_name = 't1' order by grantor, grantee, privilege_type;
+	select count(*) as cnt from t1;
+
+grantee        grantor        privilege_type tableowner     
+
+regressuser1   regressuser2   SELECT         regressuser2   
+regressuser1   regressuser2   UPDATE         regressuser2   
+regressuser2   regressuser2   SELECT         regressuser2   
+regressuser3   regressuser2   SELECT         regressuser2   
+cnt            
+
+10             
+step s2_check: 
+	SELECT grantee, grantor, privilege_type, ( select tableowner from pg_tables where ( table_schema || '.' || table_name ) = ( schemaname || '.' || tablename ) ) FROM information_schema.role_table_grants WHERE table_name = 't1' order by grantor, grantee, privilege_type;
+	select count(*) as cnt from t1;
+
+grantee        grantor        privilege_type tableowner     
+
+regressuser0   regressuser0   DELETE         regressuser0   
+regressuser0   regressuser0   INSERT         regressuser0   
+regressuser0   regressuser0   REFERENCES     regressuser0   
+regressuser0   regressuser0   SELECT         regressuser0   
+regressuser0   regressuser0   TRIGGER        regressuser0   
+regressuser0   regressuser0   TRUNCATE       regressuser0   
+regressuser0   regressuser0   UPDATE         regressuser0   
+cnt            
+
+10             
+step s2_sb_2: 
+	select pg_set_backend_snapshot( ( select recent_snapshot - 1 from pg_control_snapshot() ) );
+
+pg_set_backend_snapshot
+
+               
+step s1_check: 
+	SELECT grantee, grantor, privilege_type, ( select tableowner from pg_tables where ( table_schema || '.' || table_name ) = ( schemaname || '.' || tablename ) ) FROM information_schema.role_table_grants WHERE table_name = 't1' order by grantor, grantee, privilege_type;
+	select count(*) as cnt from t1;
+
+grantee        grantor        privilege_type tableowner     
+
+regressuser1   regressuser2   SELECT         regressuser2   
+regressuser1   regressuser2   UPDATE         regressuser2   
+regressuser2   regressuser2   SELECT         regressuser2   
+regressuser3   regressuser2   SELECT         regressuser2   
+cnt            
+
+10             
+step s2_check: 
+	SELECT grantee, grantor, privilege_type, ( select tableowner from pg_tables where ( table_schema || '.' || table_name ) = ( schemaname || '.' || tablename ) ) FROM information_schema.role_table_grants WHERE table_name = 't1' order by grantor, grantee, privilege_type;
+	select count(*) as cnt from t1;
+
+grantee        grantor        privilege_type tableowner     
+
+regressuser0   regressuser0   DELETE         regressuser0   
+regressuser0   regressuser0   INSERT         regressuser0   
+regressuser0   regressuser0   REFERENCES     regressuser0   
+regressuser0   regressuser0   SELECT         regressuser0   
+regressuser0   regressuser0   TRIGGER        regressuser0   
+regressuser0   regressuser0   TRUNCATE       regressuser0   
+regressuser0   regressuser0   UPDATE         regressuser0   
+regressuser1   regressuser0   DELETE         regressuser0   
+regressuser1   regressuser0   INSERT         regressuser0   
+regressuser1   regressuser0   SELECT         regressuser0   
+regressuser1   regressuser0   UPDATE         regressuser0   
+cnt            
+
+10             
+step s2_sb_3: 
+	select pg_set_backend_snapshot( ( select recent_snapshot from pg_control_snapshot() ) );
+
+pg_set_backend_snapshot
+
+               
+step s1_check: 
+	SELECT grantee, grantor, privilege_type, ( select tableowner from pg_tables where ( table_schema || '.' || table_name ) = ( schemaname || '.' || tablename ) ) FROM information_schema.role_table_grants WHERE table_name = 't1' order by grantor, grantee, privilege_type;
+	select count(*) as cnt from t1;
+
+grantee        grantor        privilege_type tableowner     
+
+regressuser1   regressuser2   SELECT         regressuser2   
+regressuser1   regressuser2   UPDATE         regressuser2   
+regressuser2   regressuser2   SELECT         regressuser2   
+regressuser3   regressuser2   SELECT         regressuser2   
+cnt            
+
+10             
+step s2_check: 
+	SELECT grantee, grantor, privilege_type, ( select tableowner from pg_tables where ( table_schema || '.' || table_name ) = ( schemaname || '.' || tablename ) ) FROM information_schema.role_table_grants WHERE table_name = 't1' order by grantor, grantee, privilege_type;
+	select count(*) as cnt from t1;
+
+grantee        grantor        privilege_type tableowner     
+
+regressuser1   regressuser2   SELECT         regressuser2   
+regressuser1   regressuser2   UPDATE         regressuser2   
+regressuser2   regressuser2   DELETE         regressuser2   
+regressuser2   regressuser2   INSERT         regressuser2   
+regressuser2   regressuser2   SELECT         regressuser2   
+regressuser2   regressuser2   UPDATE         regressuser2   
+regressuser3   regressuser2   SELECT         regressuser2   
+cnt            
+
+10             
+step s2_sb_0: 
+	select pg_set_backend_snapshot( 0 );
+
+pg_set_backend_snapshot
+
+               
+step s1_check: 
+	SELECT grantee, grantor, privilege_type, ( select tableowner from pg_tables where ( table_schema || '.' || table_name ) = ( schemaname || '.' || tablename ) ) FROM information_schema.role_table_grants WHERE table_name = 't1' order by grantor, grantee, privilege_type;
+	select count(*) as cnt from t1;
+
+grantee        grantor        privilege_type tableowner     
+
+regressuser1   regressuser2   SELECT         regressuser2   
+regressuser1   regressuser2   UPDATE         regressuser2   
+regressuser2   regressuser2   SELECT         regressuser2   
+regressuser3   regressuser2   SELECT         regressuser2   
+cnt            
+
+10             
+step s2_check: 
+	SELECT grantee, grantor, privilege_type, ( select tableowner from pg_tables where ( table_schema || '.' || table_name ) = ( schemaname || '.' || tablename ) ) FROM information_schema.role_table_grants WHERE table_name = 't1' order by grantor, grantee, privilege_type;
+	select count(*) as cnt from t1;
+
+grantee        grantor        privilege_type tableowner     
+
+regressuser1   regressuser2   SELECT         regressuser2   
+regressuser1   regressuser2   UPDATE         regressuser2   
+regressuser2   regressuser2   SELECT         regressuser2   
+regressuser3   regressuser2   SELECT         regressuser2   
+cnt            
+
+10             
+
+starting permutation: s3_mk_sn s1_g_1 s3_mk_sn s1_g_2 s1_g_3 s1_r_1 s3_mk_sn s1_r_2 s3_rc_sn_2 s1_check s2_check
+step s3_mk_sn: 
+	select 1 from pg_make_snapshot();
+
+?column?       
+
+1              
+step s1_g_1: 
+	grant select, insert, update, delete on t1 to regressuser1;
+
+step s3_mk_sn: 
+	select 1 from pg_make_snapshot();
+
+?column?       
+
+1              
+step s1_g_2: 
+	alter table t1 owner to regressuser2;
+	revoke all on t1 from regressuser2;
+	grant select, update, insert, delete on t1 to regressuser2;
+
+step s1_g_3: 
+	grant select on t1 to regressuser3;
+
+step s1_r_1: 
+	revoke delete, insert on table t1 from regressuser1;
+
+step s3_mk_sn: 
+	select 1 from pg_make_snapshot();
+
+?column?       
+
+1              
+step s1_r_2: 
+	revoke delete, insert, update on table t1 from regressuser2;
+
 step s3_rc_sn_2: 
   select pg_recover_to_snapshot( ( select recent_snapshot - 1 from pg_control_snapshot() ) );
 
@@ -112,95 +595,42 @@ step s1_check:
 
 grantee        grantor        privilege_type tableowner     
 
-test_owner     test_owner     DELETE         test_owner     
-test_owner     test_owner     INSERT         test_owner     
-test_owner     test_owner     REFERENCES     test_owner     
-test_owner     test_owner     SELECT         test_owner     
-test_owner     test_owner     TRIGGER        test_owner     
-test_owner     test_owner     TRUNCATE       test_owner     
-test_owner     test_owner     UPDATE         test_owner     
-test_role1     test_owner     DELETE         test_owner     
-test_role1     test_owner     INSERT         test_owner     
-test_role1     test_owner     SELECT         test_owner     
-test_role1     test_owner     UPDATE         test_owner     
+regressuser0   regressuser0   DELETE         regressuser0   
+regressuser0   regressuser0   INSERT         regressuser0   
+regressuser0   regressuser0   REFERENCES     regressuser0   
+regressuser0   regressuser0   SELECT         regressuser0   
+regressuser0   regressuser0   TRIGGER        regressuser0   
+regressuser0   regressuser0   TRUNCATE       regressuser0   
+regressuser0   regressuser0   UPDATE         regressuser0   
+regressuser1   regressuser0   DELETE         regressuser0   
+regressuser1   regressuser0   INSERT         regressuser0   
+regressuser1   regressuser0   SELECT         regressuser0   
+regressuser1   regressuser0   UPDATE         regressuser0   
 cnt            
 
 10             
-
-starting permutation: s3_mk_sn s1_check s1_g_1 s1_check s3_sw_3 s1_check
-step s3_mk_sn: 
-	select 1 from pg_make_snapshot();
-
-?column?       
-
-1              
-step s1_check: 
+step s2_check: 
 	SELECT grantee, grantor, privilege_type, ( select tableowner from pg_tables where ( table_schema || '.' || table_name ) = ( schemaname || '.' || tablename ) ) FROM information_schema.role_table_grants WHERE table_name = 't1' order by grantor, grantee, privilege_type;
 	select count(*) as cnt from t1;
 
 grantee        grantor        privilege_type tableowner     
 
-test_owner     test_owner     DELETE         test_owner     
-test_owner     test_owner     INSERT         test_owner     
-test_owner     test_owner     REFERENCES     test_owner     
-test_owner     test_owner     SELECT         test_owner     
-test_owner     test_owner     TRIGGER        test_owner     
-test_owner     test_owner     TRUNCATE       test_owner     
-test_owner     test_owner     UPDATE         test_owner     
-cnt            
-
-10             
-step s1_g_1: 
-	grant select, insert, update, delete on t1 to test_role1;
-
-step s1_check: 
-	SELECT grantee, grantor, privilege_type, ( select tableowner from pg_tables where ( table_schema || '.' || table_name ) = ( schemaname || '.' || tablename ) ) FROM information_schema.role_table_grants WHERE table_name = 't1' order by grantor, grantee, privilege_type;
-	select count(*) as cnt from t1;
-
-grantee        grantor        privilege_type tableowner     
-
-test_owner     test_owner     DELETE         test_owner     
-test_owner     test_owner     INSERT         test_owner     
-test_owner     test_owner     REFERENCES     test_owner     
-test_owner     test_owner     SELECT         test_owner     
-test_owner     test_owner     TRIGGER        test_owner     
-test_owner     test_owner     TRUNCATE       test_owner     
-test_owner     test_owner     UPDATE         test_owner     
-test_role1     test_owner     DELETE         test_owner     
-test_role1     test_owner     INSERT         test_owner     
-test_role1     test_owner     SELECT         test_owner     
-test_role1     test_owner     UPDATE         test_owner     
-cnt            
-
-10             
-step s3_sw_3: 
-	select pg_switch_to_snapshot( ( select recent_snapshot from pg_control_snapshot() ) );
-	select 'СМОТРЕТЬ НИЖЕ';
-
-pg_switch_to_snapshot
-
-               
-?column?       
-
-СМОТРЕТЬ НИЖЕ
-step s1_check: 
-	SELECT grantee, grantor, privilege_type, ( select tableowner from pg_tables where ( table_schema || '.' || table_name ) = ( schemaname || '.' || tablename ) ) FROM information_schema.role_table_grants WHERE table_name = 't1' order by grantor, grantee, privilege_type;
-	select count(*) as cnt from t1;
-
-grantee        grantor        privilege_type tableowner     
-
-test_owner     test_owner     DELETE         test_owner     
-test_owner     test_owner     INSERT         test_owner     
-test_owner     test_owner     REFERENCES     test_owner     
-test_owner     test_owner     SELECT         test_owner     
-test_owner     test_owner     TRIGGER        test_owner     
-test_owner     test_owner     TRUNCATE       test_owner     
-test_owner     test_owner     UPDATE         test_owner     
+regressuser0   regressuser0   DELETE         regressuser0   
+regressuser0   regressuser0   INSERT         regressuser0   
+regressuser0   regressuser0   REFERENCES     regressuser0   
+regressuser0   regressuser0   SELECT         regressuser0   
+regressuser0   regressuser0   TRIGGER        regressuser0   
+regressuser0   regressuser0   TRUNCATE       regressuser0   
+regressuser0   regressuser0   UPDATE         regressuser0   
+regressuser1   regressuser0   DELETE         regressuser0   
+regressuser1   regressuser0   INSERT         regressuser0   
+regressuser1   regressuser0   SELECT         regressuser0   
+regressuser1   regressuser0   UPDATE         regressuser0   
 cnt            
 
 10             
 
-starting permutation: s3_mk_sn s1_g_1 s3_mk_sn s1_g_2 s3_mk_sn s3_rc_sn s1_check
+starting permutation: s3_mk_sn s1_g_1 s3_mk_sn s1_g_2 s1_g_3 s1_r_1 s3_mk_sn s1_r_2 s3_rc_sn s1_check s2_check s3_rc_sn s1_check s2_check s3_rc_sn s1_check s2_check s3_mk_sn
 step s3_mk_sn: 
 	select 1 from pg_make_snapshot();
 
@@ -208,7 +638,7 @@ step s3_mk_sn:
 
 1              
 step s1_g_1: 
-	grant select, insert, update, delete on t1 to test_role1;
+	grant select, insert, update, delete on t1 to regressuser1;
 
 step s3_mk_sn: 
 	select 1 from pg_make_snapshot();
@@ -217,9 +647,15 @@ step s3_mk_sn:
 
 1              
 step s1_g_2: 
-	alter table t1 owner to test_role2;
-	revoke all on t1 from test_role2;
-	grant select, update, insert, delete on t1 to test_role2;
+	alter table t1 owner to regressuser2;
+	revoke all on t1 from regressuser2;
+	grant select, update, insert, delete on t1 to regressuser2;
+
+step s1_g_3: 
+	grant select on t1 to regressuser3;
+
+step s1_r_1: 
+	revoke delete, insert on table t1 from regressuser1;
 
 step s3_mk_sn: 
 	select 1 from pg_make_snapshot();
@@ -227,6 +663,9 @@ step s3_mk_sn:
 ?column?       
 
 1              
+step s1_r_2: 
+	revoke delete, insert, update on table t1 from regressuser2;
+
 step s3_rc_sn: 
   select pg_recover_to_snapshot( ( select recent_snapshot from pg_control_snapshot() ) );
 
@@ -239,87 +678,119 @@ step s1_check:
 
 grantee        grantor        privilege_type tableowner     
 
-test_role1     test_role2     DELETE         test_role2     
-test_role1     test_role2     INSERT         test_role2     
-test_role1     test_role2     SELECT         test_role2     
-test_role1     test_role2     UPDATE         test_role2     
-test_role2     test_role2     DELETE         test_role2     
-test_role2     test_role2     INSERT         test_role2     
-test_role2     test_role2     SELECT         test_role2     
-test_role2     test_role2     UPDATE         test_role2     
+regressuser1   regressuser2   SELECT         regressuser2   
+regressuser1   regressuser2   UPDATE         regressuser2   
+regressuser2   regressuser2   DELETE         regressuser2   
+regressuser2   regressuser2   INSERT         regressuser2   
+regressuser2   regressuser2   SELECT         regressuser2   
+regressuser2   regressuser2   UPDATE         regressuser2   
+regressuser3   regressuser2   SELECT         regressuser2   
 cnt            
 
 10             
+step s2_check: 
+	SELECT grantee, grantor, privilege_type, ( select tableowner from pg_tables where ( table_schema || '.' || table_name ) = ( schemaname || '.' || tablename ) ) FROM information_schema.role_table_grants WHERE table_name = 't1' order by grantor, grantee, privilege_type;
+	select count(*) as cnt from t1;
 
-starting permutation: s3_mk_sn s1_check s1_g_1 s1_check s3_sw_3 s1_check
+grantee        grantor        privilege_type tableowner     
+
+regressuser1   regressuser2   SELECT         regressuser2   
+regressuser1   regressuser2   UPDATE         regressuser2   
+regressuser2   regressuser2   DELETE         regressuser2   
+regressuser2   regressuser2   INSERT         regressuser2   
+regressuser2   regressuser2   SELECT         regressuser2   
+regressuser2   regressuser2   UPDATE         regressuser2   
+regressuser3   regressuser2   SELECT         regressuser2   
+cnt            
+
+10             
+step s3_rc_sn: 
+  select pg_recover_to_snapshot( ( select recent_snapshot from pg_control_snapshot() ) );
+
+pg_recover_to_snapshot
+
+               
+step s1_check: 
+	SELECT grantee, grantor, privilege_type, ( select tableowner from pg_tables where ( table_schema || '.' || table_name ) = ( schemaname || '.' || tablename ) ) FROM information_schema.role_table_grants WHERE table_name = 't1' order by grantor, grantee, privilege_type;
+	select count(*) as cnt from t1;
+
+grantee        grantor        privilege_type tableowner     
+
+regressuser0   regressuser0   DELETE         regressuser0   
+regressuser0   regressuser0   INSERT         regressuser0   
+regressuser0   regressuser0   REFERENCES     regressuser0   
+regressuser0   regressuser0   SELECT         regressuser0   
+regressuser0   regressuser0   TRIGGER        regressuser0   
+regressuser0   regressuser0   TRUNCATE       regressuser0   
+regressuser0   regressuser0   UPDATE         regressuser0   
+regressuser1   regressuser0   DELETE         regressuser0   
+regressuser1   regressuser0   INSERT         regressuser0   
+regressuser1   regressuser0   SELECT         regressuser0   
+regressuser1   regressuser0   UPDATE         regressuser0   
+cnt            
+
+10             
+step s2_check: 
+	SELECT grantee, grantor, privilege_type, ( select tableowner from pg_tables where ( table_schema || '.' || table_name ) = ( schemaname || '.' || tablename ) ) FROM information_schema.role_table_grants WHERE table_name = 't1' order by grantor, grantee, privilege_type;
+	select count(*) as cnt from t1;
+
+grantee        grantor        privilege_type tableowner     
+
+regressuser0   regressuser0   DELETE         regressuser0   
+regressuser0   regressuser0   INSERT         regressuser0   
+regressuser0   regressuser0   REFERENCES     regressuser0   
+regressuser0   regressuser0   SELECT         regressuser0   
+regressuser0   regressuser0   TRIGGER        regressuser0   
+regressuser0   regressuser0   TRUNCATE       regressuser0   
+regressuser0   regressuser0   UPDATE         regressuser0   
+regressuser1   regressuser0   DELETE         regressuser0   
+regressuser1   regressuser0   INSERT         regressuser0   
+regressuser1   regressuser0   SELECT         regressuser0   
+regressuser1   regressuser0   UPDATE         regressuser0   
+cnt            
+
+10             
+step s3_rc_sn: 
+  select pg_recover_to_snapshot( ( select recent_snapshot from pg_control_snapshot() ) );
+
+pg_recover_to_snapshot
+
+               
+step s1_check: 
+	SELECT grantee, grantor, privilege_type, ( select tableowner from pg_tables where ( table_schema || '.' || table_name ) = ( schemaname || '.' || tablename ) ) FROM information_schema.role_table_grants WHERE table_name = 't1' order by grantor, grantee, privilege_type;
+	select count(*) as cnt from t1;
+
+grantee        grantor        privilege_type tableowner     
+
+regressuser0   regressuser0   DELETE         regressuser0   
+regressuser0   regressuser0   INSERT         regressuser0   
+regressuser0   regressuser0   REFERENCES     regressuser0   
+regressuser0   regressuser0   SELECT         regressuser0   
+regressuser0   regressuser0   TRIGGER        regressuser0   
+regressuser0   regressuser0   TRUNCATE       regressuser0   
+regressuser0   regressuser0   UPDATE         regressuser0   
+cnt            
+
+10             
+step s2_check: 
+	SELECT grantee, grantor, privilege_type, ( select tableowner from pg_tables where ( table_schema || '.' || table_name ) = ( schemaname || '.' || tablename ) ) FROM information_schema.role_table_grants WHERE table_name = 't1' order by grantor, grantee, privilege_type;
+	select count(*) as cnt from t1;
+
+grantee        grantor        privilege_type tableowner     
+
+regressuser0   regressuser0   DELETE         regressuser0   
+regressuser0   regressuser0   INSERT         regressuser0   
+regressuser0   regressuser0   REFERENCES     regressuser0   
+regressuser0   regressuser0   SELECT         regressuser0   
+regressuser0   regressuser0   TRIGGER        regressuser0   
+regressuser0   regressuser0   TRUNCATE       regressuser0   
+regressuser0   regressuser0   UPDATE         regressuser0   
+cnt            
+
+10             
 step s3_mk_sn: 
 	select 1 from pg_make_snapshot();
 
 ?column?       
 
 1              
-step s1_check: 
-	SELECT grantee, grantor, privilege_type, ( select tableowner from pg_tables where ( table_schema || '.' || table_name ) = ( schemaname || '.' || tablename ) ) FROM information_schema.role_table_grants WHERE table_name = 't1' order by grantor, grantee, privilege_type;
-	select count(*) as cnt from t1;
-
-grantee        grantor        privilege_type tableowner     
-
-test_owner     test_owner     DELETE         test_owner     
-test_owner     test_owner     INSERT         test_owner     
-test_owner     test_owner     REFERENCES     test_owner     
-test_owner     test_owner     SELECT         test_owner     
-test_owner     test_owner     TRIGGER        test_owner     
-test_owner     test_owner     TRUNCATE       test_owner     
-test_owner     test_owner     UPDATE         test_owner     
-cnt            
-
-10             
-step s1_g_1: 
-	grant select, insert, update, delete on t1 to test_role1;
-
-step s1_check: 
-	SELECT grantee, grantor, privilege_type, ( select tableowner from pg_tables where ( table_schema || '.' || table_name ) = ( schemaname || '.' || tablename ) ) FROM information_schema.role_table_grants WHERE table_name = 't1' order by grantor, grantee, privilege_type;
-	select count(*) as cnt from t1;
-
-grantee        grantor        privilege_type tableowner     
-
-test_owner     test_owner     DELETE         test_owner     
-test_owner     test_owner     INSERT         test_owner     
-test_owner     test_owner     REFERENCES     test_owner     
-test_owner     test_owner     SELECT         test_owner     
-test_owner     test_owner     TRIGGER        test_owner     
-test_owner     test_owner     TRUNCATE       test_owner     
-test_owner     test_owner     UPDATE         test_owner     
-test_role1     test_owner     DELETE         test_owner     
-test_role1     test_owner     INSERT         test_owner     
-test_role1     test_owner     SELECT         test_owner     
-test_role1     test_owner     UPDATE         test_owner     
-cnt            
-
-10             
-step s3_sw_3: 
-	select pg_switch_to_snapshot( ( select recent_snapshot from pg_control_snapshot() ) );
-	select 'СМОТРЕТЬ НИЖЕ';
-
-pg_switch_to_snapshot
-
-               
-?column?       
-
-СМОТРЕТЬ НИЖЕ
-step s1_check: 
-	SELECT grantee, grantor, privilege_type, ( select tableowner from pg_tables where ( table_schema || '.' || table_name ) = ( schemaname || '.' || tablename ) ) FROM information_schema.role_table_grants WHERE table_name = 't1' order by grantor, grantee, privilege_type;
-	select count(*) as cnt from t1;
-
-grantee        grantor        privilege_type tableowner     
-
-test_owner     test_owner     DELETE         test_owner     
-test_owner     test_owner     INSERT         test_owner     
-test_owner     test_owner     REFERENCES     test_owner     
-test_owner     test_owner     SELECT         test_owner     
-test_owner     test_owner     TRIGGER        test_owner     
-test_owner     test_owner     TRUNCATE       test_owner     
-test_owner     test_owner     UPDATE         test_owner     
-cnt            
-
-10             

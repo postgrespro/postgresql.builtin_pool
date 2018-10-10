@@ -23,14 +23,14 @@ step s2_tab_u:
 	update foo set name = name || '_upd_sess_2';
 
 step s1_tab_s: 
-	select * from foo;
+	select * from foo order by id;
 
 id             name           
 
 1              some_text_sess_1_upd_sess_2
 2              some_text_sess_2_upd_sess_2
 step s2_tab_s: 
-	select * from foo;
+	select * from foo order by id;
 
 id             name           
 
@@ -43,12 +43,12 @@ pg_set_backend_snapshot
 
                
 step s1_tab_s: 
-	select * from foo;
+	select * from foo order by id;
 
 id             name           
 
 step s2_tab_s: 
-	select * from foo;
+	select * from foo order by id;
 
 id             name           
 
@@ -64,14 +64,14 @@ step s2_tab_u:
 	update foo set name = name || '_upd_sess_2';
 
 step s1_tab_s: 
-	select * from foo;
+	select * from foo order by id;
 
 id             name           
 
 1              some_text_sess_1
 2              some_text_sess_2
 step s2_tab_s: 
-	select * from foo;
+	select * from foo order by id;
 
 id             name           
 
@@ -87,14 +87,14 @@ step s2_tab_u:
 	update foo set name = name || '_upd_sess_2';
 
 step s1_tab_s: 
-	select * from foo;
+	select * from foo order by id;
 
 id             name           
 
 1              some_text_sess_1_upd_sess_2_upd_sess_2_upd_sess_2
 2              some_text_sess_2_upd_sess_2_upd_sess_2_upd_sess_2
 step s2_tab_s: 
-	select * from foo;
+	select * from foo order by id;
 
 id             name           
 

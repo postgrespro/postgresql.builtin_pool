@@ -15,3 +15,4 @@ test: snapfs_view
 test: snapfs_role
 test: snapfs_grant
 test: snapfs_function
+test: snapfs_index

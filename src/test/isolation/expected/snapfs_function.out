@@ -19,7 +19,7 @@ step s3_mk_sn:
 1              
 step s1_r_f: 
 	CREATE OR REPLACE FUNCTION get_some_data() RETURNS character varying
-	LANGUAGE 'plpgsql' AS $BODY$ DECLARE res varchar; BEGIN	select string_agg( name, ' ' ) into res from t1; RETURN res; END; $BODY$;
+	LANGUAGE 'plpgsql' AS $BODY$ DECLARE res varchar; BEGIN	select string_agg( name, ' ' ) into res from ( select * from t1 order by id ) as foo; RETURN res; END; $BODY$;
 
 step s3_mk_sn: 
 	select 1 from pg_make_snapshot();
@@ -114,7 +114,7 @@ step s3_mk_sn:
 1              
 step s1_r_f: 
 	CREATE OR REPLACE FUNCTION get_some_data() RETURNS character varying
-	LANGUAGE 'plpgsql' AS $BODY$ DECLARE res varchar; BEGIN	select string_agg( name, ' ' ) into res from t1; RETURN res; END; $BODY$;
+	LANGUAGE 'plpgsql' AS $BODY$ DECLARE res varchar; BEGIN	select string_agg( name, ' ' ) into res from ( select * from t1 order by id ) as foo; RETURN res; END; $BODY$;
 
 step s3_mk_sn: 
 	select 1 from pg_make_snapshot();
@@ -205,7 +205,7 @@ step s3_mk_sn:
 1              
 step s1_r_f: 
 	CREATE OR REPLACE FUNCTION get_some_data() RETURNS character varying
-	LANGUAGE 'plpgsql' AS $BODY$ DECLARE res varchar; BEGIN	select string_agg( name, ' ' ) into res from t1; RETURN res; END; $BODY$;
+	LANGUAGE 'plpgsql' AS $BODY$ DECLARE res varchar; BEGIN	select string_agg( name, ' ' ) into res from ( select * from t1 order by id ) as foo; RETURN res; END; $BODY$;
 
 step s3_mk_sn: 
 	select 1 from pg_make_snapshot();
@@ -310,7 +310,7 @@ step s3_mk_sn:
 1              
 step s1_r_f: 
 	CREATE OR REPLACE FUNCTION get_some_data() RETURNS character varying
-	LANGUAGE 'plpgsql' AS $BODY$ DECLARE res varchar; BEGIN	select string_agg( name, ' ' ) into res from t1; RETURN res; END; $BODY$;
+	LANGUAGE 'plpgsql' AS $BODY$ DECLARE res varchar; BEGIN	select string_agg( name, ' ' ) into res from ( select * from t1 order by id ) as foo; RETURN res; END; $BODY$;
 
 step s3_mk_sn: 
 	select 1 from pg_make_snapshot();
@@ -362,7 +362,7 @@ step s3_mk_sn:
 1              
 step s1_r_f: 
 	CREATE OR REPLACE FUNCTION get_some_data() RETURNS character varying
-	LANGUAGE 'plpgsql' AS $BODY$ DECLARE res varchar; BEGIN	select string_agg( name, ' ' ) into res from t1; RETURN res; END; $BODY$;
+	LANGUAGE 'plpgsql' AS $BODY$ DECLARE res varchar; BEGIN	select string_agg( name, ' ' ) into res from ( select * from t1 order by id ) as foo; RETURN res; END; $BODY$;
 
 step s3_mk_sn: 
 	select 1 from pg_make_snapshot();

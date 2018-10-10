@@ -7,7 +7,7 @@ setup {
 teardown {
 	select pg_switch_to_snapshot( 0 );
 	select pg_remove_snapshot( ( select recent_snapshot from pg_control_snapshot() ) );
-	drop table foo;
+	drop table IF EXISTS foo;
 }
 
 session "s1"
@@ -32,7 +32,7 @@ step "s1_tab_i" {
 }
 
 step "s1_tab_s" {
-	select * from foo;
+	select * from foo order by id;
 }
 
 session "s2"
@@ -45,7 +45,7 @@ step "s2_tab_u" {
 }
 
 step "s2_tab_s" {
-	select * from foo;
+	select * from foo order by id;
 }
 
 permutation "s1_mk_sn" "s1_tab_i" "s2_tab_i" "s1_mk_sn" "s2_tab_u" "s1_tab_s" "s2_tab_s" "s1_sw_sn_1" "s1_tab_s" "s2_tab_s" "s1_sw_sn_2" "s2_tab_u" "s1_tab_s" "s2_tab_s" "s1_sw_sn_0" "s2_tab_u" "s1_tab_s" "s2_tab_s"
