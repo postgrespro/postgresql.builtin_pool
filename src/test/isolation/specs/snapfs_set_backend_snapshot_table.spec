@@ -45,7 +45,7 @@ step "s2_tab_u" {
 }
 
 step "s2_tab_s" {
-	select * from foo;
+	select * from foo order by id;
 }
 
 step "s2_rm_sn_1" {

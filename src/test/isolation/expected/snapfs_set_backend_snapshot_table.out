@@ -30,7 +30,7 @@ id             name
 1              some_text_sess_1_upd_sess_2
 2              some_text_sess_2_upd_sess_2
 step s2_tab_s: 
-	select * from foo;
+	select * from foo order by id;
 
 id             name           
 
@@ -48,7 +48,7 @@ step s1_tab_s:
 id             name           
 
 step s2_tab_s: 
-	select * from foo;
+	select * from foo order by id;
 
 id             name           
 
@@ -71,7 +71,7 @@ id             name
 1              some_text_sess_1
 2              some_text_sess_2
 step s2_tab_s: 
-	select * from foo;
+	select * from foo order by id;
 
 id             name           
 
@@ -94,7 +94,7 @@ id             name
 1              some_text_sess_1_upd_sess_2_upd_sess_2_upd_sess_2
 2              some_text_sess_2_upd_sess_2_upd_sess_2_upd_sess_2
 step s2_tab_s: 
-	select * from foo;
+	select * from foo order by id;
 
 id             name           
 
@@ -143,7 +143,7 @@ pg_remove_snapshot
 step s1_sb_sn_0: 
 	select pg_set_backend_snapshot( 0 );
 
-ERROR:  Snapshot 51 is not valid any more
+ERROR:  Snapshot 59 is not valid any more
 step s1_tab_s: 
 	select * from foo order by id;
 
@@ -152,7 +152,7 @@ id             name
 1              some_text_sess_1_upd_sess_2
 2              some_text_sess_2_upd_sess_2
 step s2_tab_s: 
-	select * from foo;
+	select * from foo order by id;
 
 id             name           
 
