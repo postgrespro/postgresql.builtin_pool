@@ -10,7 +10,8 @@ setup {
 teardown {
 	select pg_switch_to_snapshot( 0 );
 	select pg_remove_snapshot( ( select recent_snapshot from pg_control_snapshot() ) );
-	DROP TABLE t1 CASCADE;
+	DROP TABLE IF EXISTS t1 CASCADE;
+	DROP FUNCTION IF EXISTS get_some_data();
 }
 
 session "s_1"
@@ -20,7 +21,7 @@ step "s1_c_f" {
 }
 step "s1_r_f" {
 	CREATE OR REPLACE FUNCTION get_some_data() RETURNS character varying
-	LANGUAGE 'plpgsql' AS $BODY$ DECLARE res varchar; BEGIN	select string_agg( name, ' ' ) into res from t1; RETURN res; END; $BODY$;
+	LANGUAGE 'plpgsql' AS $BODY$ DECLARE res varchar; BEGIN	select string_agg( name, ' ' ) into res from ( select * from t1 order by id ) as foo; RETURN res; END; $BODY$;
 }
 step "s1_d_f" {
 	drop function get_some_data();
