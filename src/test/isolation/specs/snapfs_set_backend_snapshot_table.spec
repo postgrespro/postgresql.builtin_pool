@@ -53,4 +53,3 @@ step "s2_rm_sn_1" {
 }
 
 permutation "s1_mk_sn" "s1_tab_i" "s2_tab_i" "s1_mk_sn" "s2_tab_u" "s1_tab_s" "s2_tab_s" "s1_sb_sn_1" "s1_tab_s" "s2_tab_s" "s1_sb_sn_2" "s2_tab_u" "s1_tab_s" "s2_tab_s" "s1_sb_sn_0" "s2_tab_u" "s1_tab_s" "s2_tab_s"
-permutation "s1_mk_sn" "s1_tab_i" "s2_tab_i" "s1_mk_sn" "s2_tab_u" "s1_sb_sn_1" "s1_tab_s" "s2_rm_sn_1" "s1_sb_sn_0" "s1_tab_s" "s2_tab_s"
