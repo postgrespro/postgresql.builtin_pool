@@ -8,7 +8,7 @@ setup {
 teardown {
 	select pg_set_backend_snapshot( 0 );
 	select pg_remove_snapshot( ( select recent_snapshot from pg_control_snapshot() ) );
-	drop sequence seq1;
+	DROP SEQUENCE IF EXISTS seq1;
 }
 
 session "s1"
