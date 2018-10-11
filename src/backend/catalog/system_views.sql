@@ -1119,6 +1119,10 @@ LANGUAGE INTERNAL
 STRICT IMMUTABLE PARALLEL SAFE
 AS 'jsonb_insert';
 
+CREATE VIEW snapfs_snapshots AS 
+select *,(select pg_get_snapshot_timestamp(generate_series)), pg_size_pretty((select pg_get_snapshot_size(generate_series)))
+from generate_series((select oldest_snapshot from pg_control_snapshot()), (select recent_snapshot from pg_control_snapshot()));
+
 --
 -- The default permissions for functions mean that anyone can execute them.
 -- A number of functions shouldn't be executable by just anyone, but rather
