@@ -1188,9 +1188,11 @@ setup_connection(Archive *AH, const char *dumpencoding,
 
 	if (AH->snapfs_snapshot_id)
 	{
-		char sql[64];
-		sprintf(sql, "select pg_set_backend_snapshot(%s)", AH->snapfs_snapshot_id);
-		PQclear(ExecuteSqlQueryForSingleRow((Archive *) AH, sql));
+		PQExpBuffer query = createPQExpBuffer();
+
+		appendPQExpBuffer(query, "select pg_set_backend_snapshot(%s)",  AH->snapfs_snapshot_id);
+		PQclear(ExecuteSqlQueryForSingleRow((Archive *) AH, query->data));
+		destroyPQExpBuffer(query);
 	}
 }
 

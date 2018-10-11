@@ -139,6 +139,7 @@ main(int argc, char *argv[])
 		{"no-sync", no_argument, NULL, 4},
 		{"no-unlogged-table-data", no_argument, &no_unlogged_table_data, 1},
 		{"on-conflict-do-nothing", no_argument, &on_conflict_do_nothing, 1},
+		{"snapfs-snapshot", required_argument, NULL, 5},
 
 		{NULL, 0, NULL, 0}
 	};
@@ -316,6 +317,11 @@ main(int argc, char *argv[])
 			case 4:
 				dosync = false;
 				appendPQExpBufferStr(pgdumpopts, " --no-sync");
+				break;
+
+		    case 5:
+				appendPQExpBufferStr(pgdumpopts, " --snapfs-snapshot ");
+				appendShellString(pgdumpopts, optarg);
 				break;
 
 			default:
@@ -627,6 +633,7 @@ help(void)
 	printf(_("  --no-unlogged-table-data     do not dump unlogged table data\n"));
 	printf(_("  --on-conflict-do-nothing     add ON CONFLICT DO NOTHING to INSERT commands\n"));
 	printf(_("  --quote-all-identifiers      quote all identifiers, even if not key words\n"));
+	printf(_("  --snapfs-snapshot=SNAPSHOT   use given SNAPFS snapshot for the dump\n"));
 	printf(_("  --use-set-session-authorization\n"
 			 "                               use SET SESSION AUTHORIZATION commands instead of\n"
 			 "                               ALTER OWNER commands to set ownership\n"));
