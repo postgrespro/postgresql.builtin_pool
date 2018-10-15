@@ -3955,7 +3955,7 @@ sfs_snapshot_file_size(const char *fname, bool isdir, int elevel)
 				&& snap_id == sfs_current_snapshot)
 			{
 				struct stat fst;
-				if (!stat(fname, &fst))
+				if (stat(fname, &fst))
 					elog(elevel, "[SFS] Failed to stat snapshot file %s: %m", fname);
 				sfs_snapshot_size += fst.st_size;
 			}
@@ -3988,7 +3988,7 @@ sfs_snapshot_file_time(const char *fname, bool isdir, int elevel)
 				&& snap_id == sfs_current_snapshot)
 			{
 				struct stat fst;
-				if (!stat(fname, &fst))
+				if (stat(fname, &fst))
 					elog(elevel, "[SFS] Failed to stat snapshot file %s: %m", fname);
 				if (sfs_snapshot_time > (uint64)fst.st_ctime) {
 					sfs_snapshot_time = fst.st_ctime;
