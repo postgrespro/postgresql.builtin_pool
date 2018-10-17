@@ -1321,7 +1321,7 @@ pq_endmsgread(void)
 bool
 pq_is_reading_msg(void)
 {
-	return pqstate->is_reading;
+	return pqstate && pqstate->is_reading;
 }
 
 /* --------------------------------

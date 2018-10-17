@@ -162,10 +162,19 @@ extern PGDLLIMPORT int data_directory_mode;
 extern PGDLLIMPORT int NBuffers;
 extern PGDLLIMPORT int MaxBackends;
 extern PGDLLIMPORT int MaxConnections;
-extern PGDLLIMPORT int MaxSessions;
-extern PGDLLIMPORT int SessionPoolSize;
 extern PGDLLIMPORT int max_worker_processes;
 extern PGDLLIMPORT int max_parallel_workers;
+
+enum SessionSchedulePolicy
+{
+	SESSION_SCHED_ROUND_ROBIN,
+	SESSION_SCHED_RANDOM,
+	SESSION_SCHED_LOAD_BALANCING
+};
+
+extern PGDLLIMPORT int MaxSessions;
+extern PGDLLIMPORT int SessionPoolSize;
+extern PGDLLIMPORT int SessionSchedule;
 
 extern PGDLLIMPORT int MyProcPid;
 extern PGDLLIMPORT uint32 MySessionId;

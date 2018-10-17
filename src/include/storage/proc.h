@@ -204,6 +204,10 @@ struct PGPROC
 	PGPROC	   *lockGroupLeader;	/* lock group leader, if I'm a member */
 	dlist_head	lockGroupMembers;	/* list of members, if I'm a leader */
 	dlist_node	lockGroupLink;	/* my member link, if I'm a member */
+
+	int         nFinishedSessions;  /* number of finished sessions in case of connection pooling */
+	uint64      nSessionSchedules;  /* number of session schedule performed by backend (calls of WaitEventSetWait(SessionPool->waitEvents) */
+	uint64      nReadySessions;     /* total number of ready sessions returned by all WaitEventSetWait(SessionPool->waitEvents) calls */
 };
 
 /* NOTE: "typedef struct PGPROC PGPROC" appears in storage/lock.h. */
@@ -298,6 +302,7 @@ typedef struct SessionContext
 	Oid				tempToastNamespace;	/* temporary toast namespace */
 	SessionGUC	   *gucs;				/* session local GUCs */
 	WaitEventSet   *eventSet;			/* Wait set for the session */
+	int             eventPos;           /* Position of wait socket event for this session */
 	HTAB		   *prepared_queries;	/* Session prepared queries */
 	HTAB		   *portals;			/* Session portals */
 	void		   *userId;				/* Current role state */

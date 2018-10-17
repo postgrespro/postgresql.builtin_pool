@@ -252,15 +252,22 @@ StartupPacketReaderMain(Datum arg)
 
 		worker->state = CPW_PROCESSED;
 
+		/* send size of data */
 		while ((rc = send(worker->pipes[1], &buf.len, sizeof(buf.len), 0)) < 0 && errno == EINTR);
-		if (rc != (int)sizeof(buf.len))
+
+		if (rc != (int) sizeof(buf.len))
 			elog(ERROR, "could not send data to postmaster");
+
+		/* send the data */
 		while ((rc = send(worker->pipes[1], buf.data, buf.len, 0)) < 0 && errno == EINTR);
+
 		if (rc != buf.len)
 			elog(ERROR, "could not send data to postmaster");
+
 		pfree(buf.data);
 		buf.data = NULL;
-	  cleanup:
+
+cleanup:
 		resetWorkerState(worker, port);
 		MemoryContextReset(mcxt);
 	}

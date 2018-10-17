@@ -367,6 +367,9 @@ InitProcess(void)
 	MyPgXact->xid = InvalidTransactionId;
 	MyPgXact->xmin = InvalidTransactionId;
 	MyProc->pid = MyProcPid;
+	MyProc->nReadySessions = 0;
+	MyProc->nSessionSchedules = 0;
+	MyProc->nFinishedSessions = 0;
 	/* backendId, databaseId and roleId will be filled in later */
 	MyProc->backendId = InvalidBackendId;
 	MyProc->databaseId = InvalidOid;

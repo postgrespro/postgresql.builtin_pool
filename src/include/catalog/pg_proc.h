@@ -162,6 +162,10 @@ typedef FormData_pg_proc *Form_pg_proc;
 #define PROPARALLEL_RESTRICTED	'r' /* can run in parallel master only */
 #define PROPARALLEL_UNSAFE		'u' /* banned while in parallel mode */
 
+/* Builtin connection pol functions */
+DATA(insert OID = 6027 (   pg_backend_load_average   PGNSP PGUID 12 1 0 0 0 f f f f t f v s 1 0 701 "23" _null_ _null_ _null_ _null_ _null_	 pg_backend_load_average _null_ _null_ _null_ ));
+
+
 /*
  * Symbolic values for proargmodes column.  Note that these must agree with
  * the FunctionParameterMode enum in parsenodes.h; we declare them here to

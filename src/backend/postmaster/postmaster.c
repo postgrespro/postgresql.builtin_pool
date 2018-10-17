@@ -123,6 +123,7 @@
 #include "storage/pg_shmem.h"
 #include "storage/pmsignal.h"
 #include "storage/proc.h"
+#include "storage/procarray.h"
 #include "tcop/tcopprot.h"
 #include "utils/builtins.h"
 #include "utils/datetime.h"
@@ -150,6 +151,11 @@
 #define BACKEND_TYPE_ALL		0x000F	/* OR of all the above */
 
 #define BACKEND_TYPE_WORKER		(BACKEND_TYPE_AUTOVAC | BACKEND_TYPE_BGWORKER)
+
+/*
+ * Load average for not backend which is not yet started (used in session schedule for connectoin pooling)
+ */
+#define INIT_BACKEND_LOAD_AVERAGE 10
 
 /*
  * List of active backends (or child processes anyway; we don't actually
@@ -186,6 +192,8 @@ typedef struct bkend
 	int         session_pool_id;/* identifier of backends session pool */
 	int         worker_id;      /* identifier of worker within session pool */
 	void	   *pool;			/* pool of backends */
+	PGPROC     *proc;           /* PGPROC entry for this backend */
+	uint64      n_sessions;     /* number of session scheduled to this backend */
 } Backend;
 
 static dlist_head BackendList = DLIST_STATIC_INIT(BackendList);
@@ -445,6 +453,7 @@ static int	ServerLoop(void);
 static void SendNegotiateProtocolVersion(List *unrecognized_protocol_options);
 static void processCancelRequest(Port *port, void *pkt);
 static int	initMasks(fd_set *rmask);
+static void report_postmaster_failure_to_client(Port *port, char const* errmsg);
 static void report_fork_failure_to_client(Port *port, int errnum);
 static bool RandomCancelKey(int32 *cancel_key);
 static void signal_child(pid_t pid, int signal);
@@ -2682,15 +2691,13 @@ PoolConnCreate(pgsocket poolFd, int workerId)
 	worker->port = NULL;
 	worker->state = CPW_FREE;
 
+	/* get size of data */
 	while ((rc = read(poolFd, &recv_len, sizeof recv_len)) < 0 && errno == EINTR);
-	if (rc != (int)sizeof(recv_len))
-	{
-	  io_error:
-		StreamClose(port->sock);
-		ConnFree(port);
-		return NULL;
-	}
 
+	if (rc != (int) sizeof(recv_len))
+		goto io_error;
+
+	/* get the data */
 	for (offs = 0; offs < recv_len; offs += rc)
 	{
 		while ((rc = read(poolFd, recv_buf + offs, CONN_BUF_SIZE - offs)) < 0 && errno == EINTR);
@@ -2719,6 +2726,11 @@ PoolConnCreate(pgsocket poolFd, int workerId)
 		port->cmdline_options = MemoryContextStrdup(TopMemoryContext, pq_getmsgstring(&buf));
 
 	return port;
+
+io_error:
+	StreamClose(port->sock);
+	ConnFree(port);
+	return NULL;
 }
 
 /*
@@ -4299,6 +4311,118 @@ TerminateChildren(int signal)
 }
 
 /*
+ * Try to report error to client.
+ * Since we do not care to risk blocking the postmaster on
+ * this connection, we set the connection to non-blocking and try only once.
+ *
+ * This is grungy special-purpose code; we cannot use backend libpq since
+ * it's not up and running.
+ */
+static void
+report_postmaster_failure_to_client(Port *port, char const* errmsg)
+{
+	int rc;
+
+	/* Set port to non-blocking.  Don't do send() if this fails */
+	if (!pg_set_noblock(port->sock))
+		return;
+
+	/* We'll retry after EINTR, but ignore all other failures */
+	do
+	{
+		rc = send(port->sock, errmsg, strlen(errmsg) + 1, 0);
+	} while (rc < 0 && errno == EINTR);
+
+	elog(DEBUG1, "Send postmaster failure to client: %d", rc);
+}
+
+typedef struct
+{
+	Backend* worker;
+	double   load_average;
+} WorkerState;
+
+static int
+compareWorkerLoadAverage(void const* p, void const* q)
+{
+	WorkerState* ws1 = (WorkerState*)p;
+	WorkerState* ws2 = (WorkerState*)q;
+	return ws1->load_average < ws2->load_average ? -1 : ws1->load_average == ws2->load_average ? 0 : 1;
+}
+
+static int
+ScheduleSession(DatabasePool *pool, Port *port)
+{
+	int i, j;
+	int n_workers = pool->n_workers;
+	WorkerState ws[MAX_CONNPOOL_WORKERS];
+
+	for (i = 0; i < n_workers; i++)
+	{
+		Backend *worker;
+		switch (SessionSchedule)
+		{
+		  case SESSION_SCHED_RANDOM:
+			worker = pool->workers[random() % n_workers];
+			break;
+		  case SESSION_SCHED_ROUND_ROBIN:
+			worker = pool->workers[pool->rr_index];
+			pool->rr_index = (pool->rr_index + 1) % n_workers; /* round-robin */
+			break;
+		  case SESSION_SCHED_LOAD_BALANCING:
+			if (i == 0)
+			{
+				for (j = 0; j < n_workers; j++)
+				{
+					worker = pool->workers[j];
+					if (!worker->proc)
+						worker->proc = BackendPidGetProc(worker->pid);
+					ws[j].worker = worker;
+					ws[j].load_average = (worker->proc && worker->proc->nSessionSchedules > 0)
+						? (double)worker->proc->nReadySessions / worker->proc->nSessionSchedules
+						: INIT_BACKEND_LOAD_AVERAGE;
+				}
+				qsort(ws, n_workers, sizeof(WorkerState), compareWorkerLoadAverage);
+			}
+			worker = ws[i].worker;
+			break;
+		  default:
+			Assert(false);
+		}
+		if (!worker->proc)
+			worker->proc = BackendPidGetProc(worker->pid);
+
+		if (worker->proc && worker->n_sessions - worker->proc->nFinishedSessions >= MaxSessions)
+		{
+			elog(LOG, "Worker %d reaches max session limit %d", worker->pid, MaxSessions);
+			continue;
+	    }
+		/* Send connection socket to the worker backend */
+		if (pg_send_sock(worker->session_send_sock, port->sock, worker->pid) < 0)
+		{
+			elog(LOG, "Failed to send session socket %d: %m",
+				 worker->session_send_sock);
+			UnlinkPooledBackend(worker);
+			n_workers -= 1;
+			i = -1; /* restart loop from very beginning */
+			continue;
+		}
+		worker->n_sessions += 1;
+		elog(DEBUG2, "Start new session for socket %d at backend %d",
+			 port->sock, worker->pid);
+
+		/* TODO: serialize the port and send it through socket */
+		return STATUS_OK;
+	}
+	ereport(LOG,
+			(errcode(ERRCODE_TOO_MANY_CONNECTIONS),
+			 errmsg("sorry, too many open sessions for connection pool %s/%s",
+					pool->key.database, pool->key.username)));
+	report_postmaster_failure_to_client(port, "ESorry, too many open sessions\n");
+	return STATUS_ERROR;
+}
+
+/*
  * BackendStartup -- start backend process
  *
  * returns: STATUS_ERROR if the fork failed, STATUS_OK otherwise.
@@ -4316,26 +4440,8 @@ BackendStartup(DatabasePool *pool, Port *port)
 	 * In case of session pooling instead of spawning new backend open
 	 * new session at one of the existed backends.
 	 */
-	while (pool && pool->n_workers >= SessionPoolSize)
-	{
-		Backend *worker = pool->workers[pool->rr_index];
-		pool->rr_index = (pool->rr_index + 1) % pool->n_workers; /* round-robin */
-
-		/* Send connection socket to the worker backend */
-		if (pg_send_sock(worker->session_send_sock, port->sock, worker->pid) < 0)
-		{
-			elog(LOG, "Failed to send session socket %d: %m",
-					worker->session_send_sock);
-			UnlinkPooledBackend(worker);
-			continue;
-		}
-
-		elog(DEBUG2, "Start new session for socket %d at backend %d",
-				port->sock, worker->pid);
-
-		/* TODO: serialize the port and send it through socket */
-		return STATUS_OK;
-	}
+	if (pool && pool->n_workers >= SessionPoolSize)
+		return ScheduleSession(pool, port);
 
 	/*
 	 * Create backend data structure.  Better before the fork() so we can
@@ -4349,6 +4455,7 @@ BackendStartup(DatabasePool *pool, Port *port)
 				 errmsg("out of memory")));
 		return STATUS_ERROR;
 	}
+	bn->n_sessions = 1;
 
 	/*
 	 * Compute the cancel key that will be assigned to this backend. The
@@ -4492,22 +4599,13 @@ static void
 report_fork_failure_to_client(Port *port, int errnum)
 {
 	char		buffer[1000];
-	int			rc;
 
 	/* Format the error message packet (always V2 protocol) */
 	snprintf(buffer, sizeof(buffer), "E%s%s\n",
 			 _("could not fork new process for connection: "),
 			 strerror(errnum));
 
-	/* Set port to non-blocking.  Don't do send() if this fails */
-	if (!pg_set_noblock(port->sock))
-		return;
-
-	/* We'll retry after EINTR, but ignore all other failures */
-	do
-	{
-		rc = send(port->sock, buffer, strlen(buffer) + 1, 0);
-	} while (rc < 0 && errno == EINTR);
+	report_postmaster_failure_to_client(port, buffer);
 }
 
 

@@ -429,6 +429,15 @@ static const struct config_enum_entry password_encryption_options[] = {
 	{NULL, 0, false}
 };
 
+static const struct config_enum_entry session_schedule_options[] = {
+	{"round-robin", SESSION_SCHED_ROUND_ROBIN, false},
+	{"random", SESSION_SCHED_RANDOM, false},
+	{"load-balancing", SESSION_SCHED_LOAD_BALANCING, false},
+	{NULL, 0, false}
+};
+
+
+
 /*
  * Options for enum values stored in other modules
  */
@@ -4238,6 +4247,16 @@ static struct config_enum ConfigureNamesEnum[] =
 		},
 		&plan_cache_mode,
 		PLAN_CACHE_MODE_AUTO, plan_cache_mode_options,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"session_schedule", PGC_POSTMASTER, RESOURCES_MEM,
+			gettext_noop("Session schedule policy for connection pool."),
+			NULL
+		},
+		&SessionSchedule,
+		SESSION_SCHED_ROUND_ROBIN, session_schedule_options,
 		NULL, NULL, NULL
 	},
 

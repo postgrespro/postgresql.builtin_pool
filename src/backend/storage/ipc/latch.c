@@ -744,24 +744,16 @@ AddWaitEventToSet(WaitEventSet *set, uint32 events, pgsocket fd, Latch *latch,
 /*
  * Remove event with specified socket descriptor
  */
-void DeleteWaitEventFromSet(WaitEventSet *set, pgsocket fd)
+void DeleteWaitEventFromSet(WaitEventSet *set, int event_pos)
 {
-	int i, n = set->nevents;
-	for (i = 0; i < n; i++)
-	{
-		WaitEvent  *event = &set->events[i];
-		if (event->fd == fd)
-		{
+	WaitEvent  *event = &set->events[event_pos];
 #if defined(WAIT_USE_EPOLL)
-			WaitEventAdjustEpoll(set, event, EPOLL_CTL_DEL);
+	WaitEventAdjustEpoll(set, event, EPOLL_CTL_DEL);
 #elif defined(WAIT_USE_POLL)
-			WaitEventAdjustPoll(set, event, true);
+	WaitEventAdjustPoll(set, event, true);
 #elif defined(WAIT_USE_WIN32)
-			WaitEventAdjustWin32(set, event, true);
+	WaitEventAdjustWin32(set, event, true);
 #endif
-			break;
-		}
-	}
 }
 
 /*
@@ -860,7 +852,6 @@ WaitEventAdjustEpoll(WaitEventSet *set, WaitEvent *event, int action)
 	 * requiring that, and actually it makes the code simpler...
 	 */
 	rc = epoll_ctl(set->epoll_fd, action, event->fd, &epoll_ev);
-	Assert(rc >= 0);
 	if (rc < 0)
 		ereport(ERROR,
 				(errcode_for_socket_access(),

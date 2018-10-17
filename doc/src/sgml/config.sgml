@@ -703,6 +703,125 @@ include_dir 'conf.d'
       </listitem>
      </varlistentry>
 
+     <varlistentry id="guc-max-sessions" xreflabel="max_sessions">
+      <term><varname>max_sessions</varname> (<type>integer</type>)
+      <indexterm>
+       <primary><varname>max_sessions</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+        <para>
+          The maximum number of client sessions that can be handled by
+          one backend when session pooling is switched on.
+          This parameter does not add any memory or CPU overhead, so
+          specifying a large <varname>max_sessions</varname> value
+          does not affect performance.
+          If the <varname>max_sessions</varname> limit is reached,
+          the backend stops accepting connections. Until one of the
+          connections is terminated, attempts to connect to this
+          backend result in an error.
+        </para>
+        <para>
+          The default value is 1000. This parameter can only be set at server start.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-session-pool-size" xreflabel="session_pool_size">
+      <term><varname>session_pool_size</varname> (<type>integer</type>)
+      <indexterm>
+       <primary><varname>session_pool_size</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+        <para>
+          Enables session pooling and defines the maximum number of
+          backends that can be used by client sessions for each database/user combination.
+          Launched backends are never terminated even if there are no active sessions.
+        </para>
+        <para>
+          The default value is zero, so session pooling is disabled.
+        </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-connection-pool-workers" xreflabel="connection_pool_workers">
+      <term><varname>connection_pool_workers</varname> (<type>integer</type>)
+      <indexterm>
+       <primary><varname>connection_pool_workers</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+        <para>
+          Number of connection listeners used to read client startup packages.
+          If session pooling is enabled, <productname>&productname;</productname>
+          server redirects all client startup packages to a connection listener.
+          The listener determines the database and user that the client needs
+          to access and redirects the connection to an appropriate backend,
+          which is selected from the pool using the round-robin algorithm.
+          This approach allows to avoid server slowdown if a client tries
+          to connect via a slow or unreliable network.
+        </para>
+        <para>
+          The default value is 2.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-dedicated-databases" xreflabel="dedicated_databases">
+      <term><varname>dedicated_databases</varname> (<type>string</type>)
+      <indexterm>
+       <primary><varname>dedicated_databases</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+        <para>
+          Specifies the list of databases for which session pooling is disabled.
+          For such databases, a separate backend is forked for each connection.
+          By default, session pooling is disabled for <literal>template0</literal>,
+          <literal>template1</literal>, and <literal>postgres</literal> databases.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-restart-pooler-on-reload" xreflabel="restart_pooler_on_reload">
+      <term><varname>restart_pooler_on_reload</varname> (<type>string</type>)
+      <indexterm>
+       <primary><varname>restart_pooler_on_reload</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+        <para>
+          Restart session pool workers once <function>pg_reload_conf()</function> is called.
+          The default value is <literal>false</literal>.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-session-schedule" xreflabel="session_schedule">
+      <term><varname>session_schedule</varname> (<type>enum</type>)
+      <indexterm>
+       <primary><varname>session_schedule</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+        <para>
+          Specifies scheduling policy for assigning session to backend in case of
+          connection pooling. Default policy is <literal>round-robin</literal>.
+        </para>
+        <para>
+          With <literal>round-robin</literal> policy postmaster cyclicly scatter sessions between session pool backends.
+        </para>
+        <para>
+          With <literal>random</literal> policy postmaster randomly choose backend in session pool.
+        </para>
+        <para>
+          With <literal>load-balancing</literal> policy postmaster choose backend with lowest load average.
+          Load average of backend is estimated by number of ready events at each reschedule iteration.
+       </para>
+      </listitem>
+     </varlistentry>
+
      <varlistentry id="guc-unix-socket-directories" xreflabel="unix_socket_directories">
       <term><varname>unix_socket_directories</varname> (<type>string</type>)
       <indexterm>
