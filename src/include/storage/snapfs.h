@@ -90,6 +90,9 @@ extern void sfs_unlock_database(void);
 
 extern void sfs_check_snapshot(SnapshotId sid);
 
+extern void sfs_xlog_insert(int op, SnapshotId snapid);
+extern void sfs_checkpoint(void);
+
 extern struct ControlFileData *ControlFile;
 
 #endif

@@ -34,6 +34,9 @@ extern void standby_desc_invalidations(StringInfo buf,
 #define XLOG_STANDBY_LOCK			0x00
 #define XLOG_RUNNING_XACTS			0x10
 #define XLOG_INVALIDATIONS			0x20
+#define XLOG_MAKE_SNAPSHOT			0x30
+#define XLOG_REMOVE_SNAPSHOT	    0x40
+#define XLOG_RECOVER_TO_SNAPSHOT	0x50
 
 typedef struct xl_standby_locks
 {
@@ -68,6 +71,14 @@ typedef struct xl_invalidations
 	int			nmsgs;			/* number of shared inval msgs */
 	SharedInvalidationMessage msgs[FLEXIBLE_ARRAY_MEMBER];
 } xl_invalidations;
+
+/*
+ * Snapshot operation at standby
+ */
+typedef struct xl_snapshot
+{
+	int         snapid;
+}  xl_snapshot;
 
 #define MinSizeOfInvalidations offsetof(xl_invalidations, msgs)
 

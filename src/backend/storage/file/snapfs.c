@@ -33,6 +33,7 @@
 #include "storage/lwlock.h"
 #include "storage/procarray.h"
 #include "storage/snapfs.h"
+#include "storage/standbydefs.h"
 #include "storage/bufmgr.h"
 #include "utils/inval.h"
 #include "utils/fmgrprotos.h"
@@ -163,8 +164,7 @@ sfs_switch_to_snapshot(SnapshotId snap_id)
 	sfs_lock_database();
 
 	if (!SFS_IN_SNAPSHOT())
-		RequestCheckpoint(CHECKPOINT_IMMEDIATE | CHECKPOINT_FORCE | CHECKPOINT_WAIT
-						  | CHECKPOINT_FLUSH_ALL);
+		sfs_checkpoint();
 
 	ControlFile->active_snapshot = snap_id;
 	UpdateControlFile();
@@ -197,13 +197,14 @@ sfs_make_snapshot(void)
 		elog(ERROR, "Can not perform operation inside snapshot");
 
 	sfs_lock_database();
+	sfs_checkpoint();
 
-	RequestCheckpoint(CHECKPOINT_IMMEDIATE | CHECKPOINT_FORCE | CHECKPOINT_WAIT
-					  | CHECKPOINT_FLUSH_ALL);
 	snap_id = ++ControlFile->recent_snapshot;
 	UpdateControlFile();
 
 	sfs_unlock_database();
+
+	sfs_xlog_insert(XLOG_MAKE_SNAPSHOT, snap_id);
 
 	return snap_id;
 }
@@ -214,34 +215,66 @@ sfs_make_snapshot(void)
 void
 sfs_lock_database(void)
 {
-	bool standalone = false;
-	TransactionId myXid = GetCurrentTransactionIdIfAny();
-	/* Prevent assignment Xids to transaction and
-	 * so delay start of any new update transactions
-	 */
-	LWLockAcquire(XidGenLock, LW_SHARED);
-
-	/* Wait completion of all active tranasction except own */
-	do
+	if (!InRecovery)
 	{
-		RunningTransactions running = GetRunningTransactionData();
-		standalone = (TransactionIdIsValid(myXid) && running->xcnt == 1) || (!TransactionIdIsValid(myXid) && running->xcnt == 0);
+		bool standalone = false;
+		TransactionId myXid = GetCurrentTransactionIdIfAny();
 
-		/* Release locks set by GetRunningTransactionData */
-		LWLockRelease(ProcArrayLock);
-		LWLockRelease(XidGenLock);
+		/* Prevent assignment Xids to transaction and
+		 * so delay start of any new update transactions
+		 */
+		LWLockAcquire(XidGenLock, LW_SHARED);
 
-		/* Wait for one second */
-		if (!standalone)
-			pg_usleep(USECS_PER_SEC);
+		/* Wait completion of all active tranasction except own */
+		do
+		{
+			RunningTransactions running = GetRunningTransactionData();
+			standalone = (TransactionIdIsValid(myXid) && running->xcnt == 1) || (!TransactionIdIsValid(myXid) && running->xcnt == 0);
 
-	} while (!standalone);
+			/* Release locks set by GetRunningTransactionData */
+			LWLockRelease(ProcArrayLock);
+			LWLockRelease(XidGenLock);
+
+			/* Wait for one second */
+			if (!standalone)
+				pg_usleep(USECS_PER_SEC);
+
+		} while (!standalone);
+	}
 }
 
 void
 sfs_unlock_database(void)
 {
-	LWLockRelease(XidGenLock);
+	if (!InRecovery)
+		LWLockRelease(XidGenLock);
+}
+
+void
+sfs_xlog_insert(int op, SnapshotId snapid)
+{
+	if (!InRecovery)
+	{
+		xl_snapshot xlrec;
+		xlrec.snapid = snapid;
+		XLogBeginInsert();
+		XLogSetRecordFlags(XLOG_MARK_UNIMPORTANT);
+		XLogRegisterData((char *) (&xlrec), sizeof(xlrec));
+		XLogInsert(RM_STANDBY_ID, op);
+	}
+}
+
+
+void
+sfs_checkpoint(void)
+{
+	int flags = CHECKPOINT_IMMEDIATE | CHECKPOINT_FORCE | CHECKPOINT_WAIT | CHECKPOINT_FLUSH_ALL;
+/*
+	if (InRecovery)
+		CreateRestartPoint(flags);
+	else
+*/
+	RequestCheckpoint(flags);
 }
 
 /*

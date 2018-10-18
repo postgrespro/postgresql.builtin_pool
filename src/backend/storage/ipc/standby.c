@@ -28,6 +28,7 @@
 #include "storage/proc.h"
 #include "storage/procarray.h"
 #include "storage/sinvaladt.h"
+#include "storage/snapfs.h"
 #include "storage/standby.h"
 #include "utils/hsearch.h"
 #include "utils/memutils.h"
@@ -826,6 +827,24 @@ standby_redo(XLogReaderState *record)
 											 xlrec->relcacheInitFileInval,
 											 xlrec->dbId,
 											 xlrec->tsId);
+	}
+	else if (info == XLOG_MAKE_SNAPSHOT)
+	{
+		xl_snapshot *xlrec = (xl_snapshot *) XLogRecGetData(record);
+		SnapshotId snapid = sfs_make_snapshot();
+		if (snapid != xlrec->snapid)
+			elog(WARNING, "Snapshot identifiers at replica and master do not match: %d vs. %d",
+				 snapid, xlrec->snapid);
+	}
+	else if (info == XLOG_RECOVER_TO_SNAPSHOT)
+	{
+		xl_snapshot *xlrec = (xl_snapshot *) XLogRecGetData(record);
+		sfs_recover_to_snapshot(xlrec->snapid);
+	}
+	else if (info == XLOG_REMOVE_SNAPSHOT)
+	{
+		xl_snapshot *xlrec = (xl_snapshot *) XLogRecGetData(record);
+		sfs_remove_snapshot(xlrec->snapid);
 	}
 	else
 		elog(PANIC, "standby_redo: unknown op code %u", info);

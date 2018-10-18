@@ -91,6 +91,7 @@
 #include "storage/fd.h"
 #include "storage/ipc.h"
 #include "storage/snapfs.h"
+#include "storage/standbydefs.h"
 #include "utils/guc.h"
 #include "utils/inval.h"
 #include "utils/resowner_private.h"
@@ -4021,6 +4022,8 @@ sfs_remove_snapshot(SnapshotId snap_id)
 
 	ControlFile->oldest_snapshot = snap_id + 1;
 	UpdateControlFile();
+
+	sfs_xlog_insert(XLOG_REMOVE_SNAPSHOT, snap_id);
 }
 
 void
@@ -4032,9 +4035,7 @@ sfs_recover_to_snapshot(SnapshotId snap_id)
 		elog(ERROR, "Can not perform operation inside snapshot");
 
 	sfs_lock_database();
-
-	RequestCheckpoint(CHECKPOINT_IMMEDIATE | CHECKPOINT_FORCE | CHECKPOINT_WAIT
-					  | CHECKPOINT_FLUSH_ALL);
+	sfs_checkpoint();
 
 	sfs_current_snapshot = snap_id;
 	walk_data_dir(sfs_recover_snapshot_file, ERROR);
@@ -4046,8 +4047,12 @@ sfs_recover_to_snapshot(SnapshotId snap_id)
 	walk_data_dir(sfs_remove_applied_snapshot_file, LOG);
 
 	DropSharedBuffers();
-	InvalidateSystemCaches();
-	CacheInvalidateRelcacheAll();
-
+	if (!InRecovery)
+	{
+		InvalidateSystemCaches();
+		CacheInvalidateRelcacheAll();
+	}
 	sfs_unlock_database();
+
+	sfs_xlog_insert(XLOG_RECOVER_TO_SNAPSHOT, snap_id);
 }

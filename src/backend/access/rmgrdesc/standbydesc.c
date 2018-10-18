@@ -84,6 +84,15 @@ standby_identify(uint8 info)
 		case XLOG_INVALIDATIONS:
 			id = "INVALIDATIONS";
 			break;
+		case XLOG_MAKE_SNAPSHOT:
+			id = "MAKE_SNAPSHOT";
+			break;
+		case XLOG_REMOVE_SNAPSHOT:
+			id = "REMOVE_SNAPSHOT";
+			break;
+		case XLOG_RECOVER_TO_SNAPSHOT:
+			id = "RECOVER_TO_SNAPSHOT";
+			break;
 	}
 
 	return id;

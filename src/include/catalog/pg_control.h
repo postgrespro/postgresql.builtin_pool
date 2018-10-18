@@ -51,7 +51,7 @@ typedef struct CheckPoint
 	TransactionId oldestCommitTsXid;	/* oldest Xid with valid commit
 										 * timestamp */
 	TransactionId newestCommitTsXid;	/* newest Xid with valid commit
-										 * timestamp */
+													 * timestamp */
 
 	/*
 	 * Oldest XID still running. This is only needed to initialize hot standby
