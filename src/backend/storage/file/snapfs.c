@@ -269,12 +269,14 @@ void
 sfs_checkpoint(void)
 {
 	int flags = CHECKPOINT_IMMEDIATE | CHECKPOINT_FORCE | CHECKPOINT_WAIT | CHECKPOINT_FLUSH_ALL;
-/*
-	if (InRecovery)
-		CreateRestartPoint(flags);
-	else
-*/
 	RequestCheckpoint(flags);
+}
+
+static void
+sfs_not_at_replica(void)
+{
+	if (RecoveryInProgress())
+		elog(ERROR, "Operation is not possible at replica");
 }
 
 /*
@@ -283,6 +285,7 @@ sfs_checkpoint(void)
 
 Datum pg_make_snapshot(PG_FUNCTION_ARGS)
 {
+	sfs_not_at_replica();
 	PG_RETURN_INT32(sfs_make_snapshot());
 }
 
@@ -296,6 +299,7 @@ Datum pg_remove_snapshot(PG_FUNCTION_ARGS)
 Datum pg_recover_to_snapshot(PG_FUNCTION_ARGS)
 {
 	SnapshotId snap_id = PG_GETARG_INT32(0);
+	sfs_not_at_replica();
 	sfs_recover_to_snapshot(snap_id);
 	PG_RETURN_VOID();
 }
@@ -303,6 +307,7 @@ Datum pg_recover_to_snapshot(PG_FUNCTION_ARGS)
 Datum pg_switch_to_snapshot(PG_FUNCTION_ARGS)
 {
 	SnapshotId snap_id = PG_GETARG_INT32(0);
+	sfs_not_at_replica();
 	sfs_switch_to_snapshot(snap_id);
 	PG_RETURN_VOID();
 }
