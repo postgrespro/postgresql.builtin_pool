@@ -37,6 +37,7 @@
 #include "storage/fd.h"
 #include "storage/ipc.h"
 #include "storage/reinit.h"
+#include "storage/snapfs.h"
 #include "utils/builtins.h"
 #include "utils/ps_status.h"
 #include "utils/relcache.h"
@@ -52,6 +53,7 @@ typedef struct
 	bool		includewal;
 	uint32		maxrate;
 	bool		sendtblspcmapfile;
+	SnapshotId  snapshot;
 } basebackup_options;
 
 
@@ -234,6 +236,7 @@ perform_base_backup(basebackup_options *opt)
 	tblspc_map_file = makeStringInfo();
 
 	total_checksum_failures = 0;
+	sfs_backend_snapshot = opt->snapshot;
 
 	startptr = do_pg_start_backup(opt->label, opt->fastcheckpoint, &starttli,
 								  labelfile, &tablespaces,
@@ -643,6 +646,7 @@ parse_basebackup_options(List *options, basebackup_options *opt)
 	bool		o_maxrate = false;
 	bool		o_tablespace_map = false;
 	bool		o_noverify_checksums = false;
+	bool		o_snapshot = false;
 
 	MemSet(opt, 0, sizeof(*opt));
 	foreach(lopt, options)
@@ -657,6 +661,15 @@ parse_basebackup_options(List *options, basebackup_options *opt)
 						 errmsg("duplicate option \"%s\"", defel->defname)));
 			opt->label = strVal(defel->arg);
 			o_label = true;
+		}
+		else if (strcmp(defel->defname, "snapshot") == 0)
+		{
+			if (o_snapshot)
+				ereport(ERROR,
+						(errcode(ERRCODE_SYNTAX_ERROR),
+						 errmsg("duplicate option \"%s\"", defel->defname)));
+			opt->snapshot = intVal(defel->arg);
+			o_snapshot = true;
 		}
 		else if (strcmp(defel->defname, "progress") == 0)
 		{
@@ -764,8 +777,10 @@ SendBaseBackup(BaseBackupCmd *cmd)
 				 opt.label);
 		set_ps_display(activitymsg, false);
 	}
-
+	sfs_basebackup = true;
 	perform_base_backup(&opt);
+	sfs_basebackup = false;
+	sfs_backend_snapshot = SFS_INVALID_SNAPSHOT;
 }
 
 static void
@@ -1140,6 +1155,10 @@ sendDir(const char *path, int basepathlen, bool sizeonly, List *tablespaces,
 			continue;
 		}
 
+		/* Do not backup snapfs files */
+		if (is_snapfs_file(de->d_name))
+			continue;
+
 		snprintf(pathbuf, sizeof(pathbuf), "%s/%s", path, de->d_name);
 
 		/* Skip pg_control here to back up it last */
@@ -1373,6 +1392,12 @@ sendFile(const char *readfilename, const char *tarfilename, struct stat *statbuf
 	int			segmentno = 0;
 	char	   *segmentpath;
 	bool		verify_checksum = false;
+	SnapshotId  current_snapshot;
+	File        file = -1;
+
+	current_snapshot = sfs_backend_snapshot != SFS_INVALID_SNAPSHOT ? sfs_backend_snapshot : ControlFile->active_snapshot;
+	if (current_snapshot != SFS_INVALID_SNAPSHOT)
+		file = PathNameOpenFile(readfilename, O_RDONLY|PG_BINARY);
 
 	fp = AllocateFile(readfilename, "rb");
 	if (fp == NULL)
@@ -1523,6 +1548,32 @@ sendFile(const char *readfilename, const char *tarfilename, struct stat *statbuf
 			}
 		}
 
+		if (current_snapshot != SFS_INVALID_SNAPSHOT)
+		{
+			for (i = 0; i < cnt / BLCKSZ; i++)
+			{
+				int rc;
+				page = buf + BLCKSZ * i;
+				rc = FileRead(file, page, BLCKSZ, WAIT_EVENT_DATA_FILE_READ);
+				if (rc < 0)
+					ereport(ERROR,
+							(errmsg("base backup could not read snapshot file, aborting backup")));
+			}
+		}
+
+		/* Remove information about snapshots from control file */
+		if (SFS_KEEPING_SNAPSHOT() && strcmp(readfilename, XLOG_CONTROL_FILE) == 0)
+		{
+			ControlFileData* ctl = (ControlFileData*)buf;
+			ctl->oldest_snapshot = 1;
+			ctl->recent_snapshot = SFS_INVALID_SNAPSHOT;
+			ctl->active_snapshot = SFS_INVALID_SNAPSHOT;
+			INIT_CRC32C(ctl->crc);
+			COMP_CRC32C(ctl->crc,
+						(char *) ctl,
+						offsetof(ControlFileData, crc));
+			FIN_CRC32C(ctl->crc);
+		}
 		/* Send the chunk as a CopyData message */
 		if (pq_putmessage('d', buf, cnt))
 			ereport(ERROR,
@@ -1541,6 +1592,8 @@ sendFile(const char *readfilename, const char *tarfilename, struct stat *statbuf
 			break;
 		}
 	}
+	if (file >= 0)
+		FileClose(file);
 
 	/* If the file was truncated while we were sending it, pad it with zeros */
 	if (len < statbuf->st_size)

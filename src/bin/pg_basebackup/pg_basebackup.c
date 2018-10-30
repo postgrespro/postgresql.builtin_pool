@@ -99,6 +99,7 @@ static bool temp_replication_slot = true;
 static bool create_slot = false;
 static bool no_slot = false;
 static bool verify_checksums = true;
+static char *snapshot = NULL;
 
 static bool success = false;
 static bool made_new_pgdata = false;
@@ -366,6 +367,7 @@ usage(void)
 	printf(_("  -v, --verbose          output verbose messages\n"));
 	printf(_("  -V, --version          output version information, then exit\n"));
 	printf(_("      --no-slot          prevent creation of temporary replication slot\n"));
+	printf(_("      --snapshot=SNAPID  snapfs snapshot\n"));
 	printf(_("      --no-verify-checksums\n"
 			 "                         do not verify checksums\n"));
 	printf(_("  -?, --help             show this help, then exit\n"));
@@ -1814,7 +1816,7 @@ BaseBackup(void)
 	}
 
 	basebkp =
-		psprintf("BASE_BACKUP LABEL '%s' %s %s %s %s %s %s %s",
+		psprintf("BASE_BACKUP LABEL '%s' %s %s %s %s %s %s %s %s %s",
 				 escaped_label,
 				 showprogress ? "PROGRESS" : "",
 				 includewal == FETCH_WAL ? "WAL" : "",
@@ -1822,7 +1824,9 @@ BaseBackup(void)
 				 includewal == NO_WAL ? "" : "NOWAIT",
 				 maxrate_clause ? maxrate_clause : "",
 				 format == 't' ? "TABLESPACE_MAP" : "",
-				 verify_checksums ? "" : "NOVERIFY_CHECKSUMS");
+				 verify_checksums ? "" : "NOVERIFY_CHECKSUMS",
+				 snapshot ? "SNAPSHOT" : "",
+				 snapshot ? snapshot : "");
 
 	if (PQsendQuery(conn, basebkp) == 0)
 	{
@@ -2163,6 +2167,7 @@ main(int argc, char **argv)
 		{"waldir", required_argument, NULL, 1},
 		{"no-slot", no_argument, NULL, 2},
 		{"no-verify-checksums", no_argument, NULL, 3},
+		{"snapshot", required_argument, NULL, 4},
 		{NULL, 0, NULL, 0}
 	};
 	int			c;
@@ -2333,6 +2338,9 @@ main(int argc, char **argv)
 				break;
 			case 3:
 				verify_checksums = false;
+				break;
+			case 4:
+				snapshot = pg_strdup(optarg);
 				break;
 			default:
 

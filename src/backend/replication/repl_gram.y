@@ -70,6 +70,7 @@ static SQLCmd *make_sqlcmd(void);
 %token K_DROP_REPLICATION_SLOT
 %token K_TIMELINE_HISTORY
 %token K_LABEL
+%token K_SNAPSHOT
 %token K_PROGRESS
 %token K_FAST
 %token K_WAIT
@@ -178,6 +179,11 @@ base_backup_opt:
 				{
 				  $$ = makeDefElem("label",
 								   (Node *)makeString($2), -1);
+				}
+			| K_SNAPSHOT UCONST
+				{
+				  $$ = makeDefElem("snapshot",
+								   (Node *)makeInteger($2), -1);
 				}
 			| K_PROGRESS
 				{

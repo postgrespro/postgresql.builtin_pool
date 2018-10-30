@@ -74,6 +74,7 @@ typedef struct SnapshotMap
 
 extern SnapshotId sfs_backend_snapshot;
 extern SnapshotId sfs_active_snapshot;
+extern bool sfs_basebackup;
 
 /* Memory mapping function */
 extern int sfs_munmap(SnapshotMap * map);
