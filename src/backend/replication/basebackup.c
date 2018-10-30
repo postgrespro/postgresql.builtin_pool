@@ -76,6 +76,8 @@ static int	compareWalFileNames(const void *a, const void *b);
 static void throttle(size_t increment);
 static bool is_checksummed_file(const char *fullpath, const char *filename);
 
+#define BACKUP_ALL_SNAPSHOTS ((SnapshotId)~0)
+
 /* Was the backup currently in-progress initiated in recovery mode? */
 static bool backup_started_in_recovery = false;
 
@@ -649,6 +651,8 @@ parse_basebackup_options(List *options, basebackup_options *opt)
 	bool		o_snapshot = false;
 
 	MemSet(opt, 0, sizeof(*opt));
+	opt->snapshot = BACKUP_ALL_SNAPSHOTS;
+
 	foreach(lopt, options)
 	{
 		DefElem    *defel = (DefElem *) lfirst(lopt);
@@ -1156,7 +1160,7 @@ sendDir(const char *path, int basepathlen, bool sizeonly, List *tablespaces,
 		}
 
 		/* Do not backup snapfs files */
-		if (is_snapfs_file(de->d_name))
+		if (sfs_backend_snapshot != BACKUP_ALL_SNAPSHOTS && is_snapfs_file(de->d_name))
 			continue;
 
 		snprintf(pathbuf, sizeof(pathbuf), "%s/%s", path, de->d_name);
@@ -1395,7 +1399,8 @@ sendFile(const char *readfilename, const char *tarfilename, struct stat *statbuf
 	SnapshotId  current_snapshot;
 	File        file = -1;
 
-	current_snapshot = sfs_backend_snapshot != SFS_INVALID_SNAPSHOT ? sfs_backend_snapshot : ControlFile->active_snapshot;
+	current_snapshot = sfs_backend_snapshot != SFS_INVALID_SNAPSHOT && sfs_backend_snapshot != BACKUP_ALL_SNAPSHOTS
+		? sfs_backend_snapshot : ControlFile->active_snapshot;
 	if (current_snapshot != SFS_INVALID_SNAPSHOT)
 		file = PathNameOpenFile(readfilename, O_RDONLY|PG_BINARY);
 
@@ -1562,7 +1567,9 @@ sendFile(const char *readfilename, const char *tarfilename, struct stat *statbuf
 		}
 
 		/* Remove information about snapshots from control file */
-		if (SFS_KEEPING_SNAPSHOT() && strcmp(readfilename, XLOG_CONTROL_FILE) == 0)
+		if (SFS_KEEPING_SNAPSHOT()
+			&& sfs_backend_snapshot != BACKUP_ALL_SNAPSHOTS
+			&& strcmp(readfilename, XLOG_CONTROL_FILE) == 0)
 		{
 			ControlFileData* ctl = (ControlFileData*)buf;
 			ctl->oldest_snapshot = 1;
