@@ -2054,8 +2054,23 @@ FileRead(File file, char *buffer, int amount, uint32 wait_event_info)
 					elog(ERROR, "[SFS] Field to read snapshot file: %m");
 
 				pgstat_report_wait_end();
+				if (sfs_basebackup)
+				{
+					/* We should move file position in case of base backup to avoid explicit seeks */
+					vfdP->seekPos += amount;
+				}
 				return amount;
 			}
+		}
+		/*
+		 * In case of performing pg_basebackup of particular snapshot
+		 * we are interested only in reading original image of the page.
+		 */
+		if (sfs_basebackup)
+		{
+			/* We should move file position in case of base backup to avoid explicit seeks */
+			vfdP->seekPos += amount;
+			return 0;
 		}
 	}
 retry:
@@ -2174,8 +2189,6 @@ FileWrite(File file, char *buffer, int amount, uint32 wait_event_info)
 			char orig_block[BLCKSZ];
 			int rc;
 
-			vfdP->snap_map->offs[block_no] = snap_offs + 1;
-
 			rc = sfs_read_file(vfdP->fd, orig_block, BLCKSZ);
 			if (rc < 0)
 				elog(ERROR, "[SFS] Could not read file: %m");
@@ -2190,6 +2203,9 @@ FileWrite(File file, char *buffer, int amount, uint32 wait_event_info)
 
 			if (!sfs_write_file(vfdP->snap_fd, orig_block, BLCKSZ))
 				elog(ERROR, "[SFS] Could not write file: %m");
+
+			/* Update map only after saving original page */
+			vfdP->snap_map->offs[block_no] = snap_offs + 1;
 		}
 	}
 
@@ -3448,6 +3464,13 @@ RemovePgTempRelationFilesInDbspace(const char *dbspacedirname)
 	}
 
 	FreeDir(dbspace_dir);
+}
+
+/* <file>.snap.SNAPSHOT or <file>.snapmap.SNAPSHOT */ 
+bool
+is_snapfs_file(const char* name)
+{
+	return strstr(name, ".snap") != NULL;
 }
 
 /* t<digits>_<digits>, or t<digits>_<digits>_<forkname> */

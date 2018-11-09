@@ -126,6 +126,7 @@ extern void AtEOXact_Files(bool isCommit);
 extern void AtEOSubXact_Files(bool isCommit, SubTransactionId mySubid,
 				  SubTransactionId parentSubid);
 extern void RemovePgTempFiles(void);
+extern bool is_snapfs_file(const char *name);
 extern bool looks_like_temp_rel_name(const char *name);
 
 extern int	pg_fsync(int fd);
