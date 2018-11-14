@@ -73,7 +73,7 @@ like( $stderr, '/ERROR:  Operation is not possible at replica/', 'pg_make_snapsh
 like( $stderr, '/ERROR:  Operation is not possible at replica/', 'pg_recover_to_snapshot() is prohibited on standby' );
 
 ( $ret, $stdout, $stderr ) = $node_standby->psql( 'postgres', "select pg_switch_to_snapshot( 2 );" );
-like( $stderr, '/ERROR:  Operation is not possible at replica/', 'pg_recover_to_snapshot() is prohibited on standby' );
+like( $stderr, '/ERROR:  Operation is not possible at replica/', 'pg_switch_to_snapshot() is prohibited on standby' );
 
 ( $ret, $stdout, $stderr ) = $node_standby->psql( 'postgres', "select pg_set_backend_snapshot( 4 );" );
 like( $stderr, '/ERROR:  Invalid snapshot/', 'Invalid snapshot number passed to pg_set_backend_snapshot() on standby' );
