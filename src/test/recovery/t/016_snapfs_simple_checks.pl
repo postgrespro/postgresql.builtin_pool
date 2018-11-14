@@ -16,6 +16,9 @@ sub replay_wait( $$ ) {
 	$node_standby->poll_query_until('postgres',
 		"SELECT (pg_last_wal_replay_lsn() - '$until_lsn'::pg_lsn) >= 0")
 	  or die "standby never caught up";
+
+	# the function does not work correctly
+	$node_master->safe_psql( 'postgres', "select pg_sleep(1);" );
 }
 
 my ( $ret, $stdout, $stderr );
@@ -55,11 +58,8 @@ $node_master->safe_psql('postgres',
 
 replay_wait( $node_master, $node_standby );
 
-# replay_wait() does not work correctly
-my $master_out = $node_master->safe_psql( 'postgres', "select pg_sleep(1);" );
-
 # Check for pg_control_snapshot() results
-$master_out = $node_master->safe_psql( 'postgres', "select * from pg_control_snapshot()" );
+my $master_out = $node_master->safe_psql( 'postgres', "select * from pg_control_snapshot()" );
 my $standby_out = $node_standby->safe_psql( 'postgres', "select * from pg_control_snapshot()" );
 
 ok( $master_out eq '1|3|0', 'pg_control_snapshot() on master' );
