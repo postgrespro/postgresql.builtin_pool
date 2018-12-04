@@ -2328,6 +2328,12 @@ shoelace_obsolete| SELECT shoelace.sl_name,
   WHERE (NOT (EXISTS ( SELECT shoe.shoename
            FROM shoe
           WHERE (shoe.slcolor = shoelace.sl_color))));
+snapfs_snapshots| SELECT snap_id.snap_id,
+    ( SELECT pg_get_snapshot_timestamp(snap_id.snap_id) AS pg_get_snapshot_timestamp) AS snap_created,
+    pg_size_pretty(( SELECT pg_get_snapshot_size(snap_id.snap_id) AS pg_get_snapshot_size)) AS snap_size
+   FROM generate_series(( SELECT pg_control_snapshot.oldest_snapshot
+           FROM pg_control_snapshot() pg_control_snapshot(oldest_snapshot, recent_snapshot, active_snapshot)), ( SELECT pg_control_snapshot.recent_snapshot
+           FROM pg_control_snapshot() pg_control_snapshot(oldest_snapshot, recent_snapshot, active_snapshot))) snap_id(snap_id);
 street| SELECT r.name,
     r.thepath,
     c.cname

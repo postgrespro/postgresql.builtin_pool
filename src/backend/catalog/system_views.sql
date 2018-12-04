@@ -1120,7 +1120,7 @@ STRICT IMMUTABLE PARALLEL SAFE
 AS 'jsonb_insert';
 
 CREATE VIEW snapfs_snapshots AS
-select *,(select pg_get_snapshot_timestamp(generate_series)) as snap_created, pg_size_pretty((select pg_get_snapshot_size(generate_series))) as snap_size
+select *,(select pg_get_snapshot_timestamp(snap_id)) as snap_created, pg_size_pretty((select pg_get_snapshot_size(snap_id))) as snap_size
 from generate_series((select oldest_snapshot from pg_control_snapshot()), (select recent_snapshot from pg_control_snapshot())) as snap_id;
 
 --
