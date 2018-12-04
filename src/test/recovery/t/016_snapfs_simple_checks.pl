@@ -16,6 +16,9 @@ sub replay_wait( $$ ) {
 	$node_standby->poll_query_until('postgres',
 		"SELECT (pg_last_wal_replay_lsn() - '$until_lsn'::pg_lsn) >= 0")
 	  or die "standby never caught up";
+
+	# the function does not work correctly
+	$node_master->safe_psql( 'postgres', "select pg_sleep(1);" );
 }
 
 my ( $ret, $stdout, $stderr );
@@ -60,7 +63,7 @@ my $master_out = $node_master->safe_psql( 'postgres', "select * from pg_control_
 my $standby_out = $node_standby->safe_psql( 'postgres', "select * from pg_control_snapshot()" );
 
 ok( $master_out eq '1|3|0', 'pg_control_snapshot() on master' );
-ok( $standby_out eq '1|2|0', 'pg_control_snapshot() on standby' );
+ok( $standby_out eq '1|3|0', 'pg_control_snapshot() on standby' );
 
 # Standby simple checks
 ( $ret, $stdout, $stderr ) = $node_standby->psql( 'postgres', "select pg_make_snapshot();" );
@@ -70,9 +73,9 @@ like( $stderr, '/ERROR:  Operation is not possible at replica/', 'pg_make_snapsh
 like( $stderr, '/ERROR:  Operation is not possible at replica/', 'pg_recover_to_snapshot() is prohibited on standby' );
 
 ( $ret, $stdout, $stderr ) = $node_standby->psql( 'postgres', "select pg_switch_to_snapshot( 2 );" );
-like( $stderr, '/ERROR:  Operation is not possible at replica/', 'pg_recover_to_snapshot() is prohibited on standby' );
+like( $stderr, '/ERROR:  Operation is not possible at replica/', 'pg_switch_to_snapshot() is prohibited on standby' );
 
-( $ret, $stdout, $stderr ) = $node_standby->psql( 'postgres', "select pg_set_backend_snapshot( 3 );" );
+( $ret, $stdout, $stderr ) = $node_standby->psql( 'postgres', "select pg_set_backend_snapshot( 4 );" );
 like( $stderr, '/ERROR:  Invalid snapshot/', 'Invalid snapshot number passed to pg_set_backend_snapshot() on standby' );
 
 ( $ret, $stdout, $stderr ) = $node_standby->psql( 'postgres', "select * from pg_set_backend_snapshot( 2 ); select * from pg_get_backend_snapshot(); select * from pg_set_backend_snapshot( 0 );" );
@@ -89,8 +92,7 @@ ok( $snapshot_size eq 't', 'Snapshot age is less than 180 seconds on standby' );
 
 ( $ret, $stdout, $stderr ) = $node_standby->psql( 'postgres', "select coalesce( pg_get_snapshot_timestamp( generate_series ), now() ) = coalesce( pg_get_snapshot_timestamp, now() ) and pg_size_pretty( pg_get_snapshot_size( generate_series ) ) = pg_size_pretty from snapfs_snapshots;" );
 $ret = () = $stdout =~ /t/g;
-is( $ret, 2, 'snapfs_snapshots view check on standby' );
-
+is( $ret, 3, 'snapfs_snapshots view check on standby' );
 
 # Master simple checks
 ( $ret, $stdout, $stderr ) = $node_master->psql( 'postgres', "select pg_set_backend_snapshot( 4 );" );
