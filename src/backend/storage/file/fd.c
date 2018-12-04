@@ -2051,7 +2051,7 @@ FileRead(File file, char *buffer, int amount, uint32 wait_event_info)
 					elog(ERROR, "[SFS] Could not seek file: %m");
 
 				if (sfs_read_file(vfdP->snap_fd, buffer, amount) != amount)
-					elog(ERROR, "[SFS] Field to read snapshot file: %m");
+					elog(ERROR, "[SFS] Failed to read snapshot file: %m");
 
 				pgstat_report_wait_end();
 				if (sfs_basebackup)
@@ -2389,11 +2389,16 @@ FileSeek(File file, off_t offset, int whence)
 				if (!OpenSnapshotFiles(vfdP, snap_id, false))
 					continue;
 
-				for (i = 0; i < RELSEG_SIZE; i++)
+				for (i = RELSEG_SIZE; --i != 0;)
 				{
-					sfs_segment_offs_t offs = vfdP->snap_map->offs[i];
-					if (offs >= vfdP->seekPos)
-						vfdP->seekPos = offs +  BLCKSZ - 1;
+					if (vfdP->snap_map->offs[i] != 0)
+					{
+						if (i*BLCKSZ >= vfdP->seekPos)
+						{
+							vfdP->seekPos = i*BLCKSZ;
+						}
+						break;
+					}
 				}
 			}
 		}
