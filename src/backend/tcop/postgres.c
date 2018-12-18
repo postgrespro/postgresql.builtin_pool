@@ -3675,10 +3675,13 @@ process_postgres_switches(int argc, char *argv[], GucContext ctx,
 #endif
 }
 
-#define ACTIVE_SESSION_MAGIC  0xDEFA1234U
-#define REMOVED_SESSION_MAGIC 0xDEADDEEDU
+#define ACTIVE_SESSION_MAGIC    0xDEFA1234U
+#define REMOVED_SESSION_MAGIC   0xDEADDEEDU
+#define MIN_FREE_FDS            10
+#define DESCRIPTORS_PER_SESSION 2
 
 static int nActiveSessions = 0;
+static int maxActiveSessions = 0;
 
 static SessionContext *
 CreateSession(void)
@@ -3694,6 +3697,23 @@ CreateSession(void)
 	session->magic = ACTIVE_SESSION_MAGIC;
 	session->eventPos = -1;
 	nActiveSessions += 1;
+	if (nActiveSessions > maxActiveSessions)
+	{
+		int new_max_safe_fds = max_safe_fds - (nActiveSessions - maxActiveSessions)*DESCRIPTORS_PER_SESSION;
+		if (new_max_safe_fds >= MIN_FREE_FDS)
+		{
+			max_safe_fds = new_max_safe_fds;
+			/* Ensure that we have enough free descriptors to establish new session.
+			 * Unlike fd.c, which throws away lest recently used file descriptors
+			 * only when open() call is failed, we prefer more conservative (pessimistic)
+			 * aporach here.
+			 */
+			ReleaseLruFiles();
+		}
+		else
+			elog(WARNING, "Too few free file desriptors %d for %d sessions", new_max_safe_fds, maxActiveSessions);
+		maxActiveSessions = nActiveSessions;
+	}
 	return session;
 }
 
@@ -3723,15 +3743,15 @@ SwitchToSession(SessionContext *session)
 	RestoreSessionGUCs(ActiveSession);
 	ActiveSession = session;
 
-	MyProcPort = ActiveSession->port;
-	SetTempNamespaceState(ActiveSession->tempNamespace,
-						  ActiveSession->tempToastNamespace);
+	MyProcPort = session->port;
+	SetTempNamespaceState(session->tempNamespace,
+						  session->tempToastNamespace);
 	pq_set_current_state(session->port->pqcomm_state, session->port,
 						 session->eventSet);
 	whereToSendOutput = DestRemote;
 
-	RestoreSessionGUCs(ActiveSession);
-	LoadSessionVariables(ActiveSession);
+	RestoreSessionGUCs(session);
+	LoadSessionVariables(session);
 }
 
 static void
@@ -4369,11 +4389,12 @@ PostgresMain(int argc, char *argv[],
 					pgsocket sock;
 					MemoryContext oldcontext;
 
+					session = CreateSession();
+
 					sock = pg_recv_sock(SessionPoolSock);
 					if (sock == PGINVALID_SOCKET)
 						elog(ERROR, "Failed to receive session socket: %m");
 
-					session = CreateSession();
 
 					/* Initialize port and wait event set for this session */
 					oldcontext = MemoryContextSwitchTo(session->memory);
@@ -4436,11 +4457,10 @@ PostgresMain(int argc, char *argv[],
 					pq_sendint(&buf, (int32) MyProcPid, 4);
 					pq_sendint(&buf, (int32) MyCancelKey, 4);
 					pq_endmessage(&buf);
-
 					/* Need not flush since ReadyForQuery will do it. */
-					send_ready_for_query = true;
 
-					continue;
+					ReadyForQuery(whereToSendOutput);
+					goto ChooseSession;
 				}
 				else
 				{

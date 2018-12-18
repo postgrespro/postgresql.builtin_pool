@@ -82,8 +82,11 @@ pg_send_sock(pgsocket chan, pgsocket sock, pid_t pid)
     memcpy(CMSG_DATA(cmsg), &sock, sizeof(sock));
     msg.msg_controllen = cmsg->cmsg_len;
 
-    if (sendmsg(chan, &msg, 0) < 0)
-		return PGINVALID_SOCKET;
+    while (sendmsg(chan, &msg, 0) < 0)
+	{
+		if (errno != EINTR)
+			return PGINVALID_SOCKET;
+	}
 
 	return 0;
 #endif
@@ -142,8 +145,11 @@ pg_recv_sock(pgsocket chan)
     msg.msg_control = c_buffer;
     msg.msg_controllen = sizeof(c_buffer);
 
-    if (recvmsg(chan, &msg, 0) < 0)
-		return PGINVALID_SOCKET;
+    while (recvmsg(chan, &msg, 0) < 0)
+	{
+		if (errno != EINTR)
+			return PGINVALID_SOCKET;
+	}
 
     cmsg = CMSG_FIRSTHDR(&msg);
 	if (!cmsg)

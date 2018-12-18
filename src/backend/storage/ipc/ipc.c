@@ -304,6 +304,13 @@ atexit_callback(void)
 void
 on_proc_exit(pg_on_exit_callback function, Datum arg)
 {
+	int i = on_proc_exit_index;
+
+	while (--i >= 0)
+	{
+		if (on_proc_exit_list[i].function == function && on_proc_exit_list[i].arg == arg)
+			return;
+	}
 	if (on_proc_exit_index >= MAX_ON_EXITS)
 		ereport(FATAL,
 				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),

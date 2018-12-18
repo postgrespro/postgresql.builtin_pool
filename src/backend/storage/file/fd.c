@@ -116,7 +116,7 @@
  * the number of open files.  (This appears to be true on most if not
  * all platforms as of Feb 2004.)
  */
-#define NUM_RESERVED_FDS		10
+#define NUM_RESERVED_FDS		20
 
 /*
  * If we have fewer than this many usable FDs after allowing for the reserved
@@ -276,7 +276,6 @@ static int	nextTempTableSpace = 0;
  * Insert		   - put a file at the front of the Lru ring
  * LruInsert	   - put a file at the front of the Lru ring and open it
  * ReleaseLruFile  - Release an fd by closing the last entry in the Lru ring
- * ReleaseLruFiles - Release fd(s) until we're under the max_safe_fds limit
  * AllocateVfd	   - grab a free (or new) file record (from VfdArray)
  * FreeVfd		   - free a file record
  *
@@ -304,7 +303,6 @@ static void LruDelete(File file);
 static void Insert(File file);
 static int	LruInsert(File file);
 static bool ReleaseLruFile(void);
-static void ReleaseLruFiles(void);
 static File AllocateVfd(void);
 static void FreeVfd(File file);
 
@@ -1176,7 +1174,7 @@ ReleaseLruFile(void)
  * Release kernel FDs as needed to get under the max_safe_fds limit.
  * After calling this, it's OK to try to open another file.
  */
-static void
+void
 ReleaseLruFiles(void)
 {
 	while (nfile + numAllocatedDescs >= max_safe_fds)
