@@ -3227,7 +3227,7 @@ isTempNamespaceInUse(Oid namespaceId)
 		return false;
 
 	/* Does the backend own the temporary namespace? */
-	if (proc->tempNamespaceId != namespaceId)
+	if (SessionPoolSize == 0 && proc->tempNamespaceId != namespaceId)
 		return false;
 
 	/* all good to go */

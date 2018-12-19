@@ -4376,7 +4376,7 @@ ScheduleSession(DatabasePool *pool, Port *port)
 				{
 					worker = pool->workers[j];
 					if (!worker->proc)
-						worker->proc = BackendPidGetProc(worker->pid);
+						worker->proc = BackendPidGetProcWithLock(worker->pid);
 					ws[j].worker = worker;
 					ws[j].load_average = (worker->proc && worker->proc->nSessionSchedules > 0)
 						? (double)worker->proc->nReadySessions / worker->proc->nSessionSchedules
