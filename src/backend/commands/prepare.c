@@ -467,6 +467,7 @@ StorePreparedStatement(const char *stmt_name,
 											  stmt_name,
 											  HASH_ENTER,
 											  &found);
+	MyProc->is_tainted = true;
 
 	/* Shouldn't get a duplicate entry */
 	if (found)

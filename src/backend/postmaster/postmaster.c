@@ -115,6 +115,7 @@
 #include "postmaster/pgarch.h"
 #include "postmaster/postmaster.h"
 #include "postmaster/syslogger.h"
+#include "postmaster/proxy.h"
 #include "replication/logicallauncher.h"
 #include "replication/walsender.h"
 #include "storage/fd.h"
@@ -245,6 +246,8 @@ bool		Db_user_namespace = false;
 bool		enable_bonjour = false;
 char	   *bonjour_name;
 bool		restart_after_crash = true;
+
+static Proxy* ConnectionProxy;
 
 /* PIDs of special child processes; 0 when not running */
 static pid_t StartupPID = 0,
@@ -413,7 +416,6 @@ static void BackendInitialize(Port *port);
 static void BackendRun(Port *port) pg_attribute_noreturn();
 static void ExitPostmaster(int status) pg_attribute_noreturn();
 static int	ServerLoop(void);
-static int	BackendStartup(Port *port);
 static int	ProcessStartupPacket(Port *port, bool SSLdone);
 static void SendNegotiateProtocolVersion(List *unrecognized_protocol_options);
 static void processCancelRequest(Port *port, void *pkt);
@@ -1383,6 +1385,11 @@ PostmasterMain(int argc, char *argv[])
 	/* Some workers may be scheduled to start now */
 	maybe_start_bgworkers();
 
+	if (SessionPoolSize != 0)
+	{
+		ConnectionProxy = proxy_create(SessionPoolSize);
+		proxy_start(ConnectionProxy);
+	}
 	status = ServerLoop();
 
 	/*
@@ -1710,14 +1717,22 @@ ServerLoop(void)
 					port = ConnCreate(ListenSocket[i]);
 					if (port)
 					{
-						BackendStartup(port);
+						if (ConnectionProxy)
+						{
+							proxy_add_client(port->sock);
+							free(port);
+						}
+						else
+						{
+							BackendStartup(port, NULL);
 
-						/*
-						 * We no longer need the open socket or port structure
-						 * in this process
-						 */
-						StreamClose(port->sock);
-						ConnFree(port);
+							/*
+							 * We no longer need the open socket or port structure
+							 * in this process
+							 */
+							StreamClose(port->sock);
+							ConnFree(port);
+						}
 					}
 				}
 			}
@@ -1905,8 +1920,6 @@ ProcessStartupPacket(Port *port, bool SSLdone)
 {
 	int32		len;
 	void	   *buf;
-	ProtocolVersion proto;
-	MemoryContext oldcontext;
 
 	pq_startmsgread();
 	if (pq_getbytes((char *) &len, 4) == EOF)
@@ -1954,6 +1967,15 @@ ProcessStartupPacket(Port *port, bool SSLdone)
 		return STATUS_ERROR;
 	}
 	pq_endmsgread();
+
+	return ParseStartupPacket(port, buf, len, SSLdone);
+}
+
+int
+ParseStartupPacket(Port *port, void* buf, int len, bool SSLdone)
+{
+	ProtocolVersion proto;
+	MemoryContext oldcontext;
 
 	/*
 	 * The first field is either a protocol version number or a special
@@ -4009,8 +4031,8 @@ TerminateChildren(int signal)
  *
  * Note: if you change this code, also consider StartAutovacuumWorker.
  */
-static int
-BackendStartup(Port *port)
+int
+BackendStartup(Port *port, int* backend_pid)
 {
 	Backend    *bn;				/* for backend cleanup */
 	pid_t		pid;
@@ -4114,6 +4136,8 @@ BackendStartup(Port *port)
 	if (!bn->dead_end)
 		ShmemBackendArrayAdd(bn);
 #endif
+	if (backend_pid)
+		*backend_pid = pid;
 
 	return STATUS_OK;
 }
@@ -5004,6 +5028,12 @@ SubPostmasterMain(int argc, char *argv[])
 static void
 ExitPostmaster(int status)
 {
+    if (ConnectionProxy)
+	{
+		proxy_stop(ConnectionProxy);
+	}
+	else
+	{
 #ifdef HAVE_PTHREAD_IS_THREADED_NP
 
 	/*
@@ -5018,7 +5048,7 @@ ExitPostmaster(int status)
 				 errmsg_internal("postmaster became multithreaded"),
 				 errdetail("Please report this to <pgsql-bugs@postgresql.org>.")));
 #endif
-
+	}
 	/* should cleanup shared memory and kill all backends */
 
 	/*

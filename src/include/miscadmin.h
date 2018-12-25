@@ -159,6 +159,7 @@ extern PGDLLIMPORT int data_directory_mode;
 extern PGDLLIMPORT int NBuffers;
 extern PGDLLIMPORT int MaxBackends;
 extern PGDLLIMPORT int MaxConnections;
+extern PGDLLIMPORT int SessionPoolSize;
 extern PGDLLIMPORT int max_worker_processes;
 extern PGDLLIMPORT int max_parallel_workers;
 

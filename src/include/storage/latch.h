@@ -133,9 +133,11 @@ typedef struct Latch
 /* avoid having to deal with case on platforms not requiring it */
 #define WL_SOCKET_CONNECTED  WL_SOCKET_WRITEABLE
 #endif
+#define WL_SOCKET_EDGE       (1 << 7)
 
 #define WL_SOCKET_MASK		(WL_SOCKET_READABLE | \
 							 WL_SOCKET_WRITEABLE | \
+							 WL_SOCKET_EDGE | \
 							 WL_SOCKET_CONNECTED)
 
 typedef struct WaitEvent

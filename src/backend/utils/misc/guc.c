@@ -2054,6 +2054,18 @@ static struct config_int ConfigureNamesInt[] =
 	},
 
 	{
+		{"session_pool_size", PGC_POSTMASTER, CONN_POOLING,
+			gettext_noop("Sets number of backends serving client sessions."),
+			gettext_noop("If non-zero then session pooling will be used: "
+						 "client connections will be redirected to one of the backends and maximal number of backends is determined by this parameter."
+						 "Launched backend are never terminated even in case of no active sessions.")
+		},
+		&SessionPoolSize,
+		10, 0, INT_MAX,
+		NULL, NULL, NULL
+	},
+
+	{
 		/* see max_connections and max_wal_senders */
 		{"superuser_reserved_connections", PGC_POSTMASTER, CONN_AUTH_SETTINGS,
 			gettext_noop("Sets the number of connection slots reserved for superusers."),
@@ -7121,6 +7133,9 @@ set_config_option(const char *name, const char *value,
 #undef newval
 			}
 	}
+
+	if (changeVal && MyProc)
+		MyProc->is_tainted = true;
 
 	if (changeVal && (record->flags & GUC_REPORT))
 		ReportGUCOption(record);

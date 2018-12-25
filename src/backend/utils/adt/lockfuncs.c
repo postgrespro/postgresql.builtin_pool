@@ -658,6 +658,7 @@ pg_isolation_test_session_is_blocked(PG_FUNCTION_ARGS)
 static void
 PreventAdvisoryLocksInParallelMode(void)
 {
+	MyProc->is_tainted = true;
 	if (IsInParallelMode())
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_TRANSACTION_STATE),

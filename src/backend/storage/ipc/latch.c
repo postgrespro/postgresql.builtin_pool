@@ -844,6 +844,8 @@ WaitEventAdjustEpoll(WaitEventSet *set, WaitEvent *event, int action)
 			epoll_ev.events |= EPOLLIN;
 		if (event->events & WL_SOCKET_WRITEABLE)
 			epoll_ev.events |= EPOLLOUT;
+		if (event->events & WL_SOCKET_EDGE)
+			epoll_ev.events |= EPOLLET;
 	}
 
 	/*
