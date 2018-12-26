@@ -46,6 +46,9 @@ extern int	postmaster_alive_fds[2];
 
 extern PGDLLIMPORT const char *progname;
 
+struct Proxy;
+struct Port;
+
 extern void PostmasterMain(int argc, char *argv[]) pg_attribute_noreturn();
 extern void ClosePostmasterPorts(bool am_syslogger);
 extern void InitProcessGlobals(void);
@@ -63,8 +66,8 @@ extern Size ShmemBackendArraySize(void);
 extern void ShmemBackendArrayAllocation(void);
 #endif
 
-extern int  ParseStartupPacket(Port *port, void* pkg_ody, int pkg_size, bool SSLdone);
-extern int	BackendStartup(Port *port, int* backend_pid);
+extern int  ParseStartupPacket(struct Port* port, MemoryContext memctx, void* pkg_body, int pkg_size, bool SSLdone);
+extern int	BackendStartup(struct Port* port, int* backend_pid);
 
 /*
  * Note: MAX_BACKENDS is limited to 2^18-1 because that's the width reserved
@@ -78,10 +81,11 @@ extern int	BackendStartup(Port *port, int* backend_pid);
  */
 #define MAX_BACKENDS	0x3FFFF
 
-struct Proxy;
-extern struct Proxy* proxy_create(void);
+extern struct Proxy* proxy_create(int max_backends);
 extern void proxy_start(struct Proxy* proxy);
 extern void proxy_stop(struct Proxy* proxy);
-extern void proxy_add_client(struct Proxy* proxy, pgsocket sock)
+extern void proxy_add_client(struct Proxy* proxy, struct Port* port);
+extern void proxy_lock(struct Proxy* proxy);
+extern void proxy_unlock(struct Proxy* proxy);
 
 #endif							/* _POSTMASTER_H */

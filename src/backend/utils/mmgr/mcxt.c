@@ -506,7 +506,7 @@ MemoryContextStatsDetail(MemoryContext context, int max_children)
  * *totals (if given).
  */
 static void
-MemoryContextStatsInternal(MemoryContext context, int level,
+ MemoryContextStatsInternal(MemoryContext context, int level,
 						   bool print, int max_children,
 						   MemoryContextCounters *totals)
 {

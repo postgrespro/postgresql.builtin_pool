@@ -115,7 +115,6 @@
 #include "postmaster/pgarch.h"
 #include "postmaster/postmaster.h"
 #include "postmaster/syslogger.h"
-#include "postmaster/proxy.h"
 #include "replication/logicallauncher.h"
 #include "replication/walsender.h"
 #include "storage/fd.h"
@@ -247,7 +246,7 @@ bool		enable_bonjour = false;
 char	   *bonjour_name;
 bool		restart_after_crash = true;
 
-static Proxy* ConnectionProxy;
+static struct Proxy* ConnectionProxy;
 
 /* PIDs of special child processes; 0 when not running */
 static pid_t StartupPID = 0,
@@ -1719,8 +1718,7 @@ ServerLoop(void)
 					{
 						if (ConnectionProxy)
 						{
-							proxy_add_client(port->sock);
-							free(port);
+							proxy_add_client(ConnectionProxy, port);
 						}
 						else
 						{
@@ -1968,11 +1966,11 @@ ProcessStartupPacket(Port *port, bool SSLdone)
 	}
 	pq_endmsgread();
 
-	return ParseStartupPacket(port, buf, len, SSLdone);
+	return ParseStartupPacket(port, TopMemoryContext, buf, len, SSLdone);
 }
 
 int
-ParseStartupPacket(Port *port, void* buf, int len, bool SSLdone)
+ParseStartupPacket(Port *port, MemoryContext memctx, void* buf, int len, bool SSLdone)
 {
 	ProtocolVersion proto;
 	MemoryContext oldcontext;
@@ -2051,7 +2049,7 @@ retry1:
 	 * not worry about leaking this storage on failure, since we aren't in the
 	 * postmaster process anymore.
 	 */
-	oldcontext = MemoryContextSwitchTo(TopMemoryContext);
+	oldcontext = MemoryContextSwitchTo(memctx);
 
 	if (PG_PROTOCOL_MAJOR(proto) >= 3)
 	{
@@ -2853,6 +2851,9 @@ reaper(SIGNAL_ARGS)
 	int			pid;			/* process id of dead child process */
 	int			exitstatus;		/* its exit status */
 
+	if (ConnectionProxy)
+		proxy_lock(ConnectionProxy);
+
 	PG_SETMASK(&BlockSig);
 
 	ereport(DEBUG4,
@@ -3156,6 +3157,9 @@ reaper(SIGNAL_ARGS)
 
 	/* Done with signal handler */
 	PG_SETMASK(&UnBlockSig);
+
+	if (ConnectionProxy)
+		proxy_unlock(ConnectionProxy);
 
 	errno = save_errno;
 }

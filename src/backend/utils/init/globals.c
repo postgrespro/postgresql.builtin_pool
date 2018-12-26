@@ -134,6 +134,7 @@ int			SessionPoolSize = 0;
 int			max_worker_processes = 8;
 int			max_parallel_workers = 8;
 int			MaxBackends = 0;
+int			MaxSessions = 1000;
 
 int			VacuumCostPageHit = 1;	/* GUC parameters for vacuum */
 int			VacuumCostPageMiss = 10;

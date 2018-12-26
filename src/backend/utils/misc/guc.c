@@ -2065,6 +2065,17 @@ static struct config_int ConfigureNamesInt[] =
 		NULL, NULL, NULL
 	},
 
+ 	{
+		{"max_sessions", PGC_POSTMASTER, CONN_POOLING,
+			gettext_noop("Sets the maximum number of client session."),
+			gettext_noop("Maximal number of client sessions which can be handled by one backend if session pooling is switched on. "
+						 "So maximal number of client connections is session_pool_size*max_sessions")
+		},
+		&MaxSessions,
+		1000, 1, INT_MAX,
+		NULL, NULL, NULL
+	},
+
 	{
 		/* see max_connections and max_wal_senders */
 		{"superuser_reserved_connections", PGC_POSTMASTER, CONN_AUTH_SETTINGS,
