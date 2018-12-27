@@ -2068,8 +2068,8 @@ static struct config_int ConfigureNamesInt[] =
  	{
 		{"max_sessions", PGC_POSTMASTER, CONN_POOLING,
 			gettext_noop("Sets the maximum number of client session."),
-			gettext_noop("Maximal number of client sessions which can be handled by one backend if session pooling is switched on. "
-						 "So maximal number of client connections is session_pool_size*max_sessions")
+			gettext_noop("Maximal number of client sessions which can be handled by Postgres instance."
+						 "It can be greater than max_connections and actually be arbitrary large.")
 		},
 		&MaxSessions,
 		1000, 1, INT_MAX,
@@ -7145,9 +7145,6 @@ set_config_option(const char *name, const char *value,
 			}
 	}
 
-	if (changeVal && MyProc)
-		MyProc->is_tainted = true;
-
 	if (changeVal && (record->flags & GUC_REPORT))
 		ReportGUCOption(record);
 
@@ -7841,6 +7838,7 @@ ExecSetVariableStmt(VariableSetStmt *stmt, bool isTopLevel)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_TRANSACTION_STATE),
 				 errmsg("cannot set parameters during a parallel operation")));
+	MyProc->is_tainted = true;
 
 	switch (stmt->kind)
 	{
