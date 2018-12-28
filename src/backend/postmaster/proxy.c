@@ -92,14 +92,15 @@ typedef struct SessionPool
 }
 SessionPool;
 
+static pthread_mutex_t postmaster_mutex = PTHREAD_MUTEX_INITIALIZER;
+
 static void channel_remove(Channel* chan);
 static Channel* backend_start(SessionPool* pool, Port* client_port);
 static bool channel_read(Channel* chan);
 static bool channel_write(Channel* chan, bool synchronous);
 
-//#define ELOG(fmt,...) fprintf(stderr, "PROXY: " fmt "\n", ## __VA_ARGS__)
-#define ELOG(fmt,...)
-#define ELOG_WARNING(fmt,...) fprintf(stderr, "PROXY: " fmt "\n", ## __VA_ARGS__)
+//#define ELOG(severity, fmt,...) do { postmaster_lock(); elog(severity, "PROXY: " fmt, ## __VA_ARGS__); postmaster_unlock(); } while (0)
+#define ELOG(severity,fmt,...)
 
 /**
  * Backend is ready for next command outside transaction block (idle state).
@@ -125,25 +126,33 @@ backend_reschedule(Channel* chan)
 		Assert(!chan->backend_is_tainted);
 		chan->peer->peer = NULL;
 		chan->pool->n_idle_clients += 1;
-		ELOG("Backed %d is idle", chan->backend_pid);
 		if (pending)
 		{
             /* Has pending clients: serve one of them */
+			ELOG(LOG, "Backed %d is reassigned to client %p", chan->backend_pid, pending);
 			chan->pool->pending_clients = pending->next;
 			chan->peer = pending;
 			pending->peer = chan;
 			chan->pool->n_pending_clients -= 1;
-			if (pending->rx_pos == 0) /* new client has sent startup packet and we now need to send handshake response */
+			if (pending->tx_size == 0) /* new client has sent startup packet and we now need to send handshake response */
 			{
 				Assert(chan->handshake_response != NULL); /* backend already send handshake response */
 				Assert(chan->handshake_response_size < chan->buf_size);
 				memcpy(chan->buf, chan->handshake_response, chan->handshake_response_size);
 				chan->rx_pos = chan->tx_size = chan->handshake_response_size;
-				return channel_write(pending, true);
+				ELOG(LOG, "Simulate response for startup packet to client %p", pending);
+				return channel_write(pending, false);
+			}
+			else
+			{
+				ELOG(LOG, "Try to send pending request from client %p to backend %p (pid %d)", pending, chan, chan->backend_pid);
+				Assert(pending->tx_pos == 0 && pending->rx_pos >= pending->tx_size);
+				return channel_write(chan, false); /* Send pending request to backend */
 			}
 		}
 		else /* return backend to the list of idle backends */
 		{
+			ELOG(LOG, "Backed %d is idle", chan->backend_pid);
 			chan->next = chan->pool->idle_backends;
 			chan->pool->idle_backends = chan;
 			chan->pool->n_idle_backends += 1;
@@ -174,14 +183,14 @@ client_connect(Channel* chan, int startup_packet_size)
 	MemoryContextSwitchTo(chan->proxy->tmpctx);
 	if (ParseStartupPacket(chan->client_port, chan->proxy->tmpctx, startup_packet+4, startup_packet_size-4, false) != STATUS_OK) /* skip packet size */
 	{
-		ELOG_WARNING("Failed to parse startup packet for client %p", chan);
+		ELOG(WARNING, "Failed to parse startup packet for client %p", chan);
 		return false;
 	}
 	memset(&key, 0, sizeof(key));
 	strlcpy(key.database, chan->client_port->database_name, NAMEDATALEN);
 	strlcpy(key.username, chan->client_port->user_name, NAMEDATALEN);
 
-	ELOG("Client %p connects to %s/%s", chan, key.database, key.username);
+	ELOG(LOG, "Client %p connects to %s/%s", chan, key.database, key.username);
 
 	chan->pool = (SessionPool*)hash_search(chan->proxy->pools, &key, HASH_ENTER, &found);
 	if (!found)
@@ -216,7 +225,7 @@ client_attach(Channel* chan)
 		idle_backend->peer = chan;
 		chan->pool->idle_backends = idle_backend->next;
 		chan->pool->n_idle_backends -= 1;
-		ELOG("Attach client %p to backend %d", chan, idle_backend->backend_pid);
+		ELOG(LOG, "Attach client %p to backend %p (pid %d)", chan, idle_backend, idle_backend->backend_pid);
 	}
 	else /* all backends are busy */
 	{
@@ -226,15 +235,15 @@ client_attach(Channel* chan)
 			idle_backend = backend_start(chan->pool, chan->client_port);
 			if (idle_backend != NULL)
 			{
-				ELOG("Start new backend %d for client %p",
-					 idle_backend->backend_pid, chan);
+				ELOG(LOG, "Start new backend %p (pid %d) for client %p",
+					 idle_backend, idle_backend->backend_pid, chan);
 				chan->peer = idle_backend;
 				idle_backend->peer = chan;
 				return true; /* send startup packet to new backend */
 			}
 		}
 		/* Wait until some backend is available */
-		ELOG("Client %p is waiting for available backends", chan);
+		ELOG(LOG, "Client %p is waiting for available backends", chan);
 		chan->next = chan->pool->pending_clients;
 		chan->pool->pending_clients = chan;
 		chan->pool->n_pending_clients += 1;
@@ -250,16 +259,27 @@ client_attach(Channel* chan)
 static void
 channel_hangout(Channel* chan, char const* op)
 {
-	Assert(!chan->is_disconnected);
-	if (chan->client_port)
-		ELOG("Hangout client %p due to %s error: %m", chan, op);
-	else
-		ELOG("Hangout backend %d due to %s error: %m", chan->backend_pid, op);
+	if (chan->is_disconnected)
+	   return;
+
+	if (chan->client_port) {
+		ELOG(LOG, "Hangout client %p due to %s error: %m", chan, op);
+	} else {
+		ELOG(LOG, "Hangout backend %p (pid %d) due to %s error: %m", chan, chan->backend_pid, op);
+	}
 	chan->next = chan->proxy->hangout;
 	chan->proxy->hangout = chan;
 	chan->is_disconnected = true;
+	chan->backend_is_ready = false;
+   	if (chan->client_port && chan->peer)
+	{
+		/* detach backend from client */
+		backend_reschedule(chan->peer);
+	}
+#if 0
 	if (chan->peer && !chan->peer->is_disconnected)
 		channel_hangout(chan->peer, "peer");
+#endif
 }
 
 /*
@@ -275,12 +295,15 @@ channel_write(Channel* chan, bool synchronous)
 {
 	Channel* peer = chan->peer;
 
-	while (peer != NULL && peer->tx_pos < peer->tx_size) /* has something to write */
+	if (peer == NULL)
+		return false;
+
+	while (peer->tx_pos < peer->tx_size) /* has something to write */
 	{
 		ssize_t rc = chan->client_port
 			? secure_raw_write(chan->client_port, peer->buf + peer->tx_pos, peer->tx_size - peer->tx_pos)
 			: write(chan->backend_socket, peer->buf + peer->tx_pos, peer->tx_size - peer->tx_pos);
-		ELOG("%p: write %d: %m", chan, (int)rc);
+		ELOG(LOG, "%p: write %d tx_pos=%d, tx_size=%d: %m", chan, (int)rc, peer->tx_pos, peer->tx_size);
 		if (rc <= 0)
 		{
 			if (rc == 0 || (errno != EAGAIN && errno != EWOULDBLOCK))
@@ -288,16 +311,17 @@ channel_write(Channel* chan, bool synchronous)
 			return false;
 		}
 		peer->tx_pos += rc;
-		if (peer->tx_pos == peer->tx_size) /* message is completely written */
-		{
-			Assert(peer->rx_pos >= peer->tx_size);
-			memmove(peer->buf, peer->buf + peer->tx_size, peer->rx_pos - peer->tx_size);
-			peer->rx_pos -= peer->tx_size;
-			peer->tx_pos = peer->tx_size = 0;
-			return synchronous || channel_read(peer); /* write is not invoked from read */
-		}
 	}
-	return true;
+	if (peer->tx_size != 0)
+	{
+		chan->backend_is_ready = false;
+		Assert(peer->rx_pos >= peer->tx_size);
+		memmove(peer->buf, peer->buf + peer->tx_size, peer->rx_pos - peer->tx_size);
+		peer->rx_pos -= peer->tx_size;
+		peer->tx_pos = peer->tx_size = 0;
+	}
+	//	channel_read(chan);
+	return synchronous || channel_read(peer); /* write is not invoked from read */
 }
 
 /*
@@ -313,7 +337,7 @@ channel_read(Channel* chan)
 			? secure_raw_read(chan->client_port, chan->buf + chan->rx_pos, chan->buf_size - chan->rx_pos)
 			: read(chan->backend_socket, chan->buf + chan->rx_pos, chan->buf_size - chan->rx_pos);
 
-		ELOG("%p: read %d: %m", chan, (int)rc);
+		ELOG(LOG, "%p: read %d: %m", chan, (int)rc);
 		if (rc <= 0)
 		{
 			if (rc == 0 || (errno != EAGAIN && errno != EWOULDBLOCK))
@@ -335,6 +359,7 @@ channel_read(Channel* chan)
 			}
 			else
 			{
+				ELOG(LOG, "%p receive message %c", chan, chan->buf[msg_start]); 
 				memcpy(&msg_len, chan->buf + msg_start + 1, sizeof(msg_len));
 				msg_len = ntohl(msg_len) + 1;
 			}
@@ -377,9 +402,24 @@ channel_read(Channel* chan)
 					Assert(chan->rx_pos - msg_start == msg_len); /* should be last message */
 					chan->backend_is_ready = true;
 				}
+				else if (chan->client_port /* message from client */
+						 && chan->buf[msg_start] == 'X')	/* terminate message */
+				{
+					if (chan->peer == NULL || !chan->peer->backend_is_tainted)
+					{
+						/* Skip terminate message to idle and non-tinted backends */
+						channel_hangout(chan, "terminate");
+						return false;
+					}
+				}
 				if (chan->peer == NULL)  /* client is not yet connected to backend */
 				{
-					Assert(chan->client_port);
+					if (!chan->client_port)
+					{
+						/* We are not expecting messages from idle backend. Assume that it some error or shutdown. */
+						channel_hangout(chan, "idle");
+						return false;
+					}
 					if (client_attach(chan)) /* new backend requires startup packet */
 					{
 						if (!handshake) /* if it is existed client, then copy startup packet from pool */
@@ -401,18 +441,26 @@ channel_read(Channel* chan)
 					{
 						Channel* backend = chan->peer;
 						Assert(chan->rx_pos == msg_len && msg_start == 0);
-						chan->rx_pos = 0;
+						chan->rx_pos = 0; /* skip startup packet */
 						if (backend != NULL) /* if backend was assigned */
 						{
 							Assert(backend->handshake_response != NULL); /* backend already send handshake response */
 							Assert(backend->handshake_response_size < backend->buf_size);
 							memcpy(backend->buf, backend->handshake_response, backend->handshake_response_size);
 							backend->rx_pos = backend->tx_size = backend->handshake_response_size;
-							return channel_write(chan, true);
-						} else
+							return channel_write(chan, false);
+						}
+						else
+						{
+							/* dummy handshake response will be send to client later when backen is assiged */
 							return false;
-					} else if (chan->peer == NULL) /* backend was not assigned */
+						}
+					}
+					else if (chan->peer == NULL) /* backend was not assigned */
+					{
+						chan->tx_size = response_size; /* query will be send later once backend is assigned */
 						return false;
+					}
 				}
 				msg_start += msg_len;
 			}
@@ -454,12 +502,9 @@ channel_register(Proxy* proxy, Channel* chan)
 						  sock, NULL, chan);
 	if (chan->event_pos < 0)
 	{
-		ELOG_WARNING("Failed to add new client - too much sessions: %d clients, %d backends. "
+		elog(WARNING, "PROXY: Failed to add new client - too much sessions: %d clients, %d backends. "
 					 "Try to increase 'max_sessions' configuration parameter.",
 					 proxy->n_clients, proxy->n_backends);
-		free(chan->buf);
-		free(chan);
-		close(sock);
 		return false;
 	}
 	return true;
@@ -477,33 +522,43 @@ backend_start(SessionPool* pool, Port* client_port)
 	int socks[2];
 	int rc, pid;
 	Port* port = (Port*)calloc(1, sizeof(Port));
+	Channel* chan = NULL;
 
 	socketpair(AF_UNIX, SOCK_STREAM, 0, socks);
 	port->sock = socks[0];
 	port->laddr = client_port->laddr;
 	port->raddr = client_port->raddr;
 
-	proxy_lock(pool->proxy);
+	postmaster_lock();
 	rc = BackendStartup(port, &pid);
-	proxy_unlock(pool->proxy);
 	free(port);
 
 	if (rc == STATUS_OK)
 	{
-		Channel* chan = channel_create(pool->proxy);
+		chan = channel_create(pool->proxy);
 		close(socks[0]); /* not needed in parent process */
 		chan->pool = pool;
 		chan->backend_socket = socks[1];
 		chan->backend_pid = pid;
-		if (channel_register(pool->proxy, chan)) {
+		if (channel_register(pool->proxy, chan))
+		{
 			pool->proxy->n_backends += 1;
 			pool->n_launched_backends += 1;
-			return chan;
 		}
-		return NULL;
+		else
+		{
+			free(chan->buf);
+			free(chan);
+			close(socks[1]);
+			chan = NULL;
+		}
 	}
-	ELOG_WARNING("Failed to start backend: %d", rc);
-	return NULL;
+	else
+	{
+		elog(WARNING, "Failed to start backend: %d", rc);
+	}
+	postmaster_unlock();
+	return chan;
 }
 
 /*
@@ -517,7 +572,7 @@ proxy_add_client(Proxy* proxy, Port* port)
 	chan->client_port = port;
 	chan->backend_socket = PGINVALID_SOCKET;
 	if (channel_register(proxy, chan)) {
-		ELOG("Add new client %p", chan);
+		elog(LOG, "Add new client %p", chan);
 		proxy->n_accepted_connections += 1;
 		proxy->n_clients += 1;
 	}
@@ -530,6 +585,7 @@ static void
 channel_remove(Channel* chan)
 {
 	Assert(chan->is_disconnected); /* should be marked as disconnected by channel_hangout */
+	postmaster_lock();
 	DeleteWaitEventFromSet(chan->proxy->wait_events, chan->event_pos);
 	if (chan->client_port)
 	{
@@ -550,6 +606,7 @@ channel_remove(Channel* chan)
 	}
 	free(chan->buf);
 	free(chan);
+	postmaster_unlock();
 }
 
 /*
@@ -581,23 +638,22 @@ proxy_create(int max_backends)
 /*
  * Lock mutex to avoid race condition with postmaster
  */
-void
-proxy_lock(Proxy* proxy)
+int
+postmaster_lock(void)
 {
-	int rc = pthread_mutex_lock(&proxy->mutex);
-	if (rc < 0)
-		elog(FATAL, "Failed to lock mutex: %m");
+	int rc = pthread_mutex_lock(&postmaster_mutex);
+	Assert(rc == 0);
+	return rc;
 }
 
 /*
  * Unlock mutex
  */
-void
-proxy_unlock(Proxy* proxy)
+int
+postmaster_unlock(void)
 {
-	int rc = pthread_mutex_unlock(&proxy->mutex);
-	if (rc < 0)
-		elog(FATAL, "Failed to unlock mutex: %m");
+	int rc = pthread_mutex_unlock(&postmaster_mutex);
+	return rc;
 }
 
 /*
@@ -619,9 +675,11 @@ proxy_loop(void* arg)
 		for (i = 0; i < n_ready; i++) {
 			chan = (Channel*)ready[i].user_data;
 			if (ready[i].events & WL_SOCKET_WRITEABLE) {
+				ELOG(LOG, "Channel %p is writable", chan);
 				channel_write(chan, false);
 			}
 			if (ready[i].events & WL_SOCKET_READABLE) {
+				ELOG(LOG, "Channel %p is readable", chan);
 				channel_read(chan);
 			}
 		}

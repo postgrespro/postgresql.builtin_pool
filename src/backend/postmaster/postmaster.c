@@ -1389,6 +1389,7 @@ PostmasterMain(int argc, char *argv[])
 		ConnectionProxy = proxy_create(SessionPoolSize);
 		proxy_start(ConnectionProxy);
 	}
+	postmaster_lock();
 	status = ServerLoop();
 
 	/*
@@ -1661,6 +1662,8 @@ ServerLoop(void)
 		 */
 		memcpy((char *) &rmask, (char *) &readmask, sizeof(fd_set));
 
+		postmaster_unlock();
+
 		if (pmState == PM_WAIT_DEAD_END)
 		{
 			PG_SETMASK(&UnBlockSig);
@@ -1684,6 +1687,8 @@ ServerLoop(void)
 
 			PG_SETMASK(&BlockSig);
 		}
+
+		postmaster_lock();
 
 		/* Now check the select() result */
 		if (selres < 0)
@@ -2851,10 +2856,9 @@ reaper(SIGNAL_ARGS)
 	int			pid;			/* process id of dead child process */
 	int			exitstatus;		/* its exit status */
 
-	if (ConnectionProxy)
-		proxy_lock(ConnectionProxy);
-
 	PG_SETMASK(&BlockSig);
+
+	postmaster_lock();
 
 	ereport(DEBUG4,
 			(errmsg_internal("reaping dead processes")));
@@ -3155,11 +3159,10 @@ reaper(SIGNAL_ARGS)
 	 */
 	PostmasterStateMachine();
 
+	postmaster_unlock();
+
 	/* Done with signal handler */
 	PG_SETMASK(&UnBlockSig);
-
-	if (ConnectionProxy)
-		proxy_unlock(ConnectionProxy);
 
 	errno = save_errno;
 }

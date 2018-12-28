@@ -85,7 +85,8 @@ extern struct Proxy* proxy_create(int max_backends);
 extern void proxy_start(struct Proxy* proxy);
 extern void proxy_stop(struct Proxy* proxy);
 extern void proxy_add_client(struct Proxy* proxy, struct Port* port);
-extern void proxy_lock(struct Proxy* proxy);
-extern void proxy_unlock(struct Proxy* proxy);
+
+extern int  postmaster_lock(void);
+extern int  postmaster_unlock(void);
 
 #endif							/* _POSTMASTER_H */
