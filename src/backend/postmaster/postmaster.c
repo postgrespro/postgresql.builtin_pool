@@ -4390,7 +4390,7 @@ ScheduleSession(DatabasePool *pool, Port *port)
 			Assert(false);
 		}
 		if (!worker->proc)
-			worker->proc = BackendPidGetProc(worker->pid);
+			worker->proc = BackendPidGetProcWithLock(worker->pid);
 
 		if (worker->proc && worker->n_sessions - worker->proc->nFinishedSessions >= MaxSessions)
 		{
