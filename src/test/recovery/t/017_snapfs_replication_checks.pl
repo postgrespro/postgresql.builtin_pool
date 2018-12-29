@@ -4,7 +4,8 @@ use warnings;
 
 use PostgresNode;
 use TestLib;
-use Test::More;
+use Test::More tests => 50;
+use Data::Dumper;
 
 # Wait until replay to complete
 sub replay_wait( $$ ) {
@@ -369,6 +370,3 @@ like( $stderr_standby, '/ERROR:  relation "t2" does not exist/', 'recover to sna
 $ret_standby = $node_standby->safe_psql( 'postgres',
 	"select rolname, rolcanlogin from pg_roles where rolname = 'regression_testrole';" );
 ok( $ret_standby eq '', 'recover to snapshot 1 role standby check' );
-
-
-done_testing();

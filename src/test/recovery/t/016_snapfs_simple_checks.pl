@@ -4,7 +4,7 @@ use warnings;
 
 use PostgresNode;
 use TestLib;
-use Test::More;
+use Test::More tests => 21;
 
 # Wait until replay to complete
 sub replay_wait( $$ ) {
@@ -86,11 +86,11 @@ my $snapshot_size = $node_standby->safe_psql( 'postgres', "select pg_get_snapsho
 ok( $snapshot_size eq 't', 'Snapshot size is greater than 0 on standby' );
 
 my $snapshot_timestamp = $node_standby->safe_psql( 'postgres', "select ( now() - pg_get_snapshot_timestamp( 1 ) ) > interval '0 seconds'" );
-ok( $snapshot_size eq 't', 'Snapshot age is greater than 0 on standby' );
+ok( $snapshot_timestamp eq 't', 'Snapshot age is greater than 0 on standby' );
 $snapshot_timestamp = $node_standby->safe_psql( 'postgres', "select ( now() - pg_get_snapshot_timestamp( 1 ) ) < interval '180 seconds'" );
-ok( $snapshot_size eq 't', 'Snapshot age is less than 180 seconds on standby' );
+ok( $snapshot_timestamp eq 't', 'Snapshot age is less than 180 seconds on standby' );
 
-( $ret, $stdout, $stderr ) = $node_standby->psql( 'postgres', "select coalesce( pg_get_snapshot_timestamp( generate_series ), now() ) = coalesce( pg_get_snapshot_timestamp, now() ) and pg_size_pretty( pg_get_snapshot_size( generate_series ) ) = pg_size_pretty from snapfs_snapshots;" );
+( $ret, $stdout, $stderr ) = $node_standby->psql( 'postgres', "select coalesce( pg_get_snapshot_timestamp( snap_id ), now() ) = coalesce( snap_created, now() ) and pg_size_pretty( pg_get_snapshot_size( snap_id ) ) = snap_size from snapfs_snapshots;" );
 $ret = () = $stdout =~ /t/g;
 is( $ret, 3, 'snapfs_snapshots view check on standby' );
 
@@ -106,11 +106,11 @@ $snapshot_size = $node_master->safe_psql( 'postgres', "select pg_get_snapshot_si
 ok( $snapshot_size eq 't', 'Snapshot size is greater than 0 on master' );
 
 $snapshot_timestamp = $node_master->safe_psql( 'postgres', "select ( now() - pg_get_snapshot_timestamp( 1 ) ) > interval '0 seconds'" );
-ok( $snapshot_size eq 't', 'Snapshot age is greater than 0 on master' );
+ok( $snapshot_timestamp eq 't', 'Snapshot age is greater than 0 on master' );
 $snapshot_timestamp = $node_master->safe_psql( 'postgres', "select ( now() - pg_get_snapshot_timestamp( 1 ) ) < interval '180 seconds'" );
-ok( $snapshot_size eq 't', 'Snapshot age is less than 180 seconds on master' );
+ok( $snapshot_timestamp eq 't', 'Snapshot age is less than 180 seconds on master' );
 
-( $ret, $stdout, $stderr ) = $node_master->psql( 'postgres', "select coalesce( pg_get_snapshot_timestamp( generate_series ), now() ) = coalesce( pg_get_snapshot_timestamp, now() ) and pg_size_pretty( pg_get_snapshot_size( generate_series ) ) = pg_size_pretty from snapfs_snapshots;" );
+( $ret, $stdout, $stderr ) = $node_master->psql( 'postgres', "select coalesce( pg_get_snapshot_timestamp( snap_id ), now() ) = coalesce( snap_created, now() ) and pg_size_pretty( pg_get_snapshot_size( snap_id ) ) = snap_size from snapfs_snapshots;" );
 $ret = () = $stdout =~ /t/g;
 is( $ret, 3, 'snapfs_snapshots view check on master' );
 
@@ -126,5 +126,3 @@ like( $stderr, '/ERROR:  Can not perform operation inside snapshot/', 'pg_recove
 ( $ret, $stdout, $stderr ) = $node_master->psql( 'postgres', "select pg_switch_to_snapshot( 0 );" );
 $ret = $node_master->safe_psql( 'postgres', "select pg_recover_to_snapshot( 2 );" );
 ok( $ret eq '', 'pg_recover_to_snapshot() on master' );
-
-done_testing();
