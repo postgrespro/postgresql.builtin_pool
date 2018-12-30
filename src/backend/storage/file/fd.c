@@ -2391,14 +2391,9 @@ FileSeek(File file, off_t offset, int whence)
 
 				for (i = RELSEG_SIZE; --i != 0;)
 				{
-					if (vfdP->snap_map->offs[i] != 0)
-					{
-						if (i*BLCKSZ >= vfdP->seekPos)
-						{
-							vfdP->seekPos = i*BLCKSZ;
-						}
-						break;
-					}
+					sfs_segment_offs_t offs = vfdP->snap_map->offs[i];
+					if (offs >= vfdP->seekPos)
+						vfdP->seekPos = offs +  BLCKSZ - 1;
 				}
 			}
 		}
