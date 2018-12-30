@@ -63,6 +63,8 @@ extern time_t sfs_get_snapshot_timestamp(SnapshotId sid);
 #define SFS_KEEPING_SNAPSHOT() (ControlFile->recent_snapshot >= ControlFile->oldest_snapshot)
 #define SFS_IN_SNAPSHOT()      (sfs_backend_snapshot != SFS_INVALID_SNAPSHOT || ControlFile->active_snapshot != SFS_INVALID_SNAPSHOT)
 
+#define SFS_NEW_FILE_MARKER    (~0)
+
 typedef uint32 sfs_segment_offs_t; /* segment size can not be greateer than 1Gb, so 4 bytes is enough */
 
 

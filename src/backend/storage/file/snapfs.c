@@ -217,38 +217,14 @@ void
 sfs_lock_database(void)
 {
 	if (!InRecovery)
-	{
-		bool standalone = false;
-		TransactionId myXid = GetCurrentTransactionIdIfAny();
-
-		/* Prevent assignment Xids to transaction and
-		 * so delay start of any new update transactions
-		 */
-		LWLockAcquire(XidGenLock, LW_SHARED);
-
-		/* Wait completion of all active tranasction except own */
-		do
-		{
-			RunningTransactions running = GetRunningTransactionData();
-			standalone = (TransactionIdIsValid(myXid) && running->xcnt == 1) || (!TransactionIdIsValid(myXid) && running->xcnt == 0);
-
-			/* Release locks set by GetRunningTransactionData */
-			LWLockRelease(ProcArrayLock);
-			LWLockRelease(XidGenLock);
-
-			/* Wait for one second */
-			if (!standalone)
-				pg_usleep(USECS_PER_SEC);
-
-		} while (!standalone);
-	}
+		ProcArrayLockDatabase();
 }
 
 void
 sfs_unlock_database(void)
 {
 	if (!InRecovery)
-		LWLockRelease(XidGenLock);
+		ProcArrayUnlockDatabase();
 }
 
 void

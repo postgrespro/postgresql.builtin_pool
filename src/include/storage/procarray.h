@@ -124,4 +124,8 @@ extern void ProcArraySetReplicationSlotXmin(TransactionId xmin,
 extern void ProcArrayGetReplicationSlotXmin(TransactionId *xmin,
 								TransactionId *catalog_xmin);
 
+extern void ProcArrayLockDatabase(void);
+extern void ProcArrayUnlockDatabase(void);
+extern void ProcArrayTestDatabaseLock(void);
+
 #endif							/* PROCARRAY_H */

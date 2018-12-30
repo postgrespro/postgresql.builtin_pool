@@ -67,6 +67,7 @@ typedef struct ProcArrayStruct
 {
 	int			numProcs;		/* number of valid procs entries */
 	int			maxProcs;		/* allocated size of procs array */
+	int         dbLock;         /* flag preventing start of new transactions */
 
 	/*
 	 * Known assigned XIDs handling
@@ -3965,4 +3966,49 @@ KnownAssignedXidsReset(void)
 	pArray->headKnownAssignedXids = 0;
 
 	LWLockRelease(ProcArrayLock);
+}
+
+#define DBLOCK_WAIT_TIMEOUT USECS_PER_SEC
+
+void
+ProcArrayLockDatabase(void)
+{
+	bool standalone = false;
+	TransactionId myXid = GetCurrentTransactionIdIfAny();
+	volatile ProcArrayStruct* pas = procArray;
+
+	pas->dbLock = true;
+	/* Wait completion of all active tranasction except own */
+	do
+	{
+		RunningTransactions running = GetRunningTransactionData();
+		standalone = (TransactionIdIsValid(myXid) && running->xcnt == 1) || (!TransactionIdIsValid(myXid) && running->xcnt == 0);
+
+		/* Release locks set by GetRunningTransactionData */
+		LWLockRelease(ProcArrayLock);
+		LWLockRelease(XidGenLock);
+
+		/* Wait for one second */
+		if (!standalone)
+			pg_usleep(DBLOCK_WAIT_TIMEOUT);
+
+	} while (!standalone);
+}
+
+
+void
+ProcArrayUnlockDatabase(void)
+{
+	volatile ProcArrayStruct* pas = procArray;
+	pas->dbLock = false;
+}
+
+void
+ProcArrayTestDatabaseLock(void)
+{
+	volatile ProcArrayStruct* pas = procArray;
+	while (pas->dbLock)
+	{
+		pg_usleep(DBLOCK_WAIT_TIMEOUT);
+	}
 }

@@ -1783,6 +1783,8 @@ StartTransaction(void)
 	TransactionState s;
 	VirtualTransactionId vxid;
 
+	ProcArrayTestDatabaseLock();
+
 	/*
 	 * Let's just make sure the state stack is empty
 	 */

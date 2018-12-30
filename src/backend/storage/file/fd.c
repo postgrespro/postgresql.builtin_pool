@@ -1501,6 +1501,12 @@ PathNameOpenFilePerm(const char *fileName, int fileFlags, mode_t fileMode)
 		return -1;
 	}
 	++nfile;
+
+	if (SFS_KEEPING_SNAPSHOT() && (fileFlags & O_EXCL))
+	{
+		OpenSnapshotFiles(vfdP, ControlFile->recent_snapshot, true);
+		pg_atomic_write_u32(&vfdP->snap_map->size, SFS_NEW_FILE_MARKER);
+	}
 	DO_DB(elog(LOG, "PathNameOpenFile: success %d",
 			   vfdP->fd));
 
@@ -2039,6 +2045,10 @@ FileRead(File file, char *buffer, int amount, uint32 wait_event_info)
 			if (!OpenSnapshotFiles(vfdP, snap_id, false))
 				continue;
 
+			if (pg_atomic_read_u32(&vfdP->snap_map->size) == SFS_NEW_FILE_MARKER)
+			{
+				return 0; /* empty file */
+			}
 			offs = vfdP->snap_map->offs[vfdP->seekPos/BLCKSZ];
 			if (offs)
 			{
@@ -2183,7 +2193,8 @@ FileWrite(File file, char *buffer, int amount, uint32 wait_event_info)
 
 		OpenSnapshotFiles(vfdP, ControlFile->recent_snapshot, true);
 
-		if (!vfdP->snap_map->offs[block_no]) /* This block was not saved yet in this snapshot */
+		if (pg_atomic_read_u32(&vfdP->snap_map->size) != SFS_NEW_FILE_MARKER
+		    && vfdP->snap_map->offs[block_no] == 0) /* This block was not saved yet in this snapshot */
 		{
 			sfs_segment_offs_t snap_offs = pg_atomic_fetch_add_u32(&vfdP->snap_map->size, 1)*BLCKSZ;
 			char orig_block[BLCKSZ];
@@ -2373,7 +2384,7 @@ FileSeek(File file, off_t offset, int whence)
 	if (whence == SEEK_END)
 	{
 		SnapshotId  snap_id;
-		SnapshotId  current_snapshot = sfs_backend_snapshot != SFS_INVALID_SNAPSHOT ? sfs_backend_snapshot : ControlFile->active_snapshot;
+ 		SnapshotId  current_snapshot = sfs_backend_snapshot != SFS_INVALID_SNAPSHOT ? sfs_backend_snapshot : ControlFile->active_snapshot;
 		if (current_snapshot != SFS_INVALID_SNAPSHOT)
 		{
 			if (current_snapshot < ControlFile->oldest_snapshot || current_snapshot > ControlFile->recent_snapshot)
@@ -2389,11 +2400,16 @@ FileSeek(File file, off_t offset, int whence)
 				if (!OpenSnapshotFiles(vfdP, snap_id, false))
 					continue;
 
-				for (i = RELSEG_SIZE; --i != 0;)
+				for (i = RELSEG_SIZE; --i >= 0;)
 				{
-					sfs_segment_offs_t offs = vfdP->snap_map->offs[i];
-					if (offs >= vfdP->seekPos)
-						vfdP->seekPos = offs +  BLCKSZ - 1;
+					if (vfdP->snap_map->offs[i] != 0)
+					{
+						if ((i+1)*BLCKSZ - offset >= vfdP->seekPos)
+						{
+							vfdP->seekPos = (i+1)*BLCKSZ - offset;
+						}
+						break;
+					}
 				}
 			}
 		}
@@ -2453,7 +2469,8 @@ FileTruncate(File file, off_t offset, uint32 wait_event_info)
 			char orig_block[BLCKSZ];
 			int rc;
 
-			if (!vfdP->snap_map->offs[block_no]) /* This block was not saved yet in this snapshot */
+			if (pg_atomic_read_u32(&vfdP->snap_map->size) != SFS_NEW_FILE_MARKER
+				&& !vfdP->snap_map->offs[block_no]) /* This block was not saved yet in this snapshot */
 			{
 				sfs_segment_offs_t snap_offs = pg_atomic_fetch_add_u32(&vfdP->snap_map->size, 1)*BLCKSZ;
 				vfdP->snap_map->offs[block_no] = snap_offs + 1;
@@ -3887,7 +3904,7 @@ sfs_remove_snapshot_file(const char *fname, bool isdir, int elevel)
 				&& snap_id <= sfs_current_snapshot)
 			{
 				if (unlink(fname) != 0)
-					elog(elevel, "Failed to remove file %s: %m", fname);
+					elog(elevel, "Failed to remove snapshot file %s: %m", fname);
 			}
 		}
 	}
@@ -3907,7 +3924,7 @@ sfs_remove_applied_snapshot_file(const char *fname, bool isdir, int elevel)
 				&& snap_id >= sfs_current_snapshot)
 			{
 				if (unlink(fname) != 0)
-					elog(elevel, "Failed to remove file %s: %m", fname);
+					elog(elevel, "Failed to remove applied snapshot file %s: %m", fname);
 			}
 		}
 	}
@@ -3935,25 +3952,34 @@ sfs_recover_snapshot_file(const char *fname, bool isdir, int elevel)
 				if (!OpenSnapshotFiles(vfdP, snap_id, false))
 					elog(ERROR, "[SFS] Failed to open snapshot files");
 
-				for (i = 0; i < RELSEG_SIZE; i++)
+				if (pg_atomic_read_u32(&vfdP->snap_map->size) == SFS_NEW_FILE_MARKER)
 				{
-					sfs_segment_offs_t offs = vfdP->snap_map->offs[i];
-					if (offs)
+					/* This file was created in this snapshot, so just remove it */
+					if (unlink(fname) != 0)
+						elog(elevel, "Failed to remove file %s: %m", fname);
+				}
+				else
+				{
+					for (i = 0; i < RELSEG_SIZE; i++)
 					{
-						char orig_block[BLCKSZ];
-						offs -= 1;
+						sfs_segment_offs_t offs = vfdP->snap_map->offs[i];
+						if (offs)
+						{
+							char orig_block[BLCKSZ];
+							offs -= 1;
 
-						if (lseek(vfdP->snap_fd, offs, SEEK_SET) != offs)
-							elog(ERROR, "[SFS] Could not seek file: %m");
+							if (lseek(vfdP->snap_fd, offs, SEEK_SET) != offs)
+								elog(ERROR, "[SFS] Could not seek file: %m");
 
-						if (sfs_read_file(vfdP->snap_fd, orig_block, BLCKSZ) != BLCKSZ)
-							elog(ERROR, "[SFS] Could not read file: %m");
+							if (sfs_read_file(vfdP->snap_fd, orig_block, BLCKSZ) != BLCKSZ)
+								elog(ERROR, "[SFS] Could not read file: %m");
 
-						if (lseek(vfdP->fd, i*BLCKSZ, SEEK_SET) != i*BLCKSZ)
-							elog(ERROR, "[SFS] Could not seek file: %m");
+							if (lseek(vfdP->fd, i*BLCKSZ, SEEK_SET) != i*BLCKSZ)
+								elog(ERROR, "[SFS] Could not seek file: %m");
 
-						if (!sfs_write_file(vfdP->fd, orig_block, BLCKSZ))
-							elog(ERROR, "[SFS] Could not write file: %m");
+							if (!sfs_write_file(vfdP->fd, orig_block, BLCKSZ))
+								elog(ERROR, "[SFS] Could not write file: %m");
+						}
 					}
 				}
 
