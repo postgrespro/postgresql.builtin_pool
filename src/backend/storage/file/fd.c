@@ -1502,11 +1502,6 @@ PathNameOpenFilePerm(const char *fileName, int fileFlags, mode_t fileMode)
 	}
 	++nfile;
 
-	if (SFS_KEEPING_SNAPSHOT() && (fileFlags & O_EXCL))
-	{
-		OpenSnapshotFiles(vfdP, ControlFile->recent_snapshot, true);
-		pg_atomic_write_u32(&vfdP->snap_map->size, SFS_NEW_FILE_MARKER);
-	}
 	DO_DB(elog(LOG, "PathNameOpenFile: success %d",
 			   vfdP->fd));
 
@@ -1520,6 +1515,12 @@ PathNameOpenFilePerm(const char *fileName, int fileFlags, mode_t fileMode)
 	vfdP->fileSize = 0;
 	vfdP->fdstate = 0x0;
 	vfdP->resowner = NULL;
+
+	if (SFS_KEEPING_SNAPSHOT() && (fileFlags & O_EXCL))
+	{
+		OpenSnapshotFiles(vfdP, ControlFile->recent_snapshot, true);
+		pg_atomic_write_u32(&vfdP->snap_map->size, SFS_NEW_FILE_MARKER);
+	}
 
 	return file;
 }
