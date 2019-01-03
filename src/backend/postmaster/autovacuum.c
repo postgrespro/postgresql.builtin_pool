@@ -1702,7 +1702,10 @@ AutoVacWorkerMain(int argc, char *argv[])
 		/* And do an appropriate amount of work */
 		recentXid = ReadNewTransactionId();
 		recentMulti = ReadNextMultiXactId();
+
+		LWLockAcquire(DoAutovacuumLock, LW_SHARED);
 		do_autovacuum();
+		LWLockRelease(DoAutovacuumLock);
 	}
 
 	/*

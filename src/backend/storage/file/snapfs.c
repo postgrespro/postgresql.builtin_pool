@@ -167,7 +167,9 @@ sfs_switch_to_snapshot(SnapshotId snap_id)
 	if (!SFS_IN_SNAPSHOT())
 		sfs_checkpoint();
 
+	LWLockAcquire(DoAutovacuumLock, LW_EXCLUSIVE); /* prevenyt autovacuum in snapshot */
 	ControlFile->active_snapshot = snap_id;
+	LWLockRelease(DoAutovacuumLock);
 	UpdateControlFile();
 
 	DropSharedBuffers();
