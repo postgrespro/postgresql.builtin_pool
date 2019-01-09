@@ -11,7 +11,7 @@
  * return the same.  Use caution when using these wrapper macros with signed
  * integers.
  *
- * Copyright (c) 2015-2018, PostgreSQL Global Development Group
+ * Copyright (c) 2015-2019, PostgreSQL Global Development Group
  *
  * src/include/port/pg_bswap.h
  *
@@ -102,7 +102,7 @@ pg_bswap64(uint64 x)
 
 
 /*
- * Portable and fast equivalents for for ntohs, ntohl, htons, htonl,
+ * Portable and fast equivalents for ntohs, ntohl, htons, htonl,
  * additionally extended to 64 bits.
  */
 #ifdef WORDS_BIGENDIAN

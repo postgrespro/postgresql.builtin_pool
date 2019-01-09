@@ -3,7 +3,7 @@
  * pg_subscription.c
  *		replication subscriptions
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -168,8 +168,8 @@ get_subscription_oid(const char *subname, bool missing_ok)
 {
 	Oid			oid;
 
-	oid = GetSysCacheOid2(SUBSCRIPTIONNAME, MyDatabaseId,
-						  CStringGetDatum(subname));
+	oid = GetSysCacheOid2(SUBSCRIPTIONNAME, Anum_pg_subscription_oid,
+						  MyDatabaseId, CStringGetDatum(subname));
 	if (!OidIsValid(oid) && !missing_ok)
 		ereport(ERROR,
 				(errcode(ERRCODE_UNDEFINED_OBJECT),
@@ -179,9 +179,12 @@ get_subscription_oid(const char *subname, bool missing_ok)
 
 /*
  * get_subscription_name - given a subscription OID, look up the name
+ *
+ * If missing_ok is false, throw an error if name not found.  If true, just
+ * return NULL.
  */
 char *
-get_subscription_name(Oid subid)
+get_subscription_name(Oid subid, bool missing_ok)
 {
 	HeapTuple	tup;
 	char	   *subname;
@@ -190,7 +193,11 @@ get_subscription_name(Oid subid)
 	tup = SearchSysCache1(SUBSCRIPTIONOID, ObjectIdGetDatum(subid));
 
 	if (!HeapTupleIsValid(tup))
-		elog(ERROR, "cache lookup failed for subscription %u", subid);
+	{
+		if (!missing_ok)
+			elog(ERROR, "cache lookup failed for subscription %u", subid);
+		return NULL;
+	}
 
 	subform = (Form_pg_subscription) GETSTRUCT(tup);
 	subname = pstrdup(NameStr(subform->subname));
@@ -229,13 +236,12 @@ textarray_to_stringlist(ArrayType *textarray)
 /*
  * Add new state record for a subscription table.
  */
-Oid
+void
 AddSubscriptionRelState(Oid subid, Oid relid, char state,
 						XLogRecPtr sublsn)
 {
 	Relation	rel;
 	HeapTuple	tup;
-	Oid			subrelid;
 	bool		nulls[Natts_pg_subscription_rel];
 	Datum		values[Natts_pg_subscription_rel];
 
@@ -265,26 +271,23 @@ AddSubscriptionRelState(Oid subid, Oid relid, char state,
 	tup = heap_form_tuple(RelationGetDescr(rel), values, nulls);
 
 	/* Insert tuple into catalog. */
-	subrelid = CatalogTupleInsert(rel, tup);
+	CatalogTupleInsert(rel, tup);
 
 	heap_freetuple(tup);
 
 	/* Cleanup. */
 	heap_close(rel, NoLock);
-
-	return subrelid;
 }
 
 /*
  * Update the state of a subscription table.
  */
-Oid
+void
 UpdateSubscriptionRelState(Oid subid, Oid relid, char state,
 						   XLogRecPtr sublsn)
 {
 	Relation	rel;
 	HeapTuple	tup;
-	Oid			subrelid;
 	bool		nulls[Natts_pg_subscription_rel];
 	Datum		values[Natts_pg_subscription_rel];
 	bool		replaces[Natts_pg_subscription_rel];
@@ -321,12 +324,8 @@ UpdateSubscriptionRelState(Oid subid, Oid relid, char state,
 	/* Update the catalog. */
 	CatalogTupleUpdate(rel, &tup->t_self, tup);
 
-	subrelid = HeapTupleGetOid(tup);
-
 	/* Cleanup. */
 	heap_close(rel, NoLock);
-
-	return subrelid;
 }
 
 /*

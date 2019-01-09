@@ -3,7 +3,7 @@
  * nbtinsert.c
  *	  Item insertion in Lehman and Yao btrees for Postgres.
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -216,23 +216,12 @@ top:
 
 	if (!fastpath)
 	{
-		/* find the first page containing this key */
+		/*
+		 * Find the first page containing this key.  Buffer returned by
+		 * _bt_search() is locked in exclusive mode.
+		 */
 		stack = _bt_search(rel, indnkeyatts, itup_scankey, false, &buf, BT_WRITE,
 						   NULL);
-
-		/* trade in our read lock for a write lock */
-		LockBuffer(buf, BUFFER_LOCK_UNLOCK);
-		LockBuffer(buf, BT_WRITE);
-
-		/*
-		 * If the page was split between the time that we surrendered our read
-		 * lock and acquired our write lock, then this page may no longer be
-		 * the right place for the key we want to insert.  In this case, we
-		 * need to move right in the tree.  See Lehman and Yao for an
-		 * excruciatingly precise description.
-		 */
-		buf = _bt_moveright(rel, buf, indnkeyatts, itup_scankey, false,
-							true, stack, BT_WRITE, NULL);
 	}
 
 	/*
@@ -247,7 +236,7 @@ top:
 	 * inserter can be making the check at one time.  Furthermore, once we are
 	 * past the check we hold write locks continuously until we have performed
 	 * our insertion, so no later inserter can fail to see our insertion.
-	 * (This requires some care in _bt_insertonpg.)
+	 * (This requires some care in _bt_findinsertloc.)
 	 *
 	 * If we must wait for another xact, we release the lock while waiting,
 	 * and then must start over completely.
@@ -825,10 +814,7 @@ _bt_findinsertloc(Relation rel,
  *		INCOMPLETE_SPLIT flag on it, and release the buffer.
  *
  *		The locking interactions in this code are critical.  You should
- *		grok Lehman and Yao's paper before making any changes.  In addition,
- *		you need to understand how we disambiguate duplicate keys in this
- *		implementation, in order to be able to find our location using
- *		L&Y "move right" operations.
+ *		grok Lehman and Yao's paper before making any changes.
  *----------
  */
 static void
@@ -887,10 +873,10 @@ _bt_insertonpg(Relation rel,
 		 * all the required conditions, including the fact that this page has
 		 * enough freespace. Note that this routine can in theory deal with
 		 * the situation where a NULL stack pointer is passed (that's what
-		 * would happen if the fastpath is taken), like it does during crash
-		 * recovery. But that path is much slower, defeating the very purpose
-		 * of the optimization.  The following assertion should protect us
-		 * from any future code changes that invalidate those assumptions.
+		 * would happen if the fastpath is taken). But that path is much
+		 * slower, defeating the very purpose of the optimization.  The
+		 * following assertion should protect us from any future code changes
+		 * that invalidate those assumptions.
 		 *
 		 * Note that whenever we fail to take the fastpath, we clear the
 		 * cached block. Checking for a valid cached block at this point is
@@ -1818,8 +1804,8 @@ _bt_checksplitloc(FindSplitData *state,
  * and it'd be possible for some other process to try to split or delete
  * one of these pages, and get confused because it cannot find the downlink.)
  *
- * stack - stack showing how we got here.  May be NULL in cases that don't
- *			have to be efficient (concurrent ROOT split, WAL recovery)
+ * stack - stack showing how we got here.  Will be NULL when splitting true
+ *			root, or during concurrent root split, where we can be inefficient
  * is_root - we split the true root
  * is_only - we split a page alone on its level (might have been fast root)
  */
@@ -2150,10 +2136,6 @@ _bt_newroot(Relation rel, Buffer lbuf, Buffer rbuf)
 	metapg = BufferGetPage(metabuf);
 	metad = BTPageGetMeta(metapg);
 
-	/* upgrade metapage if needed */
-	if (metad->btm_version < BTREE_VERSION)
-		_bt_upgrademetapage(metapg);
-
 	/*
 	 * Create downlink item for left page (old root).  Since this will be the
 	 * first item in a non-leaf page, it implicitly has minus-infinity key
@@ -2177,6 +2159,10 @@ _bt_newroot(Relation rel, Buffer lbuf, Buffer rbuf)
 
 	/* NO EREPORT(ERROR) from here till newroot op is logged */
 	START_CRIT_SECTION();
+
+	/* upgrade metapage if needed */
+	if (metad->btm_version < BTREE_VERSION)
+		_bt_upgrademetapage(metapg);
 
 	/* set btree special data */
 	rootopaque = (BTPageOpaque) PageGetSpecialPointer(rootpage);

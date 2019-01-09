@@ -69,7 +69,8 @@ PostgreSQL documentation
    target cluster ran for a long time after the divergence, the old WAL
    files might no longer be present. In that case, they can be manually
    copied from the WAL archive to the <filename>pg_wal</filename> directory, or
-   fetched on startup by configuring <filename>recovery.conf</filename>.  The use of
+   fetched on startup by configuring <xref linkend="guc-primary-conninfo"/> or
+   <xref linkend="guc-restore-command"/>.  The use of
    <application>pg_rewind</application> is not limited to failover, e.g.  a standby
    server can be promoted, run some write transactions, and then rewinded
    to become a standby again.
@@ -83,8 +84,9 @@ PostgreSQL documentation
    <application>pg_rewind</application> was run, and therefore could not be copied by the
    <application>pg_rewind</application> session, it must be made available when the
    target server is started. This can be done by creating a
-   <filename>recovery.conf</filename> file in the target data directory with a
-   suitable <varname>restore_command</varname>.
+   <filename>recovery.signal</filename> file in the target data directory
+   and configuring suitable <xref linkend="guc-restore-command"/>
+   in <filename>postgresql.conf</filename>.
   </para>
 
   <para>
@@ -95,6 +97,26 @@ PostgreSQL documentation
    are currently on by default.  <xref linkend="guc-full-page-writes"/>
    must also be set to <literal>on</literal>, but is enabled by default.
   </para>
+
+  <warning>
+   <para>
+    If <application>pg_rewind</application> fails while processing, then
+    the data folder of the target is likely not in a state that can be
+    recovered.  In such a case, taking a new fresh backup is recommended.
+   </para>
+
+   <para>
+    <application>pg_rewind</application> will fail immediately if it finds
+    files it cannot write directly to.  This can happen for example when
+    the source and the target server use the same file mapping for read-only
+    SSL keys and certificates.  If such files are present on the target server
+    it is recommended to remove them before running
+    <application>pg_rewind</application>.  After doing the rewind, some of
+    those files may have been copied from the source, in which case it may
+    be necessary to remove the data copied and restore back the set of links
+    used before the rewind.
+   </para>
+  </warning>
  </refsect1>
 
  <refsect1>
@@ -147,6 +169,22 @@ PostgreSQL documentation
       <listitem>
        <para>
         Do everything except actually modifying the target directory.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><option>-N</option></term>
+      <term><option>--no-sync</option></term>
+      <listitem>
+       <para>
+        By default, <command>pg_rewind</command> will wait for all files
+        to be written safely to disk.  This option causes
+        <command>pg_rewind</command> to return without waiting, which is
+        faster, but means that a subsequent operating system crash can leave
+        the synchronized data folder corrupt.  Generally, this option is
+        useful for testing but should not be used when creating a production
+        installation.
        </para>
       </listitem>
      </varlistentry>

@@ -1,9 +1,9 @@
 #!/usr/bin/perl
 # src/interfaces/ecpg/preproc/parse.pl
-# parser generater for ecpg version 2
+# parser generator for ecpg version 2
 # call with backend parser as stdin
 #
-# Copyright (c) 2007-2018, PostgreSQL Global Development Group
+# Copyright (c) 2007-2019, PostgreSQL Global Development Group
 #
 # Written by Mike Aubury <mike.aubury@aubit.com>
 #            Michael Meskes <meskes@postgresql.org>
@@ -144,7 +144,7 @@ sub main
 		# flds are the fields to use. These may start with a '$' - in
 		# which case they are the result of a previous non-terminal
 		#
-		# if they dont start with a '$' then they are token name
+		# if they don't start with a '$' then they are token name
 		#
 		# len is the number of fields in flds...
 		# leadin is the padding to apply at the beginning (just use for formatting)
@@ -223,7 +223,7 @@ sub main
 			next line;
 		}
 
-		# Dont worry about anything if we're not in the right section of gram.y
+		# Don't worry about anything if we're not in the right section of gram.y
 		if ($yaccmode != 1)
 		{
 			next line;
@@ -415,6 +415,7 @@ sub main
 			}
 		}
 	}
+	return;
 }
 
 
@@ -431,6 +432,7 @@ sub include_file
 		add_to_buffer($buffer, $_);
 	}
 	close($fh);
+	return;
 }
 
 sub include_addon
@@ -472,6 +474,7 @@ sub include_addon
 sub add_to_buffer
 {
 	push(@{ $buff{ $_[0] } }, "$_[1]\n");
+	return;
 }
 
 sub dump_buffer
@@ -480,6 +483,7 @@ sub dump_buffer
 	print '/* ', $buffer, ' */', "\n";
 	my $ref = $buff{$buffer};
 	print @$ref;
+	return;
 }
 
 sub dump_fields
@@ -582,6 +586,7 @@ sub dump_fields
 			add_to_buffer('rules', ' { $$ = NULL; }');
 		}
 	}
+	return;
 }
 
 
@@ -673,4 +678,5 @@ sub preload_addons
 			push(@{ $x->{lines} }, @code);
 		}
 	}
+	return;
 }

@@ -3,7 +3,7 @@
  * orderedsetaggs.c
  *		Ordered-set aggregate functions.
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -14,7 +14,6 @@
  */
 #include "postgres.h"
 
-#include <float.h>
 #include <math.h>
 
 #include "catalog/pg_aggregate.h"
@@ -216,7 +215,7 @@ ordered_set_startup(FunctionCallInfo fcinfo, bool use_tuples)
 			 * Get a tupledesc corresponding to the aggregated inputs
 			 * (including sort expressions) of the agg.
 			 */
-			qstate->tupdesc = ExecTypeFromTL(aggref->args, false);
+			qstate->tupdesc = ExecTypeFromTL(aggref->args);
 
 			/* If we need a flag column, hack the tupledesc to include that */
 			if (ishypothetical)
@@ -224,7 +223,7 @@ ordered_set_startup(FunctionCallInfo fcinfo, bool use_tuples)
 				TupleDesc	newdesc;
 				int			natts = qstate->tupdesc->natts;
 
-				newdesc = CreateTemplateTupleDesc(natts + 1, false);
+				newdesc = CreateTemplateTupleDesc(natts + 1);
 				for (i = 1; i <= natts; i++)
 					TupleDescCopyEntry(newdesc, i, qstate->tupdesc, i);
 
@@ -240,7 +239,8 @@ ordered_set_startup(FunctionCallInfo fcinfo, bool use_tuples)
 			}
 
 			/* Create slot we'll use to store/retrieve rows */
-			qstate->tupslot = MakeSingleTupleTableSlot(qstate->tupdesc);
+			qstate->tupslot = MakeSingleTupleTableSlot(qstate->tupdesc,
+													   &TTSOpsMinimalTuple);
 		}
 		else
 		{
@@ -1310,7 +1310,15 @@ hypothetical_dense_rank_final(PG_FUNCTION_ARGS)
 	osastate = (OSAPerGroupState *) PG_GETARG_POINTER(0);
 	econtext = osastate->qstate->econtext;
 	if (!econtext)
-		osastate->qstate->econtext = econtext = CreateStandaloneExprContext();
+	{
+		MemoryContext oldcontext;
+
+		/* Make sure to we create econtext under correct parent context. */
+		oldcontext = MemoryContextSwitchTo(osastate->qstate->qcontext);
+		osastate->qstate->econtext = CreateStandaloneExprContext();
+		econtext = osastate->qstate->econtext;
+		MemoryContextSwitchTo(oldcontext);
+	}
 
 	/* Adjust nargs to be the number of direct (or aggregated) args */
 	if (nargs % 2 != 0)
@@ -1368,7 +1376,8 @@ hypothetical_dense_rank_final(PG_FUNCTION_ARGS)
 	 * previous row available for comparisons.  This is accomplished by
 	 * swapping the slot pointer variables after each row.
 	 */
-	extraslot = MakeSingleTupleTableSlot(osastate->qstate->tupdesc);
+	extraslot = MakeSingleTupleTableSlot(osastate->qstate->tupdesc,
+										 &TTSOpsMinimalTuple);
 	slot2 = extraslot;
 
 	/* iterate till we find the hypothetical row */

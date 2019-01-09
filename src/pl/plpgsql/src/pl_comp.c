@@ -3,7 +3,7 @@
  * pl_comp.c		- Compiler part of the PL/pgSQL
  *			  procedural language
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -607,7 +607,7 @@ do_compile(FunctionCallInfo fcinfo,
 			var = plpgsql_build_variable("tg_name", 0,
 										 plpgsql_build_datatype(NAMEOID,
 																-1,
-																InvalidOid),
+																function->fn_input_collation),
 										 true);
 			Assert(var->dtype == PLPGSQL_DTYPE_VAR);
 			var->dtype = PLPGSQL_DTYPE_PROMISE;
@@ -657,7 +657,7 @@ do_compile(FunctionCallInfo fcinfo,
 			var = plpgsql_build_variable("tg_relname", 0,
 										 plpgsql_build_datatype(NAMEOID,
 																-1,
-																InvalidOid),
+																function->fn_input_collation),
 										 true);
 			Assert(var->dtype == PLPGSQL_DTYPE_VAR);
 			var->dtype = PLPGSQL_DTYPE_PROMISE;
@@ -667,7 +667,7 @@ do_compile(FunctionCallInfo fcinfo,
 			var = plpgsql_build_variable("tg_table_name", 0,
 										 plpgsql_build_datatype(NAMEOID,
 																-1,
-																InvalidOid),
+																function->fn_input_collation),
 										 true);
 			Assert(var->dtype == PLPGSQL_DTYPE_VAR);
 			var->dtype = PLPGSQL_DTYPE_PROMISE;
@@ -677,7 +677,7 @@ do_compile(FunctionCallInfo fcinfo,
 			var = plpgsql_build_variable("tg_table_schema", 0,
 										 plpgsql_build_datatype(NAMEOID,
 																-1,
-																InvalidOid),
+																function->fn_input_collation),
 										 true);
 			Assert(var->dtype == PLPGSQL_DTYPE_VAR);
 			var->dtype = PLPGSQL_DTYPE_PROMISE;
@@ -1353,6 +1353,9 @@ make_datum_param(PLpgSQL_expr *expr, int dno, int location)
  * yytxt is the original token text; we need this to check for quoting,
  * so that later checks for unreserved keywords work properly.
  *
+ * We attempt to recognize the token as a variable only if lookup is true
+ * and the plpgsql_IdentifierLookup context permits it.
+ *
  * If recognized as a variable, fill in *wdatum and return true;
  * if not recognized, fill in *word and return false.
  * (Note: those two pointers actually point to members of the same union,
@@ -1360,17 +1363,17 @@ make_datum_param(PLpgSQL_expr *expr, int dno, int location)
  * ----------
  */
 bool
-plpgsql_parse_word(char *word1, const char *yytxt,
+plpgsql_parse_word(char *word1, const char *yytxt, bool lookup,
 				   PLwdatum *wdatum, PLword *word)
 {
 	PLpgSQL_nsitem *ns;
 
 	/*
-	 * We should do nothing in DECLARE sections.  In SQL expressions, there's
-	 * no need to do anything either --- lookup will happen when the
-	 * expression is compiled.
+	 * We should not lookup variables in DECLARE sections.  In SQL
+	 * expressions, there's no need to do so either --- lookup will happen
+	 * when the expression is compiled.
 	 */
-	if (plpgsql_IdentifierLookup == IDENTIFIER_LOOKUP_NORMAL)
+	if (lookup && plpgsql_IdentifierLookup == IDENTIFIER_LOOKUP_NORMAL)
 	{
 		/*
 		 * Do a lookup in the current namespace stack
@@ -1896,7 +1899,9 @@ build_row_from_vars(PLpgSQL_variable **vars, int numvars)
 
 	row = palloc0(sizeof(PLpgSQL_row));
 	row->dtype = PLPGSQL_DTYPE_ROW;
-	row->rowtupdesc = CreateTemplateTupleDesc(numvars, false);
+	row->refname = "(unnamed row)";
+	row->lineno = -1;
+	row->rowtupdesc = CreateTemplateTupleDesc(numvars);
 	row->nfields = numvars;
 	row->fieldnames = palloc(numvars * sizeof(char *));
 	row->varnos = palloc(numvars * sizeof(int));
@@ -2029,7 +2034,7 @@ build_datatype(HeapTuple typeTup, int32 typmod, Oid collation)
 	typ = (PLpgSQL_type *) palloc(sizeof(PLpgSQL_type));
 
 	typ->typname = pstrdup(NameStr(typeStruct->typname));
-	typ->typoid = HeapTupleGetOid(typeTup);
+	typ->typoid = typeStruct->oid;
 	switch (typeStruct->typtype)
 	{
 		case TYPTYPE_BASE:

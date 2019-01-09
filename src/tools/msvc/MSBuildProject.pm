@@ -1,7 +1,7 @@
 package MSBuildProject;
 
 #
-# Package that encapsulates a MSBuild project file (Visual C++ 2010 or greater)
+# Package that encapsulates a MSBuild project file (Visual C++ 2013 or greater)
 #
 # src/tools/msvc/MSBuildProject.pm
 #
@@ -10,6 +10,8 @@ use Carp;
 use strict;
 use warnings;
 use base qw(Project);
+
+no warnings qw(redefine);    ## no critic
 
 sub _new
 {
@@ -80,6 +82,7 @@ EOF
 			strpool => 'true',
 			runtime => 'MultiThreadedDLL'
 		});
+	return;
 }
 
 sub AddDefine
@@ -87,6 +90,7 @@ sub AddDefine
 	my ($self, $def) = @_;
 
 	$self->{defines} .= $def . ';';
+	return;
 }
 
 sub WriteReferences
@@ -112,6 +116,7 @@ EOF
   </ItemGroup>
 EOF
 	}
+	return;
 }
 
 sub WriteFiles
@@ -223,6 +228,7 @@ EOF
   </ItemGroup>
 EOF
 	}
+	return;
 }
 
 sub WriteConfigurationHeader
@@ -234,6 +240,7 @@ sub WriteConfigurationHeader
       <Platform>$self->{platform}</Platform>
     </ProjectConfiguration>
 EOF
+	return;
 }
 
 sub WriteConfigurationPropertyGroup
@@ -250,8 +257,10 @@ sub WriteConfigurationPropertyGroup
     <UseOfMfc>false</UseOfMfc>
     <CharacterSet>MultiByte</CharacterSet>
     <WholeProgramOptimization>$p->{wholeopt}</WholeProgramOptimization>
+    <PlatformToolset>$self->{PlatformToolset}</PlatformToolset>
   </PropertyGroup>
 EOF
+	return;
 }
 
 sub WritePropertySheetsPropertyGroup
@@ -262,6 +271,7 @@ sub WritePropertySheetsPropertyGroup
     <Import Project="\$(UserRootDir)\\Microsoft.Cpp.\$(Platform).user.props" Condition="exists('\$(UserRootDir)\\Microsoft.Cpp.\$(Platform).user.props')" Label="LocalAppDataPlatform" />
   </ImportGroup>
 EOF
+	return;
 }
 
 sub WriteAdditionalProperties
@@ -272,6 +282,7 @@ sub WriteAdditionalProperties
     <IntDir Condition="'\$(Configuration)|\$(Platform)'=='$cfgname|$self->{platform}'">.\\$cfgname\\$self->{name}\\</IntDir>
     <LinkIncremental Condition="'\$(Configuration)|\$(Platform)'=='$cfgname|$self->{platform}'">false</LinkIncremental>
 EOF
+	return;
 }
 
 sub WriteItemDefinitionGroup
@@ -364,6 +375,7 @@ EOF
 	print $f <<EOF;
   </ItemDefinitionGroup>
 EOF
+	return;
 }
 
 sub Footer
@@ -377,70 +389,7 @@ sub Footer
   </ImportGroup>
 </Project>
 EOF
-}
-
-package VC2010Project;
-
-#
-# Package that encapsulates a Visual C++ 2010 project file
-#
-
-use strict;
-use warnings;
-use base qw(MSBuildProject);
-
-sub new
-{
-	my $classname = shift;
-	my $self      = $classname->SUPER::_new(@_);
-	bless($self, $classname);
-
-	$self->{vcver} = '10.00';
-
-	return $self;
-}
-
-package VC2012Project;
-
-#
-# Package that encapsulates a Visual C++ 2012 project file
-#
-
-use strict;
-use warnings;
-use base qw(MSBuildProject);
-
-sub new
-{
-	my $classname = shift;
-	my $self      = $classname->SUPER::_new(@_);
-	bless($self, $classname);
-
-	$self->{vcver}           = '11.00';
-	$self->{PlatformToolset} = 'v110';
-
-	return $self;
-}
-
-# This override adds the <PlatformToolset> element
-# to the PropertyGroup labeled "Configuration"
-sub WriteConfigurationPropertyGroup
-{
-	my ($self, $f, $cfgname, $p) = @_;
-	my $cfgtype =
-	  ($self->{type} eq "exe")
-	  ? 'Application'
-	  : ($self->{type} eq "dll" ? 'DynamicLibrary' : 'StaticLibrary');
-
-	print $f <<EOF;
-  <PropertyGroup Condition="'\$(Configuration)|\$(Platform)'=='$cfgname|$self->{platform}'" Label="Configuration">
-    <ConfigurationType>$cfgtype</ConfigurationType>
-    <UseOfMfc>false</UseOfMfc>
-    <CharacterSet>MultiByte</CharacterSet>
-    <WholeProgramOptimization>$p->{wholeopt}</WholeProgramOptimization>
-    <PlatformToolset>$self->{PlatformToolset}</PlatformToolset>
-  </PropertyGroup>
-EOF
+	return;
 }
 
 package VC2013Project;
@@ -451,7 +400,9 @@ package VC2013Project;
 
 use strict;
 use warnings;
-use base qw(VC2012Project);
+use base qw(MSBuildProject);
+
+no warnings qw(redefine);    ## no critic
 
 sub new
 {
@@ -474,7 +425,9 @@ package VC2015Project;
 
 use strict;
 use warnings;
-use base qw(VC2012Project);
+use base qw(MSBuildProject);
+
+no warnings qw(redefine);    ## no critic
 
 sub new
 {
@@ -497,7 +450,9 @@ package VC2017Project;
 
 use strict;
 use warnings;
-use base qw(VC2012Project);
+use base qw(MSBuildProject);
+
+no warnings qw(redefine);    ## no critic
 
 sub new
 {

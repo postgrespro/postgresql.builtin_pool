@@ -4,7 +4,7 @@
  *	  definition of the "collation" system catalog (pg_collation)
  *
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/catalog/pg_collation.h
@@ -28,6 +28,7 @@
  */
 CATALOG(pg_collation,3456,CollationRelationId)
 {
+	Oid			oid;			/* oid */
 	NameData	collname;		/* collation name */
 	Oid			collnamespace;	/* OID of namespace containing collation */
 	Oid			collowner;		/* owner of collation */

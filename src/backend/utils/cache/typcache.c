@@ -30,7 +30,7 @@
  * Domain constraint changes are also tracked properly.
  *
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -388,6 +388,7 @@ lookup_type_cache(Oid type_id, int flags)
 		typentry->typtype = typtup->typtype;
 		typentry->typrelid = typtup->typrelid;
 		typentry->typelem = typtup->typelem;
+		typentry->typcollation = typtup->typcollation;
 
 		/* If it's a domain, immediately thread it into the domain cache list */
 		if (typentry->typtype == TYPTYPE_DOMAIN)
@@ -992,7 +993,16 @@ load_domaintype_info(TypeCacheEntry *typentry)
 
 			check_expr = (Expr *) stringToNode(constring);
 
-			/* ExecInitExpr will assume we've planned the expression */
+			/*
+			 * Plan the expression, since ExecInitExpr will expect that.
+			 *
+			 * Note: caching the result of expression_planner() is not very
+			 * good practice.  Ideally we'd use a CachedExpression here so
+			 * that we would react promptly to, eg, changes in inlined
+			 * functions.  However, because we don't support mutable domain
+			 * CHECK constraints, it's not really clear that it's worth the
+			 * extra overhead to do that.
+			 */
 			check_expr = expression_planner(check_expr);
 
 			r = makeNode(DomainConstraintState);
@@ -1869,7 +1879,7 @@ assign_record_type_identifier(Oid type_id, int32 typmod)
 }
 
 /*
- * Return the amout of shmem required to hold a SharedRecordTypmodRegistry.
+ * Return the amount of shmem required to hold a SharedRecordTypmodRegistry.
  * This exists only to avoid exposing private innards of
  * SharedRecordTypmodRegistry in a header.
  */
@@ -2351,7 +2361,7 @@ load_enum_cache_data(TypeCacheEntry *tcache)
 			maxitems *= 2;
 			items = (EnumItem *) repalloc(items, sizeof(EnumItem) * maxitems);
 		}
-		items[numitems].enum_oid = HeapTupleGetOid(enum_tuple);
+		items[numitems].enum_oid = en->oid;
 		items[numitems].sort_order = en->enumsortorder;
 		numitems++;
 	}

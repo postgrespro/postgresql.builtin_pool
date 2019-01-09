@@ -71,7 +71,7 @@
  * There will always be the same number of runs as input tapes, and the same
  * number of input tapes as participants (worker Tuplesortstates).
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -240,11 +240,11 @@ ltsWriteBlock(LogicalTapeSet *lts, long blocknum, void *buffer)
 	 */
 	while (blocknum > lts->nBlocksWritten)
 	{
-		char		zerobuf[BLCKSZ];
+		PGAlignedBlock zerobuf;
 
-		MemSet(zerobuf, 0, sizeof(zerobuf));
+		MemSet(zerobuf.data, 0, sizeof(zerobuf));
 
-		ltsWriteBlock(lts, lts->nBlocksWritten, zerobuf);
+		ltsWriteBlock(lts, lts->nBlocksWritten, zerobuf.data);
 	}
 
 	/* Write the requested block */
@@ -426,17 +426,13 @@ ltsConcatWorkerTapes(LogicalTapeSet *lts, TapeShare *shared,
 	{
 		char		filename[MAXPGPATH];
 		BufFile    *file;
-		off_t		filesize;
+		int64		filesize;
 
 		lt = &lts->tapes[i];
 
 		pg_itoa(i, filename);
 		file = BufFileOpenShared(fileset, filename);
 		filesize = BufFileSize(file);
-		if (filesize < 0)
-			ereport(ERROR,
-					(errcode_for_file_access(),
-					 errmsg("could not determine size of temporary file \"%s\"", filename)));
 
 		/*
 		 * Stash first BufFile, and concatenate subsequent BufFiles to that.
@@ -471,7 +467,7 @@ ltsConcatWorkerTapes(LogicalTapeSet *lts, TapeShare *shared,
 	 * Compute number of hole blocks so that we can later work backwards, and
 	 * instrument number of physical blocks.  We don't simply use physical
 	 * blocks directly for instrumentation because this would break if we ever
-	 * subsequently wrote to worker tape.
+	 * subsequently wrote to the leader tape.
 	 *
 	 * Working backwards like this keeps our options open.  If shared BufFiles
 	 * ever support being written to post-export, logtape.c can automatically

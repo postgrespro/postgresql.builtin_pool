@@ -253,12 +253,11 @@ drop table insertconflicttest;
 --
 -- Verify that EXCLUDED does not allow system column references. These
 -- do not make sense because EXCLUDED isn't an already stored tuple
--- (and thus doesn't have a ctid, oids are not assigned yet, etc).
+-- (and thus doesn't have a ctid etc).
 --
-create table syscolconflicttest(key int4, data text) WITH OIDS;
+create table syscolconflicttest(key int4, data text);
 insert into syscolconflicttest values (1);
 insert into syscolconflicttest values (1) on conflict (key) do update set data = excluded.ctid::text;
-insert into syscolconflicttest values (1) on conflict (key) do update set data = excluded.oid::text;
 drop table syscolconflicttest;
 
 --
@@ -371,28 +370,6 @@ insert into excluded values(1, '2') on conflict (key) do update set data = 3 RET
 
 -- clean up
 drop table excluded;
-
-
--- Check tables w/o oids are handled correctly
-create table testoids(key int primary key, data text) without oids;
--- first without oids
-insert into testoids values(1, '1') on conflict (key) do update set data = excluded.data RETURNING *;
-insert into testoids values(1, '2') on conflict (key) do update set data = excluded.data RETURNING *;
--- add oids
-alter table testoids set with oids;
--- update existing row, that didn't have an oid
-insert into testoids values(1, '3') on conflict (key) do update set data = excluded.data RETURNING *;
--- insert a new row
-insert into testoids values(2, '1') on conflict (key) do update set data = excluded.data RETURNING *;
--- and update it
-insert into testoids values(2, '2') on conflict (key) do update set data = excluded.data RETURNING *;
--- remove oids again, test
-alter table testoids set without oids;
-insert into testoids values(1, '4') on conflict (key) do update set data = excluded.data RETURNING *;
-insert into testoids values(3, '1') on conflict (key) do update set data = excluded.data RETURNING *;
-insert into testoids values(3, '2') on conflict (key) do update set data = excluded.data RETURNING *;
-
-DROP TABLE testoids;
 
 
 -- check that references to columns after dropped columns are handled correctly
@@ -551,10 +528,10 @@ drop table parted_conflict;
 -- partition
 create table parted_conflict (a int, b text) partition by range (a);
 create table parted_conflict_1 partition of parted_conflict for values from (0) to (1000) partition by range (a);
+create table parted_conflict_1_1 partition of parted_conflict_1 for values from (0) to (500);
 create unique index on only parted_conflict_1 (a);
 create unique index on only parted_conflict (a);
 alter index parted_conflict_a_idx attach partition parted_conflict_1_a_idx;
-create table parted_conflict_1_1 partition of parted_conflict_1 for values from (0) to (500);
 insert into parted_conflict values (40, 'forty');
 insert into parted_conflict_1 values (40, 'cuarenta')
   on conflict (a) do update set b = excluded.b;
@@ -576,4 +553,30 @@ insert into parted_conflict values (50, 'cincuenta', 2)
 -- should see (50, 'cincuenta', 2)
 select * from parted_conflict order by a;
 
+-- test with statement level triggers
+create or replace function parted_conflict_update_func() returns trigger as $$
+declare
+    r record;
+begin
+ for r in select * from inserted loop
+	raise notice 'a = %, b = %, c = %', r.a, r.b, r.c;
+ end loop;
+ return new;
+end;
+$$ language plpgsql;
+
+create trigger parted_conflict_update
+    after update on parted_conflict
+    referencing new table as inserted
+    for each statement
+    execute procedure parted_conflict_update_func();
+
+truncate parted_conflict;
+
+insert into parted_conflict values (0, 'cero', 1);
+
+insert into parted_conflict values(0, 'cero', 1)
+  on conflict (a,b) do update set c = parted_conflict.c + 1;
+
 drop table parted_conflict;
+drop function parted_conflict_update_func();

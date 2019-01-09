@@ -1,6 +1,5 @@
 #include "postgres.h"
 
-#include <float.h>
 #include <math.h>
 
 /* Defined by Perl */
@@ -26,7 +25,7 @@ JsonbValue_to_SV(JsonbValue *jbv)
 	switch (jbv->type)
 	{
 		case jbvBinary:
-			return newRV(Jsonb_to_SV(jbv->val.binary.data));
+			return Jsonb_to_SV(jbv->val.binary.data);
 
 		case jbvNumeric:
 			{
@@ -83,7 +82,7 @@ Jsonb_to_SV(JsonbContainer *jsonb)
 					(r = JsonbIteratorNext(&it, &tmp, true)) != WJB_DONE)
 					elog(ERROR, "unexpected jsonb token: %d", r);
 
-				return newRV(JsonbValue_to_SV(&v));
+				return JsonbValue_to_SV(&v);
 			}
 			else
 			{
@@ -95,7 +94,7 @@ Jsonb_to_SV(JsonbContainer *jsonb)
 						av_push(av, JsonbValue_to_SV(&v));
 				}
 
-				return (SV *) av;
+				return newRV((SV *) av);
 			}
 
 		case WJB_BEGIN_OBJECT:
@@ -120,7 +119,7 @@ Jsonb_to_SV(JsonbContainer *jsonb)
 					}
 				}
 
-				return (SV *) hv;
+				return newRV((SV *) hv);
 			}
 
 		default:
@@ -198,7 +197,24 @@ SV_to_JsonbValue(SV *in, JsonbParseState **jsonb_state, bool is_elem)
 			break;
 
 		default:
-			if (SvIOK(in))
+			if (SvUOK(in))
+			{
+				/*
+				 * If UV is >=64 bits, we have no better way to make this
+				 * happen than converting to text and back.  Given the low
+				 * usage of UV in Perl code, it's not clear it's worth working
+				 * hard to provide alternate code paths.
+				 */
+				const char *strval = SvPV_nolen(in);
+
+				out.type = jbvNumeric;
+				out.val.numeric =
+					DatumGetNumeric(DirectFunctionCall3(numeric_in,
+														CStringGetDatum(strval),
+														ObjectIdGetDatum(InvalidOid),
+														Int32GetDatum(-1)));
+			}
+			else if (SvIOK(in))
 			{
 				IV			ival = SvIV(in);
 
@@ -268,7 +284,7 @@ jsonb_to_plperl(PG_FUNCTION_ARGS)
 	Jsonb	   *in = PG_GETARG_JSONB_P(0);
 	SV		   *sv = Jsonb_to_SV(&in->root);
 
-	return PointerGetDatum(newRV(sv));
+	return PointerGetDatum(sv);
 }
 
 

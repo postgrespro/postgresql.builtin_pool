@@ -3,7 +3,7 @@
  * spi.c
  *				Server Programming Interface
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -36,10 +36,15 @@
 #include "utils/typcache.h"
 
 
+/*
+ * These global variables are part of the API for various SPI functions
+ * (a horrible API choice, but it's too late now).  To reduce the risk of
+ * interference between different SPI callers, we save and restore them
+ * when entering/exiting a SPI nesting level.
+ */
 uint64		SPI_processed = 0;
-Oid			SPI_lastoid = InvalidOid;
 SPITupleTable *SPI_tuptable = NULL;
-int			SPI_result;
+int			SPI_result = 0;
 
 static _SPI_connection *_SPI_stack = NULL;
 static _SPI_connection *_SPI_current = NULL;
@@ -122,7 +127,6 @@ SPI_connect_ext(int options)
 
 	_SPI_current = &(_SPI_stack[_SPI_connected]);
 	_SPI_current->processed = 0;
-	_SPI_current->lastoid = InvalidOid;
 	_SPI_current->tuptable = NULL;
 	_SPI_current->execSubid = InvalidSubTransactionId;
 	slist_init(&_SPI_current->tuptables);
@@ -132,6 +136,9 @@ SPI_connect_ext(int options)
 	_SPI_current->queryEnv = NULL;
 	_SPI_current->atomic = (options & SPI_OPT_NONATOMIC ? false : true);
 	_SPI_current->internal_xact = false;
+	_SPI_current->outer_processed = SPI_processed;
+	_SPI_current->outer_tuptable = SPI_tuptable;
+	_SPI_current->outer_result = SPI_result;
 
 	/*
 	 * Create memory contexts for this procedure
@@ -153,6 +160,14 @@ SPI_connect_ext(int options)
 												  ALLOCSET_DEFAULT_SIZES);
 	/* ... and switch to procedure's context */
 	_SPI_current->savedcxt = MemoryContextSwitchTo(_SPI_current->procCxt);
+
+	/*
+	 * Reset API global variables so that current caller cannot accidentally
+	 * depend on state of an outer caller.
+	 */
+	SPI_processed = 0;
+	SPI_tuptable = NULL;
+	SPI_result = 0;
 
 	return SPI_OK_CONNECT;
 }
@@ -176,12 +191,12 @@ SPI_finish(void)
 	_SPI_current->procCxt = NULL;
 
 	/*
-	 * Reset result variables, especially SPI_tuptable which is probably
+	 * Restore outer API variables, especially SPI_tuptable which is probably
 	 * pointing at a just-deleted tuptable
 	 */
-	SPI_processed = 0;
-	SPI_lastoid = InvalidOid;
-	SPI_tuptable = NULL;
+	SPI_processed = _SPI_current->outer_processed;
+	SPI_tuptable = _SPI_current->outer_tuptable;
+	SPI_result = _SPI_current->outer_result;
 
 	/* Exit stack level */
 	_SPI_connected--;
@@ -228,8 +243,13 @@ SPI_commit(void)
 
 	_SPI_current->internal_xact = true;
 
-	if (ActiveSnapshotSet())
+	/*
+	 * Before committing, pop all active snapshots to avoid error about
+	 * "snapshot %p still active".
+	 */
+	while (ActiveSnapshotSet())
 		PopActiveSnapshot();
+
 	CommitTransactionCommand();
 	MemoryContextSwitchTo(oldcontext);
 
@@ -269,9 +289,10 @@ SPICleanup(void)
 {
 	_SPI_current = NULL;
 	_SPI_connected = -1;
+	/* Reset API global variables, too */
 	SPI_processed = 0;
-	SPI_lastoid = InvalidOid;
 	SPI_tuptable = NULL;
+	SPI_result = 0;
 }
 
 /*
@@ -331,18 +352,19 @@ AtEOSubXact_SPI(bool isCommit, SubTransactionId mySubid)
 		}
 
 		/*
-		 * Pop the stack entry and reset global variables.  Unlike
+		 * Restore outer global variables and pop the stack entry.  Unlike
 		 * SPI_finish(), we don't risk switching to memory contexts that might
 		 * be already gone.
 		 */
+		SPI_processed = connection->outer_processed;
+		SPI_tuptable = connection->outer_tuptable;
+		SPI_result = connection->outer_result;
+
 		_SPI_connected--;
 		if (_SPI_connected < 0)
 			_SPI_current = NULL;
 		else
 			_SPI_current = &(_SPI_stack[_SPI_connected]);
-		SPI_processed = 0;
-		SPI_lastoid = InvalidOid;
-		SPI_tuptable = NULL;
 	}
 
 	if (found && isCommit)
@@ -392,6 +414,19 @@ AtEOSubXact_SPI(bool isCommit, SubTransactionId mySubid)
 			}
 		}
 	}
+}
+
+/*
+ * Are we executing inside a procedure (that is, a nonatomic SPI context)?
+ */
+bool
+SPI_inside_nonatomic_context(void)
+{
+	if (_SPI_current == NULL)
+		return false;			/* not in any SPI context at all */
+	if (_SPI_current->atomic)
+		return false;			/* it's atomic (ie function not procedure) */
+	return true;
 }
 
 
@@ -836,8 +871,6 @@ SPI_modifytuple(Relation rel, HeapTuple tuple, int natts, int *attnum,
 		mtuple->t_data->t_ctid = tuple->t_data->t_ctid;
 		mtuple->t_self = tuple->t_self;
 		mtuple->t_tableOid = tuple->t_tableOid;
-		if (rel->rd_att->tdhasoid)
-			HeapTupleSetOid(mtuple, HeapTupleGetOid(tuple));
 	}
 	else
 	{
@@ -857,7 +890,7 @@ int
 SPI_fnumber(TupleDesc tupdesc, const char *fname)
 {
 	int			res;
-	Form_pg_attribute sysatt;
+	const FormData_pg_attribute *sysatt;
 
 	for (res = 0; res < tupdesc->natts; res++)
 	{
@@ -868,7 +901,7 @@ SPI_fnumber(TupleDesc tupdesc, const char *fname)
 			return res + 1;
 	}
 
-	sysatt = SystemAttributeByName(fname, true /* "oid" will be accepted */ );
+	sysatt = SystemAttributeByName(fname);
 	if (sysatt != NULL)
 		return sysatt->attnum;
 
@@ -879,7 +912,7 @@ SPI_fnumber(TupleDesc tupdesc, const char *fname)
 char *
 SPI_fname(TupleDesc tupdesc, int fnumber)
 {
-	Form_pg_attribute att;
+	const FormData_pg_attribute *att;
 
 	SPI_result = 0;
 
@@ -893,7 +926,7 @@ SPI_fname(TupleDesc tupdesc, int fnumber)
 	if (fnumber > 0)
 		att = TupleDescAttr(tupdesc, fnumber - 1);
 	else
-		att = SystemAttributeDefinition(fnumber, true);
+		att = SystemAttributeDefinition(fnumber);
 
 	return pstrdup(NameStr(att->attname));
 }
@@ -923,7 +956,7 @@ SPI_getvalue(HeapTuple tuple, TupleDesc tupdesc, int fnumber)
 	if (fnumber > 0)
 		typoid = TupleDescAttr(tupdesc, fnumber - 1)->atttypid;
 	else
-		typoid = (SystemAttributeDefinition(fnumber, true))->atttypid;
+		typoid = (SystemAttributeDefinition(fnumber))->atttypid;
 
 	getTypeOutputInfo(typoid, &foutoid, &typisvarlena);
 
@@ -965,7 +998,7 @@ SPI_gettype(TupleDesc tupdesc, int fnumber)
 	if (fnumber > 0)
 		typoid = TupleDescAttr(tupdesc, fnumber - 1)->atttypid;
 	else
-		typoid = (SystemAttributeDefinition(fnumber, true))->atttypid;
+		typoid = (SystemAttributeDefinition(fnumber))->atttypid;
 
 	typeTuple = SearchSysCache1(TYPEOID, ObjectIdGetDatum(typoid));
 
@@ -1001,7 +1034,7 @@ SPI_gettypeid(TupleDesc tupdesc, int fnumber)
 	if (fnumber > 0)
 		return TupleDescAttr(tupdesc, fnumber - 1)->atttypid;
 	else
-		return (SystemAttributeDefinition(fnumber, true))->atttypid;
+		return (SystemAttributeDefinition(fnumber))->atttypid;
 }
 
 char *
@@ -1815,7 +1848,7 @@ spi_printtup(TupleTableSlot *slot, DestReceiver *self)
 	}
 
 	tuptable->vals[tuptable->alloced - tuptable->free] =
-		ExecCopySlotTuple(slot);
+		ExecCopySlotHeapTuple(slot);
 	(tuptable->free)--;
 
 	MemoryContextSwitchTo(oldcxt);
@@ -2009,7 +2042,6 @@ _SPI_execute_plan(SPIPlanPtr plan, ParamListInfo paramLI,
 {
 	int			my_res = 0;
 	uint64		my_processed = 0;
-	Oid			my_lastoid = InvalidOid;
 	SPITupleTable *my_tuptable = NULL;
 	int			res = 0;
 	bool		pushed_active_snap = false;
@@ -2141,7 +2173,6 @@ _SPI_execute_plan(SPIPlanPtr plan, ParamListInfo paramLI,
 			DestReceiver *dest;
 
 			_SPI_current->processed = 0;
-			_SPI_current->lastoid = InvalidOid;
 			_SPI_current->tuptable = NULL;
 
 			if (stmt->utilityStmt)
@@ -2282,7 +2313,6 @@ _SPI_execute_plan(SPIPlanPtr plan, ParamListInfo paramLI,
 			if (canSetTag)
 			{
 				my_processed = _SPI_current->processed;
-				my_lastoid = _SPI_current->lastoid;
 				SPI_freetuptable(my_tuptable);
 				my_tuptable = _SPI_current->tuptable;
 				my_res = res;
@@ -2330,7 +2360,6 @@ fail:
 
 	/* Save results for caller */
 	SPI_processed = my_processed;
-	SPI_lastoid = my_lastoid;
 	SPI_tuptable = my_tuptable;
 
 	/* tuptable now is caller's responsibility, not SPI's */
@@ -2442,7 +2471,6 @@ _SPI_pquery(QueryDesc *queryDesc, bool fire_triggers, uint64 tcount)
 	ExecutorRun(queryDesc, ForwardScanDirection, tcount, true);
 
 	_SPI_current->processed = queryDesc->estate->es_processed;
-	_SPI_current->lastoid = queryDesc->estate->es_lastoid;
 
 	if ((res == SPI_OK_SELECT || queryDesc->plannedstmt->hasReturning) &&
 		queryDesc->dest->mydest == DestSPI)

@@ -4,7 +4,7 @@
  *	  prototypes for pathnode.c, relnode.c.
  *
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/optimizer/pathnode.h
@@ -214,8 +214,7 @@ extern WindowAggPath *create_windowagg_path(PlannerInfo *root,
 					  Path *subpath,
 					  PathTarget *target,
 					  List *windowFuncs,
-					  WindowClause *winclause,
-					  List *winpathkeys);
+					  WindowClause *winclause);
 extern SetOpPath *create_setop_path(PlannerInfo *root,
 				  RelOptInfo *rel,
 				  Path *subpath,
@@ -239,7 +238,7 @@ extern LockRowsPath *create_lockrows_path(PlannerInfo *root, RelOptInfo *rel,
 extern ModifyTablePath *create_modifytable_path(PlannerInfo *root,
 						RelOptInfo *rel,
 						CmdType operation, bool canSetTag,
-						Index nominalRelation, List *partitioned_rels,
+						Index nominalRelation, Index rootRelation,
 						bool partColsUpdated,
 						List *resultRelations, List *subpaths,
 						List *subroots,
@@ -261,6 +260,7 @@ extern Path *reparameterize_path_by_child(PlannerInfo *root, Path *path,
  * prototypes for relnode.c
  */
 extern void setup_simple_rel_arrays(PlannerInfo *root);
+extern void setup_append_rel_array(PlannerInfo *root);
 extern RelOptInfo *build_simple_rel(PlannerInfo *root, int relid,
 				 RelOptInfo *parent);
 extern RelOptInfo *find_base_rel(PlannerInfo *root, int relid);
@@ -278,8 +278,6 @@ extern Relids min_join_parameterization(PlannerInfo *root,
 extern RelOptInfo *build_empty_join_rel(PlannerInfo *root);
 extern RelOptInfo *fetch_upper_rel(PlannerInfo *root, UpperRelationKind kind,
 				Relids relids);
-extern AppendRelInfo *find_childrel_appendrelinfo(PlannerInfo *root,
-							RelOptInfo *rel);
 extern Relids find_childrel_parents(PlannerInfo *root, RelOptInfo *rel);
 extern ParamPathInfo *get_baserel_parampathinfo(PlannerInfo *root,
 						  RelOptInfo *baserel,

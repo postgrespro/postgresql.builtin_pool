@@ -5,7 +5,7 @@
  *	  (pg_ts_config_map)
  *
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/catalog/pg_ts_config_map.h
@@ -27,7 +27,7 @@
  *		typedef struct FormData_pg_ts_config_map
  * ----------------
  */
-CATALOG(pg_ts_config_map,3603,TSConfigMapRelationId) BKI_WITHOUT_OIDS
+CATALOG(pg_ts_config_map,3603,TSConfigMapRelationId)
 {
 	Oid			mapcfg;			/* OID of configuration owning this entry */
 	int32		maptokentype;	/* token type from parser */

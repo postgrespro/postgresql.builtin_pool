@@ -3,7 +3,7 @@
  * plpgsql.h		- Definitions for the PL/pgSQL
  *			  procedural language
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -148,7 +148,6 @@ enum
 typedef enum PLpgSQL_getdiag_kind
 {
 	PLPGSQL_GETDIAG_ROW_COUNT,
-	PLPGSQL_GETDIAG_RESULT_OID,
 	PLPGSQL_GETDIAG_CONTEXT,
 	PLPGSQL_GETDIAG_ERROR_CONTEXT,
 	PLPGSQL_GETDIAG_ERROR_DETAIL,
@@ -326,7 +325,12 @@ typedef struct PLpgSQL_var
  * Note that there's no way to name the row as such from PL/pgSQL code,
  * so many functions don't need to support these.
  *
- * refname, isconst, notnull, and default_val are unsupported (and hence
+ * That also means that there's no real name for the row variable, so we
+ * conventionally set refname to "(unnamed row)".  We could leave it NULL,
+ * but it's too convenient to be able to assume that refname is valid in
+ * all variants of PLpgSQL_variable.
+ *
+ * isconst, notnull, and default_val are unsupported (and hence
  * always zero/null) for a row.  The member variables of a row should have
  * been checked to be writable at compile time, so isconst is correctly set
  * to false.  notnull and default_val aren't applicable.
@@ -1038,7 +1042,6 @@ typedef struct PLpgSQL_execstate
 	/* temporary state for results from evaluation of query or expr */
 	SPITupleTable *eval_tuptable;
 	uint64		eval_processed;
-	Oid			eval_lastoid;
 	ExprContext *eval_econtext; /* for executing simple expressions */
 
 	/* status information for error context reporting */
@@ -1135,10 +1138,12 @@ extern bool plpgsql_print_strict_params;
 
 extern bool plpgsql_check_asserts;
 
-/* extra compile-time checks */
-#define PLPGSQL_XCHECK_NONE			0
-#define PLPGSQL_XCHECK_SHADOWVAR	1
-#define PLPGSQL_XCHECK_ALL			((int) ~0)
+/* extra compile-time and run-time checks */
+#define PLPGSQL_XCHECK_NONE						0
+#define PLPGSQL_XCHECK_SHADOWVAR				(1 << 1)
+#define PLPGSQL_XCHECK_TOOMANYROWS				(1 << 2)
+#define PLPGSQL_XCHECK_STRICTMULTIASSIGNMENT	(1 << 3)
+#define PLPGSQL_XCHECK_ALL						((int) ~0)
 
 extern int	plpgsql_extra_warnings;
 extern int	plpgsql_extra_errors;
@@ -1170,7 +1175,7 @@ extern PLpgSQL_function *plpgsql_compile(FunctionCallInfo fcinfo,
 extern PLpgSQL_function *plpgsql_compile_inline(char *proc_source);
 extern void plpgsql_parser_setup(struct ParseState *pstate,
 					 PLpgSQL_expr *expr);
-extern bool plpgsql_parse_word(char *word1, const char *yytxt,
+extern bool plpgsql_parse_word(char *word1, const char *yytxt, bool lookup,
 				   PLwdatum *wdatum, PLword *word);
 extern bool plpgsql_parse_dblword(char *word1, char *word2,
 					  PLwdatum *wdatum, PLcword *cword);

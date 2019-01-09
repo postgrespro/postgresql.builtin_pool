@@ -4,7 +4,7 @@
  *	  include file for the bootstrapping code
  *
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/bootstrap/bootstrap.h
@@ -40,7 +40,7 @@ extern void closerel(char *name);
 extern void boot_openrel(char *name);
 
 extern void DefineAttr(char *name, char *type, int attnum, int nullness);
-extern void InsertOneTuple(Oid objectid);
+extern void InsertOneTuple(void);
 extern void InsertOneValue(char *value, int i);
 extern void InsertOneNull(int i);
 

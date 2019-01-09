@@ -3,7 +3,7 @@
  *
  *	main source file
  *
- *	Copyright (c) 2010-2018, PostgreSQL Global Development Group
+ *	Copyright (c) 2010-2019, PostgreSQL Global Development Group
  *	src/bin/pg_upgrade/pg_upgrade.c
  */
 
@@ -28,8 +28,9 @@
  *	We control all assignments of pg_enum.oid because these oids are stored
  *	in user tables as enum values.
  *
- *	We control all assignments of pg_authid.oid because these oids are stored
- *	in pg_largeobject_metadata.
+ *	We control all assignments of pg_authid.oid for historical reasons (the
+ *	oids used to be stored in pg_largeobject_metadata, which is now copied via
+ *	SQL commands), that might change at some point in the future.
  */
 
 
@@ -103,8 +104,8 @@ main(int argc, char **argv)
 	/* Set mask based on PGDATA permissions */
 	if (!GetDataDirectoryCreatePerm(new_cluster.pgdata))
 	{
-		pg_log(PG_FATAL, "unable to read permissions from \"%s\"\n",
-			   new_cluster.pgdata);
+		pg_log(PG_FATAL, "could not read permissions of directory \"%s\": %s\n",
+			   new_cluster.pgdata, strerror(errno));
 		exit(1);
 	}
 
@@ -220,7 +221,8 @@ setup(char *argv0, bool *live_check)
 		 * start, assume the server is running.  If the pid file is left over
 		 * from a server crash, this also allows any committed transactions
 		 * stored in the WAL to be replayed so they are not lost, because WAL
-		 * files are not transferred from old to new servers.
+		 * files are not transferred from old to new servers.  We later check
+		 * for a clean shutdown.
 		 */
 		if (start_postmaster(&old_cluster, false))
 			stop_postmaster(false);

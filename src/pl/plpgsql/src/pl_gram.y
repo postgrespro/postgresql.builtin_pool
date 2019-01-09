@@ -3,7 +3,7 @@
  *
  * pl_gram.y			- Parser for the PL/pgSQL procedural language
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -327,7 +327,6 @@ static	void			check_raise_parameters(PLpgSQL_stmt_raise *stmt);
 %token <keyword>	K_RAISE
 %token <keyword>	K_RELATIVE
 %token <keyword>	K_RESET
-%token <keyword>	K_RESULT_OID
 %token <keyword>	K_RETURN
 %token <keyword>	K_RETURNED_SQLSTATE
 %token <keyword>	K_REVERSE
@@ -613,6 +612,7 @@ decl_cursor_args :
 
 						new = palloc0(sizeof(PLpgSQL_row));
 						new->dtype = PLPGSQL_DTYPE_ROW;
+						new->refname = "(unnamed row)";
 						new->lineno = plpgsql_location_to_lineno(@1);
 						new->rowtupdesc = NULL;
 						new->nfields = list_length($2);
@@ -976,7 +976,6 @@ stmt_getdiag	: K_GET getdiag_area_opt K_DIAGNOSTICS getdiag_list ';'
 							{
 								/* these fields are disallowed in stacked case */
 								case PLPGSQL_GETDIAG_ROW_COUNT:
-								case PLPGSQL_GETDIAG_RESULT_OID:
 									if (new->is_stacked)
 										ereport(ERROR,
 												(errcode(ERRCODE_SYNTAX_ERROR),
@@ -1059,9 +1058,6 @@ getdiag_item :
 						if (tok_is_keyword(tok, &yylval,
 										   K_ROW_COUNT, "row_count"))
 							$$ = PLPGSQL_GETDIAG_ROW_COUNT;
-						else if (tok_is_keyword(tok, &yylval,
-												K_RESULT_OID, "result_oid"))
-							$$ = PLPGSQL_GETDIAG_RESULT_OID;
 						else if (tok_is_keyword(tok, &yylval,
 												K_PG_CONTEXT, "pg_context"))
 							$$ = PLPGSQL_GETDIAG_CONTEXT;
@@ -2517,7 +2513,6 @@ unreserved_keyword	:
 				| K_RAISE
 				| K_RELATIVE
 				| K_RESET
-				| K_RESULT_OID
 				| K_RETURN
 				| K_RETURNED_SQLSTATE
 				| K_REVERSE
@@ -3526,6 +3521,7 @@ read_into_scalar_list(char *initial_name,
 
 	row = palloc0(sizeof(PLpgSQL_row));
 	row->dtype = PLPGSQL_DTYPE_ROW;
+	row->refname = "(unnamed row)";
 	row->lineno = plpgsql_location_to_lineno(initial_location);
 	row->rowtupdesc = NULL;
 	row->nfields = nfields;
@@ -3560,6 +3556,7 @@ make_scalar_list1(char *initial_name,
 
 	row = palloc0(sizeof(PLpgSQL_row));
 	row->dtype = PLPGSQL_DTYPE_ROW;
+	row->refname = "(unnamed row)";
 	row->lineno = lineno;
 	row->rowtupdesc = NULL;
 	row->nfields = 1;

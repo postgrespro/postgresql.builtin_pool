@@ -901,8 +901,8 @@ EXCLUDE NO OTHERS
     CURRENT ROW</literal>; it sets the frame to be all rows from the partition start
     up through the current row's last <firstterm>peer</firstterm> (a row
     that the window's <literal>ORDER BY</literal> clause considers
-    equivalent to the current row), or all rows if there
-    is no <literal>ORDER BY</literal>.
+    equivalent to the current row; all rows are peers if there
+    is no <literal>ORDER BY</literal>).
     In general, <literal>UNBOUNDED PRECEDING</literal> means that the frame
     starts with the first row of the partition, and similarly
     <literal>UNBOUNDED FOLLOWING</literal> means that the frame ends with the last
@@ -924,7 +924,7 @@ EXCLUDE NO OTHERS
     is an integer indicating that the frame starts or ends that many peer
     groups before or after the current row's peer group, where
     a <firstterm>peer group</firstterm> is a group of rows that are
-    equivalent according to <literal>ORDER BY</literal>.
+    equivalent according to the window's <literal>ORDER BY</literal> clause.
     In <literal>RANGE</literal> mode, use of
     an <replaceable>offset</replaceable> option requires that there be
     exactly one <literal>ORDER BY</literal> column in the window definition.
@@ -1399,10 +1399,12 @@ OFFSET <replaceable class="parameter">start</replaceable>
 OFFSET <replaceable class="parameter">start</replaceable> { ROW | ROWS }
 FETCH { FIRST | NEXT } [ <replaceable class="parameter">count</replaceable> ] { ROW | ROWS } ONLY
 </synopsis>
-    In this syntax, to write anything except a simple integer constant for
-    <replaceable class="parameter">start</replaceable> or <replaceable
-    class="parameter">count</replaceable>, you must write parentheses
-    around it.
+    In this syntax, the <replaceable class="parameter">start</replaceable>
+    or <replaceable class="parameter">count</replaceable> value is required by
+    the standard to be a literal constant, a parameter, or a variable name;
+    as a <productname>PostgreSQL</productname> extension, other expressions
+    are allowed, but will generally need to be enclosed in parentheses to avoid
+    ambiguity.
     If <replaceable class="parameter">count</replaceable> is
     omitted in a <literal>FETCH</literal> clause, it defaults to 1.
     <literal>ROW</literal>

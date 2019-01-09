@@ -3,7 +3,7 @@ use strict;
 use warnings;
 use PostgresNode;
 use TestLib;
-use Test::More tests => 28;
+use Test::More tests => 26;
 
 # Initialize master node
 my $node_master = get_new_node('master');
@@ -97,6 +97,8 @@ sub test_target_session_attrs
 		1,
 		"connect to node $target_name if mode \"$mode\" and $node1_name,$node2_name listed"
 	);
+
+	return;
 }
 
 # Connect to master in "read-write" mode with master,standby1 list.
@@ -129,7 +131,7 @@ is( $node_master->psql(
 		qq[SELECT pg_create_physical_replication_slot('$slotname_1');]),
 	0,
 	'physical slot created on master');
-$node_standby_1->append_conf('recovery.conf',
+$node_standby_1->append_conf('postgresql.conf',
 	"primary_slot_name = $slotname_1");
 $node_standby_1->append_conf('postgresql.conf',
 	"wal_receiver_status_interval = 1");
@@ -140,7 +142,7 @@ is( $node_standby_1->psql(
 		qq[SELECT pg_create_physical_replication_slot('$slotname_2');]),
 	0,
 	'physical slot created on intermediate replica');
-$node_standby_2->append_conf('recovery.conf',
+$node_standby_2->append_conf('postgresql.conf',
 	"primary_slot_name = $slotname_2");
 $node_standby_2->append_conf('postgresql.conf',
 	"wal_receiver_status_interval = 1");
@@ -195,6 +197,7 @@ sub replay_check
 	$node_standby_2->safe_psql('postgres',
 		qq[SELECT 1 FROM replayed WHERE val = $newval])
 	  or die "standby_2 didn't replay standby_1 value $newval";
+	return;
 }
 
 replay_check();
@@ -279,27 +282,3 @@ is($catalog_xmin, '',
 is($xmin, '', 'xmin of cascaded slot null with hs feedback reset');
 is($catalog_xmin, '',
 	'catalog xmin of cascaded slot still null with hs_feedback reset');
-
-note "re-enabling hot_standby_feedback and disabling while stopped";
-$node_standby_2->safe_psql('postgres',
-	'ALTER SYSTEM SET hot_standby_feedback = on;');
-$node_standby_2->reload;
-
-$node_master->safe_psql('postgres', qq[INSERT INTO tab_int VALUES (11000);]);
-replay_check();
-
-$node_standby_2->safe_psql('postgres',
-	'ALTER SYSTEM SET hot_standby_feedback = off;');
-$node_standby_2->stop;
-
-($xmin, $catalog_xmin) =
-  get_slot_xmins($node_standby_1, $slotname_2, "xmin IS NOT NULL");
-isnt($xmin, '', 'xmin of cascaded slot non-null with postgres shut down');
-
-# Xmin from a previous run should be cleared on startup.
-$node_standby_2->start;
-
-($xmin, $catalog_xmin) =
-  get_slot_xmins($node_standby_1, $slotname_2, "xmin IS NULL");
-is($xmin, '',
-	'xmin of cascaded slot reset after startup with hs feedback reset');

@@ -8,7 +8,7 @@
  *	  This file contains only the public interface routines.
  *
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -816,24 +816,26 @@ _bt_vacuum_needs_cleanup(IndexVacuumInfo *info)
 	{
 		StdRdOptions *relopts;
 		float8		cleanup_scale_factor;
+		float8		prev_num_heap_tuples;
 
 		/*
 		 * If table receives enough insertions and no cleanup was performed,
-		 * then index would appear have stale statistics.  If scale factor
-		 * is set, we avoid that by performing cleanup if the number of
-		 * inserted tuples exceeds vacuum_cleanup_index_scale_factor fraction
-		 * of original tuples count.
+		 * then index would appear have stale statistics.  If scale factor is
+		 * set, we avoid that by performing cleanup if the number of inserted
+		 * tuples exceeds vacuum_cleanup_index_scale_factor fraction of
+		 * original tuples count.
 		 */
 		relopts = (StdRdOptions *) info->index->rd_options;
 		cleanup_scale_factor = (relopts &&
 								relopts->vacuum_cleanup_index_scale_factor >= 0)
 			? relopts->vacuum_cleanup_index_scale_factor
 			: vacuum_cleanup_index_scale_factor;
+		prev_num_heap_tuples = metad->btm_last_cleanup_num_heap_tuples;
 
 		if (cleanup_scale_factor <= 0 ||
-			metad->btm_last_cleanup_num_heap_tuples < 0 ||
-			info->num_heap_tuples > (1.0 + cleanup_scale_factor) *
-			metad->btm_last_cleanup_num_heap_tuples)
+			prev_num_heap_tuples < 0 ||
+			(info->num_heap_tuples - prev_num_heap_tuples) /
+			prev_num_heap_tuples >= cleanup_scale_factor)
 			result = true;
 	}
 
@@ -871,8 +873,8 @@ btbulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 					 &oldestBtpoXact);
 
 		/*
-		 * Update cleanup-related information in metapage. This information
-		 * is used only for cleanup but keeping them up to date can avoid
+		 * Update cleanup-related information in metapage. This information is
+		 * used only for cleanup but keeping them up to date can avoid
 		 * unnecessary cleanup even after bulkdelete.
 		 */
 		_bt_update_meta_cleanup_info(info->index, oldestBtpoXact,

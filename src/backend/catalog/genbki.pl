@@ -7,7 +7,7 @@
 #    formatted header files and data files.  The BKI files are used to
 #    initialize the postgres template database.
 #
-# Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+# Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
 # Portions Copyright (c) 1994, Regents of the University of California
 #
 # src/backend/catalog/genbki.pl
@@ -22,6 +22,7 @@ use warnings;
 my @input_files;
 my $output_path = '';
 my $major_version;
+my $include_path;
 
 # Process command line switches.
 while (@ARGV)
@@ -30,6 +31,10 @@ while (@ARGV)
 	if ($arg !~ /^-/)
 	{
 		push @input_files, $arg;
+	}
+	elsif ($arg =~ /^-I/)
+	{
+		$include_path = length($arg) > 2 ? substr($arg, 2) : shift @ARGV;
 	}
 	elsif ($arg =~ /^-o/)
 	{
@@ -50,11 +55,16 @@ while (@ARGV)
 # Sanity check arguments.
 die "No input files.\n" if !@input_files;
 die "--set-version must be specified.\n" if !defined $major_version;
+die "-I, the header include path, must be specified.\n" if !$include_path;
 
-# Make sure output_path ends in a slash.
+# Make sure paths end with a slash.
 if ($output_path ne '' && substr($output_path, -1) ne '/')
 {
 	$output_path .= '/';
+}
+if (substr($include_path, -1) ne '/')
+{
+	$include_path .= '/';
 }
 
 # Read all the files into internal data structures.
@@ -143,6 +153,15 @@ foreach my $oid (keys %oidcounts)
 }
 die "found $found duplicate OID(s) in catalog data\n" if $found;
 
+
+# Oids not specified in the input files are automatically assigned,
+# starting at FirstGenbkiObjectId.
+my $FirstGenbkiObjectId =
+  Catalog::FindDefinedSymbol('access/transam.h', $include_path,
+	'FirstGenbkiObjectId');
+my $GenbkiNextOid = $FirstGenbkiObjectId;
+
+
 # Fetch some special data that we will substitute into the output file.
 # CAUTION: be wary about what symbols you substitute into the .bki file here!
 # It's okay to substitute things that are expected to be really constant
@@ -152,19 +171,28 @@ die "found $found duplicate OID(s) in catalog data\n" if $found;
 my $BOOTSTRAP_SUPERUSERID =
   Catalog::FindDefinedSymbolFromData($catalog_data{pg_authid},
 	'BOOTSTRAP_SUPERUSERID');
+my $C_COLLATION_OID =
+  Catalog::FindDefinedSymbolFromData($catalog_data{pg_collation},
+	'C_COLLATION_OID');
 my $PG_CATALOG_NAMESPACE =
   Catalog::FindDefinedSymbolFromData($catalog_data{pg_namespace},
 	'PG_CATALOG_NAMESPACE');
 
 
-# Build lookup tables for OID macro substitutions and for pg_attribute
-# copies of pg_type values.
+# Build lookup tables.
 
-# index access method OID lookup
+# access method OID lookup
 my %amoids;
 foreach my $row (@{ $catalog_data{pg_am} })
 {
 	$amoids{ $row->{amname} } = $row->{oid};
+}
+
+# language OID lookup
+my %langoids;
+foreach my $row (@{ $catalog_data{pg_language} })
+{
+	$langoids{ $row->{lanname} } = $row->{oid};
 }
 
 # opclass OID lookup
@@ -234,18 +262,53 @@ my %typeoids;
 my %types;
 foreach my $row (@{ $catalog_data{pg_type} })
 {
+	# for OID macro substitutions
 	$typeoids{ $row->{typname} } = $row->{oid};
+
+	# for pg_attribute copies of pg_type values
 	$types{ $row->{typname} }    = $row;
 }
 
-# Map catalog name to OID lookup.
+# Encoding identifier lookup.  This uses the same replacement machinery
+# as for OIDs, but we have to dig the values out of pg_wchar.h.
+my %encids;
+
+my $encfile = $include_path . 'mb/pg_wchar.h';
+open(my $ef, '<', $encfile) || die "$encfile: $!";
+
+# We're parsing an enum, so start with 0 and increment
+# every time we find an enum member.
+my $encid = 0;
+my $collect_encodings = 0;
+while (<$ef>)
+{
+	if (/typedef\s+enum\s+pg_enc/)
+	{
+		$collect_encodings = 1;
+		next;
+	}
+
+	last if /_PG_LAST_ENCODING_/;
+
+	if ($collect_encodings and /^\s+(PG_\w+)/)
+	{
+		$encids{$1} = $encid;
+		$encid++;
+	}
+}
+
+close $ef;
+
+# Map lookup name to the corresponding hash table.
 my %lookup_kind = (
 	pg_am       => \%amoids,
+	pg_language => \%langoids,
 	pg_opclass  => \%opcoids,
 	pg_operator => \%operoids,
 	pg_opfamily => \%opfoids,
 	pg_proc     => \%procoids,
-	pg_type     => \%typeoids);
+	pg_type     => \%typeoids,
+	encoding    => \%encids);
 
 
 # Open temp files
@@ -290,7 +353,7 @@ foreach my $catname (@catnames)
  * %s_d.h
  *    Macro definitions for %s
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * NOTES
@@ -320,7 +383,6 @@ EOM
 	print $bki "create $catname $catalog->{relation_oid}"
 	  . $catalog->{shared_relation}
 	  . $catalog->{bootstrap}
-	  . $catalog->{without_oids}
 	  . $catalog->{rowtype_oid_clause};
 
 	my $first = 1;
@@ -357,8 +419,7 @@ EOM
 		}
 
 		# Emit Anum_* constants
-		print $def
-		  sprintf("#define Anum_%s_%s %s\n", $catname, $attname, $attnum);
+		printf $def "#define Anum_%s_%s %s\n", $catname, $attname, $attnum;
 	}
 	print $bki "\n )\n";
 
@@ -393,9 +454,10 @@ EOM
 		foreach my $key (keys %bki_values)
 		{
 			next
-			  if $key eq "oid"
-			  || $key eq "oid_symbol"
+			  if $key eq "oid_symbol"
+			  || $key eq "array_type_oid"
 			  || $key eq "descr"
+			  || $key eq "autogenerated"
 			  || $key eq "line_number";
 			die sprintf "unrecognized field name \"%s\" in %s.dat line %s\n",
 			  $key, $catname, $bki_values{line_number}
@@ -407,6 +469,13 @@ EOM
 		{
 			my $attname = $column->{name};
 			my $atttype = $column->{type};
+
+			# Assign oid if oid column exists and no explicit assignment in row
+			if ($attname eq "oid" and not defined $bki_values{$attname})
+			{
+				$bki_values{$attname} = $GenbkiNextOid;
+				$GenbkiNextOid++;
+			}
 
 			# Substitute constant values we acquired above.
 			# (It's intentional that this can apply to parts of a field).
@@ -493,7 +562,7 @@ EOM
 	}
 
 	print $bki "close $catname\n";
-	print $def sprintf("\n#endif\t\t\t\t\t\t\t/* %s_D_H */\n", uc $catname);
+	printf $def "\n#endif\t\t\t\t\t\t\t/* %s_D_H */\n", uc $catname;
 
 	# Close and rename definition header
 	close $def;
@@ -527,7 +596,7 @@ print $schemapg <<EOM;
  * schemapg.h
  *    Schema_pg_xxx macros for use by relcache.c
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * NOTES
@@ -626,7 +695,6 @@ sub gen_pg_attribute
 			$attnum = 0;
 			my @SYS_ATTRS = (
 				{ name => 'ctid',     type => 'tid' },
-				{ name => 'oid',      type => 'oid' },
 				{ name => 'xmin',     type => 'xid' },
 				{ name => 'cmin',     type => 'cid' },
 				{ name => 'xmax',     type => 'xid' },
@@ -640,16 +708,12 @@ sub gen_pg_attribute
 				$row{attrelid}      = $table->{relation_oid};
 				$row{attstattarget} = '0';
 
-				# Omit the oid column if the catalog doesn't have them
-				next
-				  if $table->{without_oids}
-				  && $attr->{name} eq 'oid';
-
 				morph_row_for_pgattr(\%row, $schema, $attr, 1);
 				print_bki_insert(\%row, $schema);
 			}
 		}
 	}
+	return;
 }
 
 # Given $pgattr_schema (the pg_attribute schema for a catalog sufficient for
@@ -677,7 +741,10 @@ sub morph_row_for_pgattr
 
 	# set attndims if it's an array type
 	$row->{attndims} = $type->{typcategory} eq 'A' ? '1' : '0';
-	$row->{attcollation} = $type->{typcollation};
+
+	# collation-aware catalog columns must use C collation
+	$row->{attcollation} = $type->{typcollation} != 0 ?
+	    $C_COLLATION_OID : 0;
 
 	if (defined $attr->{forcenotnull})
 	{
@@ -707,6 +774,7 @@ sub morph_row_for_pgattr
 	}
 
 	Catalog::AddDefaultValues($row, $pgattr_schema, 'pg_attribute');
+	return;
 }
 
 # Write an entry to postgres.bki.
@@ -716,7 +784,6 @@ sub print_bki_insert
 	my $schema = shift;
 
 	my @bki_values;
-	my $oid = $row->{oid} ? "OID = $row->{oid} " : '';
 
 	foreach my $column (@$schema)
 	{
@@ -744,7 +811,8 @@ sub print_bki_insert
 
 		push @bki_values, $bki_value;
 	}
-	printf $bki "insert %s( %s )\n", $oid, join(' ', @bki_values);
+	printf $bki "insert ( %s )\n", join(' ', @bki_values);
+	return;
 }
 
 # Given a row reference, modify it so that it becomes a valid entry for
@@ -787,6 +855,7 @@ sub morph_row_for_schemapg
 		# Only the fixed-size portions of the descriptors are ever used.
 		delete $row->{$attname} if $column->{is_varlen};
 	}
+	return;
 }
 
 # Perform OID lookups on an array of OID names.
@@ -847,6 +916,7 @@ sub usage
 Usage: genbki.pl [options] header...
 
 Options:
+    -I               include path
     -o               output path
     --set-version    PostgreSQL version number for initdb cross-check
 

@@ -4,7 +4,7 @@
  *	  fetch tuples from a GIN scan.
  *
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -235,8 +235,8 @@ collectMatchBitmap(GinBtreeData *btree, GinBtreeStack *stack,
 			LockBuffer(stack->buffer, GIN_UNLOCK);
 
 			/*
-			 * Acquire predicate lock on the posting tree.  We already hold
-			 * a lock on the entry page, but insertions to the posting tree
+			 * Acquire predicate lock on the posting tree.  We already hold a
+			 * lock on the entry page, but insertions to the posting tree
 			 * don't check for conflicts on that level.
 			 */
 			PredicateLockPage(btree->index, rootPostingTree, snapshot);
@@ -338,7 +338,7 @@ restartScanEntry:
 	ginPrepareEntryScan(&btreeEntry, entry->attnum,
 						entry->queryKey, entry->queryCategory,
 						ginstate);
-	stackEntry = ginFindLeafPage(&btreeEntry, true, snapshot);
+	stackEntry = ginFindLeafPage(&btreeEntry, true, false, snapshot);
 	page = BufferGetPage(stackEntry->buffer);
 
 	/* ginFindLeafPage() will have already checked snapshot age. */
@@ -679,7 +679,7 @@ entryLoadMoreItems(GinState *ginstate, GinScanEntry entry,
 						   OffsetNumberNext(GinItemPointerGetOffsetNumber(&advancePast)));
 		}
 		entry->btree.fullScan = false;
-		stack = ginFindLeafPage(&entry->btree, true, snapshot);
+		stack = ginFindLeafPage(&entry->btree, true, false, snapshot);
 
 		/* we don't need the stack, just the buffer. */
 		entry->buffer = stack->buffer;
@@ -1766,8 +1766,8 @@ scanPendingInsert(IndexScanDesc scan, TIDBitmap *tbm, int64 *ntids)
 	*ntids = 0;
 
 	/*
-	 * Acquire predicate lock on the metapage, to conflict with any
-	 * fastupdate insertions.
+	 * Acquire predicate lock on the metapage, to conflict with any fastupdate
+	 * insertions.
 	 */
 	PredicateLockPage(scan->indexRelation, GIN_METAPAGE_BLKNO, scan->xs_snapshot);
 

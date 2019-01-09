@@ -7,7 +7,7 @@
  * type.
  *
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -371,7 +371,7 @@ AllocSetFreeIndex(Size size)
 
 
 /*
- * AllocSetContextCreateExtended
+ * AllocSetContextCreateInternal
  *		Create a new AllocSet context.
  *
  * parent: parent context, or NULL if top-level context
@@ -381,11 +381,13 @@ AllocSetFreeIndex(Size size)
  * maxBlockSize: maximum allocation block size
  *
  * Most callers should abstract the context size parameters using a macro
- * such as ALLOCSET_DEFAULT_SIZES.  (This is now *required* when going
- * through the AllocSetContextCreate macro.)
+ * such as ALLOCSET_DEFAULT_SIZES.
+ *
+ * Note: don't call this directly; go through the wrapper macro
+ * AllocSetContextCreate.
  */
 MemoryContext
-AllocSetContextCreateExtended(MemoryContext parent,
+AllocSetContextCreateInternal(MemoryContext parent,
 							  const char *name,
 							  Size minContextSize,
 							  Size initBlockSize,

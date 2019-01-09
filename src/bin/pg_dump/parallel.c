@@ -4,7 +4,7 @@
  *
  *	Parallel support for pg_dump and pg_restore
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -1334,7 +1334,7 @@ lockTableForWorker(ArchiveHandle *AH, TocEntry *te)
 
 	query = createPQExpBuffer();
 
-	qualId = fmtQualifiedId(AH->public.remoteVersion, te->namespace, te->tag);
+	qualId = fmtQualifiedId(te->namespace, te->tag);
 
 	appendPQExpBuffer(query, "LOCK TABLE %s IN ACCESS SHARE MODE NOWAIT",
 					  qualId);

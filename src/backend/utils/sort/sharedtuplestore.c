@@ -10,11 +10,11 @@
  * scan where each backend reads an arbitrary subset of the tuples that were
  * written.
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
- *	  src/backend/util/sort/sharedtuplestore.c
+ *	  src/backend/utils/sort/sharedtuplestore.c
  *
  *-------------------------------------------------------------------------
  */

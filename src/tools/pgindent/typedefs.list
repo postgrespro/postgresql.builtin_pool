@@ -330,6 +330,7 @@ ClosePortalStmt
 ClosePtrType
 Clump
 ClusterInfo
+ClusterOption
 ClusterStmt
 CmdType
 CoalesceExpr
@@ -1898,6 +1899,7 @@ RecheckForeignScan_function
 RecordCacheEntry
 RecordCompareData
 RecordIOData
+RecoveryLockListsEntry
 RecoveryTargetAction
 RecoveryTargetType
 RectBox
@@ -2226,6 +2228,7 @@ StdAnalyzeData
 StdRdOptions
 Step
 StopList
+StopWorkersData
 StrategyNumber
 StreamCtl
 StringInfo
@@ -3134,6 +3137,7 @@ spgxlogVacuumLeaf
 spgxlogVacuumRedirect
 spgxlogVacuumRoot
 split_pathtarget_context
+split_pathtarget_item
 sql_error_callback_arg
 sqlparseInfo
 sqlparseState

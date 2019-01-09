@@ -8,7 +8,7 @@
  * exit-time cleanup for either a postmaster or a backend.
  *
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -272,6 +272,8 @@ shmem_exit(int code)
 		on_shmem_exit_list[on_shmem_exit_index].function(code,
 														 on_shmem_exit_list[on_shmem_exit_index].arg);
 	on_shmem_exit_index = 0;
+
+	shmem_exit_inprogress = false;
 }
 
 /* ----------------------------------------------------------------

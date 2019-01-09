@@ -297,6 +297,13 @@ NATURAL FULL JOIN
     (SELECT name, n as s3_n FROM t3) as s3
   ) ss2;
 
+-- Constants as join keys can also be problematic
+SELECT * FROM
+  (SELECT name, n as s1_n FROM t1) as s1
+FULL JOIN
+  (SELECT name, 2 as s2_n FROM t2) as s2
+ON (s1_n = s2_n);
+
 
 -- Test for propagation of nullability constraints into sub-joins
 
@@ -670,6 +677,26 @@ create temp table a (i integer);
 create temp table b (x integer, y integer);
 
 select * from a left join b on i = x and i = y and x = i;
+
+rollback;
+
+--
+-- test handling of merge clauses using record_ops
+--
+begin;
+
+create type mycomptype as (id int, v bigint);
+
+create temp table tidv (idv mycomptype);
+create index on tidv (idv);
+
+explain (costs off)
+select a.idv, b.idv from tidv a, tidv b where a.idv = b.idv;
+
+set enable_mergejoin = 0;
+
+explain (costs off)
+select a.idv, b.idv from tidv a, tidv b where a.idv = b.idv;
 
 rollback;
 

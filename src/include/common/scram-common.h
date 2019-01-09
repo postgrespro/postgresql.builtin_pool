@@ -3,7 +3,7 @@
  * scram-common.h
  *		Declarations for helper functions used for SCRAM authentication
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/common/scram-common.h
@@ -18,10 +18,6 @@
 /* Name of SCRAM mechanisms per IANA */
 #define SCRAM_SHA_256_NAME "SCRAM-SHA-256"
 #define SCRAM_SHA_256_PLUS_NAME "SCRAM-SHA-256-PLUS"	/* with channel binding */
-
-/* Channel binding types */
-#define SCRAM_CHANNEL_BINDING_TLS_UNIQUE    "tls-unique"
-#define SCRAM_CHANNEL_BINDING_TLS_END_POINT	"tls-server-end-point"
 
 /* Length of SCRAM keys (client and server) */
 #define SCRAM_KEY_LEN				PG_SHA256_DIGEST_LENGTH

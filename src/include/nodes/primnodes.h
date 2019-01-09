@@ -7,7 +7,7 @@
  *	  and join trees.
  *
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/nodes/primnodes.h
@@ -18,7 +18,6 @@
 #define PRIMNODES_H
 
 #include "access/attnum.h"
-#include "access/stratnum.h"
 #include "nodes/bitmapset.h"
 #include "nodes/pg_list.h"
 
@@ -76,12 +75,15 @@ typedef struct RangeVar
 
 /*
  * TableFunc - node for a table function, such as XMLTABLE.
+ *
+ * Entries in the ns_names list are either string Value nodes containing
+ * literal namespace names, or NULL pointers to represent DEFAULT.
  */
 typedef struct TableFunc
 {
 	NodeTag		type;
-	List	   *ns_uris;		/* list of namespace uri */
-	List	   *ns_names;		/* list of namespace names */
+	List	   *ns_uris;		/* list of namespace URI expressions */
+	List	   *ns_names;		/* list of namespace names or NULL */
 	Node	   *docexpr;		/* input document expression */
 	Node	   *rowexpr;		/* row filter expression */
 	List	   *colnames;		/* column names (list of String) */
@@ -932,8 +934,20 @@ typedef struct CaseWhen
  * This is effectively like a Param, but can be implemented more simply
  * since we need only one replacement value at a time.
  *
- * We also use this in nested UPDATE expressions.
- * See transformAssignmentIndirection().
+ * We also abuse this node type for some other purposes, including:
+ *	* Placeholder for the current array element value in ArrayCoerceExpr;
+ *	  see build_coercion_expression().
+ *	* Nested FieldStore/ArrayRef assignment expressions in INSERT/UPDATE;
+ *	  see transformAssignmentIndirection().
+ *
+ * The uses in CaseExpr and ArrayCoerceExpr are safe only to the extent that
+ * there is not any other CaseExpr or ArrayCoerceExpr between the value source
+ * node and its child CaseTestExpr(s).  This is true in the parse analysis
+ * output, but the planner's function-inlining logic has to be careful not to
+ * break it.
+ *
+ * The nested-assignment-expression case is safe because the only node types
+ * that can be above such CaseTestExprs are FieldStore and ArrayRef.
  */
 typedef struct CaseTestExpr
 {
@@ -1506,102 +1520,5 @@ typedef struct OnConflictExpr
 	int			exclRelIndex;	/* RT index of 'excluded' relation */
 	List	   *exclRelTlist;	/* tlist of the EXCLUDED pseudo relation */
 } OnConflictExpr;
-
-
-/*
- * Node types to represent a partition pruning step.
- */
-
-/*
- * The base Node type.  step_id is the global identifier of a given step
- * within a given pruning context.
- */
-typedef struct PartitionPruneStep
-{
-	NodeTag		type;
-	int			step_id;
-} PartitionPruneStep;
-
-/*----------
- * PartitionPruneStepOp - Information to prune using a set of mutually AND'd
- *							OpExpr clauses
- *
- * This contains information extracted from up to partnatts OpExpr clauses,
- * where partnatts is the number of partition key columns.  'opstrategy' is the
- * strategy of the operator in the clause matched to the last partition key.
- * 'exprs' contains expressions which comprise the lookup key to be passed to
- * the partition bound search function.  'cmpfns' contains the OIDs of
- * comparison function used to compare aforementioned expressions with
- * partition bounds.  Both 'exprs' and 'cmpfns' contain the same number of
- * items up to partnatts items.
- *
- * Once we find the offset of a partition bound using the lookup key, we
- * determine which partitions to include in the result based on the value of
- * 'opstrategy'.  For example, if it were equality, we'd return just the
- * partition that would contain that key or a set of partitions if the key
- * didn't consist of all partitioning columns.  For non-equality strategies,
- * we'd need to include other partitions as appropriate.
- *
- * 'nullkeys' is the set containing the offset of the partition keys (0 to
- * partnatts - 1) that were matched to an IS NULL clause.  This is only
- * considered for hash partitioning as we need to pass which keys are null
- * to the hash partition bound search function.  It is never possible to
- * have an expression be present in 'exprs' for a given partition key and
- * the corresponding bit set in 'nullkeys'.
- *----------
- */
-typedef struct PartitionPruneStepOp
-{
-	PartitionPruneStep step;
-
-	StrategyNumber opstrategy;
-	List	   *exprs;
-	List	   *cmpfns;
-	Bitmapset  *nullkeys;
-} PartitionPruneStepOp;
-
-/*----------
- * PartitionPruneStepCombine - Information to prune using a BoolExpr clause
- *
- * For BoolExpr clauses, we combine the set of partitions determined for each
- * of its argument clauses.
- *----------
- */
-typedef enum PartitionPruneCombineOp
-{
-	PARTPRUNE_COMBINE_UNION,
-	PARTPRUNE_COMBINE_INTERSECT
-} PartitionPruneCombineOp;
-
-typedef struct PartitionPruneStepCombine
-{
-	PartitionPruneStep step;
-
-	PartitionPruneCombineOp combineOp;
-	List	   *source_stepids;
-} PartitionPruneStepCombine;
-
-/*----------
- * PartitionPruneInfo - Details required to allow the executor to prune
- * partitions.
- *
- * Here we store mapping details to allow translation of a partitioned table's
- * index into subnode indexes for node types which support arbitrary numbers
- * of sub nodes, such as Append.
- *----------
- */
-typedef struct PartitionPruneInfo
-{
-	NodeTag		type;
-	Oid			reloid;			/* Oid of partition rel */
-	List	   *pruning_steps;	/* List of PartitionPruneStep */
-	Bitmapset  *present_parts;	/* Indexes of all partitions which subnodes
-								 * are present for. */
-	int			nparts;			/* The length of the following two arrays */
-	int		   *subnode_map;	/* subnode index by partition id, or -1 */
-	int		   *subpart_map;	/* subpart index by partition id, or -1 */
-	Bitmapset  *extparams;		/* All external paramids seen in prunesteps */
-	Bitmapset  *execparams;		/* All exec paramids seen in prunesteps */
-} PartitionPruneInfo;
 
 #endif							/* PRIMNODES_H */

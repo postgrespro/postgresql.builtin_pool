@@ -449,6 +449,38 @@ SELECT t1.x, sum(t1.y), count(*) FROM pagg_tab1 t1, pagg_tab2 t2 WHERE t1.x = t2
  24 |  900 |   100
 (5 rows)
 
+-- Check with whole-row reference; partitionwise aggregation does not apply
+EXPLAIN (COSTS OFF)
+SELECT t1.x, sum(t1.y), count(t1) FROM pagg_tab1 t1, pagg_tab2 t2 WHERE t1.x = t2.y GROUP BY t1.x ORDER BY 1, 2, 3;
+                         QUERY PLAN                          
+-------------------------------------------------------------
+ Sort
+   Sort Key: t1.x, (sum(t1.y)), (count(((t1.*)::pagg_tab1)))
+   ->  HashAggregate
+         Group Key: t1.x
+         ->  Hash Join
+               Hash Cond: (t1.x = t2.y)
+               ->  Append
+                     ->  Seq Scan on pagg_tab1_p1 t1
+                     ->  Seq Scan on pagg_tab1_p2 t1_1
+                     ->  Seq Scan on pagg_tab1_p3 t1_2
+               ->  Hash
+                     ->  Append
+                           ->  Seq Scan on pagg_tab2_p1 t2
+                           ->  Seq Scan on pagg_tab2_p2 t2_1
+                           ->  Seq Scan on pagg_tab2_p3 t2_2
+(15 rows)
+
+SELECT t1.x, sum(t1.y), count(t1) FROM pagg_tab1 t1, pagg_tab2 t2 WHERE t1.x = t2.y GROUP BY t1.x ORDER BY 1, 2, 3;
+ x  | sum  | count 
+----+------+-------
+  0 |  500 |   100
+  6 | 1100 |   100
+ 12 |  700 |   100
+ 18 | 1300 |   100
+ 24 |  900 |   100
+(5 rows)
+
 -- GROUP BY having other matching key
 EXPLAIN (COSTS OFF)
 SELECT t2.y, sum(t1.y), count(*) FROM pagg_tab1 t1, pagg_tab2 t2 WHERE t1.x = t2.y GROUP BY t2.y ORDER BY 1, 2, 3;
@@ -1393,4 +1425,109 @@ SELECT y, sum(x), avg(x), count(*) FROM pagg_tab_para GROUP BY y HAVING avg(x) <
  10 | 15000 | 10.0000000000000000 |  1500
  11 | 16500 | 11.0000000000000000 |  1500
 (4 rows)
+
+-- Test when parent can produce parallel paths but not any (or some) of its children
+ALTER TABLE pagg_tab_para_p1 SET (parallel_workers = 0);
+ALTER TABLE pagg_tab_para_p3 SET (parallel_workers = 0);
+ANALYZE pagg_tab_para;
+EXPLAIN (COSTS OFF)
+SELECT x, sum(y), avg(y), count(*) FROM pagg_tab_para GROUP BY x HAVING avg(y) < 7 ORDER BY 1, 2, 3;
+                                      QUERY PLAN                                      
+--------------------------------------------------------------------------------------
+ Sort
+   Sort Key: pagg_tab_para_p1.x, (sum(pagg_tab_para_p1.y)), (avg(pagg_tab_para_p1.y))
+   ->  Finalize GroupAggregate
+         Group Key: pagg_tab_para_p1.x
+         Filter: (avg(pagg_tab_para_p1.y) < '7'::numeric)
+         ->  Gather Merge
+               Workers Planned: 2
+               ->  Sort
+                     Sort Key: pagg_tab_para_p1.x
+                     ->  Partial HashAggregate
+                           Group Key: pagg_tab_para_p1.x
+                           ->  Parallel Append
+                                 ->  Seq Scan on pagg_tab_para_p1
+                                 ->  Seq Scan on pagg_tab_para_p3
+                                 ->  Parallel Seq Scan on pagg_tab_para_p2
+(15 rows)
+
+SELECT x, sum(y), avg(y), count(*) FROM pagg_tab_para GROUP BY x HAVING avg(y) < 7 ORDER BY 1, 2, 3;
+ x  | sum  |        avg         | count 
+----+------+--------------------+-------
+  0 | 5000 | 5.0000000000000000 |  1000
+  1 | 6000 | 6.0000000000000000 |  1000
+ 10 | 5000 | 5.0000000000000000 |  1000
+ 11 | 6000 | 6.0000000000000000 |  1000
+ 20 | 5000 | 5.0000000000000000 |  1000
+ 21 | 6000 | 6.0000000000000000 |  1000
+(6 rows)
+
+ALTER TABLE pagg_tab_para_p2 SET (parallel_workers = 0);
+ANALYZE pagg_tab_para;
+EXPLAIN (COSTS OFF)
+SELECT x, sum(y), avg(y), count(*) FROM pagg_tab_para GROUP BY x HAVING avg(y) < 7 ORDER BY 1, 2, 3;
+                                      QUERY PLAN                                      
+--------------------------------------------------------------------------------------
+ Sort
+   Sort Key: pagg_tab_para_p1.x, (sum(pagg_tab_para_p1.y)), (avg(pagg_tab_para_p1.y))
+   ->  Finalize GroupAggregate
+         Group Key: pagg_tab_para_p1.x
+         Filter: (avg(pagg_tab_para_p1.y) < '7'::numeric)
+         ->  Gather Merge
+               Workers Planned: 2
+               ->  Sort
+                     Sort Key: pagg_tab_para_p1.x
+                     ->  Partial HashAggregate
+                           Group Key: pagg_tab_para_p1.x
+                           ->  Parallel Append
+                                 ->  Seq Scan on pagg_tab_para_p1
+                                 ->  Seq Scan on pagg_tab_para_p2
+                                 ->  Seq Scan on pagg_tab_para_p3
+(15 rows)
+
+SELECT x, sum(y), avg(y), count(*) FROM pagg_tab_para GROUP BY x HAVING avg(y) < 7 ORDER BY 1, 2, 3;
+ x  | sum  |        avg         | count 
+----+------+--------------------+-------
+  0 | 5000 | 5.0000000000000000 |  1000
+  1 | 6000 | 6.0000000000000000 |  1000
+ 10 | 5000 | 5.0000000000000000 |  1000
+ 11 | 6000 | 6.0000000000000000 |  1000
+ 20 | 5000 | 5.0000000000000000 |  1000
+ 21 | 6000 | 6.0000000000000000 |  1000
+(6 rows)
+
+-- Reset parallelism parameters to get partitionwise aggregation plan.
+RESET min_parallel_table_scan_size;
+RESET parallel_setup_cost;
+EXPLAIN (COSTS OFF)
+SELECT x, sum(y), avg(y), count(*) FROM pagg_tab_para GROUP BY x HAVING avg(y) < 7 ORDER BY 1, 2, 3;
+                                      QUERY PLAN                                      
+--------------------------------------------------------------------------------------
+ Sort
+   Sort Key: pagg_tab_para_p1.x, (sum(pagg_tab_para_p1.y)), (avg(pagg_tab_para_p1.y))
+   ->  Append
+         ->  HashAggregate
+               Group Key: pagg_tab_para_p1.x
+               Filter: (avg(pagg_tab_para_p1.y) < '7'::numeric)
+               ->  Seq Scan on pagg_tab_para_p1
+         ->  HashAggregate
+               Group Key: pagg_tab_para_p2.x
+               Filter: (avg(pagg_tab_para_p2.y) < '7'::numeric)
+               ->  Seq Scan on pagg_tab_para_p2
+         ->  HashAggregate
+               Group Key: pagg_tab_para_p3.x
+               Filter: (avg(pagg_tab_para_p3.y) < '7'::numeric)
+               ->  Seq Scan on pagg_tab_para_p3
+(15 rows)
+
+SELECT x, sum(y), avg(y), count(*) FROM pagg_tab_para GROUP BY x HAVING avg(y) < 7 ORDER BY 1, 2, 3;
+ x  | sum  |        avg         | count 
+----+------+--------------------+-------
+  0 | 5000 | 5.0000000000000000 |  1000
+  1 | 6000 | 6.0000000000000000 |  1000
+ 10 | 5000 | 5.0000000000000000 |  1000
+ 11 | 6000 | 6.0000000000000000 |  1000
+ 20 | 5000 | 5.0000000000000000 |  1000
+ 21 | 6000 | 6.0000000000000000 |  1000
+(6 rows)
 

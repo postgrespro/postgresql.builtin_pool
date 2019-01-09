@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2001-2018, PostgreSQL Global Development Group
+# Copyright (c) 2001-2019, PostgreSQL Global Development Group
 #
 # src/backend/utils/mb/Unicode/convutils.pm
 
@@ -99,6 +99,7 @@ sub print_conversion_tables
 		$charset);
 	print_conversion_tables_direction($this_script, $csname, TO_UNICODE,
 		$charset);
+	return;
 }
 
 #############################################################################
@@ -160,6 +161,7 @@ sub print_conversion_tables_direction
 	}
 
 	close($out);
+	return;
 }
 
 sub print_from_utf8_combined_map
@@ -194,6 +196,7 @@ sub print_from_utf8_combined_map
 	}
 	print $out "\t/* $last_comment */" if ($verbose && $last_comment ne "");
 	print $out "\n};\n";
+	return;
 }
 
 sub print_to_utf8_combined_map
@@ -230,6 +233,7 @@ sub print_to_utf8_combined_map
 	}
 	print $out "\t/* $last_comment */" if ($verbose && $last_comment ne "");
 	print $out "\n};\n";
+	return;
 }
 
 #######################################################################
@@ -256,18 +260,18 @@ sub print_radix_table
 	{
 		my $out = $c->{$in};
 
-		if ($in < 0x100)
+		if ($in <= 0xff)
 		{
 			$b1map{$in} = $out;
 		}
-		elsif ($in < 0x10000)
+		elsif ($in <= 0xffff)
 		{
 			my $b1 = $in >> 8;
 			my $b2 = $in & 0xff;
 
 			$b2map{$b1}{$b2} = $out;
 		}
-		elsif ($in < 0x1000000)
+		elsif ($in <= 0xffffff)
 		{
 			my $b1 = $in >> 16;
 			my $b2 = ($in >> 8) & 0xff;
@@ -275,7 +279,7 @@ sub print_radix_table
 
 			$b3map{$b1}{$b2}{$b3} = $out;
 		}
-		elsif ($in < 0x100000000)
+		elsif ($in <= 0xffffffff)
 		{
 			my $b1 = $in >> 24;
 			my $b2 = ($in >> 16) & 0xff;
@@ -625,6 +629,7 @@ sub print_radix_table
 	if ($off != $tblsize) { die "table size didn't match!"; }
 
 	print $out "};\n";
+	return;
 }
 
 ###

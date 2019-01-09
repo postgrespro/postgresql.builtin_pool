@@ -42,7 +42,6 @@
 <!ENTITY manage-ag     SYSTEM "manage-ag.sgml">
 <!ENTITY monitoring    SYSTEM "monitoring.sgml">
 <!ENTITY regress       SYSTEM "regress.sgml">
-<!ENTITY recovery-config SYSTEM "recovery-config.sgml">
 <!ENTITY runtime       SYSTEM "runtime.sgml">
 <!ENTITY config        SYSTEM "config.sgml">
 <!ENTITY user-manag    SYSTEM "user-manag.sgml">
@@ -166,6 +165,7 @@
 <!ENTITY sourcerepo SYSTEM "sourcerepo.sgml">
 
 <!ENTITY release    SYSTEM "release.sgml">
+<!ENTITY release-12     SYSTEM "release-12.sgml">
 <!ENTITY release-11     SYSTEM "release-11.sgml">
 <!ENTITY release-10     SYSTEM "release-10.sgml">
 <!ENTITY release-9.6    SYSTEM "release-9.6.sgml">
@@ -183,6 +183,7 @@
 <!ENTITY release-7.4    SYSTEM "release-7.4.sgml">
 <!ENTITY release-old    SYSTEM "release-old.sgml">
 
+<!ENTITY limits     SYSTEM "limits.sgml">
 <!ENTITY acronyms   SYSTEM "acronyms.sgml">
 
 <!ENTITY features-supported   SYSTEM "features-supported.sgml">

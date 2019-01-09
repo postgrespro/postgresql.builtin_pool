@@ -3,11 +3,11 @@
  * relfilenodemap.c
  *	  relfilenode to oid mapping cache.
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
- *	  src/backend/utils/cache/relfilenode.c
+ *	  src/backend/utils/cache/relfilenodemap.c
  *
  *-------------------------------------------------------------------------
  */
@@ -29,7 +29,7 @@
 #include "utils/relfilenodemap.h"
 #include "utils/relmapper.h"
 
-/* Hash table for informations about each relfilenode <-> oid pair */
+/* Hash table for information about each relfilenode <-> oid pair */
 static HTAB *RelfilenodeMapHash = NULL;
 
 /* built first time through in InitializeRelfilenodeMap */
@@ -212,29 +212,17 @@ RelidByRelfilenode(Oid reltablespace, Oid relfilenode)
 
 		while (HeapTupleIsValid(ntp = systable_getnext(scandesc)))
 		{
+			Form_pg_class classform = (Form_pg_class) GETSTRUCT(ntp);
+
 			if (found)
 				elog(ERROR,
 					 "unexpected duplicate for tablespace %u, relfilenode %u",
 					 reltablespace, relfilenode);
 			found = true;
 
-#ifdef USE_ASSERT_CHECKING
-			{
-				bool		isnull;
-				Oid			check;
-
-				check = fastgetattr(ntp, Anum_pg_class_reltablespace,
-									RelationGetDescr(relation),
-									&isnull);
-				Assert(!isnull && check == reltablespace);
-
-				check = fastgetattr(ntp, Anum_pg_class_relfilenode,
-									RelationGetDescr(relation),
-									&isnull);
-				Assert(!isnull && check == relfilenode);
-			}
-#endif
-			relid = HeapTupleGetOid(ntp);
+			Assert(classform->reltablespace == reltablespace);
+			Assert(classform->relfilenode == relfilenode);
+			relid = classform->oid;
 		}
 
 		systable_endscan(scandesc);

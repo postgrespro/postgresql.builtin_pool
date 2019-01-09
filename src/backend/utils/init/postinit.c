@@ -3,7 +3,7 @@
  * postinit.c
  *	  postgres initialization utilities
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -146,7 +146,7 @@ GetDatabaseTupleByOid(Oid dboid)
 	 * form a scan key
 	 */
 	ScanKeyInit(&key[0],
-				ObjectIdAttributeNumber,
+				Anum_pg_database_oid,
 				BTEqualStrategyNumber, F_OIDEQ,
 				ObjectIdGetDatum(dboid));
 
@@ -249,34 +249,56 @@ PerformAuthentication(Port *port)
 #ifdef USE_SSL
 			if (port->ssl_in_use)
 				ereport(LOG,
-						(errmsg("replication connection authorized: user=%s SSL enabled (protocol=%s, cipher=%s, bits=%d, compression=%s)",
-								port->user_name,
-								be_tls_get_version(port),
-								be_tls_get_cipher(port),
-								be_tls_get_cipher_bits(port),
-								be_tls_get_compression(port) ? _("on") : _("off"))));
+						(port->application_name != NULL
+						 ? errmsg("replication connection authorized: user=%s application_name=%s SSL enabled (protocol=%s, cipher=%s, bits=%d, compression=%s)",
+								  port->user_name,
+								  port->application_name,
+								  be_tls_get_version(port),
+								  be_tls_get_cipher(port),
+								  be_tls_get_cipher_bits(port),
+								  be_tls_get_compression(port) ? _("on") : _("off"))
+						 : errmsg("replication connection authorized: user=%s SSL enabled (protocol=%s, cipher=%s, bits=%d, compression=%s)",
+								  port->user_name,
+								  be_tls_get_version(port),
+								  be_tls_get_cipher(port),
+								  be_tls_get_cipher_bits(port),
+								  be_tls_get_compression(port) ? _("on") : _("off"))));
 			else
 #endif
 				ereport(LOG,
-						(errmsg("replication connection authorized: user=%s",
-								port->user_name)));
+						(port->application_name != NULL
+						 ? errmsg("replication connection authorized: user=%s application_name=%s",
+								  port->user_name,
+								  port->application_name)
+						 : errmsg("replication connection authorized: user=%s",
+								  port->user_name)));
 		}
 		else
 		{
 #ifdef USE_SSL
 			if (port->ssl_in_use)
 				ereport(LOG,
-						(errmsg("connection authorized: user=%s database=%s SSL enabled (protocol=%s, cipher=%s, bits=%d, compression=%s)",
-								port->user_name, port->database_name,
-								be_tls_get_version(port),
-								be_tls_get_cipher(port),
-								be_tls_get_cipher_bits(port),
-								be_tls_get_compression(port) ? _("on") : _("off"))));
+						(port->application_name != NULL
+						 ? errmsg("connection authorized: user=%s database=%s application_name=%s SSL enabled (protocol=%s, cipher=%s, bits=%d, compression=%s)",
+								  port->user_name, port->database_name, port->application_name,
+								  be_tls_get_version(port),
+								  be_tls_get_cipher(port),
+								  be_tls_get_cipher_bits(port),
+								  be_tls_get_compression(port) ? _("on") : _("off"))
+						 : errmsg("connection authorized: user=%s database=%s SSL enabled (protocol=%s, cipher=%s, bits=%d, compression=%s)",
+								  port->user_name, port->database_name,
+								  be_tls_get_version(port),
+								  be_tls_get_cipher(port),
+								  be_tls_get_cipher_bits(port),
+								  be_tls_get_compression(port) ? _("on") : _("off"))));
 			else
 #endif
 				ereport(LOG,
-						(errmsg("connection authorized: user=%s database=%s",
-								port->user_name, port->database_name)));
+						(port->application_name != NULL
+						 ? errmsg("connection authorized: user=%s database=%s application_name=%s",
+								  port->user_name, port->database_name, port->application_name)
+						 : errmsg("connection authorized: user=%s database=%s",
+								  port->user_name, port->database_name)));
 		}
 	}
 
@@ -632,8 +654,19 @@ InitPostgres(const char *in_dbname, Oid dboid, const char *username,
 		 * We are either a bootstrap process or a standalone backend. Either
 		 * way, start up the XLOG machinery, and register to have it closed
 		 * down at exit.
+		 *
+		 * We don't yet have an aux-process resource owner, but StartupXLOG
+		 * and ShutdownXLOG will need one.  Hence, create said resource owner
+		 * (and register a callback to clean it up after ShutdownXLOG runs).
 		 */
+		CreateAuxProcessResourceOwner();
+
 		StartupXLOG();
+		/* Release (and warn about) any buffer pins leaked in StartupXLOG */
+		ReleaseAuxProcessResources(true);
+		/* Reset CurrentResourceOwner to nothing for the moment */
+		CurrentResourceOwner = NULL;
+
 		on_shmem_exit(ShutdownXLOG, 0);
 	}
 
@@ -852,7 +885,7 @@ InitPostgres(const char *in_dbname, Oid dboid, const char *username,
 					(errcode(ERRCODE_UNDEFINED_DATABASE),
 					 errmsg("database \"%s\" does not exist", in_dbname)));
 		dbform = (Form_pg_database) GETSTRUCT(tuple);
-		MyDatabaseId = HeapTupleGetOid(tuple);
+		MyDatabaseId = dbform->oid;
 		MyDatabaseTableSpace = dbform->dattablespace;
 		/* take database name from the caller, just for paranoia */
 		strlcpy(dbname, in_dbname, sizeof(dbname));
@@ -869,7 +902,7 @@ InitPostgres(const char *in_dbname, Oid dboid, const char *username,
 					(errcode(ERRCODE_UNDEFINED_DATABASE),
 					 errmsg("database %u does not exist", dboid)));
 		dbform = (Form_pg_database) GETSTRUCT(tuple);
-		MyDatabaseId = HeapTupleGetOid(tuple);
+		MyDatabaseId = dbform->oid;
 		MyDatabaseTableSpace = dbform->dattablespace;
 		Assert(MyDatabaseId == dboid);
 		strlcpy(dbname, NameStr(dbform->datname), sizeof(dbname));
@@ -951,7 +984,7 @@ InitPostgres(const char *in_dbname, Oid dboid, const char *username,
 
 		tuple = GetDatabaseTuple(dbname);
 		if (!HeapTupleIsValid(tuple) ||
-			MyDatabaseId != HeapTupleGetOid(tuple) ||
+			MyDatabaseId != ((Form_pg_database) GETSTRUCT(tuple))->oid ||
 			MyDatabaseTableSpace != ((Form_pg_database) GETSTRUCT(tuple))->dattablespace)
 			ereport(FATAL,
 					(errcode(ERRCODE_UNDEFINED_DATABASE),

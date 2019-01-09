@@ -4,7 +4,7 @@
  *	  header file for postgres vacuum cleaner and statistics analyzer
  *
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/commands/vacuum.h
@@ -15,6 +15,7 @@
 #define VACUUM_H
 
 #include "access/htup.h"
+#include "catalog/pg_class.h"
 #include "catalog/pg_statistic.h"
 #include "catalog/pg_type.h"
 #include "nodes/parsenodes.h"
@@ -51,9 +52,11 @@
  * careful to allocate any pointed-to data in anl_context, which will NOT
  * be CurrentMemoryContext when compute_stats is called.
  *
- * Note: for the moment, all comparisons done for statistical purposes
- * should use the database's default collation (DEFAULT_COLLATION_OID).
- * This might change in some future release.
+ * Note: all comparisons done for statistical purposes should use the
+ * underlying column's collation (attcollation), except in situations
+ * where a noncollatable container type contains a collatable type;
+ * in that case use the type's default collation.  Be sure to record
+ * the appropriate collation in stacoll.
  *----------
  */
 typedef struct VacAttrStats *VacAttrStatsP;
@@ -77,11 +80,13 @@ typedef struct VacAttrStats
 	 * because some index opclasses store a different type than the underlying
 	 * column/expression.  Instead use attrtypid, attrtypmod, and attrtype for
 	 * information about the datatype being fed to the typanalyze function.
+	 * Likewise, use attrcollid not attr->attcollation.
 	 */
 	Form_pg_attribute attr;		/* copy of pg_attribute row for column */
 	Oid			attrtypid;		/* type of data being analyzed */
 	int32		attrtypmod;		/* typmod of data being analyzed */
 	Form_pg_type attrtype;		/* copy of pg_type row for attrtypid */
+	Oid			attrcollid;		/* collation of data being analyzed */
 	MemoryContext anl_context;	/* where to save long-lived data */
 
 	/*
@@ -102,6 +107,7 @@ typedef struct VacAttrStats
 	float4		stadistinct;	/* # distinct values */
 	int16		stakind[STATISTIC_NUM_SLOTS];
 	Oid			staop[STATISTIC_NUM_SLOTS];
+	Oid			stacoll[STATISTIC_NUM_SLOTS];
 	int			numnumbers[STATISTIC_NUM_SLOTS];
 	float4	   *stanumbers[STATISTIC_NUM_SLOTS];
 	int			numvalues[STATISTIC_NUM_SLOTS];
@@ -185,6 +191,10 @@ extern void vacuum_set_xid_limits(Relation rel,
 					  MultiXactId *mxactFullScanLimit);
 extern void vac_update_datfrozenxid(void);
 extern void vacuum_delay_point(void);
+extern bool vacuum_is_relation_owner(Oid relid, Form_pg_class reltuple,
+						 int options);
+extern Relation vacuum_open_relation(Oid relid, RangeVar *relation,
+					 VacuumParams *params, int options, LOCKMODE lmode);
 
 /* in commands/vacuumlazy.c */
 extern void lazy_vacuum_rel(Relation onerel, int options,

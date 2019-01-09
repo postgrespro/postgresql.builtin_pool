@@ -38,6 +38,8 @@ our @EXPORT = qw(
 # The second argument is a complementary connection string.
 sub test_connect_ok
 {
+	local $Test::Builder::Level = $Test::Builder::Level + 1;
+
 	my ($common_connstr, $connstr, $test_name) = @_;
 
 	my $cmd = [
@@ -47,10 +49,13 @@ sub test_connect_ok
 	];
 
 	command_ok($cmd, $test_name);
+	return;
 }
 
 sub test_connect_fails
 {
+	local $Test::Builder::Level = $Test::Builder::Level + 1;
+
 	my ($common_connstr, $connstr, $expected_stderr, $test_name) = @_;
 
 	my $cmd = [
@@ -60,6 +65,7 @@ sub test_connect_fails
 	];
 
 	command_fails_like($cmd, $expected_stderr, $test_name);
+	return;
 }
 
 # Copy a set of files, taking into account wildcards
@@ -75,6 +81,7 @@ sub copy_files
 		copy($orig_file, "$dest/$base_file")
 		  or die "Could not copy $orig_file to $dest";
 	}
+	return;
 }
 
 sub configure_test_server_for_ssl
@@ -130,6 +137,8 @@ sub configure_test_server_for_ssl
 
 	# Change pg_hba after restart because hostssl requires ssl=on
 	configure_hba_for_ssl($node, $serverhost, $authmethod);
+
+	return;
 }
 
 # Change the configuration to use given server cert file, and reload
@@ -150,6 +159,7 @@ sub switch_server_cert
 	close $sslconf;
 
 	$node->restart;
+	return;
 }
 
 sub configure_hba_for_ssl
@@ -173,4 +183,7 @@ sub configure_hba_for_ssl
 	print $hba
 	  "hostssl certdb          all             ::1/128                 cert\n";
 	close $hba;
+	return;
 }
+
+1;

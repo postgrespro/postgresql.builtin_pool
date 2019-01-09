@@ -3,7 +3,7 @@
  * fmgrtab.h
  *	  The function manager's table of internal functions.
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/utils/fmgrtab.h
@@ -25,10 +25,10 @@
 typedef struct
 {
 	Oid			foid;			/* OID of the function */
-	const char *funcName;		/* C name of the function */
 	short		nargs;			/* 0..FUNC_MAX_ARGS, or -1 if variable count */
 	bool		strict;			/* T if function is "strict" */
 	bool		retset;			/* T if function returns a set */
+	const char *funcName;		/* C name of the function */
 	PGFunction	func;			/* pointer to compiled function */
 } FmgrBuiltin;
 
@@ -41,6 +41,6 @@ extern const int fmgr_nbuiltins;	/* number of entries in table */
  * array.
  */
 #define InvalidOidBuiltinMapping PG_UINT16_MAX
-extern const uint16 fmgr_builtin_oid_index[FirstBootstrapObjectId];
+extern const uint16 fmgr_builtin_oid_index[FirstGenbkiObjectId];
 
 #endif							/* FMGRTAB_H */

@@ -3,7 +3,7 @@
  * fe-auth-scram.c
  *	   The front-end (client) implementation of SCRAM authentication.
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -19,11 +19,6 @@
 #include "common/scram-common.h"
 #include "fe-auth.h"
 
-/* These are needed for getpid(), in the fallback implementation */
-#ifndef HAVE_STRONG_RANDOM
-#include <sys/types.h>
-#include <unistd.h>
-#endif
 
 /*
  * Status of exchange messages used for SCRAM authentication via the
@@ -72,7 +67,6 @@ static bool verify_server_signature(fe_scram_state *state);
 static void calculate_client_proof(fe_scram_state *state,
 					   const char *client_final_message_without_proof,
 					   uint8 *result);
-static bool pg_frontend_random(char *dst, int len);
 
 /*
  * Initialize SCRAM exchange status.
@@ -320,7 +314,7 @@ build_client_first_message(fe_scram_state *state)
 	 * Generate a "raw" nonce.  This is converted to ASCII-printable form by
 	 * base64-encoding it.
 	 */
-	if (!pg_frontend_random(raw_nonce, SCRAM_RAW_NONCE_LEN))
+	if (!pg_strong_random(raw_nonce, SCRAM_RAW_NONCE_LEN))
 	{
 		printfPQExpBuffer(&conn->errorMessage,
 						  libpq_gettext("could not generate nonce\n"));
@@ -352,17 +346,9 @@ build_client_first_message(fe_scram_state *state)
 	if (strcmp(state->sasl_mechanism, SCRAM_SHA_256_PLUS_NAME) == 0)
 	{
 		Assert(conn->ssl_in_use);
-		appendPQExpBuffer(&buf, "p=%s", conn->scram_channel_binding);
+		appendPQExpBuffer(&buf, "p=tls-server-end-point");
 	}
-	else if (conn->scram_channel_binding == NULL ||
-			 strlen(conn->scram_channel_binding) == 0)
-	{
-		/*
-		 * Client has chosen to not show to server that it supports channel
-		 * binding.
-		 */
-		appendPQExpBuffer(&buf, "n");
-	}
+#ifdef HAVE_PGTLS_GET_PEER_CERTIFICATE_HASH
 	else if (conn->ssl_in_use)
 	{
 		/*
@@ -370,6 +356,7 @@ build_client_first_message(fe_scram_state *state)
 		 */
 		appendPQExpBuffer(&buf, "y");
 	}
+#endif
 	else
 	{
 		/*
@@ -432,60 +419,28 @@ build_client_final_message(fe_scram_state *state)
 	 */
 	if (strcmp(state->sasl_mechanism, SCRAM_SHA_256_PLUS_NAME) == 0)
 	{
+#ifdef HAVE_PGTLS_GET_PEER_CERTIFICATE_HASH
 		char	   *cbind_data = NULL;
 		size_t		cbind_data_len = 0;
 		size_t		cbind_header_len;
 		char	   *cbind_input;
 		size_t		cbind_input_len;
 
-		if (strcmp(conn->scram_channel_binding, SCRAM_CHANNEL_BINDING_TLS_UNIQUE) == 0)
+		/* Fetch hash data of server's SSL certificate */
+		cbind_data =
+			pgtls_get_peer_certificate_hash(state->conn,
+											&cbind_data_len);
+		if (cbind_data == NULL)
 		{
-#ifdef USE_SSL
-			cbind_data = pgtls_get_finished(state->conn, &cbind_data_len);
-			if (cbind_data == NULL)
-				goto oom_error;
-#endif
-		}
-		else if (strcmp(conn->scram_channel_binding,
-						SCRAM_CHANNEL_BINDING_TLS_END_POINT) == 0)
-		{
-			/* Fetch hash data of server's SSL certificate */
-#ifdef USE_SSL
-			cbind_data =
-				pgtls_get_peer_certificate_hash(state->conn,
-												&cbind_data_len);
-			if (cbind_data == NULL)
-			{
-				/* error message is already set on error */
-				return NULL;
-			}
-#endif
-		}
-		else
-		{
-			/* should not happen */
+			/* error message is already set on error */
 			termPQExpBuffer(&buf);
-			printfPQExpBuffer(&conn->errorMessage,
-							  libpq_gettext("invalid channel binding type\n"));
-			return NULL;
-		}
-
-		/* should not happen */
-		if (cbind_data == NULL || cbind_data_len == 0)
-		{
-			if (cbind_data != NULL)
-				free(cbind_data);
-			termPQExpBuffer(&buf);
-			printfPQExpBuffer(&conn->errorMessage,
-							  libpq_gettext("empty channel binding data for channel binding type \"%s\"\n"),
-							  conn->scram_channel_binding);
 			return NULL;
 		}
 
 		appendPQExpBuffer(&buf, "c=");
 
 		/* p=type,, */
-		cbind_header_len = 4 + strlen(conn->scram_channel_binding);
+		cbind_header_len = strlen("p=tls-server-end-point,,");
 		cbind_input_len = cbind_header_len + cbind_data_len;
 		cbind_input = malloc(cbind_input_len);
 		if (!cbind_input)
@@ -493,8 +448,7 @@ build_client_final_message(fe_scram_state *state)
 			free(cbind_data);
 			goto oom_error;
 		}
-		snprintf(cbind_input, cbind_input_len, "p=%s,,",
-				 conn->scram_channel_binding);
+		memcpy(cbind_input, "p=tls-server-end-point,,", cbind_header_len);
 		memcpy(cbind_input + cbind_header_len, cbind_data, cbind_data_len);
 
 		if (!enlargePQExpBuffer(&buf, pg_b64_enc_len(cbind_input_len)))
@@ -508,12 +462,21 @@ build_client_final_message(fe_scram_state *state)
 
 		free(cbind_data);
 		free(cbind_input);
+#else
+		/*
+		 * Chose channel binding, but the SSL library doesn't support it.
+		 * Shouldn't happen.
+		 */
+		termPQExpBuffer(&buf);
+		printfPQExpBuffer(&conn->errorMessage,
+						  "channel binding not supported by this build\n");
+		return NULL;
+#endif							/* HAVE_PGTLS_GET_PEER_CERTIFICATE_HASH */
 	}
-	else if (conn->scram_channel_binding == NULL ||
-			 strlen(conn->scram_channel_binding) == 0)
-		appendPQExpBuffer(&buf, "c=biws");	/* base64 of "n,," */
+#ifdef HAVE_PGTLS_GET_PEER_CERTIFICATE_HASH
 	else if (conn->ssl_in_use)
 		appendPQExpBuffer(&buf, "c=eSws");	/* base64 of "y,," */
+#endif
 	else
 		appendPQExpBuffer(&buf, "c=biws");	/* base64 of "n,," */
 
@@ -778,7 +741,7 @@ verify_server_signature(fe_scram_state *state)
 char *
 pg_fe_scram_build_verifier(const char *password)
 {
-	char	   *prep_password = NULL;
+	char	   *prep_password;
 	pg_saslprep_rc rc;
 	char		saltbuf[SCRAM_DEFAULT_SALT_LEN];
 	char	   *result;
@@ -795,7 +758,7 @@ pg_fe_scram_build_verifier(const char *password)
 		password = (const char *) prep_password;
 
 	/* Generate a random salt */
-	if (!pg_frontend_random(saltbuf, SCRAM_DEFAULT_SALT_LEN))
+	if (!pg_strong_random(saltbuf, SCRAM_DEFAULT_SALT_LEN))
 	{
 		if (prep_password)
 			free(prep_password);
@@ -809,56 +772,4 @@ pg_fe_scram_build_verifier(const char *password)
 		free(prep_password);
 
 	return result;
-}
-
-/*
- * Random number generator.
- */
-static bool
-pg_frontend_random(char *dst, int len)
-{
-#ifdef HAVE_STRONG_RANDOM
-	return pg_strong_random(dst, len);
-#else
-	int			i;
-	char	   *end = dst + len;
-
-	static unsigned short seed[3];
-	static int	mypid = 0;
-
-	pglock_thread();
-
-	if (mypid != getpid())
-	{
-		struct timeval now;
-
-		gettimeofday(&now, NULL);
-
-		seed[0] = now.tv_sec ^ getpid();
-		seed[1] = (unsigned short) (now.tv_usec);
-		seed[2] = (unsigned short) (now.tv_usec >> 16);
-	}
-
-	for (i = 0; dst < end; i++)
-	{
-		uint32		r;
-		int			j;
-
-		/*
-		 * pg_jrand48 returns a 32-bit integer.  Fill the next 4 bytes from
-		 * it.
-		 */
-		r = (uint32) pg_jrand48(seed);
-
-		for (j = 0; j < 4 && dst < end; j++)
-		{
-			*(dst++) = (char) (r & 0xFF);
-			r >>= 8;
-		}
-	}
-
-	pgunlock_thread();
-
-	return true;
-#endif
 }

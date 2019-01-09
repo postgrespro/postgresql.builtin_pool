@@ -421,18 +421,8 @@ select sillyaddone(42);
           43
 (1 row)
 
-alter table mutable drop column f1;
-alter table mutable add column f1 float8;
--- currently, this fails due to cached plan for "r.f1 + 1" expression
--- select sillyaddone(42);
-\c -
--- but it's OK after a reconnect
-select sillyaddone(42);
- sillyaddone 
--------------
-          43
-(1 row)
-
+-- test for change of type of column f1 should be here someday;
+-- for now see plpgsql_cache test
 alter table mutable drop column f1;
 select sillyaddone(42);  -- fail
 ERROR:  record "r" has no field "f1"

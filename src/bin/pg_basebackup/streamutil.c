@@ -1,11 +1,11 @@
 /*-------------------------------------------------------------------------
  *
  * streamutil.c - utility functions for pg_basebackup, pg_receivewal and
- * 					pg_recvlogical
+ *					pg_recvlogical
  *
  * Author: Magnus Hagander <magnus@hagander.net>
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *		  src/bin/pg_basebackup/streamutil.c
@@ -336,7 +336,9 @@ RetrieveWalSegSize(PGconn *conn)
 	if (!IsValidWalSegSize(WalSegSz))
 	{
 		fprintf(stderr,
-				_("%s: WAL segment size must be a power of two between 1MB and 1GB, but the remote server reported a value of %d bytes\n"),
+				ngettext("%s: WAL segment size must be a power of two between 1 MB and 1 GB, but the remote server reported a value of %d byte\n",
+						 "%s: WAL segment size must be a power of two between 1 MB and 1 GB, but the remote server reported a value of %d bytes\n",
+						 WalSegSz),
 				progname, WalSegSz);
 		return false;
 	}

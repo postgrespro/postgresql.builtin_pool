@@ -2,7 +2,7 @@
 #
 # Makefile for src/test/ssl
 #
-# Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+# Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
 # Portions Copyright (c) 1994, Regents of the University of California
 #
 # src/test/ssl/Makefile
@@ -32,14 +32,14 @@ SSLFILES := $(CERTIFICATES:%=ssl/%.key) $(CERTIFICATES:%=ssl/%.crt) \
 # This target generates all the key and certificate files.
 sslfiles: $(SSLFILES)
 
-# Openssl requires a directory to put all generated certificates in. We don't
+# OpenSSL requires a directory to put all generated certificates in. We don't
 # use this for anything, but we need a location.
 ssl/new_certs_dir:
 	mkdir ssl/new_certs_dir
 
 # Rule for creating private/public key pairs.
 ssl/%.key:
-	openssl genrsa -out $@ 1024
+	openssl genrsa -out $@ 2048
 	chmod 0600 $@
 
 # Root CA certificate

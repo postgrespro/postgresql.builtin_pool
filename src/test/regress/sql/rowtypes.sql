@@ -346,6 +346,26 @@ select text(row('Jim', 'Beam'));  -- error
 select (row('Jim', 'Beam')).text;  -- error
 
 --
+-- Check the equivalence of functional and column notation
+--
+insert into fullname values ('Joe', 'Blow');
+
+select f.last from fullname f;
+select last(f) from fullname f;
+
+create function longname(fullname) returns text language sql
+as $$select $1.first || ' ' || $1.last$$;
+
+select f.longname from fullname f;
+select longname(f) from fullname f;
+
+-- Starting in v11, the notational form does matter if there's ambiguity
+alter table fullname add column longname text;
+
+select f.longname from fullname f;
+select longname(f) from fullname f;
+
+--
 -- Test that composite values are seen to have the correct column names
 -- (bug #11210 and other reports)
 --
@@ -422,15 +442,15 @@ select r, r is null as isnull, r is not null as isnotnull from r;
 --
 -- Tests for component access / FieldSelect
 --
-CREATE TABLE compositetable(a text, b text) WITH OIDS;
+CREATE TABLE compositetable(a text, b text);
 INSERT INTO compositetable(a, b) VALUES('fa', 'fb');
 
 -- composite type columns can't directly be accessed (error)
 SELECT d.a FROM (SELECT compositetable AS d FROM compositetable) s;
 -- but can be accessed with proper parens
 SELECT (d).a, (d).b FROM (SELECT compositetable AS d FROM compositetable) s;
--- oids can't be accessed in composite types (error)
-SELECT (d).oid FROM (SELECT compositetable AS d FROM compositetable) s;
+-- system columns can't be accessed in composite types (error)
+SELECT (d).ctid FROM (SELECT compositetable AS d FROM compositetable) s;
 
 -- accessing non-existing column in NULL datum errors out
 SELECT (NULL::compositetable).nonexistant;

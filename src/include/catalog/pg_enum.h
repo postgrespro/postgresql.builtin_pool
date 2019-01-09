@@ -4,7 +4,7 @@
  *	  definition of the "enum" system catalog (pg_enum)
  *
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/catalog/pg_enum.h
@@ -30,6 +30,7 @@
  */
 CATALOG(pg_enum,3501,EnumRelationId)
 {
+	Oid			oid;			/* oid */
 	Oid			enumtypid;		/* OID of owning enum type */
 	float4		enumsortorder;	/* sort position of this enum value */
 	NameData	enumlabel;		/* text representation of enum value */
@@ -52,5 +53,10 @@ extern void AddEnumLabel(Oid enumTypeOid, const char *newVal,
 			 bool skipIfExists);
 extern void RenameEnumLabel(Oid enumTypeOid,
 				const char *oldVal, const char *newVal);
+extern bool EnumBlacklisted(Oid enum_id);
+extern Size EstimateEnumBlacklistSpace(void);
+extern void SerializeEnumBlacklist(void *space, Size size);
+extern void RestoreEnumBlacklist(void *space);
+extern void AtEOXact_Enum(void);
 
 #endif							/* PG_ENUM_H */

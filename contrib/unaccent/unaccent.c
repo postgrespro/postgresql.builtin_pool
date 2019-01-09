@@ -3,7 +3,7 @@
  * unaccent.c
  *	  Text search unaccent dictionary
  *
- * Copyright (c) 2009-2018, PostgreSQL Global Development Group
+ * Copyright (c) 2009-2019, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *	  contrib/unaccent/unaccent.c
@@ -14,13 +14,16 @@
 #include "postgres.h"
 
 #include "catalog/namespace.h"
+#include "catalog/pg_ts_dict.h"
 #include "commands/defrem.h"
 #include "lib/stringinfo.h"
 #include "tsearch/ts_cache.h"
 #include "tsearch/ts_locale.h"
 #include "tsearch/ts_public.h"
 #include "utils/builtins.h"
+#include "utils/lsyscache.h"
 #include "utils/regproc.h"
+#include "utils/syscache.h"
 
 PG_MODULE_MAGIC;
 
@@ -376,7 +379,21 @@ unaccent_dict(PG_FUNCTION_ARGS)
 
 	if (PG_NARGS() == 1)
 	{
-		dictOid = get_ts_dict_oid(stringToQualifiedNameList("unaccent"), false);
+		/*
+		 * Use the "unaccent" dictionary that is in the same schema that this
+		 * function is in.
+		 */
+		Oid			procnspid = get_func_namespace(fcinfo->flinfo->fn_oid);
+		const char *dictname = "unaccent";
+
+		dictOid = GetSysCacheOid2(TSDICTNAMENSP, Anum_pg_ts_dict_oid,
+								  PointerGetDatum(dictname),
+								  ObjectIdGetDatum(procnspid));
+		if (!OidIsValid(dictOid))
+			ereport(ERROR,
+					(errcode(ERRCODE_UNDEFINED_OBJECT),
+					 errmsg("text search dictionary \"%s.%s\" does not exist",
+							get_namespace_name(procnspid), dictname)));
 		strArg = 0;
 	}
 	else

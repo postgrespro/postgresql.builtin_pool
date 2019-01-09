@@ -3,7 +3,7 @@
  * nodeLimit.c
  *	  Routines to handle limiting of query results where appropriate
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -134,6 +134,14 @@ ExecLimit(PlanState *pstate)
 					node->position - node->offset >= node->count)
 				{
 					node->lstate = LIMIT_WINDOWEND;
+
+					/*
+					 * If we know we won't need to back up, we can release
+					 * resources at this point.
+					 */
+					if (!(node->ps.state->es_top_eflags & EXEC_FLAG_BACKWARD))
+						(void) ExecShutdownNode(outerPlan);
+
 					return NULL;
 				}
 
@@ -368,10 +376,13 @@ ExecInitLimit(Limit *node, EState *estate, int eflags)
 										  (PlanState *) limitstate);
 
 	/*
-	 * Initialize result slot and type. (XXX not actually used, but upper
-	 * nodes access it to get this node's result tupledesc...)
+	 * Initialize result type.
 	 */
-	ExecInitResultTupleSlotTL(estate, &limitstate->ps);
+	ExecInitResultTypeTL(&limitstate->ps);
+
+	limitstate->ps.resultopsset = true;
+	limitstate->ps.resultops = ExecGetResultSlotOps(outerPlanState(limitstate),
+													&limitstate->ps.resultopsfixed);
 
 	/*
 	 * limit nodes do no projections, so initialize projection info for this

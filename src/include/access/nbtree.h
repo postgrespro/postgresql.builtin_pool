@@ -4,7 +4,7 @@
  *	  header file for postgres btree access method implementation.
  *
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/access/nbtree.h
@@ -103,7 +103,7 @@ typedef struct BTMetaPageData
 	BlockNumber btm_fastroot;	/* current "fast" root location */
 	uint32		btm_fastlevel;	/* tree level of the "fast" root page */
 	/* following fields are available since page version 3 */
-	TransactionId btm_oldest_btpo_xact; /* oldest btpo_xact among of deleted
+	TransactionId btm_oldest_btpo_xact; /* oldest btpo_xact among all deleted
 										 * pages */
 	float8		btm_last_cleanup_num_heap_tuples;	/* number of heap tuples
 													 * during last cleanup */
@@ -274,8 +274,7 @@ typedef struct BTMetaPageData
  *	When a new operator class is declared, we require that the user
  *	supply us with an amproc procedure (BTORDER_PROC) for determining
  *	whether, for two keys a and b, a < b, a = b, or a > b.  This routine
- *	must return < 0, 0, > 0, respectively, in these three cases.  (It must
- *	not return INT_MIN, since we may negate the result before using it.)
+ *	must return < 0, 0, > 0, respectively, in these three cases.
  *
  *	To facilitate accelerated sorting, an operator class may choose to
  *	offer a second procedure (BTSORTSUPPORT_PROC).  For full details, see

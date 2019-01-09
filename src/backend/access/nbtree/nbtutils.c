@@ -3,7 +3,7 @@
  * nbtutils.c
  *	  Utility code for Postgres btree implementation.
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -518,7 +518,7 @@ _bt_compare_array_elements(const void *a, const void *b, void *arg)
 											  cxt->collation,
 											  da, db));
 	if (cxt->reverse)
-		compare = -compare;
+		INVERT_COMPARE_RESULT(compare);
 	return compare;
 }
 
@@ -1652,7 +1652,7 @@ _bt_check_rowcompare(ScanKey skey, IndexTuple tuple, TupleDesc tupdesc,
 													subkey->sk_argument));
 
 		if (subkey->sk_flags & SK_BT_DESC)
-			cmpresult = -cmpresult;
+			INVERT_COMPARE_RESULT(cmpresult);
 
 		/* Done comparing if unequal, else advance to next column */
 		if (cmpresult != 0)
@@ -2196,8 +2196,8 @@ _bt_check_natts(Relation rel, Page page, OffsetNumber offnum)
 			 * non-zero, or when there is no explicit representation and the
 			 * tuple is evidently not a pre-pg_upgrade tuple.
 			 *
-			 * Prior to v11, downlinks always had P_HIKEY as their offset.
-			 * Use that to decide if the tuple is a pre-v11 tuple.
+			 * Prior to v11, downlinks always had P_HIKEY as their offset. Use
+			 * that to decide if the tuple is a pre-v11 tuple.
 			 */
 			return BTreeTupleGetNAtts(itup, rel) == 0 ||
 				((itup->t_info & INDEX_ALT_TID_MASK) == 0 &&

@@ -4,7 +4,7 @@
  *	  prototypes for catalog/index.c.
  *
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/catalog/index.h
@@ -40,7 +40,8 @@ typedef enum
 
 extern void index_check_primary_key(Relation heapRel,
 						IndexInfo *indexInfo,
-						bool is_alter_table);
+						bool is_alter_table,
+						IndexStmt *stmt);
 
 #define	INDEX_CREATE_IS_PRIMARY				(1 << 0)
 #define	INDEX_CREATE_ADD_CONSTRAINT			(1 << 1)

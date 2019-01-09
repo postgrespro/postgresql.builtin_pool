@@ -7,7 +7,7 @@
  * common code for calling set-returning functions according to the
  * ReturnSetInfo API.
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -260,7 +260,7 @@ ExecMakeTableFunctionResult(SetExprState *setexpr,
 				rsinfo.setResult = tupstore;
 				if (!returnsTuple)
 				{
-					tupdesc = CreateTemplateTupleDesc(1, false);
+					tupdesc = CreateTemplateTupleDesc(1);
 					TupleDescInitEntry(tupdesc,
 									   (AttrNumber) 1,
 									   "column",
@@ -521,7 +521,7 @@ restart:
 			{
 				/* We must return the whole tuple as a Datum. */
 				*isNull = false;
-				return ExecFetchSlotTupleDatum(fcache->funcResultSlot);
+				return ExecFetchSlotHeapTupleDatum(fcache->funcResultSlot);
 			}
 			else
 			{
@@ -746,7 +746,7 @@ init_sexpr(Oid foid, Oid input_collation, Expr *node,
 		else if (functypclass == TYPEFUNC_SCALAR)
 		{
 			/* Base data type, i.e. scalar */
-			tupdesc = CreateTemplateTupleDesc(1, false);
+			tupdesc = CreateTemplateTupleDesc(1);
 			TupleDescInitEntry(tupdesc,
 							   (AttrNumber) 1,
 							   NULL,
@@ -873,7 +873,8 @@ ExecPrepareTuplestoreResult(SetExprState *sexpr,
 			slotDesc = NULL;	/* keep compiler quiet */
 		}
 
-		sexpr->funcResultSlot = MakeSingleTupleTableSlot(slotDesc);
+		sexpr->funcResultSlot = MakeSingleTupleTableSlot(slotDesc,
+														 &TTSOpsMinimalTuple);
 		MemoryContextSwitchTo(oldcontext);
 	}
 

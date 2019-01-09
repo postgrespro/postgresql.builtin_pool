@@ -3,7 +3,7 @@
  * fmgr.c
  *	  The Postgres function manager.
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -75,7 +75,7 @@ fmgr_isbuiltin(Oid id)
 	uint16		index;
 
 	/* fast lookup only possible if original oid still assigned */
-	if (id >= FirstBootstrapObjectId)
+	if (id >= FirstGenbkiObjectId)
 		return NULL;
 
 	/*
@@ -529,7 +529,7 @@ fetch_finfo_record(void *filehandle, const char *funcname)
 static CFuncHashTabEntry *
 lookup_C_func(HeapTuple procedureTuple)
 {
-	Oid			fn_oid = HeapTupleGetOid(procedureTuple);
+	Oid			fn_oid = ((Form_pg_proc) GETSTRUCT(procedureTuple))->oid;
 	CFuncHashTabEntry *entry;
 
 	if (CFuncHash == NULL)
@@ -554,7 +554,7 @@ static void
 record_C_func(HeapTuple procedureTuple,
 			  PGFunction user_fn, const Pg_finfo_record *inforec)
 {
-	Oid			fn_oid = HeapTupleGetOid(procedureTuple);
+	Oid			fn_oid =  ((Form_pg_proc) GETSTRUCT(procedureTuple))->oid;
 	CFuncHashTabEntry *entry;
 	bool		found;
 

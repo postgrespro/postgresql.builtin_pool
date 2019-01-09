@@ -3,7 +3,7 @@
  * parse_relation.c
  *	  parser support routines dealing with relations
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -28,6 +28,7 @@
 #include "parser/parse_enr.h"
 #include "parser/parse_relation.h"
 #include "parser/parse_type.h"
+#include "storage/lmgr.h"
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
@@ -1208,15 +1209,22 @@ addRangeTableEntry(ParseState *pstate,
 	rte->alias = alias;
 
 	/*
-	 * Get the rel's OID.  This access also ensures that we have an up-to-date
-	 * relcache entry for the rel.  Since this is typically the first access
-	 * to a rel in a statement, be careful to get the right access level
-	 * depending on whether we're doing SELECT FOR UPDATE/SHARE.
+	 * Identify the type of lock we'll need on this relation.  It's not the
+	 * query's target table (that case is handled elsewhere), so we need
+	 * either RowShareLock if it's locked by FOR UPDATE/SHARE, or plain
+	 * AccessShareLock otherwise.
 	 */
 	lockmode = isLockedRefname(pstate, refname) ? RowShareLock : AccessShareLock;
+
+	/*
+	 * Get the rel's OID.  This access also ensures that we have an up-to-date
+	 * relcache entry for the rel.  Since this is typically the first access
+	 * to a rel in a statement, we must open the rel with the proper lockmode.
+	 */
 	rel = parserOpenTable(pstate, relation, lockmode);
 	rte->relid = RelationGetRelid(rel);
 	rte->relkind = rel->rd_rel->relkind;
+	rte->rellockmode = lockmode;
 
 	/*
 	 * Build the list of effective column names using user-supplied aliases
@@ -1262,10 +1270,20 @@ addRangeTableEntry(ParseState *pstate,
  *
  * This is just like addRangeTableEntry() except that it makes an RTE
  * given an already-open relation instead of a RangeVar reference.
+ *
+ * lockmode is the lock type required for query execution; it must be one
+ * of AccessShareLock, RowShareLock, or RowExclusiveLock depending on the
+ * RTE's role within the query.  The caller must hold that lock mode
+ * or a stronger one.
+ *
+ * Note: properly, lockmode should be declared LOCKMODE not int, but that
+ * would require importing storage/lock.h into parse_relation.h.  Since
+ * LOCKMODE is typedef'd as int anyway, that seems like overkill.
  */
 RangeTblEntry *
 addRangeTableEntryForRelation(ParseState *pstate,
 							  Relation rel,
+							  int lockmode,
 							  Alias *alias,
 							  bool inh,
 							  bool inFromCl)
@@ -1275,10 +1293,16 @@ addRangeTableEntryForRelation(ParseState *pstate,
 
 	Assert(pstate != NULL);
 
+	Assert(lockmode == AccessShareLock ||
+		   lockmode == RowShareLock ||
+		   lockmode == RowExclusiveLock);
+	Assert(CheckRelationLockedByMe(rel, lockmode, true));
+
 	rte->rtekind = RTE_RELATION;
 	rte->alias = alias;
 	rte->relid = RelationGetRelid(rel);
 	rte->relkind = rel->rd_rel->relkind;
+	rte->rellockmode = lockmode;
 
 	/*
 	 * Build the list of effective column names using user-supplied aliases
@@ -1335,7 +1359,6 @@ addRangeTableEntryForSubquery(ParseState *pstate,
 	Assert(pstate != NULL);
 
 	rte->rtekind = RTE_SUBQUERY;
-	rte->relid = InvalidOid;
 	rte->subquery = subquery;
 	rte->alias = alias;
 
@@ -1505,7 +1528,7 @@ addRangeTableEntryForFunction(ParseState *pstate,
 		else if (functypclass == TYPEFUNC_SCALAR)
 		{
 			/* Base data type, i.e. scalar */
-			tupdesc = CreateTemplateTupleDesc(1, false);
+			tupdesc = CreateTemplateTupleDesc(1);
 			TupleDescInitEntry(tupdesc,
 							   (AttrNumber) 1,
 							   chooseScalarFunctionAlias(funcexpr, funcname,
@@ -1522,7 +1545,7 @@ addRangeTableEntryForFunction(ParseState *pstate,
 			 * Use the column definition list to construct a tupdesc and fill
 			 * in the RangeTblFunction's lists.
 			 */
-			tupdesc = CreateTemplateTupleDesc(list_length(coldeflist), false);
+			tupdesc = CreateTemplateTupleDesc(list_length(coldeflist));
 			i = 1;
 			foreach(col, coldeflist)
 			{
@@ -1596,7 +1619,7 @@ addRangeTableEntryForFunction(ParseState *pstate,
 			totalatts++;
 
 		/* Merge the tuple descs of each function into a composite one */
-		tupdesc = CreateTemplateTupleDesc(totalatts, false);
+		tupdesc = CreateTemplateTupleDesc(totalatts);
 		natts = 0;
 		for (i = 0; i < nfuncs; i++)
 		{
@@ -3090,10 +3113,7 @@ attnameAttNum(Relation rd, const char *attname, bool sysColOK)
 	if (sysColOK)
 	{
 		if ((i = specialAttNum(attname)) != InvalidAttrNumber)
-		{
-			if (i != ObjectIdAttributeNumber || rd->rd_rel->relhasoids)
-				return i;
-		}
+			return i;
 	}
 
 	/* on failure */
@@ -3102,20 +3122,18 @@ attnameAttNum(Relation rd, const char *attname, bool sysColOK)
 
 /* specialAttNum()
  *
- * Check attribute name to see if it is "special", e.g. "oid".
+ * Check attribute name to see if it is "special", e.g. "xmin".
  * - thomas 2000-02-07
  *
  * Note: this only discovers whether the name could be a system attribute.
- * Caller needs to verify that it really is an attribute of the rel,
- * at least in the case of "oid", which is now optional.
+ * Caller needs to ensure that it really is an attribute of the rel.
  */
 static int
 specialAttNum(const char *attname)
 {
-	Form_pg_attribute sysatt;
+	const FormData_pg_attribute *sysatt;
 
-	sysatt = SystemAttributeByName(attname,
-								   true /* "oid" will be accepted */ );
+	sysatt = SystemAttributeByName(attname);
 	if (sysatt != NULL)
 		return sysatt->attnum;
 	return InvalidAttrNumber;
@@ -3129,14 +3147,14 @@ specialAttNum(const char *attname)
  *	heap_open()'ed.  Use the cache version get_atttype()
  *	for access to non-opened relations.
  */
-Name
+const NameData *
 attnumAttName(Relation rd, int attid)
 {
 	if (attid <= 0)
 	{
-		Form_pg_attribute sysatt;
+		const FormData_pg_attribute *sysatt;
 
-		sysatt = SystemAttributeDefinition(attid, rd->rd_rel->relhasoids);
+		sysatt = SystemAttributeDefinition(attid);
 		return &sysatt->attname;
 	}
 	if (attid > rd->rd_att->natts)
@@ -3156,9 +3174,9 @@ attnumTypeId(Relation rd, int attid)
 {
 	if (attid <= 0)
 	{
-		Form_pg_attribute sysatt;
+		const FormData_pg_attribute *sysatt;
 
-		sysatt = SystemAttributeDefinition(attid, rd->rd_rel->relhasoids);
+		sysatt = SystemAttributeDefinition(attid);
 		return sysatt->atttypid;
 	}
 	if (attid > rd->rd_att->natts)

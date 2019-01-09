@@ -11,7 +11,7 @@
  * so for all external functions, all the referenced functions (and
  * prerequisites) will be imorted.
  *
- * Copyright (c) 2016-2018, PostgreSQL Global Development Group
+ * Copyright (c) 2016-2019, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *	  src/backend/lib/llvmjit/llvmjit_inline.c
@@ -286,14 +286,6 @@ llvm_build_inline_plan(llvm::Module *mod)
 
 			Assert(!funcDef->isDeclaration());
 			Assert(funcDef->hasExternalLinkage());
-
-			/* don't inline functions marked as noinline */
-			if (funcDef->getAttributes().hasFnAttribute(llvm::Attribute::NoInline))
-			{
-				ilog(DEBUG1, "ineligibile to import %s due to noinline",
-					 symbolName.data());
-				continue;
-			}
 
 			llvm::StringSet<> importVars;
 			llvm::SmallPtrSet<const llvm::Function *, 8> visitedFunctions;
@@ -599,6 +591,13 @@ function_inlinable(llvm::Function &F,
 
 	if (F.materialize())
 		elog(FATAL, "failed to materialize metadata");
+
+	if (F.getAttributes().hasFnAttribute(llvm::Attribute::NoInline))
+	{
+		ilog(DEBUG1, "ineligibile to import %s due to noinline",
+			 F.getName().data());
+		return false;
+	}
 
 	function_references(F, running_instcount, referencedVars, referencedFunctions);
 

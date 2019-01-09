@@ -3,7 +3,7 @@
  * varlena.c
  *	  Functions for the variable-length built-in types.
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -69,7 +69,7 @@ typedef struct
 	int			last_returned;	/* Last comparison result (cache) */
 	bool		cache_blob;		/* Does buf2 contain strxfrm() blob, etc? */
 	bool		collate_c;
-	bool		bpchar;			/* Sorting bpchar, not varchar/text/bytea? */
+	Oid			typeid;			/* Actual datatype (text/bpchar/bytea/name) */
 	hyperLogLogState abbr_card; /* Abbreviated key cardinality state */
 	hyperLogLogState full_card; /* Full key cardinality state */
 	double		prop_card;		/* Required cardinality proportion */
@@ -93,7 +93,10 @@ typedef struct
 
 static int	varstrfastcmp_c(Datum x, Datum y, SortSupport ssup);
 static int	bpcharfastcmp_c(Datum x, Datum y, SortSupport ssup);
-static int	varstrfastcmp_locale(Datum x, Datum y, SortSupport ssup);
+static int	namefastcmp_c(Datum x, Datum y, SortSupport ssup);
+static int	varlenafastcmp_locale(Datum x, Datum y, SortSupport ssup);
+static int	namefastcmp_locale(Datum x, Datum y, SortSupport ssup);
+static int	varstrfastcmp_locale(char *a1p, int len1, char *a2p, int len2, SortSupport ssup);
 static int	varstrcmp_abbrev(Datum x, Datum y, SortSupport ssup);
 static Datum varstr_abbrev_convert(Datum original, SortSupport ssup);
 static bool varstr_abbrev_abort(int memtupcount, SortSupport ssup);
@@ -182,7 +185,7 @@ char *
 text_to_cstring(const text *t)
 {
 	/* must cast away the const, unfortunately */
-	text	   *tunpacked = pg_detoast_datum_packed((struct varlena *) t);
+	text	   *tunpacked = pg_detoast_datum_packed(unconstify(text *, t));
 	int			len = VARSIZE_ANY_EXHDR(tunpacked);
 	char	   *result;
 
@@ -213,7 +216,7 @@ void
 text_to_cstring_buffer(const text *src, char *dst, size_t dst_len)
 {
 	/* must cast away the const, unfortunately */
-	text	   *srcunpacked = pg_detoast_datum_packed((struct varlena *) src);
+	text	   *srcunpacked = pg_detoast_datum_packed(unconstify(text *, src));
 	size_t		src_len = VARSIZE_ANY_EXHDR(srcunpacked);
 
 	if (dst_len > 0)
@@ -1814,7 +1817,7 @@ bttextsortsupport(PG_FUNCTION_ARGS)
 	oldcontext = MemoryContextSwitchTo(ssup->ssup_cxt);
 
 	/* Use generic string SortSupport */
-	varstr_sortsupport(ssup, collid, false);
+	varstr_sortsupport(ssup, TEXTOID, collid);
 
 	MemoryContextSwitchTo(oldcontext);
 
@@ -1832,7 +1835,7 @@ bttextsortsupport(PG_FUNCTION_ARGS)
  * this will not work with any other collation, though.
  */
 void
-varstr_sortsupport(SortSupport ssup, Oid collid, bool bpchar)
+varstr_sortsupport(SortSupport ssup, Oid typeid, Oid collid)
 {
 	bool		abbreviate = ssup->abbreviate;
 	bool		collate_c = false;
@@ -1845,18 +1848,25 @@ varstr_sortsupport(SortSupport ssup, Oid collid, bool bpchar)
 	 * overhead of a trip through the fmgr layer for every comparison, which
 	 * can be substantial.
 	 *
-	 * Most typically, we'll set the comparator to varstrfastcmp_locale, which
-	 * uses strcoll() to perform comparisons and knows about the special
-	 * requirements of BpChar callers.  However, if LC_COLLATE = C, we can
-	 * make things quite a bit faster with varstrfastcmp_c or bpcharfastcmp_c,
-	 * both of which use memcmp() rather than strcoll().
+	 * Most typically, we'll set the comparator to varlenafastcmp_locale,
+	 * which uses strcoll() to perform comparisons.  We use that for the
+	 * BpChar case too, but type NAME uses namefastcmp_locale. However, if
+	 * LC_COLLATE = C, we can make things quite a bit faster with
+	 * varstrfastcmp_c, bpcharfastcmp_c, or namefastcmp_c, all of which use
+	 * memcmp() rather than strcoll().
 	 */
 	if (lc_collate_is_c(collid))
 	{
-		if (!bpchar)
-			ssup->comparator = varstrfastcmp_c;
-		else
+		if (typeid == BPCHAROID)
 			ssup->comparator = bpcharfastcmp_c;
+		else if (typeid == NAMEOID)
+		{
+			ssup->comparator = namefastcmp_c;
+			/* Not supporting abbreviation with type NAME, for now */
+			abbreviate = false;
+		}
+		else
+			ssup->comparator = varstrfastcmp_c;
 
 		collate_c = true;
 	}
@@ -1897,7 +1907,17 @@ varstr_sortsupport(SortSupport ssup, Oid collid, bool bpchar)
 			return;
 #endif
 
-		ssup->comparator = varstrfastcmp_locale;
+		/*
+		 * We use varlenafastcmp_locale except for type NAME.
+		 */
+		if (typeid == NAMEOID)
+		{
+			ssup->comparator = namefastcmp_locale;
+			/* Not supporting abbreviation with type NAME, for now */
+			abbreviate = false;
+		}
+		else
+			ssup->comparator = varlenafastcmp_locale;
 	}
 
 	/*
@@ -1963,7 +1983,7 @@ varstr_sortsupport(SortSupport ssup, Oid collid, bool bpchar)
 		 */
 		sss->cache_blob = true;
 		sss->collate_c = collate_c;
-		sss->bpchar = bpchar;
+		sss->typeid = typeid;
 		ssup->ssup_extra = sss;
 
 		/*
@@ -2055,17 +2075,25 @@ bpcharfastcmp_c(Datum x, Datum y, SortSupport ssup)
 }
 
 /*
- * sortsupport comparison func (for locale case)
+ * sortsupport comparison func (for NAME C locale case)
  */
 static int
-varstrfastcmp_locale(Datum x, Datum y, SortSupport ssup)
+namefastcmp_c(Datum x, Datum y, SortSupport ssup)
+{
+	Name		arg1 = DatumGetName(x);
+	Name		arg2 = DatumGetName(y);
+
+	return strncmp(NameStr(*arg1), NameStr(*arg2), NAMEDATALEN);
+}
+
+/*
+ * sortsupport comparison func (for locale case with all varlena types)
+ */
+static int
+varlenafastcmp_locale(Datum x, Datum y, SortSupport ssup)
 {
 	VarString  *arg1 = DatumGetVarStringPP(x);
 	VarString  *arg2 = DatumGetVarStringPP(y);
-	bool		arg1_match;
-	VarStringSortSupport *sss = (VarStringSortSupport *) ssup->ssup_extra;
-
-	/* working state */
 	char	   *a1p,
 			   *a2p;
 	int			len1,
@@ -2077,6 +2105,41 @@ varstrfastcmp_locale(Datum x, Datum y, SortSupport ssup)
 
 	len1 = VARSIZE_ANY_EXHDR(arg1);
 	len2 = VARSIZE_ANY_EXHDR(arg2);
+
+	result = varstrfastcmp_locale(a1p, len1, a2p, len2, ssup);
+
+	/* We can't afford to leak memory here. */
+	if (PointerGetDatum(arg1) != x)
+		pfree(arg1);
+	if (PointerGetDatum(arg2) != y)
+		pfree(arg2);
+
+	return result;
+}
+
+/*
+ * sortsupport comparison func (for locale case with NAME type)
+ */
+static int
+namefastcmp_locale(Datum x, Datum y, SortSupport ssup)
+{
+	Name		arg1 = DatumGetName(x);
+	Name		arg2 = DatumGetName(y);
+
+	return varstrfastcmp_locale(NameStr(*arg1), strlen(NameStr(*arg1)),
+								NameStr(*arg2), strlen(NameStr(*arg2)),
+								ssup);
+}
+
+/*
+ * sortsupport comparison func for locale cases
+ */
+static int
+varstrfastcmp_locale(char *a1p, int len1, char *a2p, int len2, SortSupport ssup)
+{
+	VarStringSortSupport *sss = (VarStringSortSupport *) ssup->ssup_extra;
+	int			result;
+	bool		arg1_match;
 
 	/* Fast pre-check for equality, as discussed in varstr_cmp() */
 	if (len1 == len2 && memcmp(a1p, a2p, len1) == 0)
@@ -2094,11 +2157,10 @@ varstrfastcmp_locale(Datum x, Datum y, SortSupport ssup)
 		 * (not limited to padding), so we need make no distinction between
 		 * padding space characters and "real" space characters.
 		 */
-		result = 0;
-		goto done;
+		return 0;
 	}
 
-	if (sss->bpchar)
+	if (sss->typeid == BPCHAROID)
 	{
 		/* Get true number of bytes, ignoring trailing spaces */
 		len1 = bpchartruelen(a1p, len1);
@@ -2152,8 +2214,7 @@ varstrfastcmp_locale(Datum x, Datum y, SortSupport ssup)
 	else if (arg1_match && !sss->cache_blob)
 	{
 		/* Use result cached following last actual strcoll() call */
-		result = sss->last_returned;
-		goto done;
+		return sss->last_returned;
 	}
 
 	if (sss->locale)
@@ -2222,13 +2283,6 @@ varstrfastcmp_locale(Datum x, Datum y, SortSupport ssup)
 	/* Cache result, perhaps saving an expensive strcoll() call next time */
 	sss->cache_blob = false;
 	sss->last_returned = result;
-done:
-	/* We can't afford to leak memory here. */
-	if (PointerGetDatum(arg1) != x)
-		pfree(arg1);
-	if (PointerGetDatum(arg2) != y)
-		pfree(arg2);
-
 	return result;
 }
 
@@ -2240,7 +2294,7 @@ varstrcmp_abbrev(Datum x, Datum y, SortSupport ssup)
 {
 	/*
 	 * When 0 is returned, the core system will call varstrfastcmp_c()
-	 * (bpcharfastcmp_c() in BpChar case) or varstrfastcmp_locale().  Even a
+	 * (bpcharfastcmp_c() in BpChar case) or varlenafastcmp_locale().  Even a
 	 * strcmp() on two non-truncated strxfrm() blobs cannot indicate *equality*
 	 * authoritatively, for the same reason that there is a strcoll()
 	 * tie-breaker call to strcmp() in varstr_cmp().
@@ -2279,7 +2333,7 @@ varstr_abbrev_convert(Datum original, SortSupport ssup)
 	len = VARSIZE_ANY_EXHDR(authoritative);
 
 	/* Get number of bytes, ignoring trailing spaces */
-	if (sss->bpchar)
+	if (sss->typeid == BPCHAROID)
 		len = bpchartruelen(authoritative_data, len);
 
 	/*
@@ -2640,6 +2694,167 @@ text_smaller(PG_FUNCTION_ARGS)
 
 
 /*
+ * Cross-type comparison functions for types text and name.
+ */
+
+Datum
+nameeqtext(PG_FUNCTION_ARGS)
+{
+	Name		arg1 = PG_GETARG_NAME(0);
+	text	   *arg2 = PG_GETARG_TEXT_PP(1);
+	size_t		len1 = strlen(NameStr(*arg1));
+	size_t		len2 = VARSIZE_ANY_EXHDR(arg2);
+	bool		result;
+
+	result = (len1 == len2 &&
+			  memcmp(NameStr(*arg1), VARDATA_ANY(arg2), len1) == 0);
+
+	PG_FREE_IF_COPY(arg2, 1);
+
+	PG_RETURN_BOOL(result);
+}
+
+Datum
+texteqname(PG_FUNCTION_ARGS)
+{
+	text	   *arg1 = PG_GETARG_TEXT_PP(0);
+	Name		arg2 = PG_GETARG_NAME(1);
+	size_t		len1 = VARSIZE_ANY_EXHDR(arg1);
+	size_t		len2 = strlen(NameStr(*arg2));
+	bool		result;
+
+	result = (len1 == len2 &&
+			  memcmp(VARDATA_ANY(arg1), NameStr(*arg2), len1) == 0);
+
+	PG_FREE_IF_COPY(arg1, 0);
+
+	PG_RETURN_BOOL(result);
+}
+
+Datum
+namenetext(PG_FUNCTION_ARGS)
+{
+	Name		arg1 = PG_GETARG_NAME(0);
+	text	   *arg2 = PG_GETARG_TEXT_PP(1);
+	size_t		len1 = strlen(NameStr(*arg1));
+	size_t		len2 = VARSIZE_ANY_EXHDR(arg2);
+	bool		result;
+
+	result = !(len1 == len2 &&
+			   memcmp(NameStr(*arg1), VARDATA_ANY(arg2), len1) == 0);
+
+	PG_FREE_IF_COPY(arg2, 1);
+
+	PG_RETURN_BOOL(result);
+}
+
+Datum
+textnename(PG_FUNCTION_ARGS)
+{
+	text	   *arg1 = PG_GETARG_TEXT_PP(0);
+	Name		arg2 = PG_GETARG_NAME(1);
+	size_t		len1 = VARSIZE_ANY_EXHDR(arg1);
+	size_t		len2 = strlen(NameStr(*arg2));
+	bool		result;
+
+	result = !(len1 == len2 &&
+			   memcmp(VARDATA_ANY(arg1), NameStr(*arg2), len1) == 0);
+
+	PG_FREE_IF_COPY(arg1, 0);
+
+	PG_RETURN_BOOL(result);
+}
+
+Datum
+btnametextcmp(PG_FUNCTION_ARGS)
+{
+	Name		arg1 = PG_GETARG_NAME(0);
+	text	   *arg2 = PG_GETARG_TEXT_PP(1);
+	int32		result;
+
+	result = varstr_cmp(NameStr(*arg1), strlen(NameStr(*arg1)),
+						VARDATA_ANY(arg2), VARSIZE_ANY_EXHDR(arg2),
+						PG_GET_COLLATION());
+
+	PG_FREE_IF_COPY(arg2, 1);
+
+	PG_RETURN_INT32(result);
+}
+
+Datum
+bttextnamecmp(PG_FUNCTION_ARGS)
+{
+	text	   *arg1 = PG_GETARG_TEXT_PP(0);
+	Name		arg2 = PG_GETARG_NAME(1);
+	int32		result;
+
+	result = varstr_cmp(VARDATA_ANY(arg1), VARSIZE_ANY_EXHDR(arg1),
+						NameStr(*arg2), strlen(NameStr(*arg2)),
+						PG_GET_COLLATION());
+
+	PG_FREE_IF_COPY(arg1, 0);
+
+	PG_RETURN_INT32(result);
+}
+
+#define CmpCall(cmpfunc) \
+	DatumGetInt32(DirectFunctionCall2Coll(cmpfunc, \
+										  PG_GET_COLLATION(), \
+										  PG_GETARG_DATUM(0), \
+										  PG_GETARG_DATUM(1)))
+
+Datum
+namelttext(PG_FUNCTION_ARGS)
+{
+	PG_RETURN_BOOL(CmpCall(btnametextcmp) < 0);
+}
+
+Datum
+nameletext(PG_FUNCTION_ARGS)
+{
+	PG_RETURN_BOOL(CmpCall(btnametextcmp) <= 0);
+}
+
+Datum
+namegttext(PG_FUNCTION_ARGS)
+{
+	PG_RETURN_BOOL(CmpCall(btnametextcmp) > 0);
+}
+
+Datum
+namegetext(PG_FUNCTION_ARGS)
+{
+	PG_RETURN_BOOL(CmpCall(btnametextcmp) >= 0);
+}
+
+Datum
+textltname(PG_FUNCTION_ARGS)
+{
+	PG_RETURN_BOOL(CmpCall(bttextnamecmp) < 0);
+}
+
+Datum
+textlename(PG_FUNCTION_ARGS)
+{
+	PG_RETURN_BOOL(CmpCall(bttextnamecmp) <= 0);
+}
+
+Datum
+textgtname(PG_FUNCTION_ARGS)
+{
+	PG_RETURN_BOOL(CmpCall(bttextnamecmp) > 0);
+}
+
+Datum
+textgename(PG_FUNCTION_ARGS)
+{
+	PG_RETURN_BOOL(CmpCall(bttextnamecmp) >= 0);
+}
+
+#undef CmpCall
+
+
+/*
  * The following operators support character-by-character comparison
  * of text datums, to allow building indexes suitable for LIKE clauses.
  * Note that the regular texteq/textne comparison operators, and regular
@@ -2758,7 +2973,7 @@ bttext_pattern_sortsupport(PG_FUNCTION_ARGS)
 	oldcontext = MemoryContextSwitchTo(ssup->ssup_cxt);
 
 	/* Use generic string SortSupport, forcing "C" collation */
-	varstr_sortsupport(ssup, C_COLLATION_OID, false);
+	varstr_sortsupport(ssup, TEXTOID, C_COLLATION_OID);
 
 	MemoryContextSwitchTo(oldcontext);
 
@@ -3503,6 +3718,118 @@ SplitDirectoriesString(char *rawstring, char separator,
 }
 
 
+/*
+ * SplitGUCList --- parse a string containing identifiers or file names
+ *
+ * This is used to split the value of a GUC_LIST_QUOTE GUC variable, without
+ * presuming whether the elements will be taken as identifiers or file names.
+ * We assume the input has already been through flatten_set_variable_args(),
+ * so that we need never downcase (if appropriate, that was done already).
+ * Nor do we ever truncate, since we don't know the correct max length.
+ * We disallow embedded whitespace for simplicity (it shouldn't matter,
+ * because any embedded whitespace should have led to double-quoting).
+ * Otherwise the API is identical to SplitIdentifierString.
+ *
+ * XXX it's annoying to have so many copies of this string-splitting logic.
+ * However, it's not clear that having one function with a bunch of option
+ * flags would be much better.
+ *
+ * XXX there is a version of this function in src/bin/pg_dump/dumputils.c.
+ * Be sure to update that if you have to change this.
+ *
+ * Inputs:
+ *	rawstring: the input string; must be overwritable!	On return, it's
+ *			   been modified to contain the separated identifiers.
+ *	separator: the separator punctuation expected between identifiers
+ *			   (typically '.' or ',').  Whitespace may also appear around
+ *			   identifiers.
+ * Outputs:
+ *	namelist: filled with a palloc'd list of pointers to identifiers within
+ *			  rawstring.  Caller should list_free() this even on error return.
+ *
+ * Returns true if okay, false if there is a syntax error in the string.
+ */
+bool
+SplitGUCList(char *rawstring, char separator,
+			 List **namelist)
+{
+	char	   *nextp = rawstring;
+	bool		done = false;
+
+	*namelist = NIL;
+
+	while (scanner_isspace(*nextp))
+		nextp++;				/* skip leading whitespace */
+
+	if (*nextp == '\0')
+		return true;			/* allow empty string */
+
+	/* At the top of the loop, we are at start of a new identifier. */
+	do
+	{
+		char	   *curname;
+		char	   *endp;
+
+		if (*nextp == '"')
+		{
+			/* Quoted name --- collapse quote-quote pairs */
+			curname = nextp + 1;
+			for (;;)
+			{
+				endp = strchr(nextp + 1, '"');
+				if (endp == NULL)
+					return false;	/* mismatched quotes */
+				if (endp[1] != '"')
+					break;		/* found end of quoted name */
+				/* Collapse adjacent quotes into one quote, and look again */
+				memmove(endp, endp + 1, strlen(endp));
+				nextp = endp;
+			}
+			/* endp now points at the terminating quote */
+			nextp = endp + 1;
+		}
+		else
+		{
+			/* Unquoted name --- extends to separator or whitespace */
+			curname = nextp;
+			while (*nextp && *nextp != separator &&
+				   !scanner_isspace(*nextp))
+				nextp++;
+			endp = nextp;
+			if (curname == nextp)
+				return false;	/* empty unquoted name not allowed */
+		}
+
+		while (scanner_isspace(*nextp))
+			nextp++;			/* skip trailing whitespace */
+
+		if (*nextp == separator)
+		{
+			nextp++;
+			while (scanner_isspace(*nextp))
+				nextp++;		/* skip leading whitespace for next */
+			/* we expect another name, so done remains false */
+		}
+		else if (*nextp == '\0')
+			done = true;
+		else
+			return false;		/* invalid syntax */
+
+		/* Now safe to overwrite separator with a null */
+		*endp = '\0';
+
+		/*
+		 * Finished isolating current name --- add it to list
+		 */
+		*namelist = lappend(*namelist, curname);
+
+		/* Loop back if we didn't reach end of string */
+	} while (!done);
+
+	return true;
+}
+
+
 /*****************************************************************************
  *	Comparison Functions used for bytea
  *
@@ -3686,7 +4013,7 @@ bytea_sortsupport(PG_FUNCTION_ARGS)
 	oldcontext = MemoryContextSwitchTo(ssup->ssup_cxt);
 
 	/* Use generic string SortSupport, forcing "C" collation */
-	varstr_sortsupport(ssup, C_COLLATION_OID, false);
+	varstr_sortsupport(ssup, BYTEAOID, C_COLLATION_OID);
 
 	MemoryContextSwitchTo(oldcontext);
 
@@ -5155,8 +5482,8 @@ text_format(PG_FUNCTION_ARGS)
 
 				str = OutputFunctionCall(&typoutputinfo_width, value);
 
-				/* pg_atoi will complain about bad data or overflow */
-				width = pg_atoi(str, sizeof(int), '\0');
+				/* pg_strtoint32 will complain about bad data or overflow */
+				width = pg_strtoint32(str);
 
 				pfree(str);
 			}

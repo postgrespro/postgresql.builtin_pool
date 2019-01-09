@@ -4,7 +4,7 @@
  *	  prototypes for planner.c.
  *
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/optimizer/planner.h
@@ -47,12 +47,17 @@ extern bool is_dummy_plan(Plan *plan);
 extern RowMarkType select_rowmark_type(RangeTblEntry *rte,
 					LockClauseStrength strength);
 
+extern bool limit_needed(Query *parse);
+
 extern void mark_partial_aggref(Aggref *agg, AggSplit aggsplit);
 
 extern Path *get_cheapest_fractional_path(RelOptInfo *rel,
 							 double tuple_fraction);
 
 extern Expr *expression_planner(Expr *expr);
+extern Expr *expression_planner_with_deps(Expr *expr,
+							 List **relationOids,
+							 List **invalItems);
 
 extern Expr *preprocess_phv_expression(PlannerInfo *root, Expr *expr);
 

@@ -3,7 +3,7 @@
  * basebackup.c
  *	  code for taking a base backup and streaming it to a standby
  *
- * Portions Copyright (c) 2010-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 2010-2019, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *	  src/backend/replication/basebackup.c
@@ -189,12 +189,19 @@ static const char *excludeFiles[] =
 
 /*
  * List of files excluded from checksum validation.
+ *
+ * Note: this list should be kept in sync with what pg_verify_checksums.c
+ * includes.
  */
-static const char *noChecksumFiles[] = {
+static const char *const noChecksumFiles[] = {
 	"pg_control",
 	"pg_filenode.map",
 	"pg_internal.init",
 	"PG_VERSION",
+#ifdef EXEC_BACKEND
+	"config_exec_params",
+	"config_exec_params.new",
+#endif
 	NULL,
 };
 
@@ -333,7 +340,7 @@ perform_base_backup(basebackup_options *opt)
 				if (lstat(XLOG_CONTROL_FILE, &statbuf) != 0)
 					ereport(ERROR,
 							(errcode_for_file_access(),
-							 errmsg("could not stat control file \"%s\": %m",
+							 errmsg("could not stat file \"%s\": %m",
 									XLOG_CONTROL_FILE)));
 				sendFile(XLOG_CONTROL_FILE, XLOG_CONTROL_FILE, &statbuf, false);
 			}
@@ -495,6 +502,8 @@ perform_base_backup(basebackup_options *opt)
 			fp = AllocateFile(pathbuf, "rb");
 			if (fp == NULL)
 			{
+				int			save_errno = errno;
+
 				/*
 				 * Most likely reason for this is that the file was already
 				 * removed by a checkpoint, so check for that to get a better
@@ -502,6 +511,7 @@ perform_base_backup(basebackup_options *opt)
 				 */
 				CheckXLogRemoved(segno, tli);
 
+				errno = save_errno;
 				ereport(ERROR,
 						(errcode_for_file_access(),
 						 errmsg("could not open file \"%s\": %m", pathbuf)));
@@ -1318,7 +1328,7 @@ sendDir(const char *path, int basepathlen, bool sizeonly, List *tablespaces,
 static bool
 is_checksummed_file(const char *fullpath, const char *filename)
 {
-	const char **f;
+	const char *const *f;
 
 	/* Check that the file is in a tablespace */
 	if (strncmp(fullpath, "./global/", 9) == 0 ||
@@ -1683,7 +1693,7 @@ throttle(size_t increment)
 		 * the maximum time to sleep. Thus the cast to long is safe.
 		 */
 		wait_result = WaitLatch(MyLatch,
-								WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH,
+								WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
 								(long) (sleep / 1000),
 								WAIT_EVENT_BASE_BACKUP_THROTTLE);
 

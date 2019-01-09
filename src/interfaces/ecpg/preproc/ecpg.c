@@ -1,7 +1,7 @@
 /* src/interfaces/ecpg/preproc/ecpg.c */
 
 /* Main for ecpg, the PostgreSQL embedded SQL precompiler. */
-/* Copyright (c) 1996-2018, PostgreSQL Global Development Group */
+/* Copyright (c) 1996-2019, PostgreSQL Global Development Group */
 
 #include "postgres_fe.h"
 
@@ -9,7 +9,7 @@
 
 #include "getopt_long.h"
 
-#include "extern.h"
+#include "preproc_extern.h"
 
 int			ret_value = 0;
 bool		autocommit = false,
@@ -149,7 +149,7 @@ main(int argc, char *const argv[])
 		}
 		if (strcmp(argv[1], "--version") == 0 || strcmp(argv[1], "-V") == 0)
 		{
-			printf("ecpg %s\n", PG_VERSION);
+			printf("ecpg (PostgreSQL) %s\n", PG_VERSION);
 			exit(0);
 		}
 	}

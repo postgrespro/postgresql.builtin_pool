@@ -55,6 +55,15 @@ $$ select 'foo'::varchar union all select 'bar'::varchar $$
 language sql stable;
 select sp_test_func() order by 1;
 
+-- Parallel Append is not to be used when the subpath depends on the outer param
+create table part_pa_test(a int, b int) partition by range(a);
+create table part_pa_test_p1 partition of part_pa_test for values from (minvalue) to (0);
+create table part_pa_test_p2 partition of part_pa_test for values from (0) to (maxvalue);
+explain (costs off)
+	select (select max((select pa1.b from part_pa_test pa1 where pa1.a = pa2.a)))
+	from part_pa_test pa2;
+drop table part_pa_test;
+
 -- test with leader participation disabled
 set parallel_leader_participation = off;
 explain (costs off)
@@ -252,6 +261,13 @@ explain (costs off, verbose)
 
 drop function sp_simple_func(integer);
 
+-- test handling of SRFs in targetlist (bug in 10.0)
+
+explain (costs off)
+   select count(*), generate_series(1,2) from tenk1 group by twenty;
+
+select count(*), generate_series(1,2) from tenk1 group by twenty;
+
 -- test gather merge with parallel leader participation disabled
 set parallel_leader_participation = off;
 
@@ -346,6 +362,17 @@ select count(*) from tenk1;
 reset force_parallel_mode;
 reset role;
 
+-- Window function calculation can't be pushed to workers.
+explain (costs off, verbose)
+  select count(*) from tenk1 a where (unique1, two) in
+    (select unique1, row_number() over() from tenk1 b);
+
+
+-- LIMIT/OFFSET within sub-selects can't be pushed to workers.
+explain (costs off)
+  select * from tenk1 a where two in
+    (select two from tenk1 b where stringu1 like '%AAAA' limit 3);
+
 -- to increase the parallel query test coverage
 SAVEPOINT settings;
 SET LOCAL force_parallel_mode = 1;
@@ -383,10 +410,26 @@ ORDER BY 1;
 SELECT * FROM information_schema.foreign_data_wrapper_options
 ORDER BY 1, 2, 3;
 
--- test interation between subquery and partial_paths
-SET LOCAL min_parallel_table_scan_size TO 0;
+-- test passing expanded-value representations to workers
+CREATE FUNCTION make_some_array(int,int) returns int[] as
+$$declare x int[];
+  begin
+    x[1] := $1;
+    x[2] := $2;
+    return x;
+  end$$ language plpgsql parallel safe;
+CREATE TABLE fooarr(f1 text, f2 int[], f3 text);
+INSERT INTO fooarr VALUES('1', ARRAY[1,2], 'one');
+
+PREPARE pstmt(text, int[]) AS SELECT * FROM fooarr WHERE f1 = $1 AND f2 = $2;
+EXPLAIN (COSTS OFF) EXECUTE pstmt('1', make_some_array(1,2));
+EXECUTE pstmt('1', make_some_array(1,2));
+DEALLOCATE pstmt;
+
+-- test interaction between subquery and partial_paths
 CREATE VIEW tenk1_vw_sec WITH (security_barrier) AS SELECT * FROM tenk1;
 EXPLAIN (COSTS OFF)
-SELECT 1 FROM tenk1_vw_sec WHERE EXISTS (SELECT 1 WHERE unique1 = 0);
+SELECT 1 FROM tenk1_vw_sec
+  WHERE (SELECT sum(f1) FROM int4_tbl WHERE f1 < unique1) < 100;
 
 rollback;

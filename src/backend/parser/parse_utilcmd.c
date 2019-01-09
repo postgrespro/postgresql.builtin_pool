@@ -16,7 +16,7 @@
  * a quick copyObject() call before manipulating the query tree.
  *
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *	src/backend/parser/parse_utilcmd.c
@@ -80,7 +80,6 @@ typedef struct
 	List	   *inhRelations;	/* relations to inherit from */
 	bool		isforeign;		/* true if CREATE/ALTER FOREIGN TABLE */
 	bool		isalter;		/* true if altering existing table */
-	bool		hasoids;		/* does relation have an OID column? */
 	List	   *columns;		/* ColumnDef items */
 	List	   *ckconstraints;	/* CHECK constraints */
 	List	   *fkconstraints;	/* FOREIGN KEY constraints */
@@ -168,7 +167,6 @@ transformCreateStmt(CreateStmt *stmt, const char *queryString)
 	Oid			namespaceid;
 	Oid			existing_relid;
 	ParseCallbackState pcbstate;
-	bool		like_found = false;
 	bool		is_foreign_table = IsA(stmt, CreateForeignTableStmt);
 
 	/*
@@ -247,18 +245,6 @@ transformCreateStmt(CreateStmt *stmt, const char *queryString)
 	cxt.partbound = stmt->partbound;
 	cxt.ofType = (stmt->ofTypename != NULL);
 
-	/*
-	 * Notice that we allow OIDs here only for plain tables, even though
-	 * foreign tables also support them.  This is necessary because the
-	 * default_with_oids GUC must apply only to plain tables and not any other
-	 * relkind; doing otherwise would break existing pg_dump files.  We could
-	 * allow explicit "WITH OIDS" while not allowing default_with_oids to
-	 * affect other relkinds, but it would complicate interpretOidsOption(),
-	 * and right now there's no WITH OIDS option in CREATE FOREIGN TABLE
-	 * anyway.
-	 */
-	cxt.hasoids = interpretOidsOption(stmt->options, !cxt.isforeign);
-
 	Assert(!stmt->ofTypename || !stmt->inhRelations);	/* grammar enforces */
 
 	if (stmt->ofTypename)
@@ -291,7 +277,6 @@ transformCreateStmt(CreateStmt *stmt, const char *queryString)
 				break;
 
 			case T_TableLikeClause:
-				like_found = true;
 				transformTableLikeClause(&cxt, (TableLikeClause *) element);
 				break;
 
@@ -301,20 +286,6 @@ transformCreateStmt(CreateStmt *stmt, const char *queryString)
 				break;
 		}
 	}
-
-	/*
-	 * If we had any LIKE tables, they may require creation of an OID column
-	 * even though the command's own WITH clause didn't ask for one (or,
-	 * perhaps, even specifically rejected having one).  Insert a WITH option
-	 * to ensure that happens.  We prepend to the list because the first oid
-	 * option will be honored, and we want to override anything already there.
-	 * (But note that DefineRelation will override this again to add an OID
-	 * column if one appears in an inheritance parent table.)
-	 */
-	if (like_found && cxt.hasoids)
-		stmt->options = lcons(makeDefElem("oids",
-										  (Node *) makeInteger(true), -1),
-							  stmt->options);
 
 	/*
 	 * transformIndexConstraints wants cxt.alist to contain only index
@@ -440,7 +411,8 @@ generateSerialExtraStmts(CreateStmtContext *cxt, ColumnDef *column,
 		sname = ChooseRelationName(cxt->relation->relname,
 								   column->colname,
 								   "seq",
-								   snamespaceid);
+								   snamespaceid,
+								   false);
 	}
 
 	ereport(DEBUG1,
@@ -691,7 +663,7 @@ transformColumnDefinition(CreateStmtContext *cxt, ColumnDef *column)
 								 errmsg("identity columns are not supported on partitions")));
 
 					ctype = typenameType(cxt->pstate, column->typeName, NULL);
-					typeOid = HeapTupleGetOid(ctype);
+					typeOid = ((Form_pg_type) GETSTRUCT(ctype))->oid;
 					ReleaseSysCache(ctype);
 
 					if (saw_identity)
@@ -987,7 +959,6 @@ transformTableLikeClause(CreateStmtContext *cxt, TableLikeClause *table_like_cla
 		def->is_local = true;
 		def->is_not_null = attribute->attnotnull;
 		def->is_from_type = false;
-		def->is_from_parent = false;
 		def->storage = 0;
 		def->raw_default = NULL;
 		def->cooked_default = NULL;
@@ -1078,9 +1049,6 @@ transformTableLikeClause(CreateStmtContext *cxt, TableLikeClause *table_like_cla
 			cxt->alist = lappend(cxt->alist, stmt);
 		}
 	}
-
-	/* We use oids if at least one LIKE'ed table has oids. */
-	cxt->hasoids |= relation->rd_rel->relhasoids;
 
 	/*
 	 * Copy CHECK constraints if requested, being careful to adjust attribute
@@ -1245,7 +1213,7 @@ transformOfType(CreateStmtContext *cxt, TypeName *ofTypename)
 
 	tuple = typenameType(NULL, ofTypename, NULL);
 	check_of_type(tuple);
-	ofTypeId = HeapTupleGetOid(tuple);
+	ofTypeId = ((Form_pg_type) GETSTRUCT(tuple))->oid;
 	ofTypename->typeOid = ofTypeId; /* cached for later */
 
 	tupdesc = lookup_rowtype_tupdesc(ofTypeId, -1);
@@ -1264,7 +1232,6 @@ transformOfType(CreateStmtContext *cxt, TypeName *ofTypename)
 		n->is_local = true;
 		n->is_not_null = false;
 		n->is_from_type = true;
-		n->is_from_parent = false;
 		n->storage = 0;
 		n->raw_default = NULL;
 		n->cooked_default = NULL;
@@ -1346,7 +1313,6 @@ generateClonedIndexStmt(RangeVar *heapRel, Oid heapRelid, Relation source_idx,
 	/* Begin building the IndexStmt */
 	index = makeNode(IndexStmt);
 	index->relation = heapRel;
-	index->relationId = heapRelid;
 	index->accessMethod = pstrdup(NameStr(amrec->amname));
 	if (OidIsValid(idxrelrec->reltablespace))
 		index->tableSpace = get_tablespace_name(idxrelrec->reltablespace);
@@ -2003,7 +1969,7 @@ transformIndexConstraint(Constraint *constraint, CreateStmtContext *cxt)
 							index_name, RelationGetRelationName(heap_rel)),
 					 parser_errposition(cxt->pstate, constraint->location)));
 
-		if (!IndexIsValid(index_form))
+		if (!index_form->indisvalid)
 			ereport(ERROR,
 					(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 					 errmsg("index \"%s\" is not valid", index_name),
@@ -2064,7 +2030,7 @@ transformIndexConstraint(Constraint *constraint, CreateStmtContext *cxt)
 		for (i = 0; i < index_form->indnatts; i++)
 		{
 			int16		attnum = index_form->indkey.values[i];
-			Form_pg_attribute attform;
+			const FormData_pg_attribute *attform;
 			char	   *attname;
 			Oid			defopclass;
 
@@ -2079,8 +2045,7 @@ transformIndexConstraint(Constraint *constraint, CreateStmtContext *cxt)
 				attform = TupleDescAttr(heap_rel->rd_att, attnum - 1);
 			}
 			else
-				attform = SystemAttributeDefinition(attnum,
-													heap_rel->rd_rel->relhasoids);
+				attform = SystemAttributeDefinition(attnum);
 			attname = pstrdup(NameStr(attform->attname));
 
 			if (i < index_form->indnkeyatts)
@@ -2098,7 +2063,7 @@ transformIndexConstraint(Constraint *constraint, CreateStmtContext *cxt)
 					index_rel->rd_indoption[i] != 0)
 					ereport(ERROR,
 							(errcode(ERRCODE_WRONG_OBJECT_TYPE),
-							 errmsg("index \"%s\" does not have default sorting behavior", index_name),
+							 errmsg("index \"%s\" column number %d does not have default sorting behavior", index_name, i + 1),
 							 errdetail("Cannot create a primary key or unique constraint using such an index."),
 							 parser_errposition(cxt->pstate, constraint->location)));
 
@@ -2170,7 +2135,7 @@ transformIndexConstraint(Constraint *constraint, CreateStmtContext *cxt)
 				if (constraint->contype == CONSTR_PRIMARY)
 					column->is_not_null = true;
 			}
-			else if (SystemAttributeByName(key, cxt->hasoids) != NULL)
+			else if (SystemAttributeByName(key) != NULL)
 			{
 				/*
 				 * column will be a system column in the new table, so accept
@@ -2293,7 +2258,7 @@ transformIndexConstraint(Constraint *constraint, CreateStmtContext *cxt)
 
 		if (!found)
 		{
-			if (SystemAttributeByName(key, cxt->hasoids) != NULL)
+			if (SystemAttributeByName(key) != NULL)
 			{
 				/*
 				 * column will be a system column in the new table, so accept
@@ -2525,7 +2490,9 @@ transformIndexStmt(Oid relid, IndexStmt *stmt, const char *queryString)
 	 * relation, but we still need to open it.
 	 */
 	rel = relation_open(relid, NoLock);
-	rte = addRangeTableEntryForRelation(pstate, rel, NULL, false, true);
+	rte = addRangeTableEntryForRelation(pstate, rel,
+										AccessShareLock,
+										NULL, false, true);
 
 	/* no to join list, yes to namespaces */
 	addRTEtoQuery(pstate, rte, false, true, true);
@@ -2634,9 +2601,11 @@ transformRuleStmt(RuleStmt *stmt, const char *queryString,
 	 * qualification.
 	 */
 	oldrte = addRangeTableEntryForRelation(pstate, rel,
+										   AccessShareLock,
 										   makeAlias("old", NIL),
 										   false, false);
 	newrte = addRangeTableEntryForRelation(pstate, rel,
+										   AccessShareLock,
 										   makeAlias("new", NIL),
 										   false, false);
 	/* Must override addRangeTableEntry's default access-check flags */
@@ -2732,9 +2701,11 @@ transformRuleStmt(RuleStmt *stmt, const char *queryString,
 			 * them in the joinlist.
 			 */
 			oldrte = addRangeTableEntryForRelation(sub_pstate, rel,
+												   AccessShareLock,
 												   makeAlias("old", NIL),
 												   false, false);
 			newrte = addRangeTableEntryForRelation(sub_pstate, rel,
+												   AccessShareLock,
 												   makeAlias("new", NIL),
 												   false, false);
 			oldrte->requiredPerms = 0;
@@ -2912,6 +2883,7 @@ transformAlterTableStmt(Oid relid, AlterTableStmt *stmt,
 						const char *queryString)
 {
 	Relation	rel;
+	TupleDesc	tupdesc;
 	ParseState *pstate;
 	CreateStmtContext cxt;
 	List	   *result;
@@ -2931,12 +2903,14 @@ transformAlterTableStmt(Oid relid, AlterTableStmt *stmt,
 
 	/* Caller is responsible for locking the relation */
 	rel = relation_open(relid, NoLock);
+	tupdesc = RelationGetDescr(rel);
 
 	/* Set up pstate */
 	pstate = make_parsestate(NULL);
 	pstate->p_sourcetext = queryString;
 	rte = addRangeTableEntryForRelation(pstate,
 										rel,
+										AccessShareLock,
 										NULL,
 										false,
 										true);
@@ -2958,7 +2932,6 @@ transformAlterTableStmt(Oid relid, AlterTableStmt *stmt,
 	cxt.rel = rel;
 	cxt.inhRelations = NIL;
 	cxt.isalter = true;
-	cxt.hasoids = false;		/* need not be right */
 	cxt.columns = NIL;
 	cxt.ckconstraints = NIL;
 	cxt.fkconstraints = NIL;
@@ -3059,7 +3032,8 @@ transformAlterTableStmt(Oid relid, AlterTableStmt *stmt,
 					 * if attribute not found, something will error about it
 					 * later
 					 */
-					if (attnum != InvalidAttrNumber && get_attidentity(relid, attnum))
+					if (attnum != InvalidAttrNumber &&
+						TupleDescAttr(tupdesc, attnum - 1)->attidentity)
 					{
 						Oid			seq_relid = getOwnedSequence(relid, attnum);
 						Oid			typeOid = typenameTypeId(pstate, def->typeName);
@@ -3391,7 +3365,7 @@ transformColumnType(CreateStmtContext *cxt, ColumnDef *column)
 			ereport(ERROR,
 					(errcode(ERRCODE_DATATYPE_MISMATCH),
 					 errmsg("collations are not supported by type %s",
-							format_type_be(HeapTupleGetOid(ctype))),
+							format_type_be(typtup->oid)),
 					 parser_errposition(cxt->pstate,
 										column->collClause->location)));
 	}

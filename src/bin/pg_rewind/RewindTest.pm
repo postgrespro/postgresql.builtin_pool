@@ -71,6 +71,7 @@ sub master_psql
 
 	system_or_bail 'psql', '-q', '--no-psqlrc', '-d',
 	  $node_master->connstr('postgres'), '-c', "$cmd";
+	return;
 }
 
 sub standby_psql
@@ -79,12 +80,15 @@ sub standby_psql
 
 	system_or_bail 'psql', '-q', '--no-psqlrc', '-d',
 	  $node_standby->connstr('postgres'), '-c', "$cmd";
+	return;
 }
 
 # Run a query against the master, and check that the output matches what's
 # expected
 sub check_query
 {
+	local $Test::Builder::Level = $Test::Builder::Level + 1;
+
 	my ($query, $expected_stdout, $test_name) = @_;
 	my ($stdout, $stderr);
 
@@ -112,6 +116,7 @@ sub check_query
 		$stdout =~ s/\r//g if $Config{osname} eq 'msys';
 		is($stdout, $expected_stdout, "$test_name: query result matches");
 	}
+	return;
 }
 
 sub setup_cluster
@@ -130,6 +135,7 @@ sub setup_cluster
 		'postgresql.conf', qq(
 wal_keep_segments = 20
 ));
+	return;
 }
 
 sub start_master
@@ -138,6 +144,8 @@ sub start_master
 
 	#### Now run the test-specific parts to initialize the master before setting
 	# up standby
+
+	return;
 }
 
 sub create_standby
@@ -151,17 +159,20 @@ sub create_standby
 	my $connstr_master = $node_master->connstr();
 
 	$node_standby->append_conf(
-		"recovery.conf", qq(
+		"postgresql.conf", qq(
 primary_conninfo='$connstr_master application_name=rewind_standby'
-standby_mode=on
 recovery_target_timeline='latest'
 ));
+
+	$node_standby->set_standby_mode();
 
 	# Start standby
 	$node_standby->start;
 
 	# The standby may have WAL to apply before it matches the primary.  That
 	# is fine, because no test examines the standby before promotion.
+
+	return;
 }
 
 sub promote_standby
@@ -183,6 +194,8 @@ sub promote_standby
 	# after promotion so quickly that when pg_rewind runs, the standby has not
 	# performed a checkpoint after promotion yet.
 	standby_psql("checkpoint");
+
+	return;
 }
 
 sub run_pg_rewind
@@ -219,7 +232,8 @@ sub run_pg_rewind
 				'pg_rewind',
 				"--debug",
 				"--source-pgdata=$standby_pgdata",
-				"--target-pgdata=$master_pgdata"
+				"--target-pgdata=$master_pgdata",
+				"--no-sync"
 			],
 			'pg_rewind local');
 	}
@@ -231,7 +245,8 @@ sub run_pg_rewind
 			[
 				'pg_rewind',       "--debug",
 				"--source-server", $standby_connstr,
-				"--target-pgdata=$master_pgdata"
+				"--target-pgdata=$master_pgdata",
+				"--no-sync"
 			],
 			'pg_rewind remote');
 	}
@@ -256,16 +271,19 @@ sub run_pg_rewind
 	# Plug-in rewound node to the now-promoted standby node
 	my $port_standby = $node_standby->port;
 	$node_master->append_conf(
-		'recovery.conf', qq(
+		'postgresql.conf', qq(
 primary_conninfo='port=$port_standby'
-standby_mode=on
 recovery_target_timeline='latest'
 ));
+
+	$node_master->set_standby_mode();
 
 	# Restart the master to check that rewind went correctly
 	$node_master->start;
 
 	#### Now run the test-specific parts to check the result
+
+	return;
 }
 
 # Clean up after the test. Stop both servers, if they're still running.
@@ -273,6 +291,7 @@ sub clean_rewind_test
 {
 	$node_master->teardown_node  if defined $node_master;
 	$node_standby->teardown_node if defined $node_standby;
+	return;
 }
 
 1;

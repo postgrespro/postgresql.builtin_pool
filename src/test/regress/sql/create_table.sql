@@ -51,7 +51,7 @@ CREATE TABLE tenk1 (
 	stringu1	name,
 	stringu2	name,
 	string4		name
-) WITH OIDS;
+);
 
 CREATE TABLE tenk2 (
 	unique1 	int4,
@@ -83,7 +83,7 @@ CREATE TABLE person (
 CREATE TABLE emp (
 	salary 		int4,
 	manager 	name
-) INHERITS (person) WITH OIDS;
+) INHERITS (person);
 
 
 CREATE TABLE student (
@@ -255,7 +255,6 @@ CREATE TABLE IF NOT EXISTS test_tsvector(
 
 -- invalid: non-lowercase quoted reloptions identifiers
 CREATE TABLE tas_case WITH ("Fillfactor" = 10) AS SELECT 1 a;
-CREATE TABLE tas_case (a text) WITH ("Oids" = true);
 
 CREATE UNLOGGED TABLE unlogged1 (a int primary key);			-- OK
 CREATE TEMPORARY TABLE unlogged2 (a int primary key);			-- OK
@@ -278,9 +277,24 @@ CREATE TABLE as_select1 AS SELECT * FROM pg_class WHERE relkind = 'r';
 CREATE TABLE IF NOT EXISTS as_select1 AS SELECT * FROM pg_class WHERE relkind = 'r';
 DROP TABLE as_select1;
 
--- check that the oid column is added before the primary key is checked
-CREATE TABLE oid_pk (f1 INT, PRIMARY KEY(oid)) WITH OIDS;
-DROP TABLE oid_pk;
+-- create an extra wide table to test for issues related to that
+-- (temporarily hide query, to avoid the long CREATE TABLE stmt)
+\set ECHO none
+SELECT 'CREATE TABLE extra_wide_table(firstc text, '|| array_to_string(array_agg('c'||i||' bool'),',')||', lastc text);'
+FROM generate_series(1, 1100) g(i)
+\gexec
+\set ECHO all
+INSERT INTO extra_wide_table(firstc, lastc) VALUES('first col', 'last col');
+SELECT firstc, lastc FROM extra_wide_table;
+
+-- check that tables with oids cannot be created anymore
+CREATE TABLE withoid() WITH OIDS;
+CREATE TABLE withoid() WITH (oids);
+CREATE TABLE withoid() WITH (oids = true);
+
+-- but explicitly not adding oids is still supported
+CREATE TEMP TABLE withoutoid() WITHOUT OIDS; DROP TABLE withoutoid;
+CREATE TEMP TABLE withoutoid() WITH (oids = false); DROP TABLE withoutoid;
 
 --
 -- Partitioned tables
@@ -302,11 +316,6 @@ CREATE TABLE partitioned (
 	a int,
 	EXCLUDE USING gist (a WITH &&)
 ) PARTITION BY RANGE (a);
-
--- prevent column from being used twice in the partition key
-CREATE TABLE partitioned (
-	a int
-) PARTITION BY RANGE (a, a);
 
 -- prevent using prohibited expressions in the key
 CREATE FUNCTION retset (a int) RETURNS SETOF int AS $$ SELECT 1; $$ LANGUAGE SQL IMMUTABLE;
@@ -525,22 +534,6 @@ CREATE TEMP TABLE temp_parted (
 CREATE TABLE fail_part PARTITION OF temp_parted FOR VALUES IN ('a');
 DROP TABLE temp_parted;
 
--- cannot create a table with oids as partition of table without oids
-CREATE TABLE no_oids_parted (
-	a int
-) PARTITION BY RANGE (a) WITHOUT OIDS;
-CREATE TABLE fail_part PARTITION OF no_oids_parted FOR VALUES FROM (1) TO (10) WITH OIDS;
-DROP TABLE no_oids_parted;
-
--- If the partitioned table has oids, then the partition must have them.
--- If the WITHOUT OIDS option is specified for partition, it is overridden.
-CREATE TABLE oids_parted (
-	a int
-) PARTITION BY RANGE (a) WITH OIDS;
-CREATE TABLE part_forced_oids PARTITION OF oids_parted FOR VALUES FROM (1) TO (10) WITHOUT OIDS;
-\d+ part_forced_oids
-DROP TABLE oids_parted, part_forced_oids;
-
 -- check for partition bound overlap and other invalid specifications
 
 CREATE TABLE list_parted2 (
@@ -646,11 +639,26 @@ CREATE TABLE part_b PARTITION OF parted (
 ) FOR VALUES IN ('b');
 
 CREATE TABLE part_b PARTITION OF parted (
-	b NOT NULL DEFAULT 1 CHECK (b >= 0),
-	CONSTRAINT check_a CHECK (length(a) > 0)
+	b NOT NULL DEFAULT 1,
+	CONSTRAINT check_a CHECK (length(a) > 0),
+	CONSTRAINT check_b CHECK (b >= 0)
 ) FOR VALUES IN ('b');
--- conislocal should be false for any merged constraints
-SELECT conislocal, coninhcount FROM pg_constraint WHERE conrelid = 'part_b'::regclass AND conname = 'check_a';
+-- conislocal should be false for any merged constraints, true otherwise
+SELECT conislocal, coninhcount FROM pg_constraint WHERE conrelid = 'part_b'::regclass ORDER BY conislocal, coninhcount;
+
+-- Once check_b is added to the parent, it should be made non-local for part_b
+ALTER TABLE parted ADD CONSTRAINT check_b CHECK (b >= 0);
+SELECT conislocal, coninhcount FROM pg_constraint WHERE conrelid = 'part_b'::regclass;
+
+-- Neither check_a nor check_b are droppable from part_b
+ALTER TABLE part_b DROP CONSTRAINT check_a;
+ALTER TABLE part_b DROP CONSTRAINT check_b;
+
+-- And dropping it from parted should leave no trace of them on part_b, unlike
+-- traditional inheritance where they will be left behind, because they would
+-- be local constraints.
+ALTER TABLE parted DROP CONSTRAINT check_a, DROP CONSTRAINT check_b;
+SELECT conislocal, coninhcount FROM pg_constraint WHERE conrelid = 'part_b'::regclass;
 
 -- specify PARTITION BY for a partition
 CREATE TABLE fail_part_col_not_found PARTITION OF parted FOR VALUES IN ('c') PARTITION BY RANGE (c);
@@ -658,6 +666,25 @@ CREATE TABLE part_c PARTITION OF parted (b WITH OPTIONS NOT NULL DEFAULT 0) FOR 
 
 -- create a level-2 partition
 CREATE TABLE part_c_1_10 PARTITION OF part_c FOR VALUES FROM (1) TO (10);
+
+-- check that NOT NULL and default value are inherited correctly
+create table parted_notnull_inh_test (a int default 1, b int not null default 0) partition by list (a);
+create table parted_notnull_inh_test1 partition of parted_notnull_inh_test (a not null, b default 1) for values in (1);
+insert into parted_notnull_inh_test (b) values (null);
+-- note that while b's default is overriden, a's default is preserved
+\d parted_notnull_inh_test1
+drop table parted_notnull_inh_test;
+
+-- check for a conflicting COLLATE clause
+create table parted_collate_must_match (a text collate "C", b text collate "C")
+  partition by range (a);
+-- on the partition key
+create table parted_collate_must_match1 partition of parted_collate_must_match
+  (a collate "POSIX") for values from ('a') to ('m');
+-- on another column
+create table parted_collate_must_match2 partition of parted_collate_must_match
+  (b collate "POSIX") for values from ('m') to ('z');
+drop table parted_collate_must_match;
 
 -- Partition bound in describe output
 \d+ part_b
@@ -726,3 +753,26 @@ create table boolspart_t partition of boolspart for values in (true);
 create table boolspart_f partition of boolspart for values in (false);
 \d+ boolspart
 drop table boolspart;
+
+-- partitions mixing temporary and permanent relations
+create table perm_parted (a int) partition by list (a);
+create temporary table temp_parted (a int) partition by list (a);
+create table perm_part partition of temp_parted default; -- error
+create temp table temp_part partition of perm_parted default; -- error
+create temp table temp_part partition of temp_parted default; -- ok
+drop table perm_parted cascade;
+drop table temp_parted cascade;
+
+-- check that adding partitions to a table while it is being used is prevented
+create table tab_part_create (a int) partition by list (a);
+create or replace function func_part_create() returns trigger
+  language plpgsql as $$
+  begin
+    execute 'create table tab_part_create_1 partition of tab_part_create for values in (1)';
+    return null;
+  end $$;
+create trigger trig_part_create before insert on tab_part_create
+  for each statement execute procedure func_part_create();
+insert into tab_part_create values (1);
+drop table tab_part_create;
+drop function func_part_create();

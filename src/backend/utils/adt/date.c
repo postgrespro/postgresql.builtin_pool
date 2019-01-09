@@ -3,7 +3,7 @@
  * date.c
  *	  implements DATE and TIME data types specified in SQL standard
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994-5, Regents of the University of California
  *
  *
@@ -29,7 +29,6 @@
 #include "utils/builtins.h"
 #include "utils/date.h"
 #include "utils/datetime.h"
-#include "utils/nabstime.h"
 #include "utils/sortsupport.h"
 
 /*
@@ -1170,55 +1169,6 @@ timestamptz_date(PG_FUNCTION_ARGS)
 }
 
 
-/* abstime_date()
- * Convert abstime to date data type.
- */
-Datum
-abstime_date(PG_FUNCTION_ARGS)
-{
-	AbsoluteTime abstime = PG_GETARG_ABSOLUTETIME(0);
-	DateADT		result;
-	struct pg_tm tt,
-			   *tm = &tt;
-	int			tz;
-
-	switch (abstime)
-	{
-		case INVALID_ABSTIME:
-			ereport(ERROR,
-					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-					 errmsg("cannot convert reserved abstime value to date")));
-			result = 0;			/* keep compiler quiet */
-			break;
-
-		case NOSTART_ABSTIME:
-			DATE_NOBEGIN(result);
-			break;
-
-		case NOEND_ABSTIME:
-			DATE_NOEND(result);
-			break;
-
-		default:
-			abstime2tm(abstime, &tz, tm, NULL);
-			/* Prevent overflow in Julian-day routines */
-			if (!IS_VALID_JULIAN(tm->tm_year, tm->tm_mon, tm->tm_mday))
-				ereport(ERROR,
-						(errcode(ERRCODE_DATETIME_VALUE_OUT_OF_RANGE),
-						 errmsg("abstime out of range for date")));
-			result = date2j(tm->tm_year, tm->tm_mon, tm->tm_mday) - POSTGRES_EPOCH_JDATE;
-			/* Now check for just-out-of-range dates */
-			if (!IS_VALID_DATE(result))
-				ereport(ERROR,
-						(errcode(ERRCODE_DATETIME_VALUE_OUT_OF_RANGE),
-						 errmsg("abstime out of range for date")));
-			break;
-	}
-
-	PG_RETURN_DATEADT(result);
-}
-
-
 /*****************************************************************************
  *	 Time ADT
  *****************************************************************************/
@@ -1889,7 +1839,7 @@ in_range_time_interval(PG_FUNCTION_ARGS)
 	 */
 	if (offset->time < 0)
 		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_PRECEDING_FOLLOWING_SIZE),
+				(errcode(ERRCODE_INVALID_PRECEDING_OR_FOLLOWING_SIZE),
 				 errmsg("invalid preceding or following size in window function")));
 
 	/*
@@ -2391,7 +2341,7 @@ in_range_timetz_interval(PG_FUNCTION_ARGS)
 	 */
 	if (offset->time < 0)
 		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_PRECEDING_FOLLOWING_SIZE),
+				(errcode(ERRCODE_INVALID_PRECEDING_OR_FOLLOWING_SIZE),
 				 errmsg("invalid preceding or following size in window function")));
 
 	/*

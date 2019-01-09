@@ -214,10 +214,11 @@ PostgreSQL documentation
       <listitem>
 
        <para>
-        Write a minimal <filename>recovery.conf</filename> in the output
+        Create <filename>standby.signal</filename> and append connection settings
+        to <filename>postgresql.auto.conf</filename> in the output
         directory (or into the base archive file when using tar format) to
         ease setting up a standby server.
-        The <filename>recovery.conf</filename> file will record the connection
+        The <filename>postgresql.auto.conf</filename> file will record the connection
         settings and, if specified, the replication slot
         that <application>pg_basebackup</application> is using, so that the
         streaming replication will use the same settings later on.
@@ -387,9 +388,9 @@ PostgreSQL documentation
       <term><option>--create-slot</option></term>
       <listitem>
        <para>
-        This option causes the replication slot specified by the
-        option <literal>--slot</literal> to be created before starting the
-        backup.  In this case, an error is raised if the slot already exists.
+        This option causes creation of a replication slot named by the
+        <literal>--slot</literal> option before starting the backup.
+        An error is raised if the slot already exists.
        </para>
       </listitem>
      </varlistentry>
@@ -470,7 +471,7 @@ PostgreSQL documentation
         replication slot.  If the base backup is intended to be used as a
         streaming replication standby using replication slots, it should then
         use the same replication slot name
-        in <filename>recovery.conf</filename>.  That way, it is ensured that
+        in <xref linkend="guc-primary-slot-name"/>.  That way, it is ensured that
         the server does not remove any necessary WAL data in the time between
         the end of the base backup and the start of streaming replication.
        </para>
@@ -482,6 +483,18 @@ PostgreSQL documentation
         If this option is not specified and the server supports temporary
         replication slots (version 10 and later), then a temporary replication
         slot is automatically used for WAL streaming.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><option>-v</option></term>
+      <term><option>--verbose</option></term>
+      <listitem>
+       <para>
+        Enables verbose mode. Will output some extra steps during startup and
+        shutdown, as well as show the exact file name that is currently being
+        processed if progress reporting is also enabled.
        </para>
       </listitem>
      </varlistentry>
@@ -507,33 +520,20 @@ PostgreSQL documentation
      </varlistentry>
 
      <varlistentry>
-      <term><option>-k</option></term>
       <term><option>--no-verify-checksums</option></term>
       <listitem>
        <para>
         Disables verification of checksums, if they are enabled on the server
-        the base backup is taken from. 
+        the base backup is taken from.
        </para>
        <para>
-        By default, checksums are verified and checksum failures will result in
-        a non-zero exit status. However, the base backup will not be removed in
-        this case, as if the <literal>--no-clean</literal> option was used.
+        By default, checksums are verified and checksum failures will result
+        in a non-zero exit status. However, the base backup will not be
+        removed in such a case, as if the <option>--no-clean</option> option
+        had been used.
        </para>
       </listitem>
      </varlistentry>
-
-     <varlistentry>
-      <term><option>-v</option></term>
-      <term><option>--verbose</option></term>
-      <listitem>
-       <para>
-        Enables verbose mode. Will output some extra steps during startup and
-        shutdown, as well as show the exact file name that is currently being
-        processed if progress reporting is also enabled.
-       </para>
-      </listitem>
-     </varlistentry>
-
     </variablelist>
    </para>
 

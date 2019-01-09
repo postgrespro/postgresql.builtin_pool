@@ -89,7 +89,7 @@
    The <literal>CATALOG</literal> line can also be annotated, with some
    other BKI property macros described in <filename>genbki.h</filename>, to
    define other properties of the catalog as a whole, such as whether
-   it has OIDs (by default, it does).
+   it is a shared relation.
   </para>
 
   <para>
@@ -217,12 +217,14 @@
       <replaceable>value</replaceable> pairs.  The
       allowed <replaceable>key</replaceable>s are the names of the catalog's
       columns, plus the metadata keys <literal>oid</literal>,
-      <literal>oid_symbol</literal>, and <literal>descr</literal>.
+      <literal>oid_symbol</literal>,
+      <literal>array_type_oid</literal>, and <literal>descr</literal>.
       (The use of <literal>oid</literal> and <literal>oid_symbol</literal>
-      is described in <xref linkend="system-catalog-oid-assignment"/>
-      below.  <literal>descr</literal> supplies a description string for
-      the object, which will be inserted
-      into <structname>pg_description</structname>
+      is described in <xref linkend="system-catalog-oid-assignment"/> below,
+      while <literal>array_type_oid</literal> is described in
+      <xref linkend="system-catalog-auto-array-types"/>.
+      <literal>descr</literal> supplies a description string for the object,
+      which will be inserted into <structname>pg_description</structname>
       or <structname>pg_shdescription</structname> as appropriate.)
       While the metadata keys are optional, the catalog's defined columns
       must all be provided, except when the catalog's <literal>.h</literal>
@@ -282,8 +284,9 @@
         <para>
          Within each pair of curly braces, the metadata
          fields <literal>oid</literal>, <literal>oid_symbol</literal>,
-         and <literal>descr</literal> (if present) come first, in that
-         order, then the catalog's own fields appear in their defined order.
+         <literal>array_type_oid</literal>, and <literal>descr</literal>
+         (if present) come first, in that order, then the catalog's own
+         fields appear in their defined order.
         </para>
        </listitem>
 
@@ -351,7 +354,7 @@
     also needed if the row's OID must be referenced from C code.
     If neither case applies, the <literal>oid</literal> metadata field can
     be omitted, in which case the bootstrap code assigns an OID
-    automatically, or leaves it zero in a catalog that has no OIDs.
+    automatically.
     In practice we usually preassign OIDs for all or none of the pre-loaded
     rows in a given catalog, even if only some of them are actually
     cross-referenced.
@@ -384,15 +387,16 @@
     through the catalog headers and <filename>.dat</filename> files
     to see which ones do not appear.  You can also use
     the <filename>duplicate_oids</filename> script to check for mistakes.
-    (<filename>genbki.pl</filename> will also detect duplicate OIDs
+    (<filename>genbki.pl</filename> will assign OIDs for any rows that
+    didn't get one hand-assigned to them and also detect duplicate OIDs
     at compile time.)
    </para>
 
    <para>
     The OID counter starts at 10000 at the beginning of a bootstrap run.
-    If a catalog row is in a table that requires OIDs, but no OID was
-    preassigned by an <literal>oid</literal> field, then it will
-    receive an OID of 10000 or above.
+    If a row from a source other than <filename>postgres.bki</filename>
+    is inserted into a table that requires OIDs, then it will receive an
+    OID of 10000 or above.
    </para>
   </sect2>
 
@@ -405,8 +409,9 @@
     that's error-prone and hard to understand, so for frequently-referenced
     catalogs, <filename>genbki.pl</filename> provides mechanisms to write
     symbolic references instead.  Currently this is possible for references
-    to access methods, functions, operators, opclasses, opfamilies, and
-    types.  The rules are as follows:
+    to access methods, functions, languages,
+    operators, opclasses, opfamilies, types, and encodings.
+    The rules are as follows:
    </para>
 
    <itemizedlist>
@@ -417,12 +422,18 @@
       by attaching <literal>BKI_LOOKUP(<replaceable>lookuprule</replaceable>)</literal>
       to the column's definition, where <replaceable>lookuprule</replaceable>
       is <literal>pg_am</literal>, <literal>pg_proc</literal>,
+      <literal>pg_language</literal>,
       <literal>pg_operator</literal>, <literal>pg_opclass</literal>,
-      <literal>pg_opfamily</literal>, or <literal>pg_type</literal>.
+      <literal>pg_opfamily</literal>,
+      <literal>pg_type</literal>,
+      or <literal>encoding</literal>.
       <literal>BKI_LOOKUP</literal> can be attached to columns of
       type <type>Oid</type>, <type>regproc</type>, <type>oidvector</type>,
       or <type>Oid[]</type>; in the latter two cases it implies performing a
       lookup on each element of the array.
+      It's also permissible to attach <literal>BKI_LOOKUP</literal>
+      to integer columns; this should be done only for encodings,
+      which are not currently represented as catalog OIDs.
      </para>
     </listitem>
 
@@ -495,6 +506,41 @@
     runs, and puts simple numeric OIDs into the emitted BKI file.  There is
     therefore no need for the bootstrap backend to deal with symbolic
     references.
+   </para>
+  </sect2>
+
+  <sect2 id="system-catalog-auto-array-types">
+   <title>Automatic Creation of Array Types</title>
+
+   <para>
+    Most scalar data types should have a corresponding array type (that is,
+    a standard varlena array type whose element type is the scalar type, and
+    which is referenced by the <structfield>typarray</structfield> field of
+    the scalar type's <structname>pg_type</structname>
+    entry).  <filename>genbki.pl</filename> is able to generate
+    the <structname>pg_type</structname> entry for the array type
+    automatically in most cases.
+   </para>
+
+   <para>
+    To use this facility, just write an <literal>array_type_oid
+    =&gt; <replaceable>nnnn</replaceable></literal> metadata field in the
+    scalar type's <structname>pg_type</structname> entry, specifying the OID
+    to use for the array type.  You may then omit
+    the <structfield>typarray</structfield> field, since it will be filled
+    automatically with that OID.
+   </para>
+
+   <para>
+    The generated array type's name is the scalar type's name with an
+    underscore prepended.  The array entry's other fields are filled from
+    <literal>BKI_ARRAY_DEFAULT(<replaceable>value</replaceable>)</literal>
+    annotations in <filename>pg_type.h</filename>, or if there isn't one,
+    copied from the scalar type.  (There's also a special case
+    for <structfield>typalign</structfield>.)  Then
+    the <structfield>typelem</structfield>
+    and <structfield>typarray</structfield> fields of the two entries are
+    set to cross-reference each other.
    </para>
   </sect2>
 
@@ -676,7 +722,6 @@ $ perl  rewrite_dat_with_prokind.pl  pg_proc.dat
      <replaceable class="parameter">tableoid</replaceable>
      <optional><literal>bootstrap</literal></optional>
      <optional><literal>shared_relation</literal></optional>
-     <optional><literal>without_oids</literal></optional>
      <optional><literal>rowtype_oid</literal> <replaceable>oid</replaceable></optional>
      (<replaceable class="parameter">name1</replaceable> =
      <replaceable class="parameter">type1</replaceable>
@@ -728,7 +773,6 @@ $ perl  rewrite_dat_with_prokind.pl  pg_proc.dat
      <para>
       The table is created as shared if <literal>shared_relation</literal> is
       specified.
-      It will have OIDs unless <literal>without_oids</literal> is specified.
       The table's row type OID (<structname>pg_type</structname> OID) can optionally
       be specified via the <literal>rowtype_oid</literal> clause; if not specified,
       an OID is automatically generated for it.  (The <literal>rowtype_oid</literal>
@@ -767,7 +811,7 @@ $ perl  rewrite_dat_with_prokind.pl  pg_proc.dat
 
    <varlistentry>
     <term>
-     <literal>insert</literal> <optional><literal>OID =</literal> <replaceable class="parameter">oid_value</replaceable></optional> <literal>(</literal> <replaceable class="parameter">value1</replaceable> <replaceable class="parameter">value2</replaceable> ... <literal>)</literal>
+     <literal>insert</literal> <literal>(</literal> <optional><replaceable class="parameter">oid_value</replaceable></optional> <replaceable class="parameter">value1</replaceable> <replaceable class="parameter">value2</replaceable> ... <literal>)</literal>
     </term>
 
     <listitem>
@@ -775,11 +819,7 @@ $ perl  rewrite_dat_with_prokind.pl  pg_proc.dat
       Insert a new row into the open table using <replaceable
       class="parameter">value1</replaceable>, <replaceable
       class="parameter">value2</replaceable>, etc., for its column
-      values and <replaceable
-      class="parameter">oid_value</replaceable> for its OID.  If
-      <replaceable class="parameter">oid_value</replaceable> is zero
-      (0) or the clause is omitted, and the table has OIDs, then the
-      next available OID is assigned.
+      values.
      </para>
 
      <para>
@@ -947,16 +987,16 @@ $ perl  rewrite_dat_with_prokind.pl  pg_proc.dat
   <title>BKI Example</title>
 
   <para>
-   The following sequence of commands will create the
-   table <literal>test_table</literal> with OID 420, having two columns
-   <literal>cola</literal> and <literal>colb</literal> of type
-   <type>int4</type> and <type>text</type>, respectively, and insert
-   two rows into the table:
+   The following sequence of commands will create the table
+   <literal>test_table</literal> with OID 420, having three columns
+   <literal>oid</literal>, <literal>cola</literal> and <literal>colb</literal>
+   of type <type>oid</type>, <type>int4</type> and <type>text</type>,
+   respectively, and insert two rows into the table:
 <programlisting>
-create test_table 420 (cola = int4, colb = text)
+create test_table 420 (oid = oid, cola = int4, colb = text)
 open test_table
-insert OID=421 ( 1 "value1" )
-insert OID=422 ( 2 _null_ )
+insert ( 421 1 "value1" )
+insert ( 422 2 _null_ )
 close test_table
 </programlisting>
   </para>

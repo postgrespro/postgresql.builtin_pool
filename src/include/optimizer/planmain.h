@@ -4,7 +4,7 @@
  *	  prototypes for various files in optimizer/plan
  *
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/optimizer/planmain.h
@@ -53,6 +53,8 @@ extern ForeignScan *make_foreignscan(List *qptlist, List *qpqual,
 				 Index scanrelid, List *fdw_exprs, List *fdw_private,
 				 List *fdw_scan_tlist, List *fdw_recheck_quals,
 				 Plan *outer_plan);
+extern Plan *change_plan_targetlist(Plan *subplan, List *tlist,
+					   bool tlist_parallel_safe);
 extern Plan *materialize_finished_plan(Plan *subplan);
 extern bool is_projection_capable_path(Path *path);
 extern bool is_projection_capable_plan(Plan *plan);
@@ -116,9 +118,11 @@ extern bool innerrel_is_unique(PlannerInfo *root,
  */
 extern Plan *set_plan_references(PlannerInfo *root, Plan *plan);
 extern void record_plan_function_dependency(PlannerInfo *root, Oid funcid);
+extern void record_plan_type_dependency(PlannerInfo *root, Oid typeid);
 extern void extract_query_dependencies(Node *query,
 						   List **relationOids,
 						   List **invalItems,
 						   bool *hasRowSecurity);
+extern bool extract_query_dependencies_walker(Node *node, PlannerInfo *root);
 
 #endif							/* PLANMAIN_H */

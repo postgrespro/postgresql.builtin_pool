@@ -3,7 +3,7 @@
  * nodeIndexscan.c
  *	  Routines to support indexed scans of relations
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -108,7 +108,7 @@ IndexNext(IndexScanState *node)
 	{
 		/*
 		 * We reach here if the index scan is not parallel, or if we're
-		 * executing a index scan that was intended to be parallel serially.
+		 * serially executing an index scan that was planned to be parallel.
 		 */
 		scandesc = index_beginscan(node->ss.ss_currentRelation,
 								   node->iss_RelationDesc,
@@ -140,10 +140,10 @@ IndexNext(IndexScanState *node)
 		 * Note: we pass 'false' because tuples returned by amgetnext are
 		 * pointers onto disk pages and must not be pfree()'d.
 		 */
-		ExecStoreTuple(tuple,	/* tuple to store */
-					   slot,	/* slot to store in */
-					   scandesc->xs_cbuf,	/* buffer containing tuple */
-					   false);	/* don't pfree */
+		ExecStoreBufferHeapTuple(tuple, /* tuple to store */
+								 slot,	/* slot to store in */
+								 scandesc->xs_cbuf);	/* buffer containing
+														 * tuple */
 
 		/*
 		 * If the index was lossy, we have to recheck the index quals using
@@ -208,13 +208,11 @@ IndexNextWithReorder(IndexScanState *node)
 
 	scandesc = node->iss_ScanDesc;
 	econtext = node->ss.ps.ps_ExprContext;
-	slot = node->ss.ss_ScanTupleSlot;
-
 	if (scandesc == NULL)
 	{
 		/*
 		 * We reach here if the index scan is not parallel, or if we're
-		 * executing a index scan that was intended to be parallel serially.
+		 * serially executing an index scan that was planned to be parallel.
 		 */
 		scandesc = index_beginscan(node->ss.ss_currentRelation,
 								   node->iss_RelationDesc,
@@ -245,6 +243,7 @@ IndexNextWithReorder(IndexScanState *node)
 		 */
 		if (!pairingheap_is_empty(node->iss_ReorderQueue))
 		{
+			slot = node->iss_ReorderQueueSlot;
 			topmost = (ReorderTuple *) pairingheap_first(node->iss_ReorderQueue);
 
 			if (node->iss_ReachedEnd ||
@@ -257,20 +256,22 @@ IndexNextWithReorder(IndexScanState *node)
 				tuple = reorderqueue_pop(node);
 
 				/* Pass 'true', as the tuple in the queue is a palloc'd copy */
-				ExecStoreTuple(tuple, slot, InvalidBuffer, true);
+				ExecStoreHeapTuple(tuple, slot, true);
 				return slot;
 			}
 		}
 		else if (node->iss_ReachedEnd)
 		{
 			/* Queue is empty, and no more tuples from index.  We're done. */
-			return ExecClearTuple(slot);
+			ExecClearTuple(node->iss_ReorderQueueSlot);
+			return ExecClearTuple(node->ss.ss_ScanTupleSlot);
 		}
 
 		/*
 		 * Fetch next tuple from the index.
 		 */
 next_indextuple:
+		slot = node->ss.ss_ScanTupleSlot;
 		tuple = index_getnext(scandesc, ForwardScanDirection);
 		if (!tuple)
 		{
@@ -284,13 +285,11 @@ next_indextuple:
 
 		/*
 		 * Store the scanned tuple in the scan tuple slot of the scan state.
-		 * Note: we pass 'false' because tuples returned by amgetnext are
-		 * pointers onto disk pages and must not be pfree()'d.
 		 */
-		ExecStoreTuple(tuple,	/* tuple to store */
-					   slot,	/* slot to store in */
-					   scandesc->xs_cbuf,	/* buffer containing tuple */
-					   false);	/* don't pfree */
+		ExecStoreBufferHeapTuple(tuple, /* tuple to store */
+								 slot,	/* slot to store in */
+								 scandesc->xs_cbuf);	/* buffer containing
+														 * tuple */
 
 		/*
 		 * If the index was lossy, we have to recheck the index quals and
@@ -374,7 +373,8 @@ next_indextuple:
 	 * if we get here it means the index scan failed so we are at the end of
 	 * the scan..
 	 */
-	return ExecClearTuple(slot);
+	ExecClearTuple(node->iss_ReorderQueueSlot);
+	return ExecClearTuple(node->ss.ss_ScanTupleSlot);
 }
 
 /*
@@ -469,9 +469,10 @@ reorderqueue_cmp(const pairingheap_node *a, const pairingheap_node *b,
 	ReorderTuple *rtb = (ReorderTuple *) b;
 	IndexScanState *node = (IndexScanState *) arg;
 
-	return -cmp_orderbyvals(rta->orderbyvals, rta->orderbynulls,
-							rtb->orderbyvals, rtb->orderbynulls,
-							node);
+	/* exchange argument order to invert the sort order */
+	return cmp_orderbyvals(rtb->orderbyvals, rtb->orderbynulls,
+						   rta->orderbyvals, rta->orderbynulls,
+						   node);
 }
 
 /*
@@ -804,14 +805,12 @@ ExecEndIndexScan(IndexScanState *node)
 {
 	Relation	indexRelationDesc;
 	IndexScanDesc indexScanDesc;
-	Relation	relation;
 
 	/*
 	 * extract information from the node
 	 */
 	indexRelationDesc = node->iss_RelationDesc;
 	indexScanDesc = node->iss_ScanDesc;
-	relation = node->ss.ss_currentRelation;
 
 	/*
 	 * Free the exprcontext(s) ... now dead code, see ExecFreeExprContext
@@ -825,7 +824,10 @@ ExecEndIndexScan(IndexScanState *node)
 	/*
 	 * clear out tuple table slots
 	 */
-	ExecClearTuple(node->ss.ps.ps_ResultTupleSlot);
+	if (node->ss.ps.ps_ResultTupleSlot)
+		ExecClearTuple(node->ss.ps.ps_ResultTupleSlot);
+	if (node->iss_ReorderQueueSlot)
+		ExecClearTuple(node->iss_ReorderQueueSlot);
 	ExecClearTuple(node->ss.ss_ScanTupleSlot);
 
 	/*
@@ -835,11 +837,6 @@ ExecEndIndexScan(IndexScanState *node)
 		index_endscan(indexScanDesc);
 	if (indexRelationDesc)
 		index_close(indexRelationDesc, NoLock);
-
-	/*
-	 * close the heap relation.
-	 */
-	ExecCloseScanRelation(relation);
 }
 
 /* ----------------------------------------------------------------
@@ -941,7 +938,7 @@ ExecInitIndexScan(IndexScan *node, EState *estate, int eflags)
 	ExecAssignExprContext(estate, &indexstate->ss.ps);
 
 	/*
-	 * open the base relation and acquire appropriate lock on it.
+	 * open the scan relation
 	 */
 	currentRelation = ExecOpenScanRelation(estate, node->scan.scanrelid, eflags);
 
@@ -952,12 +949,13 @@ ExecInitIndexScan(IndexScan *node, EState *estate, int eflags)
 	 * get the scan type from the relation descriptor.
 	 */
 	ExecInitScanTupleSlot(estate, &indexstate->ss,
-						  RelationGetDescr(currentRelation));
+						  RelationGetDescr(currentRelation),
+						  &TTSOpsBufferHeapTuple);
 
 	/*
-	 * Initialize result slot, type and projection.
+	 * Initialize result type and projection.
 	 */
-	ExecInitResultTupleSlotTL(estate, &indexstate->ss.ps);
+	ExecInitResultTypeTL(&indexstate->ss.ps);
 	ExecAssignScanProjectionInfo(&indexstate->ss);
 
 	/*
@@ -1083,9 +1081,13 @@ ExecInitIndexScan(IndexScan *node, EState *estate, int eflags)
 		indexstate->iss_OrderByNulls = (bool *)
 			palloc(numOrderByKeys * sizeof(bool));
 
-		/* and initialize the reorder queue */
+		/* and initialize the reorder queue and the corresponding slot */
 		indexstate->iss_ReorderQueue = pairingheap_allocate(reorderqueue_cmp,
 															indexstate);
+		indexstate->iss_ReorderQueueSlot =
+			ExecAllocTableSlot(&estate->es_tupleTable,
+							   RelationGetDescr(currentRelation),
+							   &TTSOpsHeapTuple);
 	}
 
 	/*

@@ -3,16 +3,15 @@
  * File and directory permission routines
  *
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
- * src/include/common/file_perm.c
+ * src/common/file_perm.c
  *
  *-------------------------------------------------------------------------
  */
-#include <sys/stat.h>
-
 #include "c.h"
+
 #include "common/file_perm.h"
 
 /* Modes for creating directories and files in the data directory */

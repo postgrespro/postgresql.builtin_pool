@@ -39,7 +39,10 @@ ALTER INDEX ALL IN TABLESPACE <replaceable class="parameter">name</replaceable> 
 
   <para>
    <command>ALTER INDEX</command> changes the definition of an existing index.
-   There are several subforms:
+   There are several subforms described below. Note that the lock level required
+   may differ for each subform. An <literal>ACCESS EXCLUSIVE</literal> lock is held
+   unless explicitly noted. When multiple subcommands are listed, the lock
+   held will be the strictest one required from any subcommand.
 
   <variablelist>
 
@@ -48,7 +51,14 @@ ALTER INDEX ALL IN TABLESPACE <replaceable class="parameter">name</replaceable> 
     <listitem>
      <para>
       The <literal>RENAME</literal> form changes the name of the index.
+      If the index is associated with a table constraint (either
+      <literal>UNIQUE</literal>, <literal>PRIMARY KEY</literal>,
+      or <literal>EXCLUDE</literal>), the constraint is renamed as well.
       There is no effect on the stored data.
+     </para>
+     <para>
+      Renaming an index acquires a <literal>SHARE UPDATE EXCLUSIVE</literal>
+      lock.
      </para>
     </listitem>
    </varlistentry>
@@ -134,7 +144,7 @@ ALTER INDEX ALL IN TABLESPACE <replaceable class="parameter">name</replaceable> 
       subsequent <xref linkend="sql-analyze"/> operations, though can
       be used only on index columns that are defined as an expression.
       Since expressions lack a unique name, we refer to them using the
-      ordinal number of the index column. 
+      ordinal number of the index column.
       The target can be set in the range 0 to 10000; alternatively, set it
       to -1 to revert to using the system default statistics
       target (<xref linkend="guc-default-statistics-target"/>).
@@ -285,8 +295,7 @@ REINDEX INDEX distributors;
 <programlisting>
 CREATE INDEX coord_idx ON measured (x, y, (z + t));
 ALTER INDEX coord_idx ALTER COLUMN 3 SET STATISTICS 1000;
-</programlisting>
-  </para>
+</programlisting></para>
 
  </refsect1>
 

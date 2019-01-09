@@ -3,7 +3,7 @@
  * parse_oper.c
  *		handle operator things for parser
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -244,7 +244,7 @@ get_sort_group_operators(Oid argtype,
 Oid
 oprid(Operator op)
 {
-	return HeapTupleGetOid(op);
+	return ((Form_pg_operator) GETSTRUCT(op))->oid;
 }
 
 /* given operator tuple, return the underlying function's OID */

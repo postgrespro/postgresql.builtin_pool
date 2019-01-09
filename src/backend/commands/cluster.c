@@ -6,7 +6,7 @@
  * There is hardly anything left of Paul Brown's original implementation...
  *
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994-5, Regents of the University of California
  *
  *
@@ -75,7 +75,7 @@ static List *get_tables_to_cluster(MemoryContext cluster_context);
 static void reform_and_rewrite_tuple(HeapTuple tuple,
 						 TupleDesc oldTupDesc, TupleDesc newTupDesc,
 						 Datum *values, bool *isnull,
-						 bool newRelHasOids, RewriteState rwstate);
+						 RewriteState rwstate);
 
 
 /*---------------------------------------------------------------------------
@@ -186,7 +186,7 @@ cluster(ClusterStmt *stmt, bool isTopLevel)
 		heap_close(rel, NoLock);
 
 		/* Do the job. */
-		cluster_rel(tableOid, indexOid, false, stmt->verbose);
+		cluster_rel(tableOid, indexOid, stmt->options);
 	}
 	else
 	{
@@ -234,7 +234,8 @@ cluster(ClusterStmt *stmt, bool isTopLevel)
 			/* functions in indexes may want a snapshot set */
 			PushActiveSnapshot(GetTransactionSnapshot());
 			/* Do the job. */
-			cluster_rel(rvtc->tableOid, rvtc->indexOid, true, stmt->verbose);
+			cluster_rel(rvtc->tableOid, rvtc->indexOid,
+						stmt->options | CLUOPT_RECHECK);
 			PopActiveSnapshot();
 			CommitTransactionCommand();
 		}
@@ -265,9 +266,11 @@ cluster(ClusterStmt *stmt, bool isTopLevel)
  * and error messages should refer to the operation as VACUUM not CLUSTER.
  */
 void
-cluster_rel(Oid tableOid, Oid indexOid, bool recheck, bool verbose)
+cluster_rel(Oid tableOid, Oid indexOid, int options)
 {
 	Relation	OldHeap;
+	bool		verbose = ((options & CLUOPT_VERBOSE) != 0);
+	bool		recheck = ((options & CLUOPT_RECHECK) != 0);
 
 	/* Check for user-requested abort. */
 	CHECK_FOR_INTERRUPTS();
@@ -467,7 +470,7 @@ check_index_is_clusterable(Relation OldHeap, Oid indexOid, bool recheck, LOCKMOD
 	 * might put recently-dead tuples out-of-order in the new table, and there
 	 * is little harm in that.)
 	 */
-	if (!IndexIsValid(OldIndex->rd_index))
+	if (!OldIndex->rd_index->indisvalid)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("cannot cluster on invalid index \"%s\"",
@@ -542,7 +545,7 @@ mark_index_clustered(Relation rel, Oid indexOid, bool is_internal)
 		else if (thisIndexOid == indexOid)
 		{
 			/* this was checked earlier, but let's be real sure */
-			if (!IndexIsValid(indexForm))
+			if (!indexForm->indisvalid)
 				elog(ERROR, "cannot cluster on invalid index %u", indexOid);
 			indexForm->indisclustered = true;
 			CatalogTupleUpdate(pg_index, &indexTuple->t_self, indexTuple);
@@ -685,8 +688,6 @@ make_new_heap(Oid OIDOldHeap, Oid NewTableSpace, char relpersistence,
 										  relpersistence,
 										  false,
 										  RelationIsMapped(OldHeap),
-										  true,
-										  0,
 										  ONCOMMIT_NOOP,
 										  reloptions,
 										  false,
@@ -1058,7 +1059,7 @@ copy_heap_data(Oid OIDNewHeap, Oid OIDOldHeap, Oid OIDOldIndex, bool verbose,
 			reform_and_rewrite_tuple(tuple,
 									 oldTupDesc, newTupDesc,
 									 values, isnull,
-									 NewHeap->rd_rel->relhasoids, rwstate);
+									 rwstate);
 	}
 
 	if (indexScan != NULL)
@@ -1087,7 +1088,7 @@ copy_heap_data(Oid OIDNewHeap, Oid OIDOldHeap, Oid OIDOldIndex, bool verbose,
 			reform_and_rewrite_tuple(tuple,
 									 oldTupDesc, newTupDesc,
 									 values, isnull,
-									 NewHeap->rd_rel->relhasoids, rwstate);
+									 rwstate);
 		}
 
 		tuplesort_end(tuplesort);
@@ -1581,7 +1582,7 @@ finish_heap_swap(Oid OIDOldHeap, Oid OIDNewHeap,
 	 * swap_relation_files()), thus relfrozenxid was not updated. That's
 	 * annoying because a potential reason for doing a VACUUM FULL is a
 	 * imminent or actual anti-wraparound shutdown.  So, now that we can
-	 * access the new relation using it's indices, update relfrozenxid.
+	 * access the new relation using its indices, update relfrozenxid.
 	 * pg_class doesn't have a toast relation, so we don't need to update the
 	 * corresponding toast relation. Not that there's little point moving all
 	 * relfrozenxid updates here since swap_relation_files() needs to write to
@@ -1658,14 +1659,14 @@ finish_heap_swap(Oid OIDOldHeap, Oid OIDNewHeap,
 			snprintf(NewToastName, NAMEDATALEN, "pg_toast_%u",
 					 OIDOldHeap);
 			RenameRelationInternal(newrel->rd_rel->reltoastrelid,
-								   NewToastName, true);
+								   NewToastName, true, false);
 
 			/* ... and its valid index too. */
 			snprintf(NewToastName, NAMEDATALEN, "pg_toast_%u_index",
 					 OIDOldHeap);
 
 			RenameRelationInternal(toastidx,
-								   NewToastName, true);
+								   NewToastName, true, true);
 		}
 		relation_close(newrel, NoLock);
 	}
@@ -1752,7 +1753,7 @@ get_tables_to_cluster(MemoryContext cluster_context)
  *
  * 2. The tuple might not even be legal for the new table; this is
  * currently only known to happen as an after-effect of ALTER TABLE
- * SET WITHOUT OIDS.
+ * SET WITHOUT OIDS (in an older version, via pg_upgrade).
  *
  * So, we must reconstruct the tuple from component Datums.
  */
@@ -1760,7 +1761,7 @@ static void
 reform_and_rewrite_tuple(HeapTuple tuple,
 						 TupleDesc oldTupDesc, TupleDesc newTupDesc,
 						 Datum *values, bool *isnull,
-						 bool newRelHasOids, RewriteState rwstate)
+						 RewriteState rwstate)
 {
 	HeapTuple	copiedTuple;
 	int			i;
@@ -1775,10 +1776,6 @@ reform_and_rewrite_tuple(HeapTuple tuple,
 	}
 
 	copiedTuple = heap_form_tuple(newTupDesc, values, isnull);
-
-	/* Preserve OID, if any */
-	if (newRelHasOids)
-		HeapTupleSetOid(copiedTuple, HeapTupleGetOid(tuple));
 
 	/* The heap rewrite module does the rest */
 	rewrite_heap_tuple(rwstate, tuple, copiedTuple);

@@ -7,7 +7,7 @@
  *	  transfer pending entries into the regular index structure.  This
  *	  wins because bulk insertion is much more efficient than retail.
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -64,18 +64,15 @@ writeListPage(Relation index, Buffer buffer,
 				size = 0;
 	OffsetNumber l,
 				off;
-	char	   *workspace;
+	PGAlignedBlock workspace;
 	char	   *ptr;
-
-	/* workspace could be a local array; we use palloc for alignment */
-	workspace = palloc(BLCKSZ);
 
 	START_CRIT_SECTION();
 
 	GinInitBuffer(buffer, GIN_LIST);
 
 	off = FirstOffsetNumber;
-	ptr = workspace;
+	ptr = workspace.data;
 
 	for (i = 0; i < ntuples; i++)
 	{
@@ -127,7 +124,7 @@ writeListPage(Relation index, Buffer buffer,
 		XLogRegisterData((char *) &data, sizeof(ginxlogInsertListPage));
 
 		XLogRegisterBuffer(0, buffer, REGBUF_WILL_INIT);
-		XLogRegisterBufData(0, workspace, size);
+		XLogRegisterBufData(0, workspace.data, size);
 
 		recptr = XLogInsert(RM_GIN_ID, XLOG_GIN_INSERT_LISTPAGE);
 		PageSetLSN(page, recptr);
@@ -139,8 +136,6 @@ writeListPage(Relation index, Buffer buffer,
 	UnlockReleaseBuffer(buffer);
 
 	END_CRIT_SECTION();
-
-	pfree(workspace);
 
 	return freesize;
 }
@@ -247,9 +242,9 @@ ginHeapTupleFastInsert(GinState *ginstate, GinTupleCollector *collector)
 	metapage = BufferGetPage(metabuffer);
 
 	/*
-	 * An insertion to the pending list could logically belong anywhere in
-	 * the tree, so it conflicts with all serializable scans.  All scans
-	 * acquire a predicate lock on the metabuffer to represent that.
+	 * An insertion to the pending list could logically belong anywhere in the
+	 * tree, so it conflicts with all serializable scans.  All scans acquire a
+	 * predicate lock on the metabuffer to represent that.
 	 */
 	CheckForSerializableConflictIn(index, NULL, metabuffer);
 
@@ -492,17 +487,40 @@ ginHeapTupleFastCollect(GinState *ginstate,
 								&nentries, &categories);
 
 	/*
+	 * Protect against integer overflow in allocation calculations
+	 */
+	if (nentries < 0 ||
+		collector->ntuples + nentries > MaxAllocSize / sizeof(IndexTuple))
+		elog(ERROR, "too many entries for GIN index");
+
+	/*
 	 * Allocate/reallocate memory for storing collected tuples
 	 */
 	if (collector->tuples == NULL)
 	{
-		collector->lentuples = nentries * ginstate->origTupdesc->natts;
+		/*
+		 * Determine the number of elements to allocate in the tuples array
+		 * initially.  Make it a power of 2 to avoid wasting memory when
+		 * resizing (since palloc likes powers of 2).
+		 */
+		collector->lentuples = 16;
+		while (collector->lentuples < nentries)
+			collector->lentuples *= 2;
+
 		collector->tuples = (IndexTuple *) palloc(sizeof(IndexTuple) * collector->lentuples);
 	}
-
-	while (collector->ntuples + nentries > collector->lentuples)
+	else if (collector->lentuples < collector->ntuples + nentries)
 	{
-		collector->lentuples *= 2;
+		/*
+		 * Advance lentuples to the next suitable power of 2.  This won't
+		 * overflow, though we could get to a value that exceeds
+		 * MaxAllocSize/sizeof(IndexTuple), causing an error in repalloc.
+		 */
+		do
+		{
+			collector->lentuples *= 2;
+		} while (collector->lentuples < collector->ntuples + nentries);
+
 		collector->tuples = (IndexTuple *) repalloc(collector->tuples,
 													sizeof(IndexTuple) * collector->lentuples);
 	}

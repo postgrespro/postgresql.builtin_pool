@@ -4,7 +4,7 @@
  *	  routines to support running postgres in 'bootstrap' mode
  *	bootstrap mode is used to create the initial template database
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -24,6 +24,7 @@
 #include "catalog/index.h"
 #include "catalog/pg_collation.h"
 #include "catalog/pg_type.h"
+#include "common/link-canary.h"
 #include "libpq/pqsignal.h"
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
@@ -110,7 +111,7 @@ static const struct typinfo TypInfo[] = {
 	F_INT4IN, F_INT4OUT},
 	{"float4", FLOAT4OID, 0, 4, FLOAT4PASSBYVAL, 'i', 'p', InvalidOid,
 	F_FLOAT4IN, F_FLOAT4OUT},
-	{"name", NAMEOID, CHAROID, NAMEDATALEN, false, 'c', 'p', InvalidOid,
+	{"name", NAMEOID, CHAROID, NAMEDATALEN, false, 'c', 'p', C_COLLATION_OID,
 	F_NAMEIN, F_NAMEOUT},
 	{"regclass", REGCLASSOID, 0, 4, true, 'i', 'p', InvalidOid,
 	F_REGCLASSIN, F_REGCLASSOUT},
@@ -265,7 +266,7 @@ AuxiliaryProcessMain(int argc, char *argv[])
 					if (!IsValidWalSegSize(WalSegSz))
 						ereport(ERROR,
 								(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-								 errmsg("-X requires a power of 2 value between 1MB and 1GB")));
+								 errmsg("-X requires a power of two value between 1 MB and 1 GB")));
 					SetConfigOption("wal_segment_size", optarg, PGC_INTERNAL,
 									PGC_S_OVERRIDE);
 				}
@@ -403,6 +404,13 @@ AuxiliaryProcessMain(int argc, char *argv[])
 		/* finish setting up bufmgr.c */
 		InitBufferPoolBackend();
 
+		/*
+		 * Auxiliary processes don't run transactions, but they may need a
+		 * resource owner anyway to manage buffer pins acquired outside
+		 * transactions (and, perhaps, other things in future).
+		 */
+		CreateAuxProcessResourceOwner();
+
 		/* Initialize backend status information */
 		pgstat_initialize();
 		pgstat_bestart();
@@ -494,6 +502,13 @@ BootstrapModeMain(void)
 
 	Assert(!IsUnderPostmaster);
 	Assert(IsBootstrapProcessingMode());
+
+	/*
+	 * To ensure that src/common/link-canary.c is linked into the backend, we
+	 * must call it from somewhere.  Here is as good as anywhere.
+	 */
+	if (pg_link_canary_is_frontend())
+		elog(ERROR, "backend is incorrectly linked to frontend functions");
 
 	/*
 	 * Do backend-like initialization for bootstrap mode
@@ -601,7 +616,7 @@ boot_openrel(char *relname)
 		app = Typ;
 		while ((tup = heap_getnext(scan, ForwardScanDirection)) != NULL)
 		{
-			(*app)->am_oid = HeapTupleGetOid(tup);
+			(*app)->am_oid = ((Form_pg_type) GETSTRUCT(tup))->oid;
 			memcpy((char *) &(*app)->am_typ,
 				   (char *) GETSTRUCT(tup),
 				   sizeof((*app)->am_typ));
@@ -729,6 +744,15 @@ DefineAttr(char *name, char *type, int attnum, int nullness)
 			attrtypes[attnum]->attndims = 0;
 	}
 
+	/*
+	 * If a system catalog column is collation-aware, force it to use C
+	 * collation, so that its behavior is independent of the database's
+	 * collation.  This is essential to allow template0 to be cloned with a
+	 * different database collation.
+	 */
+	if (OidIsValid(attrtypes[attnum]->attcollation))
+		attrtypes[attnum]->attcollation = C_COLLATION_OID;
+
 	attrtypes[attnum]->attstattarget = -1;
 	attrtypes[attnum]->attcacheoff = -1;
 	attrtypes[attnum]->atttypmod = -1;
@@ -784,20 +808,16 @@ DefineAttr(char *name, char *type, int attnum, int nullness)
  * ----------------
  */
 void
-InsertOneTuple(Oid objectid)
+InsertOneTuple(void)
 {
 	HeapTuple	tuple;
 	TupleDesc	tupDesc;
 	int			i;
 
-	elog(DEBUG4, "inserting row oid %u, %d columns", objectid, numattr);
+	elog(DEBUG4, "inserting row with %d columns", numattr);
 
-	tupDesc = CreateTupleDesc(numattr,
-							  RelationGetForm(boot_reldesc)->relhasoids,
-							  attrtypes);
+	tupDesc = CreateTupleDesc(numattr, attrtypes);
 	tuple = heap_form_tuple(tupDesc, values, Nulls);
-	if (objectid != (Oid) 0)
-		HeapTupleSetOid(tuple, objectid);
 	pfree(tupDesc);				/* just free's tupDesc, not the attrtypes */
 
 	simple_heap_insert(boot_reldesc, tuple);
@@ -931,7 +951,7 @@ gettype(char *type)
 		app = Typ;
 		while ((tup = heap_getnext(scan, ForwardScanDirection)) != NULL)
 		{
-			(*app)->am_oid = HeapTupleGetOid(tup);
+			(*app)->am_oid = ((Form_pg_type) GETSTRUCT(tup))->oid;
 			memmove((char *) &(*app++)->am_typ,
 					(char *) GETSTRUCT(tup),
 					sizeof((*app)->am_typ));

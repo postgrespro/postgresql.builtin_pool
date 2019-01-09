@@ -3,7 +3,7 @@
  * xlogreader.h
  *		Definitions for the generic XLog reading facility
  *
- * Portions Copyright (c) 2013-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 2013-2019, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *		src/include/access/xlogreader.h
@@ -185,7 +185,10 @@ struct XLogReaderState
 	 */
 	TimeLineID	nextTLI;
 
-	/* Buffer for current ReadRecord result (expandable) */
+	/*
+	 * Buffer for current ReadRecord result (expandable), used when a record
+	 * crosses a page boundary.
+	 */
 	char	   *readRecordBuf;
 	uint32		readRecordBufSize;
 
@@ -207,7 +210,7 @@ extern struct XLogRecord *XLogReadRecord(XLogReaderState *state,
 
 /* Validate a page */
 extern bool XLogReaderValidatePageHeader(XLogReaderState *state,
-					XLogRecPtr recptr, char *phdr);
+							 XLogRecPtr recptr, char *phdr);
 
 /* Invalidate read state */
 extern void XLogReaderInvalReadState(XLogReaderState *state);

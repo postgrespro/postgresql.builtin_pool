@@ -3,7 +3,7 @@
  * seclabel.c
  *	  routines to support security label feature.
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * -------------------------------------------------------------------------
@@ -321,7 +321,7 @@ SetSharedSecurityLabel(const ObjectAddress *object,
 /*
  * SetSecurityLabel attempts to set the security label for the specified
  * provider on the specified object to the given value.  NULL means that any
- * any existing label should be deleted.
+ * existing label should be deleted.
  */
 void
 SetSecurityLabel(const ObjectAddress *object,

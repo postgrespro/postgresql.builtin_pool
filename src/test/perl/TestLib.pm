@@ -194,6 +194,7 @@ sub system_or_bail
 	{
 		BAIL_OUT("system $_[0] failed");
 	}
+	return;
 }
 
 sub run_log
@@ -244,6 +245,7 @@ sub append_to_file
 	  or die "could not write \"$filename\": $!";
 	print $fh $str;
 	close $fh;
+	return;
 }
 
 # Check that all file/dir modes in a directory match the expected values,
@@ -259,8 +261,6 @@ sub check_mode_recursive
 		{
 			follow_fast => 1,
 			wanted      => sub {
-				my $file_stat = stat($File::Find::name);
-
 				# Is file in the ignore list?
 				foreach my $ignore ($ignore_list ? @{$ignore_list} : [])
 				{
@@ -270,8 +270,23 @@ sub check_mode_recursive
 					}
 				}
 
-				defined($file_stat)
-				  or die("unable to stat $File::Find::name");
+				# Allow ENOENT.  A running server can delete files, such as
+				# those in pg_stat.  Other stat() failures are fatal.
+				my $file_stat = stat($File::Find::name);
+				unless (defined($file_stat))
+				{
+					my $is_ENOENT = $!{ENOENT};
+					my $msg = "unable to stat $File::Find::name: $!";
+					if ($is_ENOENT)
+					{
+						warn $msg;
+						return;
+					}
+					else
+					{
+						die $msg;
+					}
+				}
 
 				my $file_mode = S_IMODE($file_stat->mode);
 
@@ -338,6 +353,7 @@ sub chmod_recursive
 			}
 		},
 		$dir);
+	return;
 }
 
 # Check presence of a given regexp within pg_config.h for the installation
@@ -363,20 +379,25 @@ sub check_pg_config
 #
 sub command_ok
 {
+	local $Test::Builder::Level = $Test::Builder::Level + 1;
 	my ($cmd, $test_name) = @_;
 	my $result = run_log($cmd);
 	ok($result, $test_name);
+	return;
 }
 
 sub command_fails
 {
+	local $Test::Builder::Level = $Test::Builder::Level + 1;
 	my ($cmd, $test_name) = @_;
 	my $result = run_log($cmd);
 	ok(!$result, $test_name);
+	return;
 }
 
 sub command_exit_is
 {
+	local $Test::Builder::Level = $Test::Builder::Level + 1;
 	my ($cmd, $expected, $test_name) = @_;
 	print("# Running: " . join(" ", @{$cmd}) . "\n");
 	my $h = IPC::Run::start $cmd;
@@ -394,10 +415,12 @@ sub command_exit_is
 	  ? ($h->full_results)[0]
 	  : $h->result(0);
 	is($result, $expected, $test_name);
+	return;
 }
 
 sub program_help_ok
 {
+	local $Test::Builder::Level = $Test::Builder::Level + 1;
 	my ($cmd) = @_;
 	my ($stdout, $stderr);
 	print("# Running: $cmd --help\n");
@@ -406,10 +429,12 @@ sub program_help_ok
 	ok($result, "$cmd --help exit code 0");
 	isnt($stdout, '', "$cmd --help goes to stdout");
 	is($stderr, '', "$cmd --help nothing to stderr");
+	return;
 }
 
 sub program_version_ok
 {
+	local $Test::Builder::Level = $Test::Builder::Level + 1;
 	my ($cmd) = @_;
 	my ($stdout, $stderr);
 	print("# Running: $cmd --version\n");
@@ -418,10 +443,12 @@ sub program_version_ok
 	ok($result, "$cmd --version exit code 0");
 	isnt($stdout, '', "$cmd --version goes to stdout");
 	is($stderr, '', "$cmd --version nothing to stderr");
+	return;
 }
 
 sub program_options_handling_ok
 {
+	local $Test::Builder::Level = $Test::Builder::Level + 1;
 	my ($cmd) = @_;
 	my ($stdout, $stderr);
 	print("# Running: $cmd --not-a-valid-option\n");
@@ -430,10 +457,12 @@ sub program_options_handling_ok
 	  '2>', \$stderr;
 	ok(!$result, "$cmd with invalid option nonzero exit code");
 	isnt($stderr, '', "$cmd with invalid option prints error message");
+	return;
 }
 
 sub command_like
 {
+	local $Test::Builder::Level = $Test::Builder::Level + 1;
 	my ($cmd, $expected_stdout, $test_name) = @_;
 	my ($stdout, $stderr);
 	print("# Running: " . join(" ", @{$cmd}) . "\n");
@@ -441,10 +470,12 @@ sub command_like
 	ok($result, "$test_name: exit code 0");
 	is($stderr, '', "$test_name: no stderr");
 	like($stdout, $expected_stdout, "$test_name: matches");
+	return;
 }
 
 sub command_like_safe
 {
+	local $Test::Builder::Level = $Test::Builder::Level + 1;
 
 	# Doesn't rely on detecting end of file on the file descriptors,
 	# which can fail, causing the process to hang, notably on Msys
@@ -460,16 +491,19 @@ sub command_like_safe
 	ok($result, "$test_name: exit code 0");
 	is($stderr, '', "$test_name: no stderr");
 	like($stdout, $expected_stdout, "$test_name: matches");
+	return;
 }
 
 sub command_fails_like
 {
+	local $Test::Builder::Level = $Test::Builder::Level + 1;
 	my ($cmd, $expected_stderr, $test_name) = @_;
 	my ($stdout, $stderr);
 	print("# Running: " . join(" ", @{$cmd}) . "\n");
 	my $result = IPC::Run::run $cmd, '>', \$stdout, '2>', \$stderr;
 	ok(!$result, "$test_name: exit code not 0");
 	like($stderr, $expected_stderr, "$test_name: matches");
+	return;
 }
 
 # Run a command and check its status and outputs.
@@ -481,6 +515,8 @@ sub command_fails_like
 # - test_name: name of test
 sub command_checks_all
 {
+	local $Test::Builder::Level = $Test::Builder::Level + 1;
+
 	my ($cmd, $expected_ret, $out, $err, $test_name) = @_;
 
 	# run command
@@ -509,6 +545,8 @@ sub command_checks_all
 	{
 		like($stderr, $re, "$test_name stderr /$re/");
 	}
+
+	return;
 }
 
 1;

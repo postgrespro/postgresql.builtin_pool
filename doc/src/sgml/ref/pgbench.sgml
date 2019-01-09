@@ -511,7 +511,7 @@ pgbench <optional> <replaceable>options</replaceable> </optional> <replaceable>d
       <listitem>
        <para>
         Show progress report every <replaceable>sec</replaceable> seconds.  The report
-        includes the time since the beginning of the run, the tps since the
+        includes the time since the beginning of the run, the TPS since the
         last report, and the transaction latency average and standard
         deviation since the last report.  Under throttling (<option>-R</option>),
         the latency is computed with respect to the transaction scheduled
@@ -727,9 +727,9 @@ pgbench <optional> <replaceable>options</replaceable> </optional> <replaceable>d
        </para>
        <para>
         Remember to take the sampling rate into account when processing the
-        log file. For example, when computing tps values, you need to multiply
+        log file. For example, when computing TPS values, you need to multiply
         the numbers accordingly (e.g. with 0.01 sample rate, you'll only get
-        1/100 of the actual tps).
+        1/100 of the actual TPS).
        </para>
       </listitem>
      </varlistentry>
@@ -802,6 +802,18 @@ pgbench <optional> <replaceable>options</replaceable> </optional> <replaceable>d
    </para>
 
  </refsect2>
+ </refsect1>
+
+ <refsect1>
+  <title>Exit Status</title>
+
+  <para>
+   A successful run will exit with status 0.  Exit status 1 indicates static
+   problems such as invalid command-line options.  Errors during the run such
+   as database errors or problems in the script will result in exit status 2.
+   In the latter case, <application>pgbench</application> will print partial
+   results.
+  </para>
  </refsect1>
 
  <refsect1>
@@ -948,7 +960,7 @@ pgbench <optional> <replaceable>options</replaceable> </optional> <replaceable>d
     <term><literal>\else</literal></term>
     <term><literal>\endif</literal></term>
     <listitem>
-     <para> 
+     <para>
       This group of commands implements nestable conditional blocks,
       similarly to <literal>psql</literal>'s <xref linkend="psql-metacommand-if"/>.
       Conditional expressions are identical to those with <literal>\set</literal>,
@@ -967,7 +979,7 @@ pgbench <optional> <replaceable>options</replaceable> </optional> <replaceable>d
       Sets variable <replaceable>varname</replaceable> to a value calculated
       from <replaceable>expression</replaceable>.
       The expression may contain the <literal>NULL</literal> constant,
-      boolean constants <literal>TRUE</literal> and <literal>FALSE</literal>,
+      Boolean constants <literal>TRUE</literal> and <literal>FALSE</literal>,
       integer constants such as <literal>5432</literal>,
       double constants such as <literal>3.14159</literal>,
       references to variables <literal>:</literal><replaceable>variablename</replaceable>,
@@ -987,6 +999,13 @@ pgbench <optional> <replaceable>options</replaceable> </optional> <replaceable>d
       For conditional purposes, non zero numerical values are
       <literal>TRUE</literal>, zero numerical values and <literal>NULL</literal>
       are <literal>FALSE</literal>.
+     </para>
+
+     <para>
+      Too large or small integer and double constants, as well as
+      integer arithmetic operators (<literal>+</literal>,
+      <literal>-</literal>, <literal>*</literal> and <literal>/</literal>)
+      raise errors on overflows.
      </para>
 
      <para>
@@ -1215,7 +1234,7 @@ pgbench <optional> <replaceable>options</replaceable> </optional> <replaceable>d
      </row>
      <row>
       <entry><literal>-</literal></entry>
-      <entry>substraction</entry>
+      <entry>subtraction</entry>
       <entry><literal>3 - 2.0</literal></entry>
       <entry><literal>1.0</literal></entry>
      </row>
@@ -1415,7 +1434,7 @@ pgbench <optional> <replaceable>options</replaceable> </optional> <replaceable>d
    <para>
     The <literal>random</literal> function generates values using a uniform
     distribution, that is all the values are drawn within the specified
-    range with equal probability. The <literal>random_exponential</literal>, 
+    range with equal probability. The <literal>random_exponential</literal>,
     <literal>random_gaussian</literal> and <literal>random_zipfian</literal>
     functions require an additional double parameter which determines the precise
     shape of the distribution.
@@ -1485,7 +1504,7 @@ f(x) = PHI(2.0 * parameter * (x - mu) / (max - min + 1)) /
     </listitem>
     <listitem>
      <para>
-      <literal>random_zipfian</literal> generates an approximated bounded zipfian
+      <literal>random_zipfian</literal> generates an approximated bounded Zipfian
       distribution. For <replaceable>parameter</replaceable> in (0, 1), an
       approximated algorithm is taken from
       "Quickly Generating Billion-Record Synthetic Databases",

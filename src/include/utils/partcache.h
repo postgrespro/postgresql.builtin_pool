@@ -2,7 +2,7 @@
  *
  * partcache.h
  *
- * Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Copyright (c) 1996-2019, PostgreSQL Global Development Group
  *
  * src/include/utils/partcache.h
  *
@@ -26,9 +26,9 @@ typedef struct PartitionKeyData
 	char		strategy;		/* partitioning strategy */
 	int16		partnatts;		/* number of columns in the partition key */
 	AttrNumber *partattrs;		/* attribute numbers of columns in the
-								 * partition key */
+								 * partition key or 0 if it's an expr */
 	List	   *partexprs;		/* list of expressions in the partitioning
-								 * key, or NIL */
+								 * key, one for each zero-valued partattrs */
 
 	Oid		   *partopfamily;	/* OIDs of operator families */
 	Oid		   *partopcintype;	/* OIDs of opclass declared input data types */

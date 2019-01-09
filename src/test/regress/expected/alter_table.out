@@ -23,9 +23,7 @@ ALTER TABLE attmp ADD COLUMN d float8;
 ALTER TABLE attmp ADD COLUMN e float4;
 ALTER TABLE attmp ADD COLUMN f int2;
 ALTER TABLE attmp ADD COLUMN g polygon;
-ALTER TABLE attmp ADD COLUMN h abstime;
 ALTER TABLE attmp ADD COLUMN i char;
-ALTER TABLE attmp ADD COLUMN j abstime[];
 ALTER TABLE attmp ADD COLUMN k int4;
 ALTER TABLE attmp ADD COLUMN l tid;
 ALTER TABLE attmp ADD COLUMN m xid;
@@ -36,24 +34,23 @@ ALTER TABLE attmp ADD COLUMN q point;
 ALTER TABLE attmp ADD COLUMN r lseg;
 ALTER TABLE attmp ADD COLUMN s path;
 ALTER TABLE attmp ADD COLUMN t box;
-ALTER TABLE attmp ADD COLUMN u tinterval;
 ALTER TABLE attmp ADD COLUMN v timestamp;
 ALTER TABLE attmp ADD COLUMN w interval;
 ALTER TABLE attmp ADD COLUMN x float8[];
 ALTER TABLE attmp ADD COLUMN y float4[];
 ALTER TABLE attmp ADD COLUMN z int2[];
-INSERT INTO attmp (a, b, c, d, e, f, g, h, i, j, k, l, m, n, p, q, r, s, t, u,
+INSERT INTO attmp (a, b, c, d, e, f, g,    i,    k, l, m, n, p, q, r, s, t,
 	v, w, x, y, z)
    VALUES (4, 'name', 'text', 4.1, 4.1, 2, '(4.1,4.1,3.1,3.1)',
-        'Mon May  1 00:30:30 1995', 'c', '{Mon May  1 00:30:30 1995, Monday Aug 24 14:43:07 1992, epoch}',
+	'c',
 	314159, '(1,1)', '512',
 	'1 2 3 4 5 6 7 8', 'magnetic disk', '(1.1,1.1)', '(4.1,4.1,3.1,3.1)',
-	'(0,2,4.1,4.1,3.1,3.1)', '(4.1,4.1,3.1,3.1)', '["epoch" "infinity"]',
+	'(0,2,4.1,4.1,3.1,3.1)', '(4.1,4.1,3.1,3.1)',
 	'epoch', '01:00:10', '{1.0,2.0,3.0,4.0}', '{1.0,2.0,3.0,4.0}', '{1,2,3,4}');
 SELECT * FROM attmp;
- initial | a |  b   |  c   |  d  |  e  | f |           g           |              h               | i |                                               j                                                |   k    |   l   |  m  |        n        |       p       |     q     |           r           |              s              |          t          |                      u                      |            v             |        w         |     x     |     y     |     z     
----------+---+------+------+-----+-----+---+-----------------------+------------------------------+---+------------------------------------------------------------------------------------------------+--------+-------+-----+-----------------+---------------+-----------+-----------------------+-----------------------------+---------------------+---------------------------------------------+--------------------------+------------------+-----------+-----------+-----------
-         | 4 | name | text | 4.1 | 4.1 | 2 | ((4.1,4.1),(3.1,3.1)) | Mon May 01 00:30:30 1995 PDT | c | {"Mon May 01 00:30:30 1995 PDT","Mon Aug 24 14:43:07 1992 PDT","Wed Dec 31 16:00:00 1969 PST"} | 314159 | (1,1) | 512 | 1 2 3 4 5 6 7 8 | magnetic disk | (1.1,1.1) | [(4.1,4.1),(3.1,3.1)] | ((0,2),(4.1,4.1),(3.1,3.1)) | (4.1,4.1),(3.1,3.1) | ["Wed Dec 31 16:00:00 1969 PST" "infinity"] | Thu Jan 01 00:00:00 1970 | @ 1 hour 10 secs | {1,2,3,4} | {1,2,3,4} | {1,2,3,4}
+ initial | a |  b   |  c   |  d  |  e  | f |           g           | i |   k    |   l   |  m  |        n        |       p       |     q     |           r           |              s              |          t          |            v             |        w         |     x     |     y     |     z     
+---------+---+------+------+-----+-----+---+-----------------------+---+--------+-------+-----+-----------------+---------------+-----------+-----------------------+-----------------------------+---------------------+--------------------------+------------------+-----------+-----------+-----------
+         | 4 | name | text | 4.1 | 4.1 | 2 | ((4.1,4.1),(3.1,3.1)) | c | 314159 | (1,1) | 512 | 1 2 3 4 5 6 7 8 | magnetic disk | (1.1,1.1) | [(4.1,4.1),(3.1,3.1)] | ((0,2),(4.1,4.1),(3.1,3.1)) | (4.1,4.1),(3.1,3.1) | Thu Jan 01 00:00:00 1970 | @ 1 hour 10 secs | {1,2,3,4} | {1,2,3,4} | {1,2,3,4}
 (1 row)
 
 DROP TABLE attmp;
@@ -68,9 +65,7 @@ ALTER TABLE attmp ADD COLUMN d float8;
 ALTER TABLE attmp ADD COLUMN e float4;
 ALTER TABLE attmp ADD COLUMN f int2;
 ALTER TABLE attmp ADD COLUMN g polygon;
-ALTER TABLE attmp ADD COLUMN h abstime;
 ALTER TABLE attmp ADD COLUMN i char;
-ALTER TABLE attmp ADD COLUMN j abstime[];
 ALTER TABLE attmp ADD COLUMN k int4;
 ALTER TABLE attmp ADD COLUMN l tid;
 ALTER TABLE attmp ADD COLUMN m xid;
@@ -81,24 +76,23 @@ ALTER TABLE attmp ADD COLUMN q point;
 ALTER TABLE attmp ADD COLUMN r lseg;
 ALTER TABLE attmp ADD COLUMN s path;
 ALTER TABLE attmp ADD COLUMN t box;
-ALTER TABLE attmp ADD COLUMN u tinterval;
 ALTER TABLE attmp ADD COLUMN v timestamp;
 ALTER TABLE attmp ADD COLUMN w interval;
 ALTER TABLE attmp ADD COLUMN x float8[];
 ALTER TABLE attmp ADD COLUMN y float4[];
 ALTER TABLE attmp ADD COLUMN z int2[];
-INSERT INTO attmp (a, b, c, d, e, f, g, h, i, j, k, l, m, n, p, q, r, s, t, u,
+INSERT INTO attmp (a, b, c, d, e, f, g,    i,   k, l, m, n, p, q, r, s, t,
 	v, w, x, y, z)
    VALUES (4, 'name', 'text', 4.1, 4.1, 2, '(4.1,4.1,3.1,3.1)',
-        'Mon May  1 00:30:30 1995', 'c', '{Mon May  1 00:30:30 1995, Monday Aug 24 14:43:07 1992, epoch}',
+        'c',
 	314159, '(1,1)', '512',
 	'1 2 3 4 5 6 7 8', 'magnetic disk', '(1.1,1.1)', '(4.1,4.1,3.1,3.1)',
-	'(0,2,4.1,4.1,3.1,3.1)', '(4.1,4.1,3.1,3.1)', '["epoch" "infinity"]',
+	'(0,2,4.1,4.1,3.1,3.1)', '(4.1,4.1,3.1,3.1)',
 	'epoch', '01:00:10', '{1.0,2.0,3.0,4.0}', '{1.0,2.0,3.0,4.0}', '{1,2,3,4}');
 SELECT * FROM attmp;
- initial | a |  b   |  c   |  d  |  e  | f |           g           |              h               | i |                                               j                                                |   k    |   l   |  m  |        n        |       p       |     q     |           r           |              s              |          t          |                      u                      |            v             |        w         |     x     |     y     |     z     
----------+---+------+------+-----+-----+---+-----------------------+------------------------------+---+------------------------------------------------------------------------------------------------+--------+-------+-----+-----------------+---------------+-----------+-----------------------+-----------------------------+---------------------+---------------------------------------------+--------------------------+------------------+-----------+-----------+-----------
-         | 4 | name | text | 4.1 | 4.1 | 2 | ((4.1,4.1),(3.1,3.1)) | Mon May 01 00:30:30 1995 PDT | c | {"Mon May 01 00:30:30 1995 PDT","Mon Aug 24 14:43:07 1992 PDT","Wed Dec 31 16:00:00 1969 PST"} | 314159 | (1,1) | 512 | 1 2 3 4 5 6 7 8 | magnetic disk | (1.1,1.1) | [(4.1,4.1),(3.1,3.1)] | ((0,2),(4.1,4.1),(3.1,3.1)) | (4.1,4.1),(3.1,3.1) | ["Wed Dec 31 16:00:00 1969 PST" "infinity"] | Thu Jan 01 00:00:00 1970 | @ 1 hour 10 secs | {1,2,3,4} | {1,2,3,4} | {1,2,3,4}
+ initial | a |  b   |  c   |  d  |  e  | f |           g           | i |   k    |   l   |  m  |        n        |       p       |     q     |           r           |              s              |          t          |            v             |        w         |     x     |     y     |     z     
+---------+---+------+------+-----+-----+---+-----------------------+---+--------+-------+-----+-----------------+---------------+-----------+-----------------------+-----------------------------+---------------------+--------------------------+------------------+-----------+-----------+-----------
+         | 4 | name | text | 4.1 | 4.1 | 2 | ((4.1,4.1),(3.1,3.1)) | c | 314159 | (1,1) | 512 | 1 2 3 4 5 6 7 8 | magnetic disk | (1.1,1.1) | [(4.1,4.1),(3.1,3.1)] | ((0,2),(4.1,4.1),(3.1,3.1)) | (4.1,4.1),(3.1,3.1) | Thu Jan 01 00:00:00 1970 | @ 1 hour 10 secs | {1,2,3,4} | {1,2,3,4} | {1,2,3,4}
 (1 row)
 
 CREATE INDEX attmp_idx ON attmp (a, (d + e), b);
@@ -111,12 +105,12 @@ ERROR:  cannot alter statistics on non-expression column "a" of index "attmp_idx
 HINT:  Alter statistics on table column instead.
 ALTER INDEX attmp_idx ALTER COLUMN 2 SET STATISTICS 1000;
 \d+ attmp_idx
-                    Index "public.attmp_idx"
- Column |       Type       | Definition | Storage | Stats target 
---------+------------------+------------+---------+--------------
- a      | integer          | a          | plain   | 
- expr   | double precision | (d + e)    | plain   | 1000
- b      | cstring          | b          | plain   | 
+                        Index "public.attmp_idx"
+ Column |       Type       | Key? | Definition | Storage | Stats target 
+--------+------------------+------+------------+---------+--------------
+ a      | integer          | yes  | a          | plain   | 
+ expr   | double precision | yes  | (d + e)    | plain   | 1000
+ b      | cstring          | yes  | b          | plain   | 
 btree, for table "public.attmp"
 
 ALTER INDEX attmp_idx ALTER COLUMN 3 SET STATISTICS 1000;
@@ -159,6 +153,24 @@ SELECT * FROM attmp_new2;
 
 DROP TABLE attmp_new;
 DROP TABLE attmp_new2;
+-- check rename of partitioned tables and indexes also
+CREATE TABLE part_attmp (a int primary key) partition by range (a);
+CREATE TABLE part_attmp1 PARTITION OF part_attmp FOR VALUES FROM (0) TO (100);
+ALTER INDEX part_attmp_pkey RENAME TO part_attmp_index;
+ALTER INDEX part_attmp1_pkey RENAME TO part_attmp1_index;
+ALTER TABLE part_attmp RENAME TO part_at2tmp;
+ALTER TABLE part_attmp1 RENAME TO part_at2tmp1;
+SET ROLE regress_alter_table_user1;
+ALTER INDEX part_attmp_index RENAME TO fail;
+ERROR:  must be owner of index part_attmp_index
+ALTER INDEX part_attmp1_index RENAME TO fail;
+ERROR:  must be owner of index part_attmp1_index
+ALTER TABLE part_at2tmp RENAME TO fail;
+ERROR:  must be owner of table part_at2tmp
+ALTER TABLE part_at2tmp1 RENAME TO fail;
+ERROR:  must be owner of table part_at2tmp1
+RESET ROLE;
+DROP TABLE part_at2tmp;
 --
 -- check renaming to a table's array type's autogenerated name
 -- (the array type's name should get out of the way)
@@ -381,6 +393,28 @@ ALTER TABLE IF EXISTS constraint_not_exist RENAME CONSTRAINT con3 TO con3foo; --
 NOTICE:  relation "constraint_not_exist" does not exist, skipping
 ALTER TABLE IF EXISTS constraint_rename_test ADD CONSTRAINT con4 UNIQUE (a);
 NOTICE:  relation "constraint_rename_test" does not exist, skipping
+-- renaming constraints with cache reset of target relation
+CREATE TABLE constraint_rename_cache (a int,
+  CONSTRAINT chk_a CHECK (a > 0),
+  PRIMARY KEY (a));
+ALTER TABLE constraint_rename_cache
+  RENAME CONSTRAINT chk_a TO chk_a_new;
+ALTER TABLE constraint_rename_cache
+  RENAME CONSTRAINT constraint_rename_cache_pkey TO constraint_rename_pkey_new;
+CREATE TABLE like_constraint_rename_cache
+  (LIKE constraint_rename_cache INCLUDING ALL);
+\d like_constraint_rename_cache
+    Table "public.like_constraint_rename_cache"
+ Column |  Type   | Collation | Nullable | Default 
+--------+---------+-----------+----------+---------
+ a      | integer |           | not null | 
+Indexes:
+    "like_constraint_rename_cache_pkey" PRIMARY KEY, btree (a)
+Check constraints:
+    "chk_a_new" CHECK (a > 0)
+
+DROP TABLE constraint_rename_cache;
+DROP TABLE like_constraint_rename_cache;
 -- FOREIGN KEY CONSTRAINT adding TEST
 CREATE TABLE attmp2 (a int primary key);
 CREATE TABLE attmp3 (a int, b int);
@@ -837,7 +871,7 @@ ERROR:  check constraint "foo" is violated by some row
 drop table atacc2;
 drop table atacc1;
 -- test unique constraint adding
-create table atacc1 ( test int ) with oids;
+create table atacc1 ( test int ) ;
 -- add a unique constraint
 alter table atacc1 add constraint atacc_test1 unique (test);
 -- insert first value
@@ -848,8 +882,6 @@ ERROR:  duplicate key value violates unique constraint "atacc_test1"
 DETAIL:  Key (test)=(2) already exists.
 -- should succeed
 insert into atacc1 (test) values (4);
--- try adding a unique oid constraint
-alter table atacc1 add constraint atacc_oid1 unique(oid);
 -- try to create duplicates via alter table using - should fail
 alter table atacc1 alter column test type integer using 0;
 ERROR:  could not create unique index "atacc_test1"
@@ -898,7 +930,7 @@ ERROR:  duplicate key value violates unique constraint "atacc1_test_key"
 DETAIL:  Key (test)=(3) already exists.
 drop table atacc1;
 -- test primary key constraint adding
-create table atacc1 ( test int ) with oids;
+create table atacc1 ( id serial, test int) ;
 -- add a primary key constraint
 alter table atacc1 add constraint atacc_test1 primary key (test);
 -- insert first value
@@ -912,14 +944,14 @@ insert into atacc1 (test) values (4);
 -- inserting NULL should fail
 insert into atacc1 (test) values(NULL);
 ERROR:  null value in column "test" violates not-null constraint
-DETAIL:  Failing row contains (null).
+DETAIL:  Failing row contains (4, null).
 -- try adding a second primary key (should fail)
-alter table atacc1 add constraint atacc_oid1 primary key(oid);
+alter table atacc1 add constraint atacc_oid1 primary key(id);
 ERROR:  multiple primary keys for table "atacc1" are not allowed
 -- drop first primary key constraint
 alter table atacc1 drop constraint atacc_test1 restrict;
 -- try adding a primary key on oid (should succeed)
-alter table atacc1 add constraint atacc_oid1 primary key(oid);
+alter table atacc1 add constraint atacc_oid1 primary key(id);
 drop table atacc1;
 -- let's do one where the primary key constraint fails when added
 create table atacc1 ( test int );
@@ -1009,7 +1041,7 @@ alter table non_existent alter column bar drop not null;
 ERROR:  relation "non_existent" does not exist
 -- test setting columns to null and not null and vice versa
 -- test checking for null values and primary key
-create table atacc1 (test int not null) with oids;
+create table atacc1 (test int not null);
 alter table atacc1 add constraint "atacc1_pkey" primary key (test);
 alter table atacc1 alter column test drop not null;
 ERROR:  column "test" is in a primary key
@@ -1025,11 +1057,6 @@ alter table atacc1 alter bar set not null;
 ERROR:  column "bar" of relation "atacc1" does not exist
 alter table atacc1 alter bar drop not null;
 ERROR:  column "bar" of relation "atacc1" does not exist
--- try altering the oid column, should fail
-alter table atacc1 alter oid set not null;
-ERROR:  cannot alter system column "oid"
-alter table atacc1 alter oid drop not null;
-ERROR:  cannot alter system column "oid"
 -- try creating a view and altering that, should fail
 create view myview as select * from atacc1;
 alter table myview alter column test drop not null;
@@ -1095,7 +1122,7 @@ select * from def_test;
 
 -- set defaults to an incorrect type: this should fail
 alter table def_test alter column c1 set default 'wrong_datatype';
-ERROR:  invalid input syntax for integer: "wrong_datatype"
+ERROR:  invalid input syntax for type integer: "wrong_datatype"
 alter table def_test alter column c2 set default 20;
 -- set defaults on a non-existent column: this should fail
 alter table def_test alter column c3 set default 30;
@@ -1135,7 +1162,7 @@ ERROR:  permission denied: "pg_class" is a system catalog
 alter table nosuchtable drop column bar;
 ERROR:  relation "nosuchtable" does not exist
 -- test dropping columns
-create table atacc1 (a int4 not null, b int4, c int4 not null, d int4) with oids;
+create table atacc1 (a int4 not null, b int4, c int4 not null, d int4);
 insert into atacc1 values (1, 2, 3, 4);
 alter table atacc1 drop a;
 alter table atacc1 drop a;
@@ -1280,8 +1307,13 @@ delete from atacc1;
 -- try dropping a non-existent column, should fail
 alter table atacc1 drop bar;
 ERROR:  column "bar" of relation "atacc1" does not exist
--- try dropping the oid column, should succeed
-alter table atacc1 drop oid;
+-- try removing an oid column, should succeed (as it's nonexistant)
+alter table atacc1 SET WITHOUT OIDS;
+-- try adding an oid column, should fail (not supported)
+alter table atacc1 SET WITH OIDS;
+ERROR:  syntax error at or near "WITH"
+LINE 1: alter table atacc1 SET WITH OIDS;
+                               ^
 -- try dropping the xmin column, should fail
 alter table atacc1 drop xmin;
 ERROR:  cannot drop system column "xmin"
@@ -1679,131 +1711,6 @@ order by attrelid::regclass::text, attnum;
  depth2   | c       |           1 | f
 (3 rows)
 
---
--- Test the ALTER TABLE SET WITH/WITHOUT OIDS command
---
-create table altstartwith (col integer) with oids;
-insert into altstartwith values (1);
-select oid > 0, * from altstartwith;
- ?column? | col 
-----------+-----
- t        |   1
-(1 row)
-
-alter table altstartwith set without oids;
-select oid > 0, * from altstartwith; -- fails
-ERROR:  column "oid" does not exist
-LINE 1: select oid > 0, * from altstartwith;
-               ^
-select * from altstartwith;
- col 
------
-   1
-(1 row)
-
-alter table altstartwith set with oids;
-select oid > 0, * from altstartwith;
- ?column? | col 
-----------+-----
- t        |   1
-(1 row)
-
-drop table altstartwith;
--- Check inheritance cases
-create table altwithoid (col integer) with oids;
--- Inherits parents oid column anyway
-create table altinhoid () inherits (altwithoid) without oids;
-insert into altinhoid values (1);
-select oid > 0, * from altwithoid;
- ?column? | col 
-----------+-----
- t        |   1
-(1 row)
-
-select oid > 0, * from altinhoid;
- ?column? | col 
-----------+-----
- t        |   1
-(1 row)
-
-alter table altwithoid set without oids;
-select oid > 0, * from altwithoid; -- fails
-ERROR:  column "oid" does not exist
-LINE 1: select oid > 0, * from altwithoid;
-               ^
-select oid > 0, * from altinhoid; -- fails
-ERROR:  column "oid" does not exist
-LINE 1: select oid > 0, * from altinhoid;
-               ^
-select * from altwithoid;
- col 
------
-   1
-(1 row)
-
-select * from altinhoid;
- col 
------
-   1
-(1 row)
-
-alter table altwithoid set with oids;
-select oid > 0, * from altwithoid;
- ?column? | col 
-----------+-----
- t        |   1
-(1 row)
-
-select oid > 0, * from altinhoid;
- ?column? | col 
-----------+-----
- t        |   1
-(1 row)
-
-drop table altwithoid cascade;
-NOTICE:  drop cascades to table altinhoid
-create table altwithoid (col integer) without oids;
--- child can have local oid column
-create table altinhoid () inherits (altwithoid) with oids;
-insert into altinhoid values (1);
-select oid > 0, * from altwithoid; -- fails
-ERROR:  column "oid" does not exist
-LINE 1: select oid > 0, * from altwithoid;
-               ^
-select oid > 0, * from altinhoid;
- ?column? | col 
-----------+-----
- t        |   1
-(1 row)
-
-alter table altwithoid set with oids;
-NOTICE:  merging definition of column "oid" for child "altinhoid"
-select oid > 0, * from altwithoid;
- ?column? | col 
-----------+-----
- t        |   1
-(1 row)
-
-select oid > 0, * from altinhoid;
- ?column? | col 
-----------+-----
- t        |   1
-(1 row)
-
--- the child's local definition should remain
-alter table altwithoid set without oids;
-select oid > 0, * from altwithoid; -- fails
-ERROR:  column "oid" does not exist
-LINE 1: select oid > 0, * from altwithoid;
-               ^
-select oid > 0, * from altinhoid;
- ?column? | col 
-----------+-----
- t        |   1
-(1 row)
-
-drop table altwithoid cascade;
-NOTICE:  drop cascades to table altinhoid
 -- test renumbering of child-table columns in inherited operations
 create table p1 (f1 int);
 create table c1 (f2 text, f3 int) inherits (p1);
@@ -1844,7 +1751,7 @@ select * from foo;
 (1 row)
 
 drop domain mytype cascade;
-NOTICE:  drop cascades to table foo column f2
+NOTICE:  drop cascades to column f2 of table foo
 select * from foo;
  f1 | f3 
 ----+----
@@ -2680,11 +2587,11 @@ drop cascades to operator family alter2.ctype_hash_ops for access method hash
 drop cascades to type alter2.ctype
 drop cascades to function alter2.same(alter2.ctype,alter2.ctype)
 drop cascades to operator alter2.=(alter2.ctype,alter2.ctype)
-drop cascades to conversion ascii_to_utf8
-drop cascades to text search parser prs
-drop cascades to text search configuration cfg
-drop cascades to text search template tmpl
-drop cascades to text search dictionary dict
+drop cascades to conversion alter2.ascii_to_utf8
+drop cascades to text search parser alter2.prs
+drop cascades to text search configuration alter2.cfg
+drop cascades to text search template alter2.tmpl
+drop cascades to text search dictionary alter2.dict
 --
 -- composite types
 --
@@ -2870,8 +2777,8 @@ DROP TABLE test_tbl2_subclass;
 CREATE TYPE test_typex AS (a int, b text);
 CREATE TABLE test_tblx (x int, y test_typex check ((y).a > 0));
 ALTER TYPE test_typex DROP ATTRIBUTE a; -- fails
-ERROR:  cannot drop composite type test_typex column a because other objects depend on it
-DETAIL:  constraint test_tblx_y_check on table test_tblx depends on composite type test_typex column a
+ERROR:  cannot drop column a of composite type test_typex because other objects depend on it
+DETAIL:  constraint test_tblx_y_check on table test_tblx depends on column a of composite type test_typex
 HINT:  Use DROP ... CASCADE to drop the dependent objects too.
 ALTER TYPE test_typex DROP ATTRIBUTE a CASCADE;
 NOTICE:  drop cascades to constraint test_tblx_y_check on table test_tblx
@@ -2904,7 +2811,7 @@ CREATE TABLE tt3 (y numeric(8,2), x int);			-- wrong column order
 CREATE TABLE tt4 (x int);							-- too few columns
 CREATE TABLE tt5 (x int, y numeric(8,2), z int);	-- too few columns
 CREATE TABLE tt6 () INHERITS (tt0);					-- can't have a parent
-CREATE TABLE tt7 (x int, q text, y numeric(8,2)) WITH OIDS;
+CREATE TABLE tt7 (x int, q text, y numeric(8,2));
 ALTER TABLE tt7 DROP q;								-- OK
 ALTER TABLE tt0 OF tt_t0;
 ALTER TABLE tt1 OF tt_t0;
@@ -2976,6 +2883,41 @@ Check constraints:
 
 DROP TABLE alter2.tt8;
 DROP SCHEMA alter2;
+--
+-- Check conflicts between index and CHECK constraint names
+--
+CREATE TABLE tt9(c integer);
+ALTER TABLE tt9 ADD CHECK(c > 1);
+ALTER TABLE tt9 ADD CHECK(c > 2);  -- picks nonconflicting name
+ALTER TABLE tt9 ADD CONSTRAINT foo CHECK(c > 3);
+ALTER TABLE tt9 ADD CONSTRAINT foo CHECK(c > 4);  -- fail, dup name
+ERROR:  constraint "foo" for relation "tt9" already exists
+ALTER TABLE tt9 ADD UNIQUE(c);
+ALTER TABLE tt9 ADD UNIQUE(c);  -- picks nonconflicting name
+ALTER TABLE tt9 ADD CONSTRAINT tt9_c_key UNIQUE(c);  -- fail, dup name
+ERROR:  relation "tt9_c_key" already exists
+ALTER TABLE tt9 ADD CONSTRAINT foo UNIQUE(c);  -- fail, dup name
+ERROR:  constraint "foo" for relation "tt9" already exists
+ALTER TABLE tt9 ADD CONSTRAINT tt9_c_key CHECK(c > 5);  -- fail, dup name
+ERROR:  constraint "tt9_c_key" for relation "tt9" already exists
+ALTER TABLE tt9 ADD CONSTRAINT tt9_c_key2 CHECK(c > 6);
+ALTER TABLE tt9 ADD UNIQUE(c);  -- picks nonconflicting name
+\d tt9
+                Table "public.tt9"
+ Column |  Type   | Collation | Nullable | Default 
+--------+---------+-----------+----------+---------
+ c      | integer |           |          | 
+Indexes:
+    "tt9_c_key" UNIQUE CONSTRAINT, btree (c)
+    "tt9_c_key1" UNIQUE CONSTRAINT, btree (c)
+    "tt9_c_key3" UNIQUE CONSTRAINT, btree (c)
+Check constraints:
+    "foo" CHECK (c > 3)
+    "tt9_c_check" CHECK (c > 1)
+    "tt9_c_check1" CHECK (c > 2)
+    "tt9_c_key2" CHECK (c > 6)
+
+DROP TABLE tt9;
 -- Check that comments on constraints and indexes are not lost at ALTER TABLE.
 CREATE TABLE comment_test (
   id int,
@@ -3231,6 +3173,9 @@ ALTER TABLE test_add_column
 ALTER TABLE test_add_column
 	ADD COLUMN c2 integer; -- fail because c2 already exists
 ERROR:  column "c2" of relation "test_add_column" already exists
+ALTER TABLE ONLY test_add_column
+	ADD COLUMN c2 integer; -- fail because c2 already exists
+ERROR:  column "c2" of relation "test_add_column" already exists
 \d test_add_column
           Table "public.test_add_column"
  Column |  Type   | Collation | Nullable | Default 
@@ -3239,6 +3184,9 @@ ERROR:  column "c2" of relation "test_add_column" already exists
  c2     | integer |           |          | 
 
 ALTER TABLE test_add_column
+	ADD COLUMN IF NOT EXISTS c2 integer; -- skipping because c2 already exists
+NOTICE:  column "c2" of relation "test_add_column" already exists, skipping
+ALTER TABLE ONLY test_add_column
 	ADD COLUMN IF NOT EXISTS c2 integer; -- skipping because c2 already exists
 NOTICE:  column "c2" of relation "test_add_column" already exists, skipping
 \d test_add_column
@@ -3394,16 +3342,6 @@ ALTER TABLE list_parted ATTACH PARTITION fail_part FOR VALUES IN (1);
 ERROR:  cannot attach a typed table as partition
 DROP TYPE mytype CASCADE;
 NOTICE:  drop cascades to table fail_part
--- check existence (or non-existence) of oid column
-ALTER TABLE list_parted SET WITH OIDS;
-CREATE TABLE fail_part (a int);
-ALTER TABLE list_parted ATTACH PARTITION fail_part FOR VALUES IN (1);
-ERROR:  cannot attach table "fail_part" without OIDs as partition of table "list_parted" with OIDs
-ALTER TABLE list_parted SET WITHOUT OIDS;
-ALTER TABLE fail_part SET WITH OIDS;
-ALTER TABLE list_parted ATTACH PARTITION fail_part FOR VALUES IN (1);
-ERROR:  cannot attach table "fail_part" with OIDs as partition of table "list_parted" without OIDs
-DROP TABLE fail_part;
 -- check that the table being attached has only columns present in the parent
 CREATE TABLE fail_part (like list_parted, c int);
 ALTER TABLE list_parted ATTACH PARTITION fail_part FOR VALUES IN (1);
@@ -3894,3 +3832,49 @@ alter table defpart_attach_test_d add check (a > 1);
 alter table defpart_attach_test attach partition defpart_attach_test_d default;
 INFO:  partition constraint for table "defpart_attach_test_d" is implied by existing constraints
 drop table defpart_attach_test;
+-- check combinations of temporary and permanent relations when attaching
+-- partitions.
+create table perm_part_parent (a int) partition by list (a);
+create temp table temp_part_parent (a int) partition by list (a);
+create table perm_part_child (a int);
+create temp table temp_part_child (a int);
+alter table temp_part_parent attach partition perm_part_child default; -- error
+ERROR:  cannot attach a permanent relation as partition of temporary relation "temp_part_parent"
+alter table perm_part_parent attach partition temp_part_child default; -- error
+ERROR:  cannot attach a temporary relation as partition of permanent relation "perm_part_parent"
+alter table temp_part_parent attach partition temp_part_child default; -- ok
+drop table perm_part_parent cascade;
+drop table temp_part_parent cascade;
+-- check that attaching partitions to a table while it is being used is
+-- prevented
+create table tab_part_attach (a int) partition by list (a);
+create or replace function func_part_attach() returns trigger
+  language plpgsql as $$
+  begin
+    execute 'create table tab_part_attach_1 (a int)';
+    execute 'alter table tab_part_attach attach partition tab_part_attach_1 for values in (1)';
+    return null;
+  end $$;
+create trigger trig_part_attach before insert on tab_part_attach
+  for each statement execute procedure func_part_attach();
+insert into tab_part_attach values (1);
+ERROR:  cannot ALTER TABLE "tab_part_attach" because it is being used by active queries in this session
+CONTEXT:  SQL statement "alter table tab_part_attach attach partition tab_part_attach_1 for values in (1)"
+PL/pgSQL function func_part_attach() line 4 at EXECUTE
+drop table tab_part_attach;
+drop function func_part_attach();
+-- test case where the partitioning operator is a SQL function whose
+-- evaluation results in the table's relcache being rebuilt partway through
+-- the execution of an ATTACH PARTITION command
+create function at_test_sql_partop (int4, int4) returns int language sql
+as $$ select case when $1 = $2 then 0 when $1 > $2 then 1 else -1 end; $$;
+create operator class at_test_sql_partop for type int4 using btree as
+    operator 1 < (int4, int4), operator 2 <= (int4, int4),
+    operator 3 = (int4, int4), operator 4 >= (int4, int4),
+    operator 5 > (int4, int4), function 1 at_test_sql_partop(int4, int4);
+create table at_test_sql_partop (a int) partition by range (a at_test_sql_partop);
+create table at_test_sql_partop_1 (a int);
+alter table at_test_sql_partop attach partition at_test_sql_partop_1 for values from (0) to (10);
+drop table at_test_sql_partop;
+drop operator class at_test_sql_partop using btree;
+drop function at_test_sql_partop;

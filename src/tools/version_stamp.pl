@@ -3,7 +3,7 @@
 #################################################################
 # version_stamp.pl -- update version stamps throughout the source tree
 #
-# Copyright (c) 2008-2018, PostgreSQL Global Development Group
+# Copyright (c) 2008-2019, PostgreSQL Global Development Group
 #
 # src/tools/version_stamp.pl
 #################################################################
@@ -24,7 +24,7 @@ use strict;
 
 # Major version is hard-wired into the script.  We update it when we branch
 # a new development version.
-my $majorversion = 11;
+my $majorversion = 12;
 
 # Validate argument and compute derived variables
 my $minor = shift;
@@ -141,4 +141,5 @@ sub sed_file
 	  or die "mv failed: $?";
 
 	$fixedfiles .= "\t$filename\n";
+	return;
 }

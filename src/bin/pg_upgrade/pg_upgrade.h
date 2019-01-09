@@ -1,7 +1,7 @@
 /*
  *	pg_upgrade.h
  *
- *	Copyright (c) 2010-2018, PostgreSQL Global Development Group
+ *	Copyright (c) 2010-2019, PostgreSQL Global Development Group
  *	src/bin/pg_upgrade/pg_upgrade.h
  */
 
@@ -230,10 +230,11 @@ typedef struct
 } ControlData;
 
 /*
- * Enumeration to denote link modes
+ * Enumeration to denote transfer modes
  */
 typedef enum
 {
+	TRANSFER_MODE_CLONE,
 	TRANSFER_MODE_COPY,
 	TRANSFER_MODE_LINK
 } transferMode;
@@ -297,9 +298,15 @@ typedef struct
 	bool		check;			/* true -> ask user for permission to make
 								 * changes */
 	transferMode transfer_mode; /* copy files or link them? */
-	int			jobs;
+	int			jobs;			/* number of processes/threads to use */
+	char	   *socketdir;		/* directory to use for Unix sockets */
 } UserOpts;
 
+typedef struct
+{
+	char	   *name;
+	int			dbnum;
+} LibraryInfo;
 
 /*
  * OSInfo
@@ -312,7 +319,7 @@ typedef struct
 	bool		user_specified; /* user specified on command-line */
 	char	  **old_tablespaces;	/* tablespaces */
 	int			num_old_tablespaces;
-	char	  **libraries;		/* loadable libraries */
+	LibraryInfo *libraries;		/* loadable libraries */
 	int			num_libraries;
 	ClusterInfo *running_cluster;
 } OSInfo;
@@ -367,12 +374,15 @@ bool		pid_lock_file_exists(const char *datadir);
 
 /* file.c */
 
+void cloneFile(const char *src, const char *dst,
+		  const char *schemaName, const char *relName);
 void copyFile(const char *src, const char *dst,
 		 const char *schemaName, const char *relName);
 void linkFile(const char *src, const char *dst,
 		 const char *schemaName, const char *relName);
 void rewriteVisibilityMap(const char *fromfile, const char *tofile,
 					 const char *schemaName, const char *relName);
+void		check_file_clone(void);
 void		check_hard_link(void);
 
 /* fopen_priv() is no longer different from fopen() */

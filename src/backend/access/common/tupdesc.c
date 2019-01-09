@@ -3,7 +3,7 @@
  * tupdesc.c
  *	  POSTGRES tuple descriptor support code
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -42,7 +42,7 @@
  * caller can overwrite this if needed.
  */
 TupleDesc
-CreateTemplateTupleDesc(int natts, bool hasoid)
+CreateTemplateTupleDesc(int natts)
 {
 	TupleDesc	desc;
 
@@ -73,7 +73,6 @@ CreateTemplateTupleDesc(int natts, bool hasoid)
 	desc->constr = NULL;
 	desc->tdtypeid = RECORDOID;
 	desc->tdtypmod = -1;
-	desc->tdhasoid = hasoid;
 	desc->tdrefcount = -1;		/* assume not reference-counted */
 
 	return desc;
@@ -88,12 +87,12 @@ CreateTemplateTupleDesc(int natts, bool hasoid)
  * caller can overwrite this if needed.
  */
 TupleDesc
-CreateTupleDesc(int natts, bool hasoid, Form_pg_attribute *attrs)
+CreateTupleDesc(int natts, Form_pg_attribute *attrs)
 {
 	TupleDesc	desc;
 	int			i;
 
-	desc = CreateTemplateTupleDesc(natts, hasoid);
+	desc = CreateTemplateTupleDesc(natts);
 
 	for (i = 0; i < natts; ++i)
 		memcpy(TupleDescAttr(desc, i), attrs[i], ATTRIBUTE_FIXED_PART_SIZE);
@@ -114,7 +113,7 @@ CreateTupleDescCopy(TupleDesc tupdesc)
 	TupleDesc	desc;
 	int			i;
 
-	desc = CreateTemplateTupleDesc(tupdesc->natts, tupdesc->tdhasoid);
+	desc = CreateTemplateTupleDesc(tupdesc->natts);
 
 	/* Flat-copy the attribute array */
 	memcpy(TupleDescAttr(desc, 0),
@@ -154,7 +153,7 @@ CreateTupleDescCopyConstr(TupleDesc tupdesc)
 	TupleConstr *constr = tupdesc->constr;
 	int			i;
 
-	desc = CreateTemplateTupleDesc(tupdesc->natts, tupdesc->tdhasoid);
+	desc = CreateTemplateTupleDesc(tupdesc->natts);
 
 	/* Flat-copy the attribute array */
 	memcpy(TupleDescAttr(desc, 0),
@@ -185,13 +184,13 @@ CreateTupleDescCopyConstr(TupleDesc tupdesc)
 			memcpy(cpy->missing, constr->missing, tupdesc->natts * sizeof(AttrMissing));
 			for (i = tupdesc->natts - 1; i >= 0; i--)
 			{
-				if (constr->missing[i].ammissingPresent)
+				if (constr->missing[i].am_present)
 				{
 					Form_pg_attribute attr = TupleDescAttr(tupdesc, i);
 
-					cpy->missing[i].ammissing = datumCopy(constr->missing[i].ammissing,
-														  attr->attbyval,
-														  attr->attlen);
+					cpy->missing[i].am_value = datumCopy(constr->missing[i].am_value,
+														 attr->attbyval,
+														 attr->attlen);
 				}
 			}
 		}
@@ -337,9 +336,9 @@ FreeTupleDesc(TupleDesc tupdesc)
 
 			for (i = tupdesc->natts - 1; i >= 0; i--)
 			{
-				if (attrmiss[i].ammissingPresent
+				if (attrmiss[i].am_present
 					&& !TupleDescAttr(tupdesc, i)->attbyval)
-					pfree(DatumGetPointer(attrmiss[i].ammissing));
+					pfree(DatumGetPointer(attrmiss[i].am_value));
 			}
 			pfree(attrmiss);
 		}
@@ -415,8 +414,6 @@ equalTupleDescs(TupleDesc tupdesc1, TupleDesc tupdesc2)
 	if (tupdesc1->natts != tupdesc2->natts)
 		return false;
 	if (tupdesc1->tdtypeid != tupdesc2->tdtypeid)
-		return false;
-	if (tupdesc1->tdhasoid != tupdesc2->tdhasoid)
 		return false;
 
 	for (i = 0; i < tupdesc1->natts; i++)
@@ -512,13 +509,13 @@ equalTupleDescs(TupleDesc tupdesc1, TupleDesc tupdesc2)
 				AttrMissing *missval1 = constr1->missing + i;
 				AttrMissing *missval2 = constr2->missing + i;
 
-				if (missval1->ammissingPresent != missval2->ammissingPresent)
+				if (missval1->am_present != missval2->am_present)
 					return false;
-				if (missval1->ammissingPresent)
+				if (missval1->am_present)
 				{
 					Form_pg_attribute missatt1 = TupleDescAttr(tupdesc1, i);
 
-					if (!datumIsEqual(missval1->ammissing, missval2->ammissing,
+					if (!datumIsEqual(missval1->am_value, missval2->am_value,
 									  missatt1->attbyval, missatt1->attlen))
 						return false;
 				}
@@ -574,7 +571,6 @@ hashTupleDesc(TupleDesc desc)
 
 	s = hash_combine(0, hash_uint32(desc->natts));
 	s = hash_combine(s, hash_uint32(desc->tdtypeid));
-	s = hash_combine(s, hash_uint32(desc->tdhasoid));
 	for (i = 0; i < desc->natts; ++i)
 		s = hash_combine(s, hash_uint32(TupleDescAttr(desc, i)->atttypid));
 
@@ -748,6 +744,9 @@ TupleDescInitBuiltinEntry(TupleDesc desc,
 			att->attstorage = 'p';
 			att->attcollation = InvalidOid;
 			break;
+
+		default:
+			elog(ERROR, "unsupported type %u", oidtypeid);
 	}
 }
 
@@ -800,7 +799,7 @@ BuildDescForRelation(List *schema)
 	 * allocate a new tuple descriptor
 	 */
 	natts = list_length(schema);
-	desc = CreateTemplateTupleDesc(natts, false);
+	desc = CreateTemplateTupleDesc(natts);
 	has_not_null = false;
 
 	attnum = 0;
@@ -900,7 +899,7 @@ BuildDescFromLists(List *names, List *types, List *typmods, List *collations)
 	/*
 	 * allocate a new tuple descriptor
 	 */
-	desc = CreateTemplateTupleDesc(natts, false);
+	desc = CreateTemplateTupleDesc(natts);
 
 	attnum = 0;
 

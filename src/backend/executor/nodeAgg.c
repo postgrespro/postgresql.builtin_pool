@@ -205,7 +205,7 @@
  *    to filter expressions having to be evaluated early, and allows to JIT
  *    the entire expression into one native function.
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -288,7 +288,7 @@ static void build_pertrans_for_aggref(AggStatePerTrans pertrans,
 static int find_compatible_peragg(Aggref *newagg, AggState *aggstate,
 					   int lastaggno, List **same_input_transnos);
 static int find_compatible_pertrans(AggState *aggstate, Aggref *newagg,
-						 bool sharable,
+						 bool shareable,
 						 Oid aggtransfn, Oid aggtranstype,
 						 Oid aggserialfn, Oid aggdeserialfn,
 						 Datum initValue, bool initValueIsNull,
@@ -1080,7 +1080,7 @@ prepare_projection_slot(AggState *aggstate, TupleTableSlot *slot, int currentSet
 
 		aggstate->grouped_cols = grouped_cols;
 
-		if (slot->tts_isempty)
+		if (TTS_EMPTY(slot))
 		{
 			/*
 			 * Force all values to be NULL if working on an empty input tuple
@@ -1396,14 +1396,15 @@ find_hash_columns(AggState *aggstate)
 				Max(varNumber + 1, perhash->largestGrpColIdx);
 		}
 
-		hashDesc = ExecTypeFromTL(hashTlist, false);
+		hashDesc = ExecTypeFromTL(hashTlist);
 
 		execTuplesHashPrepare(perhash->numCols,
 							  perhash->aggnode->grpOperators,
 							  &perhash->eqfuncoids,
 							  &perhash->hashfunctions);
 		perhash->hashslot =
-			ExecAllocTableSlot(&estate->es_tupleTable, hashDesc);
+			ExecAllocTableSlot(&estate->es_tupleTable, hashDesc,
+							   &TTSOpsMinimalTuple);
 
 		list_free(hashTlist);
 		bms_free(colnos);
@@ -1740,7 +1741,7 @@ agg_retrieve_direct(AggState *aggstate)
 					 * Make a copy of the first input tuple; we will use this
 					 * for comparisons (in group mode) and for projection.
 					 */
-					aggstate->grp_firstTuple = ExecCopySlotTuple(outerslot);
+					aggstate->grp_firstTuple = ExecCopySlotHeapTuple(outerslot);
 				}
 				else
 				{
@@ -1799,10 +1800,8 @@ agg_retrieve_direct(AggState *aggstate)
 				 * reserved for it.  The tuple will be deleted when it is
 				 * cleared from the slot.
 				 */
-				ExecStoreTuple(aggstate->grp_firstTuple,
-							   firstSlot,
-							   InvalidBuffer,
-							   true);
+				ExecForceStoreHeapTuple(aggstate->grp_firstTuple,
+								   firstSlot);
 				aggstate->grp_firstTuple = NULL;	/* don't keep two pointers */
 
 				/* set up for first advance_aggregates call */
@@ -1858,7 +1857,7 @@ agg_retrieve_direct(AggState *aggstate)
 						if (!ExecQual(aggstate->phase->eqfunctions[node->numCols - 1],
 									  tmpcontext))
 						{
-							aggstate->grp_firstTuple = ExecCopySlotTuple(outerslot);
+							aggstate->grp_firstTuple = ExecCopySlotHeapTuple(outerslot);
 							break;
 						}
 					}
@@ -2212,15 +2211,17 @@ ExecInitAgg(Agg *node, EState *estate, int eflags)
 	/*
 	 * initialize source tuple type.
 	 */
-	ExecCreateScanSlotFromOuterPlan(estate, &aggstate->ss);
+	ExecCreateScanSlotFromOuterPlan(estate, &aggstate->ss,
+									ExecGetResultSlotOps(outerPlanState(&aggstate->ss), NULL));
 	scanDesc = aggstate->ss.ss_ScanTupleSlot->tts_tupleDescriptor;
 	if (node->chain)
-		aggstate->sort_slot = ExecInitExtraTupleSlot(estate, scanDesc);
+		aggstate->sort_slot = ExecInitExtraTupleSlot(estate, scanDesc,
+													 &TTSOpsMinimalTuple);
 
 	/*
 	 * Initialize result type, slot and projection.
 	 */
-	ExecInitResultTupleSlotTL(estate, &aggstate->ss.ps);
+	ExecInitResultTupleSlotTL(&aggstate->ss.ps, &TTSOpsVirtual);
 	ExecAssignProjectionInfo(&aggstate->ss.ps, NULL);
 
 	/*
@@ -2522,7 +2523,7 @@ ExecInitAgg(Agg *node, EState *estate, int eflags)
 		AclResult	aclresult;
 		Oid			transfn_oid,
 					finalfn_oid;
-		bool		sharable;
+		bool		shareable;
 		Oid			serialfn_oid,
 					deserialfn_oid;
 		Expr	   *finalfnexpr;
@@ -2597,12 +2598,12 @@ ExecInitAgg(Agg *node, EState *estate, int eflags)
 
 		/*
 		 * If finalfn is marked read-write, we can't share transition states;
-		 * but it is okay to share states for AGGMODIFY_SHARABLE aggs.  Also,
+		 * but it is okay to share states for AGGMODIFY_SHAREABLE aggs.  Also,
 		 * if we're not executing the finalfn here, we can share regardless.
 		 */
-		sharable = (aggform->aggfinalmodify != AGGMODIFY_READ_WRITE) ||
+		shareable = (aggform->aggfinalmodify != AGGMODIFY_READ_WRITE) ||
 			(finalfn_oid == InvalidOid);
-		peragg->sharable = sharable;
+		peragg->shareable = shareable;
 
 		serialfn_oid = InvalidOid;
 		deserialfn_oid = InvalidOid;
@@ -2746,12 +2747,12 @@ ExecInitAgg(Agg *node, EState *estate, int eflags)
 		 * 2. Build working state for invoking the transition function, or
 		 * look up previously initialized working state, if we can share it.
 		 *
-		 * find_compatible_peragg() already collected a list of sharable
+		 * find_compatible_peragg() already collected a list of shareable
 		 * per-Trans's with the same inputs. Check if any of them have the
 		 * same transition function and initial value.
 		 */
 		existing_transno = find_compatible_pertrans(aggstate, aggref,
-													sharable,
+													shareable,
 													transfn_oid, aggtranstype,
 													serialfn_oid, deserialfn_oid,
 													initValue, initValueIsNull,
@@ -3061,9 +3062,10 @@ build_pertrans_for_aggref(AggStatePerTrans pertrans,
 	 */
 	if (numSortCols > 0 || aggref->aggfilter)
 	{
-		pertrans->sortdesc = ExecTypeFromTL(aggref->args, false);
+		pertrans->sortdesc = ExecTypeFromTL(aggref->args);
 		pertrans->sortslot =
-			ExecInitExtraTupleSlot(estate, pertrans->sortdesc);
+			ExecInitExtraTupleSlot(estate, pertrans->sortdesc,
+								   &TTSOpsMinimalTuple);
 	}
 
 	if (numSortCols > 0)
@@ -3085,7 +3087,8 @@ build_pertrans_for_aggref(AggStatePerTrans pertrans,
 		{
 			/* we will need an extra slot to store prior values */
 			pertrans->uniqslot =
-				ExecInitExtraTupleSlot(estate, pertrans->sortdesc);
+				ExecInitExtraTupleSlot(estate, pertrans->sortdesc,
+									   &TTSOpsMinimalTuple);
 		}
 
 		/* Extract the sort information for use later */
@@ -3170,7 +3173,7 @@ GetAggInitVal(Datum textInitVal, Oid transtype)
  * with this one, with the same input parameters. If no compatible aggregate
  * can be found, returns -1.
  *
- * As a side-effect, this also collects a list of existing, sharable per-Trans
+ * As a side-effect, this also collects a list of existing, shareable per-Trans
  * structs with matching inputs. If no identical Aggref is found, the list is
  * passed later to find_compatible_pertrans, to see if we can at least reuse
  * the state value of another aggregate.
@@ -3237,7 +3240,7 @@ find_compatible_peragg(Aggref *newagg, AggState *aggstate,
 		 * we might report a transno more than once.  find_compatible_pertrans
 		 * is cheap enough that it's not worth spending cycles to avoid that.)
 		 */
-		if (peragg->sharable)
+		if (peragg->shareable)
 			*same_input_transnos = lappend_int(*same_input_transnos,
 											   peragg->transno);
 	}
@@ -3254,7 +3257,7 @@ find_compatible_peragg(Aggref *newagg, AggState *aggstate,
  * verified to match.)
  */
 static int
-find_compatible_pertrans(AggState *aggstate, Aggref *newagg, bool sharable,
+find_compatible_pertrans(AggState *aggstate, Aggref *newagg, bool shareable,
 						 Oid aggtransfn, Oid aggtranstype,
 						 Oid aggserialfn, Oid aggdeserialfn,
 						 Datum initValue, bool initValueIsNull,
@@ -3263,7 +3266,7 @@ find_compatible_pertrans(AggState *aggstate, Aggref *newagg, bool sharable,
 	ListCell   *lc;
 
 	/* If this aggregate can't share transition states, give up */
-	if (!sharable)
+	if (!shareable)
 		return -1;
 
 	foreach(lc, transnos)

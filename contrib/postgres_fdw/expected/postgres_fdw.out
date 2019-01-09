@@ -129,13 +129,6 @@ CREATE FOREIGN TABLE ft6 (
 	c2 int NOT NULL,
 	c3 text
 ) SERVER loopback2 OPTIONS (schema_name 'S 1', table_name 'T 4');
--- A table with oids. CREATE FOREIGN TABLE doesn't support the
--- WITH OIDS option, but ALTER does.
-CREATE FOREIGN TABLE ft_pg_type (
-	typname name,
-	typlen smallint
-) SERVER loopback OPTIONS (schema_name 'pg_catalog', table_name 'pg_type');
-ALTER TABLE ft_pg_type SET WITH OIDS;
 -- ===================================================================
 -- tests for validator
 -- ===================================================================
@@ -185,16 +178,15 @@ ALTER FOREIGN TABLE ft2 OPTIONS (schema_name 'S 1', table_name 'T 1');
 ALTER FOREIGN TABLE ft1 ALTER COLUMN c1 OPTIONS (column_name 'C 1');
 ALTER FOREIGN TABLE ft2 ALTER COLUMN c1 OPTIONS (column_name 'C 1');
 \det+
-                                      List of foreign tables
- Schema |   Table    |  Server   |                   FDW options                    | Description 
---------+------------+-----------+--------------------------------------------------+-------------
- public | ft1        | loopback  | (schema_name 'S 1', table_name 'T 1')            | 
- public | ft2        | loopback  | (schema_name 'S 1', table_name 'T 1')            | 
- public | ft4        | loopback  | (schema_name 'S 1', table_name 'T 3')            | 
- public | ft5        | loopback  | (schema_name 'S 1', table_name 'T 4')            | 
- public | ft6        | loopback2 | (schema_name 'S 1', table_name 'T 4')            | 
- public | ft_pg_type | loopback  | (schema_name 'pg_catalog', table_name 'pg_type') | 
-(6 rows)
+                              List of foreign tables
+ Schema | Table |  Server   |              FDW options              | Description 
+--------+-------+-----------+---------------------------------------+-------------
+ public | ft1   | loopback  | (schema_name 'S 1', table_name 'T 1') | 
+ public | ft2   | loopback  | (schema_name 'S 1', table_name 'T 1') | 
+ public | ft4   | loopback  | (schema_name 'S 1', table_name 'T 3') | 
+ public | ft5   | loopback  | (schema_name 'S 1', table_name 'T 4') | 
+ public | ft6   | loopback2 | (schema_name 'S 1', table_name 'T 4') | 
+(5 rows)
 
 -- Test that alteration of server options causes reconnection
 -- Remote's errors might be non-English, so hide them to ensure stable results
@@ -1709,25 +1701,27 @@ SELECT t1.c1, t2.c1 FROM ft1 t1 JOIN ft2 t2 ON (t1.c1 = t2.c1) ORDER BY t1.c3, t
                Output: t1.c1, t2.c1, t1.c3, t1.*, t2.*
                Relations: (public.ft1 t1) INNER JOIN (public.ft2 t2)
                Remote SQL: SELECT r1."C 1", r2."C 1", r1.c3, CASE WHEN (r1.*)::text IS NOT NULL THEN ROW(r1."C 1", r1.c2, r1.c3, r1.c4, r1.c5, r1.c6, r1.c7, r1.c8) END, CASE WHEN (r2.*)::text IS NOT NULL THEN ROW(r2."C 1", r2.c2, r2.c3, r2.c4, r2.c5, r2.c6, r2.c7, r2.c8) END FROM ("S 1"."T 1" r1 INNER JOIN "S 1"."T 1" r2 ON (((r1."C 1" = r2."C 1")))) ORDER BY r1.c3 ASC NULLS LAST, r1."C 1" ASC NULLS LAST FOR UPDATE OF r1
-               ->  Sort
-                     Output: t1.c1, t1.c3, t1.*, t2.c1, t2.*
-                     Sort Key: t1.c3 USING <, t1.c1
-                     ->  Merge Join
+               ->  Result
+                     Output: t1.c1, t2.c1, t1.c3, t1.*, t2.*
+                     ->  Sort
                            Output: t1.c1, t1.c3, t1.*, t2.c1, t2.*
-                           Merge Cond: (t1.c1 = t2.c1)
-                           ->  Sort
-                                 Output: t1.c1, t1.c3, t1.*
-                                 Sort Key: t1.c1
-                                 ->  Foreign Scan on public.ft1 t1
+                           Sort Key: t1.c3, t1.c1
+                           ->  Merge Join
+                                 Output: t1.c1, t1.c3, t1.*, t2.c1, t2.*
+                                 Merge Cond: (t1.c1 = t2.c1)
+                                 ->  Sort
                                        Output: t1.c1, t1.c3, t1.*
-                                       Remote SQL: SELECT "C 1", c2, c3, c4, c5, c6, c7, c8 FROM "S 1"."T 1" FOR UPDATE
-                           ->  Sort
-                                 Output: t2.c1, t2.*
-                                 Sort Key: t2.c1
-                                 ->  Foreign Scan on public.ft2 t2
+                                       Sort Key: t1.c1
+                                       ->  Foreign Scan on public.ft1 t1
+                                             Output: t1.c1, t1.c3, t1.*
+                                             Remote SQL: SELECT "C 1", c2, c3, c4, c5, c6, c7, c8 FROM "S 1"."T 1" FOR UPDATE
+                                 ->  Sort
                                        Output: t2.c1, t2.*
-                                       Remote SQL: SELECT "C 1", c2, c3, c4, c5, c6, c7, c8 FROM "S 1"."T 1"
-(26 rows)
+                                       Sort Key: t2.c1
+                                       ->  Foreign Scan on public.ft2 t2
+                                             Output: t2.c1, t2.*
+                                             Remote SQL: SELECT "C 1", c2, c3, c4, c5, c6, c7, c8 FROM "S 1"."T 1"
+(28 rows)
 
 SELECT t1.c1, t2.c1 FROM ft1 t1 JOIN ft2 t2 ON (t1.c1 = t2.c1) ORDER BY t1.c3, t1.c1 OFFSET 100 LIMIT 10 FOR UPDATE OF t1;
  c1  | c1  
@@ -1756,25 +1750,27 @@ SELECT t1.c1, t2.c1 FROM ft1 t1 JOIN ft2 t2 ON (t1.c1 = t2.c1) ORDER BY t1.c3, t
                Output: t1.c1, t2.c1, t1.c3, t1.*, t2.*
                Relations: (public.ft1 t1) INNER JOIN (public.ft2 t2)
                Remote SQL: SELECT r1."C 1", r2."C 1", r1.c3, CASE WHEN (r1.*)::text IS NOT NULL THEN ROW(r1."C 1", r1.c2, r1.c3, r1.c4, r1.c5, r1.c6, r1.c7, r1.c8) END, CASE WHEN (r2.*)::text IS NOT NULL THEN ROW(r2."C 1", r2.c2, r2.c3, r2.c4, r2.c5, r2.c6, r2.c7, r2.c8) END FROM ("S 1"."T 1" r1 INNER JOIN "S 1"."T 1" r2 ON (((r1."C 1" = r2."C 1")))) ORDER BY r1.c3 ASC NULLS LAST, r1."C 1" ASC NULLS LAST FOR UPDATE OF r1 FOR UPDATE OF r2
-               ->  Sort
-                     Output: t1.c1, t1.c3, t1.*, t2.c1, t2.*
-                     Sort Key: t1.c3 USING <, t1.c1
-                     ->  Merge Join
+               ->  Result
+                     Output: t1.c1, t2.c1, t1.c3, t1.*, t2.*
+                     ->  Sort
                            Output: t1.c1, t1.c3, t1.*, t2.c1, t2.*
-                           Merge Cond: (t1.c1 = t2.c1)
-                           ->  Sort
-                                 Output: t1.c1, t1.c3, t1.*
-                                 Sort Key: t1.c1
-                                 ->  Foreign Scan on public.ft1 t1
+                           Sort Key: t1.c3, t1.c1
+                           ->  Merge Join
+                                 Output: t1.c1, t1.c3, t1.*, t2.c1, t2.*
+                                 Merge Cond: (t1.c1 = t2.c1)
+                                 ->  Sort
                                        Output: t1.c1, t1.c3, t1.*
-                                       Remote SQL: SELECT "C 1", c2, c3, c4, c5, c6, c7, c8 FROM "S 1"."T 1" FOR UPDATE
-                           ->  Sort
-                                 Output: t2.c1, t2.*
-                                 Sort Key: t2.c1
-                                 ->  Foreign Scan on public.ft2 t2
+                                       Sort Key: t1.c1
+                                       ->  Foreign Scan on public.ft1 t1
+                                             Output: t1.c1, t1.c3, t1.*
+                                             Remote SQL: SELECT "C 1", c2, c3, c4, c5, c6, c7, c8 FROM "S 1"."T 1" FOR UPDATE
+                                 ->  Sort
                                        Output: t2.c1, t2.*
-                                       Remote SQL: SELECT "C 1", c2, c3, c4, c5, c6, c7, c8 FROM "S 1"."T 1" FOR UPDATE
-(26 rows)
+                                       Sort Key: t2.c1
+                                       ->  Foreign Scan on public.ft2 t2
+                                             Output: t2.c1, t2.*
+                                             Remote SQL: SELECT "C 1", c2, c3, c4, c5, c6, c7, c8 FROM "S 1"."T 1" FOR UPDATE
+(28 rows)
 
 SELECT t1.c1, t2.c1 FROM ft1 t1 JOIN ft2 t2 ON (t1.c1 = t2.c1) ORDER BY t1.c3, t1.c1 OFFSET 100 LIMIT 10 FOR UPDATE;
  c1  | c1  
@@ -1804,25 +1800,27 @@ SELECT t1.c1, t2.c1 FROM ft1 t1 JOIN ft2 t2 ON (t1.c1 = t2.c1) ORDER BY t1.c3, t
                Output: t1.c1, t2.c1, t1.c3, t1.*, t2.*
                Relations: (public.ft1 t1) INNER JOIN (public.ft2 t2)
                Remote SQL: SELECT r1."C 1", r2."C 1", r1.c3, CASE WHEN (r1.*)::text IS NOT NULL THEN ROW(r1."C 1", r1.c2, r1.c3, r1.c4, r1.c5, r1.c6, r1.c7, r1.c8) END, CASE WHEN (r2.*)::text IS NOT NULL THEN ROW(r2."C 1", r2.c2, r2.c3, r2.c4, r2.c5, r2.c6, r2.c7, r2.c8) END FROM ("S 1"."T 1" r1 INNER JOIN "S 1"."T 1" r2 ON (((r1."C 1" = r2."C 1")))) ORDER BY r1.c3 ASC NULLS LAST, r1."C 1" ASC NULLS LAST FOR SHARE OF r1
-               ->  Sort
-                     Output: t1.c1, t1.c3, t1.*, t2.c1, t2.*
-                     Sort Key: t1.c3 USING <, t1.c1
-                     ->  Merge Join
+               ->  Result
+                     Output: t1.c1, t2.c1, t1.c3, t1.*, t2.*
+                     ->  Sort
                            Output: t1.c1, t1.c3, t1.*, t2.c1, t2.*
-                           Merge Cond: (t1.c1 = t2.c1)
-                           ->  Sort
-                                 Output: t1.c1, t1.c3, t1.*
-                                 Sort Key: t1.c1
-                                 ->  Foreign Scan on public.ft1 t1
+                           Sort Key: t1.c3, t1.c1
+                           ->  Merge Join
+                                 Output: t1.c1, t1.c3, t1.*, t2.c1, t2.*
+                                 Merge Cond: (t1.c1 = t2.c1)
+                                 ->  Sort
                                        Output: t1.c1, t1.c3, t1.*
-                                       Remote SQL: SELECT "C 1", c2, c3, c4, c5, c6, c7, c8 FROM "S 1"."T 1" FOR SHARE
-                           ->  Sort
-                                 Output: t2.c1, t2.*
-                                 Sort Key: t2.c1
-                                 ->  Foreign Scan on public.ft2 t2
+                                       Sort Key: t1.c1
+                                       ->  Foreign Scan on public.ft1 t1
+                                             Output: t1.c1, t1.c3, t1.*
+                                             Remote SQL: SELECT "C 1", c2, c3, c4, c5, c6, c7, c8 FROM "S 1"."T 1" FOR SHARE
+                                 ->  Sort
                                        Output: t2.c1, t2.*
-                                       Remote SQL: SELECT "C 1", c2, c3, c4, c5, c6, c7, c8 FROM "S 1"."T 1"
-(26 rows)
+                                       Sort Key: t2.c1
+                                       ->  Foreign Scan on public.ft2 t2
+                                             Output: t2.c1, t2.*
+                                             Remote SQL: SELECT "C 1", c2, c3, c4, c5, c6, c7, c8 FROM "S 1"."T 1"
+(28 rows)
 
 SELECT t1.c1, t2.c1 FROM ft1 t1 JOIN ft2 t2 ON (t1.c1 = t2.c1) ORDER BY t1.c3, t1.c1 OFFSET 100 LIMIT 10 FOR SHARE OF t1;
  c1  | c1  
@@ -1851,25 +1849,27 @@ SELECT t1.c1, t2.c1 FROM ft1 t1 JOIN ft2 t2 ON (t1.c1 = t2.c1) ORDER BY t1.c3, t
                Output: t1.c1, t2.c1, t1.c3, t1.*, t2.*
                Relations: (public.ft1 t1) INNER JOIN (public.ft2 t2)
                Remote SQL: SELECT r1."C 1", r2."C 1", r1.c3, CASE WHEN (r1.*)::text IS NOT NULL THEN ROW(r1."C 1", r1.c2, r1.c3, r1.c4, r1.c5, r1.c6, r1.c7, r1.c8) END, CASE WHEN (r2.*)::text IS NOT NULL THEN ROW(r2."C 1", r2.c2, r2.c3, r2.c4, r2.c5, r2.c6, r2.c7, r2.c8) END FROM ("S 1"."T 1" r1 INNER JOIN "S 1"."T 1" r2 ON (((r1."C 1" = r2."C 1")))) ORDER BY r1.c3 ASC NULLS LAST, r1."C 1" ASC NULLS LAST FOR SHARE OF r1 FOR SHARE OF r2
-               ->  Sort
-                     Output: t1.c1, t1.c3, t1.*, t2.c1, t2.*
-                     Sort Key: t1.c3 USING <, t1.c1
-                     ->  Merge Join
+               ->  Result
+                     Output: t1.c1, t2.c1, t1.c3, t1.*, t2.*
+                     ->  Sort
                            Output: t1.c1, t1.c3, t1.*, t2.c1, t2.*
-                           Merge Cond: (t1.c1 = t2.c1)
-                           ->  Sort
-                                 Output: t1.c1, t1.c3, t1.*
-                                 Sort Key: t1.c1
-                                 ->  Foreign Scan on public.ft1 t1
+                           Sort Key: t1.c3, t1.c1
+                           ->  Merge Join
+                                 Output: t1.c1, t1.c3, t1.*, t2.c1, t2.*
+                                 Merge Cond: (t1.c1 = t2.c1)
+                                 ->  Sort
                                        Output: t1.c1, t1.c3, t1.*
-                                       Remote SQL: SELECT "C 1", c2, c3, c4, c5, c6, c7, c8 FROM "S 1"."T 1" FOR SHARE
-                           ->  Sort
-                                 Output: t2.c1, t2.*
-                                 Sort Key: t2.c1
-                                 ->  Foreign Scan on public.ft2 t2
+                                       Sort Key: t1.c1
+                                       ->  Foreign Scan on public.ft1 t1
+                                             Output: t1.c1, t1.c3, t1.*
+                                             Remote SQL: SELECT "C 1", c2, c3, c4, c5, c6, c7, c8 FROM "S 1"."T 1" FOR SHARE
+                                 ->  Sort
                                        Output: t2.c1, t2.*
-                                       Remote SQL: SELECT "C 1", c2, c3, c4, c5, c6, c7, c8 FROM "S 1"."T 1" FOR SHARE
-(26 rows)
+                                       Sort Key: t2.c1
+                                       ->  Foreign Scan on public.ft2 t2
+                                             Output: t2.c1, t2.*
+                                             Remote SQL: SELECT "C 1", c2, c3, c4, c5, c6, c7, c8 FROM "S 1"."T 1" FOR SHARE
+(28 rows)
 
 SELECT t1.c1, t2.c1 FROM ft1 t1 JOIN ft2 t2 ON (t1.c1 = t2.c1) ORDER BY t1.c3, t1.c1 OFFSET 100 LIMIT 10 FOR SHARE;
  c1  | c1  
@@ -3217,6 +3217,8 @@ select array_agg(c1 order by c1 using operator(public.<^)) from ft2 where c2 = 6
          Remote SQL: SELECT "C 1", c2 FROM "S 1"."T 1" WHERE (("C 1" < 100)) AND ((c2 = 6))
 (6 rows)
 
+-- Update local stats on ft2
+ANALYZE ft2;
 -- Add into extension
 alter extension postgres_fdw add operator class my_op_class using btree;
 alter extension postgres_fdw add function my_op_cmp(a int, b int);
@@ -4048,21 +4050,6 @@ SELECT ctid, * FROM ft1 t1 LIMIT 1;
  (0,1) |  1 |  1 | 00001 | Fri Jan 02 00:00:00 1970 PST | Fri Jan 02 00:00:00 1970 | 1  | 1          | foo
 (1 row)
 
-EXPLAIN (VERBOSE, COSTS OFF)
-SELECT oid, * FROM ft_pg_type WHERE typname = 'int4';
-                                             QUERY PLAN                                             
-----------------------------------------------------------------------------------------------------
- Foreign Scan on public.ft_pg_type
-   Output: oid, typname, typlen
-   Remote SQL: SELECT typname, typlen, oid FROM pg_catalog.pg_type WHERE ((typname = 'int4'::name))
-(3 rows)
-
-SELECT oid, * FROM ft_pg_type WHERE typname = 'int4';
- oid | typname | typlen 
------+---------+--------
-  23 | int4    |      4
-(1 row)
-
 -- ===================================================================
 -- used in PL/pgSQL function
 -- ===================================================================
@@ -4087,16 +4074,16 @@ DROP FUNCTION f_test(int);
 -- ===================================================================
 ALTER FOREIGN TABLE ft1 ALTER COLUMN c8 TYPE int;
 SELECT * FROM ft1 WHERE c1 = 1;  -- ERROR
-ERROR:  invalid input syntax for integer: "foo"
+ERROR:  invalid input syntax for type integer: "foo"
 CONTEXT:  column "c8" of foreign table "ft1"
 SELECT  ft1.c1,  ft2.c2, ft1.c8 FROM ft1, ft2 WHERE ft1.c1 = ft2.c1 AND ft1.c1 = 1; -- ERROR
-ERROR:  invalid input syntax for integer: "foo"
+ERROR:  invalid input syntax for type integer: "foo"
 CONTEXT:  column "c8" of foreign table "ft1"
 SELECT  ft1.c1,  ft2.c2, ft1 FROM ft1, ft2 WHERE ft1.c1 = ft2.c1 AND ft1.c1 = 1; -- ERROR
-ERROR:  invalid input syntax for integer: "foo"
+ERROR:  invalid input syntax for type integer: "foo"
 CONTEXT:  whole-row reference to foreign table "ft1"
 SELECT sum(c2), array_agg(c8) FROM ft1 GROUP BY c8; -- ERROR
-ERROR:  invalid input syntax for integer: "foo"
+ERROR:  invalid input syntax for type integer: "foo"
 CONTEXT:  processing expression at position 2 in select list
 ALTER FOREIGN TABLE ft1 ALTER COLUMN c8 TYPE user_enum;
 -- ===================================================================
@@ -4233,18 +4220,21 @@ explain (verbose, costs off) select * from ft3 where f2 = 'foo' COLLATE "C";
 
 explain (verbose, costs off) select * from ft3 f, loct3 l
   where f.f3 = l.f3 COLLATE "POSIX" and l.f1 = 'foo';
-                       QUERY PLAN                        
----------------------------------------------------------
- Nested Loop
+                         QUERY PLAN                          
+-------------------------------------------------------------
+ Hash Join
    Output: f.f1, f.f2, f.f3, l.f1, l.f2, l.f3
-   Join Filter: ((f.f3)::text = (l.f3)::text)
-   ->  Index Scan using loct3_f1_key on public.loct3 l
-         Output: l.f1, l.f2, l.f3
-         Index Cond: (l.f1 = 'foo'::text)
+   Inner Unique: true
+   Hash Cond: ((f.f3)::text = (l.f3)::text)
    ->  Foreign Scan on public.ft3 f
          Output: f.f1, f.f2, f.f3
          Remote SQL: SELECT f1, f2, f3 FROM public.loct3
-(9 rows)
+   ->  Hash
+         Output: l.f1, l.f2, l.f3
+         ->  Index Scan using loct3_f1_key on public.loct3 l
+               Output: l.f1, l.f2, l.f3
+               Index Cond: (l.f1 = 'foo'::text)
+(12 rows)
 
 -- ===================================================================
 -- test writable foreign table stuff
@@ -6173,10 +6163,12 @@ ALTER FOREIGN TABLE ft1 DROP CONSTRAINT ft1_c2negative;
 -- ===================================================================
 -- test WITH CHECK OPTION constraints
 -- ===================================================================
+CREATE FUNCTION row_before_insupd_trigfunc() RETURNS trigger AS $$BEGIN NEW.a := NEW.a + 10; RETURN NEW; END$$ LANGUAGE plpgsql;
 CREATE TABLE base_tbl (a int, b int);
 ALTER TABLE base_tbl SET (autovacuum_enabled = 'false');
+CREATE TRIGGER row_before_insupd_trigger BEFORE INSERT OR UPDATE ON base_tbl FOR EACH ROW EXECUTE PROCEDURE row_before_insupd_trigfunc();
 CREATE FOREIGN TABLE foreign_tbl (a int, b int)
-  SERVER loopback OPTIONS(table_name 'base_tbl');
+  SERVER loopback OPTIONS (table_name 'base_tbl');
 CREATE VIEW rw_view AS SELECT * FROM foreign_tbl
   WHERE a < b WITH CHECK OPTION;
 \d+ rw_view
@@ -6192,45 +6184,162 @@ View definition:
   WHERE foreign_tbl.a < foreign_tbl.b;
 Options: check_option=cascaded
 
-INSERT INTO rw_view VALUES (0, 10); -- ok
-INSERT INTO rw_view VALUES (10, 0); -- should fail
-ERROR:  new row violates check option for view "rw_view"
-DETAIL:  Failing row contains (10, 0).
 EXPLAIN (VERBOSE, COSTS OFF)
-UPDATE rw_view SET b = 20 WHERE a = 0; -- not pushed down
-                                            QUERY PLAN                                            
---------------------------------------------------------------------------------------------------
- Update on public.foreign_tbl
-   Remote SQL: UPDATE public.base_tbl SET b = $2 WHERE ctid = $1
-   ->  Foreign Scan on public.foreign_tbl
-         Output: foreign_tbl.a, 20, foreign_tbl.ctid
-         Remote SQL: SELECT a, ctid FROM public.base_tbl WHERE ((a < b)) AND ((a = 0)) FOR UPDATE
-(5 rows)
+INSERT INTO rw_view VALUES (0, 5);
+                                   QUERY PLAN                                   
+--------------------------------------------------------------------------------
+ Insert on public.foreign_tbl
+   Remote SQL: INSERT INTO public.base_tbl(a, b) VALUES ($1, $2) RETURNING a, b
+   ->  Result
+         Output: 0, 5
+(4 rows)
 
-UPDATE rw_view SET b = 20 WHERE a = 0; -- ok
-EXPLAIN (VERBOSE, COSTS OFF)
-UPDATE rw_view SET b = -20 WHERE a = 0; -- not pushed down
-                                            QUERY PLAN                                            
---------------------------------------------------------------------------------------------------
- Update on public.foreign_tbl
-   Remote SQL: UPDATE public.base_tbl SET b = $2 WHERE ctid = $1
-   ->  Foreign Scan on public.foreign_tbl
-         Output: foreign_tbl.a, '-20'::integer, foreign_tbl.ctid
-         Remote SQL: SELECT a, ctid FROM public.base_tbl WHERE ((a < b)) AND ((a = 0)) FOR UPDATE
-(5 rows)
-
-UPDATE rw_view SET b = -20 WHERE a = 0; -- should fail
+INSERT INTO rw_view VALUES (0, 5); -- should fail
 ERROR:  new row violates check option for view "rw_view"
-DETAIL:  Failing row contains (0, -20).
+DETAIL:  Failing row contains (10, 5).
+EXPLAIN (VERBOSE, COSTS OFF)
+INSERT INTO rw_view VALUES (0, 15);
+                                   QUERY PLAN                                   
+--------------------------------------------------------------------------------
+ Insert on public.foreign_tbl
+   Remote SQL: INSERT INTO public.base_tbl(a, b) VALUES ($1, $2) RETURNING a, b
+   ->  Result
+         Output: 0, 15
+(4 rows)
+
+INSERT INTO rw_view VALUES (0, 15); -- ok
 SELECT * FROM foreign_tbl;
- a | b  
----+----
- 0 | 20
+ a  | b  
+----+----
+ 10 | 15
+(1 row)
+
+EXPLAIN (VERBOSE, COSTS OFF)
+UPDATE rw_view SET b = b + 5;
+                                      QUERY PLAN                                       
+---------------------------------------------------------------------------------------
+ Update on public.foreign_tbl
+   Remote SQL: UPDATE public.base_tbl SET b = $2 WHERE ctid = $1 RETURNING a, b
+   ->  Foreign Scan on public.foreign_tbl
+         Output: foreign_tbl.a, (foreign_tbl.b + 5), foreign_tbl.ctid
+         Remote SQL: SELECT a, b, ctid FROM public.base_tbl WHERE ((a < b)) FOR UPDATE
+(5 rows)
+
+UPDATE rw_view SET b = b + 5; -- should fail
+ERROR:  new row violates check option for view "rw_view"
+DETAIL:  Failing row contains (20, 20).
+EXPLAIN (VERBOSE, COSTS OFF)
+UPDATE rw_view SET b = b + 15;
+                                      QUERY PLAN                                       
+---------------------------------------------------------------------------------------
+ Update on public.foreign_tbl
+   Remote SQL: UPDATE public.base_tbl SET b = $2 WHERE ctid = $1 RETURNING a, b
+   ->  Foreign Scan on public.foreign_tbl
+         Output: foreign_tbl.a, (foreign_tbl.b + 15), foreign_tbl.ctid
+         Remote SQL: SELECT a, b, ctid FROM public.base_tbl WHERE ((a < b)) FOR UPDATE
+(5 rows)
+
+UPDATE rw_view SET b = b + 15; -- ok
+SELECT * FROM foreign_tbl;
+ a  | b  
+----+----
+ 20 | 30
 (1 row)
 
 DROP FOREIGN TABLE foreign_tbl CASCADE;
 NOTICE:  drop cascades to view rw_view
+DROP TRIGGER row_before_insupd_trigger ON base_tbl;
 DROP TABLE base_tbl;
+-- test WCO for partitions
+CREATE TABLE child_tbl (a int, b int);
+ALTER TABLE child_tbl SET (autovacuum_enabled = 'false');
+CREATE TRIGGER row_before_insupd_trigger BEFORE INSERT OR UPDATE ON child_tbl FOR EACH ROW EXECUTE PROCEDURE row_before_insupd_trigfunc();
+CREATE FOREIGN TABLE foreign_tbl (a int, b int)
+  SERVER loopback OPTIONS (table_name 'child_tbl');
+CREATE TABLE parent_tbl (a int, b int) PARTITION BY RANGE(a);
+ALTER TABLE parent_tbl ATTACH PARTITION foreign_tbl FOR VALUES FROM (0) TO (100);
+CREATE VIEW rw_view AS SELECT * FROM parent_tbl
+  WHERE a < b WITH CHECK OPTION;
+\d+ rw_view
+                           View "public.rw_view"
+ Column |  Type   | Collation | Nullable | Default | Storage | Description 
+--------+---------+-----------+----------+---------+---------+-------------
+ a      | integer |           |          |         | plain   | 
+ b      | integer |           |          |         | plain   | 
+View definition:
+ SELECT parent_tbl.a,
+    parent_tbl.b
+   FROM parent_tbl
+  WHERE parent_tbl.a < parent_tbl.b;
+Options: check_option=cascaded
+
+EXPLAIN (VERBOSE, COSTS OFF)
+INSERT INTO rw_view VALUES (0, 5);
+         QUERY PLAN          
+-----------------------------
+ Insert on public.parent_tbl
+   ->  Result
+         Output: 0, 5
+(3 rows)
+
+INSERT INTO rw_view VALUES (0, 5); -- should fail
+ERROR:  new row violates check option for view "rw_view"
+DETAIL:  Failing row contains (10, 5).
+EXPLAIN (VERBOSE, COSTS OFF)
+INSERT INTO rw_view VALUES (0, 15);
+         QUERY PLAN          
+-----------------------------
+ Insert on public.parent_tbl
+   ->  Result
+         Output: 0, 15
+(3 rows)
+
+INSERT INTO rw_view VALUES (0, 15); -- ok
+SELECT * FROM foreign_tbl;
+ a  | b  
+----+----
+ 10 | 15
+(1 row)
+
+EXPLAIN (VERBOSE, COSTS OFF)
+UPDATE rw_view SET b = b + 5;
+                                       QUERY PLAN                                       
+----------------------------------------------------------------------------------------
+ Update on public.parent_tbl
+   Foreign Update on public.foreign_tbl
+     Remote SQL: UPDATE public.child_tbl SET b = $2 WHERE ctid = $1 RETURNING a, b
+   ->  Foreign Scan on public.foreign_tbl
+         Output: foreign_tbl.a, (foreign_tbl.b + 5), foreign_tbl.ctid
+         Remote SQL: SELECT a, b, ctid FROM public.child_tbl WHERE ((a < b)) FOR UPDATE
+(6 rows)
+
+UPDATE rw_view SET b = b + 5; -- should fail
+ERROR:  new row violates check option for view "rw_view"
+DETAIL:  Failing row contains (20, 20).
+EXPLAIN (VERBOSE, COSTS OFF)
+UPDATE rw_view SET b = b + 15;
+                                       QUERY PLAN                                       
+----------------------------------------------------------------------------------------
+ Update on public.parent_tbl
+   Foreign Update on public.foreign_tbl
+     Remote SQL: UPDATE public.child_tbl SET b = $2 WHERE ctid = $1 RETURNING a, b
+   ->  Foreign Scan on public.foreign_tbl
+         Output: foreign_tbl.a, (foreign_tbl.b + 15), foreign_tbl.ctid
+         Remote SQL: SELECT a, b, ctid FROM public.child_tbl WHERE ((a < b)) FOR UPDATE
+(6 rows)
+
+UPDATE rw_view SET b = b + 15; -- ok
+SELECT * FROM foreign_tbl;
+ a  | b  
+----+----
+ 20 | 30
+(1 row)
+
+DROP FOREIGN TABLE foreign_tbl CASCADE;
+DROP TRIGGER row_before_insupd_trigger ON child_tbl;
+DROP TABLE parent_tbl CASCADE;
+NOTICE:  drop cascades to view rw_view
+DROP FUNCTION row_before_insupd_trigfunc;
 -- ===================================================================
 -- test serial columns (ie, sequence-based defaults)
 -- ===================================================================
@@ -7370,6 +7479,81 @@ drop table bar cascade;
 NOTICE:  drop cascades to foreign table bar2
 drop table loct1;
 drop table loct2;
+-- Test pushing down UPDATE/DELETE joins to the remote server
+create table parent (a int, b text);
+create table loct1 (a int, b text);
+create table loct2 (a int, b text);
+create foreign table remt1 (a int, b text)
+  server loopback options (table_name 'loct1');
+create foreign table remt2 (a int, b text)
+  server loopback options (table_name 'loct2');
+alter foreign table remt1 inherit parent;
+insert into remt1 values (1, 'foo');
+insert into remt1 values (2, 'bar');
+insert into remt2 values (1, 'foo');
+insert into remt2 values (2, 'bar');
+analyze remt1;
+analyze remt2;
+explain (verbose, costs off)
+update parent set b = parent.b || remt2.b from remt2 where parent.a = remt2.a returning *;
+                                                                  QUERY PLAN                                                                   
+-----------------------------------------------------------------------------------------------------------------------------------------------
+ Update on public.parent
+   Output: parent.a, parent.b, remt2.a, remt2.b
+   Update on public.parent
+   Foreign Update on public.remt1
+   ->  Nested Loop
+         Output: parent.a, (parent.b || remt2.b), parent.ctid, remt2.*, remt2.a, remt2.b
+         Join Filter: (parent.a = remt2.a)
+         ->  Seq Scan on public.parent
+               Output: parent.a, parent.b, parent.ctid
+         ->  Foreign Scan on public.remt2
+               Output: remt2.b, remt2.*, remt2.a
+               Remote SQL: SELECT a, b FROM public.loct2
+   ->  Foreign Update
+         Remote SQL: UPDATE public.loct1 r4 SET b = (r4.b || r2.b) FROM public.loct2 r2 WHERE ((r4.a = r2.a)) RETURNING r4.a, r4.b, r2.a, r2.b
+(14 rows)
+
+update parent set b = parent.b || remt2.b from remt2 where parent.a = remt2.a returning *;
+ a |   b    | a |  b  
+---+--------+---+-----
+ 1 | foofoo | 1 | foo
+ 2 | barbar | 2 | bar
+(2 rows)
+
+explain (verbose, costs off)
+delete from parent using remt2 where parent.a = remt2.a returning parent;
+                                                    QUERY PLAN                                                    
+------------------------------------------------------------------------------------------------------------------
+ Delete on public.parent
+   Output: parent.*
+   Delete on public.parent
+   Foreign Delete on public.remt1
+   ->  Nested Loop
+         Output: parent.ctid, remt2.*
+         Join Filter: (parent.a = remt2.a)
+         ->  Seq Scan on public.parent
+               Output: parent.ctid, parent.a
+         ->  Foreign Scan on public.remt2
+               Output: remt2.*, remt2.a
+               Remote SQL: SELECT a, b FROM public.loct2
+   ->  Foreign Delete
+         Remote SQL: DELETE FROM public.loct1 r4 USING public.loct2 r2 WHERE ((r4.a = r2.a)) RETURNING r4.a, r4.b
+(14 rows)
+
+delete from parent using remt2 where parent.a = remt2.a returning parent;
+   parent   
+------------
+ (1,foofoo)
+ (2,barbar)
+(2 rows)
+
+-- cleanup
+drop foreign table remt1;
+drop foreign table remt2;
+drop table loct1;
+drop table loct2;
+drop table parent;
 -- ===================================================================
 -- test tuple routing for foreign-table partitions
 -- ===================================================================
@@ -7797,6 +7981,22 @@ drop trigger rem2_trig_row_before on rem2;
 drop trigger rem2_trig_row_after on rem2;
 drop trigger loc2_trig_row_before_insert on loc2;
 delete from rem2;
+-- test COPY FROM with foreign table created in the same transaction
+create table loc3 (f1 int, f2 text);
+begin;
+create foreign table rem3 (f1 int, f2 text)
+	server loopback options(table_name 'loc3');
+copy rem3 from stdin;
+commit;
+select * from rem3;
+ f1 | f2  
+----+-----
+  1 | foo
+  2 | bar
+(2 rows)
+
+drop foreign table rem3;
+drop table loc3;
 -- ===================================================================
 -- test IMPORT FOREIGN SCHEMA
 -- ===================================================================
@@ -8041,7 +8241,7 @@ CREATE TABLE import_source.t5 (c1 int, c2 text collate "C", "Col" "Colors");
 CREATE SCHEMA import_dest5;
 BEGIN;
 DROP TYPE "Colors" CASCADE;
-NOTICE:  drop cascades to table import_source.t5 column Col
+NOTICE:  drop cascades to column Col of table import_source.t5
 IMPORT FOREIGN SCHEMA import_source LIMIT TO (t5)
   FROM SERVER loopback INTO import_dest5;  -- ERROR
 ERROR:  type "public.Colors" does not exist
@@ -8140,8 +8340,9 @@ ALTER TABLE fprt2_p1 SET (autovacuum_enabled = 'false');
 ALTER TABLE fprt2_p2 SET (autovacuum_enabled = 'false');
 INSERT INTO fprt2_p1 SELECT i, i, to_char(i/50, 'FM0000') FROM generate_series(0, 249, 3) i;
 INSERT INTO fprt2_p2 SELECT i, i, to_char(i/50, 'FM0000') FROM generate_series(250, 499, 3) i;
-CREATE FOREIGN TABLE ftprt2_p1 PARTITION OF fprt2 FOR VALUES FROM (0) TO (250)
+CREATE FOREIGN TABLE ftprt2_p1 (b int, c varchar, a int)
 	SERVER loopback OPTIONS (table_name 'fprt2_p1', use_remote_estimate 'true');
+ALTER TABLE fprt2 ATTACH PARTITION ftprt2_p1 FOR VALUES FROM (0) TO (250);
 CREATE FOREIGN TABLE ftprt2_p2 PARTITION OF fprt2 FOR VALUES FROM (250) TO (500)
 	SERVER loopback OPTIONS (table_name 'fprt2_p2', use_remote_estimate 'true');
 ANALYZE fprt2;
@@ -8192,28 +8393,42 @@ SELECT t1.a,t2.b,t2.c FROM fprt1 t1 LEFT JOIN (SELECT * FROM fprt2 WHERE a < 10)
  8 |   | 
 (5 rows)
 
--- with whole-row reference
+-- with whole-row reference; partitionwise join does not apply
 EXPLAIN (COSTS OFF)
-SELECT t1,t2 FROM fprt1 t1 JOIN fprt2 t2 ON (t1.a = t2.b and t1.b = t2.a) WHERE t1.a % 25 =0 ORDER BY 1,2;
-                                   QUERY PLAN                                    
----------------------------------------------------------------------------------
+SELECT t1.wr, t2.wr FROM (SELECT t1 wr, a FROM fprt1 t1 WHERE t1.a % 25 = 0) t1 FULL JOIN (SELECT t2 wr, b FROM fprt2 t2 WHERE t2.b % 25 = 0) t2 ON (t1.a = t2.b) ORDER BY 1,2;
+                       QUERY PLAN                       
+--------------------------------------------------------
  Sort
    Sort Key: ((t1.*)::fprt1), ((t2.*)::fprt2)
-   ->  Append
-         ->  Foreign Scan
-               Relations: (public.ftprt1_p1 t1) INNER JOIN (public.ftprt2_p1 t2)
-         ->  Foreign Scan
-               Relations: (public.ftprt1_p2 t1) INNER JOIN (public.ftprt2_p2 t2)
-(7 rows)
+   ->  Hash Full Join
+         Hash Cond: (t1.a = t2.b)
+         ->  Append
+               ->  Foreign Scan on ftprt1_p1 t1
+               ->  Foreign Scan on ftprt1_p2 t1_1
+         ->  Hash
+               ->  Append
+                     ->  Foreign Scan on ftprt2_p1 t2
+                     ->  Foreign Scan on ftprt2_p2 t2_1
+(11 rows)
 
-SELECT t1,t2 FROM fprt1 t1 JOIN fprt2 t2 ON (t1.a = t2.b and t1.b = t2.a) WHERE t1.a % 25 =0 ORDER BY 1,2;
-       t1       |       t2       
+SELECT t1.wr, t2.wr FROM (SELECT t1 wr, a FROM fprt1 t1 WHERE t1.a % 25 = 0) t1 FULL JOIN (SELECT t2 wr, b FROM fprt2 t2 WHERE t2.b % 25 = 0) t2 ON (t1.a = t2.b) ORDER BY 1,2;
+       wr       |       wr       
 ----------------+----------------
  (0,0,0000)     | (0,0,0000)
+ (50,50,0001)   | 
+ (100,100,0002) | 
  (150,150,0003) | (150,150,0003)
+ (200,200,0004) | 
  (250,250,0005) | (250,250,0005)
+ (300,300,0006) | 
+ (350,350,0007) | 
  (400,400,0008) | (400,400,0008)
-(4 rows)
+ (450,450,0009) | 
+                | (75,75,0001)
+                | (225,225,0004)
+                | (325,325,0006)
+                | (475,475,0009)
+(14 rows)
 
 -- join with lateral reference
 EXPLAIN (COSTS OFF)
@@ -8238,7 +8453,7 @@ SELECT t1.a,t1.b FROM fprt1 t1, LATERAL (SELECT t2.a, t2.b FROM fprt2 t2 WHERE t
  400 | 400
 (4 rows)
 
--- with PHVs, partition-wise join selected but no join pushdown
+-- with PHVs, partitionwise join selected but no join pushdown
 EXPLAIN (COSTS OFF)
 SELECT t1.a, t1.phv, t2.b, t2.phv FROM (SELECT 't1_phv' phv, * FROM fprt1 WHERE a % 25 = 0) t1 FULL JOIN (SELECT 't2_phv' phv, * FROM fprt2 WHERE b % 25 = 0) t2 ON (t1.a = t2.b) ORDER BY t1.a, t2.b;
                       QUERY PLAN                      
@@ -8276,6 +8491,34 @@ SELECT t1.a, t1.phv, t2.b, t2.phv FROM (SELECT 't1_phv' phv, * FROM fprt1 WHERE 
      |        | 325 | t2_phv
      |        | 475 | t2_phv
 (14 rows)
+
+-- test FOR UPDATE; partitionwise join does not apply
+EXPLAIN (COSTS OFF)
+SELECT t1.a, t2.b FROM fprt1 t1 INNER JOIN fprt2 t2 ON (t1.a = t2.b) WHERE t1.a % 25 = 0 ORDER BY 1,2 FOR UPDATE OF t1;
+                          QUERY PLAN                          
+--------------------------------------------------------------
+ LockRows
+   ->  Sort
+         Sort Key: t1.a
+         ->  Hash Join
+               Hash Cond: (t2.b = t1.a)
+               ->  Append
+                     ->  Foreign Scan on ftprt2_p1 t2
+                     ->  Foreign Scan on ftprt2_p2 t2_1
+               ->  Hash
+                     ->  Append
+                           ->  Foreign Scan on ftprt1_p1 t1
+                           ->  Foreign Scan on ftprt1_p2 t1_1
+(12 rows)
+
+SELECT t1.a, t2.b FROM fprt1 t1 INNER JOIN fprt2 t2 ON (t1.a = t2.b) WHERE t1.a % 25 = 0 ORDER BY 1,2 FOR UPDATE OF t1;
+  a  |  b  
+-----+-----
+   0 |   0
+ 150 | 150
+ 250 | 250
+ 400 | 400
+(4 rows)
 
 RESET enable_partitionwise_join;
 -- ===================================================================

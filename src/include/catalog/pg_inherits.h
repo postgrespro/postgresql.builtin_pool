@@ -4,7 +4,7 @@
  *	  definition of the "inherits" system catalog (pg_inherits)
  *
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/catalog/pg_inherits.h
@@ -29,7 +29,7 @@
  *		typedef struct FormData_pg_inherits
  * ----------------
  */
-CATALOG(pg_inherits,2611,InheritsRelationId) BKI_WITHOUT_OIDS
+CATALOG(pg_inherits,2611,InheritsRelationId)
 {
 	Oid			inhrelid;
 	Oid			inhparent;

@@ -72,6 +72,15 @@
 # define gettimeofday(a,b) gettimeofday(a)
 #endif
 
+/* Define to 1 if you have the `ASN1_STRING_get0_data' function. */
+/* #undef HAVE_ASN1_STRING_GET0_DATA */
+
+/* Define to 1 if you have the `BIO_get_data' function. */
+/* #undef HAVE_BIO_GET_DATA */
+
+/* Define to 1 if you have the `BIO_meth_new' function. */
+/* #undef HAVE_BIO_METH_NEW */
+
 /* Define to 1 if you have the `cbrt' function. */
 //#define HAVE_CBRT 1
 
@@ -98,36 +107,45 @@
    don't. */
 #define HAVE_DECL_F_FULLFSYNC 0
 
+/* Define to 1 if you have the declaration of
+   `LLVMCreateGDBRegistrationListener', and to 0 if you don't. */
+#undef HAVE_DECL_LLVMCREATEGDBREGISTRATIONLISTENER
+
+/* Define to 1 if you have the declaration of
+   `LLVMCreatePerfJITEventListener', and to 0 if you don't. */
+#undef HAVE_DECL_LLVMCREATEPERFJITEVENTLISTENER
+
 /* Define to 1 if you have the declaration of `LLVMGetHostCPUName', and to 0
    if you don't. */
 #define HAVE_DECL_LLVMGETHOSTCPUNAME 0
+
+/* Define to 1 if you have the declaration of `LLVMGetHostCPUFeatures', and to 0
+   if you don't. */
+#define HAVE_DECL_LLVMGETHOSTCPUFEATURES 0
 
 /* Define to 1 if you have the declaration of `LLVMOrcGetSymbolAddressIn', and
    to 0 if you don't. */
 #define HAVE_DECL_LLVMORCGETSYMBOLADDRESSIN 0
 
-/* Define to 1 if you have the declaration of `LLVMOrcRegisterGDB', and to 0
-   if you don't. */
-#define HAVE_DECL_LLVMORCREGISTERGDB 0
-
-/* Define to 1 if you have the declaration of `LLVMOrcRegisterPerf', and to 0
-   if you don't. */
-#define HAVE_DECL_LLVMORCREGISTERPERF 0
-
-/* Define to 1 if you have the declaration of `snprintf', and to 0 if you
+/* Define to 1 if you have the declaration of `RTLD_GLOBAL', and to 0 if you
    don't. */
-#define HAVE_DECL_SNPRINTF 1
+#define HAVE_DECL_RTLD_GLOBAL 0
+
+/* Define to 1 if you have the declaration of `RTLD_NOW', and to 0 if you
+   don't. */
+#define HAVE_DECL_RTLD_NOW 0
 
 /* Define to 1 if you have the declaration of `strnlen', and to 0 if you
    don't. */
 #define HAVE_DECL_STRNLEN 1
 
-/* Define to 1 if you have the declaration of `vsnprintf', and to 0 if you
+/* Define to 1 if you have the declaration of `strtoll', and to 0 if you
    don't. */
-#define HAVE_DECL_VSNPRINTF 1
+#define HAVE_DECL_STRTOLL 1
 
-/* Define to 1 if you have the <dld.h> header file. */
-/* #undef HAVE_DLD_H */
+/* Define to 1 if you have the declaration of `strtoull', and to 0 if you
+   don't. */
+#define HAVE_DECL_STRTOULL 1
 
 /* Define to 1 if you have the `dlopen' function. */
 /* #undef HAVE_DLOPEN */
@@ -225,6 +243,9 @@
 /* Define to 1 if you have the <ldap.h> header file. */
 /* #undef HAVE_LDAP_H */
 
+/* Define to 1 if you have the `ldap_initialize' function. */
+/* #undef HAVE_LDAP_INITIALIZE */
+
 /* Define to 1 if you have the `crypto' library (-lcrypto). */
 /* #undef HAVE_LIBCRYPTO */
 
@@ -280,6 +301,9 @@
 /* Define to 1 if you have the <netinet/tcp.h> header file. */
 /* #undef HAVE_NETINET_TCP_H */
 
+/* Define to 1 if you have the `OPENSSL_init_ssl' function. */
+/* #undef HAVE_OPENSSL_INIT_SSL */
+
 /* Define to 1 if you have the <pam/pam_appl.h> header file. */
 /* #undef HAVE_PAM_PAM_APPL_H */
 
@@ -295,11 +319,20 @@
 /* Define to 1 if you have the `posix_fallocate' function. */
 /* #undef HAVE_POSIX_FALLOCATE */
 
+/* Define to 1 if you have the `ppoll' function. */
+/* #undef HAVE_PPOLL */
+
+/* Define to 1 if you have the `pread' function. */
+/* #undef HAVE_PREAD */
+
 /* Define to 1 if you have the `pstat' function. */
 /* #undef HAVE_PSTAT */
 
 /* Define to 1 if the PS_STRINGS thing exists. */
 /* #undef HAVE_PS_STRINGS */
+
+/* Define to 1 if you have the `pwrite' function. */
+/* #undef HAVE_PWRITE */
 
 /* Define to 1 if you have the `random' function. */
 /* #undef HAVE_RANDOM */
@@ -341,9 +374,6 @@
 /* Define to 1 if you have the `setsid' function. */
 /* #undef HAVE_SETSID */
 
-/* Define to 1 if you have the `snprintf' function. */
-/* #undef HAVE_SNPRINTF */
-
 /* Define to 1 if you have spinlocks. */
 #define HAVE_SPINLOCKS 1
 
@@ -352,6 +382,9 @@
 
 /* Define to 1 if you have the `srandom' function. */
 /* #undef HAVE_SRANDOM */
+
+/* Define to 1 if you have the `SSL_clear_options' function. */
+#define HAVE_SSL_CLEAR_OPTIONS 1
 
 /* Define to 1 if you have the `SSL_get_current_compression' function. */
 #define HAVE_SSL_GET_CURRENT_COMPRESSION 1
@@ -367,10 +400,8 @@
 /* Define to 1 if you have the <stdlib.h> header file. */
 #define HAVE_STDLIB_H 1
 
-/* Define to 1 if you have the `strerror' function. */
-#ifndef HAVE_STRERROR
-#define HAVE_STRERROR 1
-#endif
+/* Define to 1 if you have the `strchrnul' function. */
+/* #undef HAVE_STRCHRNUL */
 
 /* Define to 1 if you have the `strerror_r' function. */
 /* #undef HAVE_STRERROR_R */
@@ -381,20 +412,26 @@
 /* Define to 1 if you have the <string.h> header file. */
 #define HAVE_STRING_H 1
 
-/* Define to use have a strong random number source */
-#define HAVE_STRONG_RANDOM 1
+/* Define to 1 if you have the `strsignal' function. */
+/* #undef HAVE_STRSIGNAL */
 
 /* Define to 1 if you have the `strtoll' function. */
-//#define HAVE_STRTOLL 1
-
-/* Define to 1 if you have the `strtoq' function. */
-/* #undef HAVE_STRTOQ */
+#ifdef HAVE_LONG_LONG_INT_64
+#define HAVE_STRTOLL 1
+/* Before VS2013, use Microsoft's nonstandard equivalent function */
+#if (_MSC_VER < 1800)
+#define strtoll _strtoi64
+#endif
+#endif
 
 /* Define to 1 if you have the `strtoull' function. */
-//#define HAVE_STRTOULL 1
-
-/* Define to 1 if you have the `strtouq' function. */
-/* #undef HAVE_STRTOUQ */
+#ifdef HAVE_LONG_LONG_INT_64
+#define HAVE_STRTOULL 1
+/* Before VS2013, use Microsoft's nonstandard equivalent function */
+#if (_MSC_VER < 1800)
+#define strtoull _strtoui64
+#endif
+#endif
 
 /* Define to 1 if the system has the type `struct addrinfo'. */
 #if (_MSC_VER > 1200)
@@ -449,6 +486,9 @@
 
 /* Define to 1 if you have the <sys/ipc.h> header file. */
 /* #undef HAVE_SYS_IPC_H */
+
+/* Define to 1 if you have the <sys/prctl.h> header file. */
+/* #undef HAVE_SYS_PRCTL_H */
 
 /* Define to 1 if you have the <sys/pstat.h> header file. */
 /* #undef HAVE_SYS_PSTAT_H */
@@ -514,9 +554,6 @@
 /* Define to 1 if you have the <utime.h> header file. */
 #define HAVE_UTIME_H 1
 
-/* Define to 1 if you have the `vsnprintf' function. */
-#define HAVE_VSNPRINTF 1
-
 /* Define to 1 if you have the <wchar.h> header file. */
 #define HAVE_WCHAR_H 1
 
@@ -528,6 +565,9 @@
 
 /* Define to 1 if you have the <winldap.h> header file. */
 /* #undef HAVE_WINLDAP_H */
+
+/* Define to 1 if you have the `X509_get_signature_nid' function. */
+#define HAVE_X509_GET_SIGNATURE_NID 1
 
 /* Define to 1 if the system has the type `_Bool'. */
 /* #undef HAVE__BOOL */
@@ -562,10 +602,7 @@
 /* Define to 1 if your compiler understands _Static_assert. */
 /* #undef HAVE__STATIC_ASSERT */
 
-/* Define to 1 if your compiler understands __VA_ARGS__ in macros. */
-#define HAVE__VA_ARGS 1
-
-/* Define to the appropriate snprintf length modifier for 64-bit ints. */
+/* Define to the appropriate printf length modifier for 64-bit ints. */
 #define INT64_MODIFIER "ll"
 
 /* Define to 1 if `locale_t' requires <xlocale.h>. */
@@ -587,10 +624,10 @@
 #define PACKAGE_NAME "PostgreSQL"
 
 /* Define to the full name and version of this package. */
-#define PACKAGE_STRING "PostgreSQL 11devel"
+#define PACKAGE_STRING "PostgreSQL 12devel"
 
 /* Define to the version of this package. */
-#define PACKAGE_VERSION "11devel"
+#define PACKAGE_VERSION "12devel"
 
 /* Define to the name of a signed 128-bit integer type. */
 #undef PG_INT128_TYPE
@@ -599,10 +636,10 @@
 #define PG_INT64_TYPE long long int
 
 /* PostgreSQL version as a string */
-#define PG_VERSION "11devel"
+#define PG_VERSION "12devel"
 
 /* PostgreSQL version as a number */
-#define PG_VERSION_NUM 110000
+#define PG_VERSION_NUM 120000
 
 /* Define to the one symbol short name of this package. */
 #define PACKAGE_TARNAME "postgresql"
@@ -637,7 +674,7 @@
 /* Define to 1 if you have the ANSI C header files. */
 #define STDC_HEADERS 1
 
-/* Define to 1 if strerror_r() returns a int. */
+/* Define to 1 if strerror_r() returns int. */
 /* #undef STRERROR_R_INT */
 
 /* Define to 1 if your <sys/time.h> declares `struct tm'. */
@@ -672,9 +709,6 @@
 
 /* Define to 1 to build with PAM support. (--with-pam) */
 /* #undef USE_PAM */
-
-/* Use replacement snprintf() functions. */
-#define USE_REPL_SNPRINTF 1
 
 /* Define to 1 to use software CRC-32C implementation (slicing-by-8). */
 #if (_MSC_VER < 1500)

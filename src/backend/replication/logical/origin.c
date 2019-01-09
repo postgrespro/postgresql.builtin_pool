@@ -3,7 +3,7 @@
  * origin.c
  *	  Logical replication progress tracking support.
  *
- * Copyright (c) 2013-2018, PostgreSQL Global Development Group
+ * Copyright (c) 2013-2019, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *	  src/backend/replication/logical/origin.c
@@ -576,9 +576,15 @@ CheckPointReplicationOrigin(void)
 						tmppath)));
 
 	/* write magic */
+	errno = 0;
 	if ((write(tmpfd, &magic, sizeof(magic))) != sizeof(magic))
 	{
+		int			save_errno = errno;
+
 		CloseTransientFile(tmpfd);
+
+		/* if write didn't set errno, assume problem is no disk space */
+		errno = save_errno ? save_errno : ENOSPC;
 		ereport(PANIC,
 				(errcode_for_file_access(),
 				 errmsg("could not write to file \"%s\": %m",
@@ -614,10 +620,16 @@ CheckPointReplicationOrigin(void)
 		/* make sure we only write out a commit that's persistent */
 		XLogFlush(local_lsn);
 
+		errno = 0;
 		if ((write(tmpfd, &disk_state, sizeof(disk_state))) !=
 			sizeof(disk_state))
 		{
+			int			save_errno = errno;
+
 			CloseTransientFile(tmpfd);
+
+			/* if write didn't set errno, assume problem is no disk space */
+			errno = save_errno ? save_errno : ENOSPC;
 			ereport(PANIC,
 					(errcode_for_file_access(),
 					 errmsg("could not write to file \"%s\": %m",
@@ -631,9 +643,15 @@ CheckPointReplicationOrigin(void)
 
 	/* write out the CRC */
 	FIN_CRC32C(crc);
+	errno = 0;
 	if ((write(tmpfd, &crc, sizeof(crc))) != sizeof(crc))
 	{
+		int			save_errno = errno;
+
 		CloseTransientFile(tmpfd);
+
+		/* if write didn't set errno, assume problem is no disk space */
+		errno = save_errno ? save_errno : ENOSPC;
 		ereport(PANIC,
 				(errcode_for_file_access(),
 				 errmsg("could not write to file \"%s\": %m",
@@ -697,9 +715,18 @@ StartupReplicationOrigin(void)
 	/* verify magic, that is written even if nothing was active */
 	readBytes = read(fd, &magic, sizeof(magic));
 	if (readBytes != sizeof(magic))
-		ereport(PANIC,
-				(errmsg("could not read file \"%s\": %m",
-						path)));
+	{
+		if (readBytes < 0)
+			ereport(PANIC,
+					(errcode_for_file_access(),
+					 errmsg("could not read file \"%s\": %m",
+							path)));
+		else
+			ereport(PANIC,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("could not read file \"%s\": read %d of %zu",
+							path, readBytes, sizeof(magic))));
+	}
 	COMP_CRC32C(crc, &magic, sizeof(magic));
 
 	if (magic != REPLICATION_STATE_MAGIC)
@@ -1433,7 +1460,7 @@ pg_show_replication_origin_status(PG_FUNCTION_ARGS)
 	int			i;
 #define REPLICATION_ORIGIN_PROGRESS_COLS 4
 
-	/* we we want to return 0 rows if slot is set to zero */
+	/* we want to return 0 rows if slot is set to zero */
 	replorigin_check_prerequisites(false, true);
 
 	if (rsinfo == NULL || !IsA(rsinfo, ReturnSetInfo))

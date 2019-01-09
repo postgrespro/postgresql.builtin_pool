@@ -3,7 +3,7 @@
  * joinpath.c
  *	  Routines to find all possible paths for processing a set of joins
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -498,7 +498,7 @@ try_partial_nestloop_path(PlannerInfo *root,
 		/*
 		 * The inner and outer paths are parameterized, if at all, by the top
 		 * level parents, not the child relations, so we must use those relids
-		 * for our paramaterization tests.
+		 * for our parameterization tests.
 		 */
 		if (outerrel->top_parent_relids)
 			outerrelids = outerrel->top_parent_relids;

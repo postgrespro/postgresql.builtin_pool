@@ -9,10 +9,10 @@
  * dependent objects can be associated with it.  An extension is created by
  * populating the pg_extension catalog from a "control" file.
  * The extension control file is parsed with the same parser we use for
- * postgresql.conf and recovery.conf.  An extension also has an installation
- * script file, containing SQL commands to create the extension's objects.
+ * postgresql.conf.  An extension also has an installation script file,
+ * containing SQL commands to create the extension's objects.
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -32,6 +32,7 @@
 #include "access/htup_details.h"
 #include "access/sysattr.h"
 #include "access/xact.h"
+#include "catalog/catalog.h"
 #include "catalog/dependency.h"
 #include "catalog/indexing.h"
 #include "catalog/namespace.h"
@@ -154,7 +155,7 @@ get_extension_oid(const char *extname, bool missing_ok)
 
 	/* We assume that there can be at most one matching tuple */
 	if (HeapTupleIsValid(tuple))
-		result = HeapTupleGetOid(tuple);
+		result = ((Form_pg_extension) GETSTRUCT(tuple))->oid;
 	else
 		result = InvalidOid;
 
@@ -188,7 +189,7 @@ get_extension_name(Oid ext_oid)
 	rel = heap_open(ExtensionRelationId, AccessShareLock);
 
 	ScanKeyInit(&entry[0],
-				ObjectIdAttributeNumber,
+				Anum_pg_extension_oid,
 				BTEqualStrategyNumber, F_OIDEQ,
 				ObjectIdGetDatum(ext_oid));
 
@@ -227,7 +228,7 @@ get_extension_schema(Oid ext_oid)
 	rel = heap_open(ExtensionRelationId, AccessShareLock);
 
 	ScanKeyInit(&entry[0],
-				ObjectIdAttributeNumber,
+				Anum_pg_extension_oid,
 				BTEqualStrategyNumber, F_OIDEQ,
 				ObjectIdGetDatum(ext_oid));
 
@@ -683,8 +684,6 @@ read_extension_script_file(const ExtensionControlFile *control,
 /*
  * Execute given SQL string.
  *
- * filename is used only to report errors.
- *
  * Note: it's tempting to just use SPI to execute the string, but that does
  * not work very well.  The really serious problem is that SPI will parse,
  * analyze, and plan the whole string before executing any of it; of course
@@ -694,7 +693,7 @@ read_extension_script_file(const ExtensionControlFile *control,
  * could be very long.
  */
 static void
-execute_sql_string(const char *sql, const char *filename)
+execute_sql_string(const char *sql)
 {
 	List	   *raw_parsetree_list;
 	DestReceiver *dest;
@@ -921,7 +920,7 @@ execute_extension_script(Oid extensionOid, ExtensionControlFile *control,
 		/* And now back to C string */
 		c_sql = text_to_cstring(DatumGetTextPP(t_sql));
 
-		execute_sql_string(c_sql, filename);
+		execute_sql_string(c_sql);
 	}
 	PG_CATCH();
 	{
@@ -1760,6 +1759,9 @@ InsertExtensionTuple(const char *extName, Oid extOwner,
 	memset(values, 0, sizeof(values));
 	memset(nulls, 0, sizeof(nulls));
 
+	extensionOid = GetNewOidWithIndex(rel, ExtensionOidIndexId,
+									  Anum_pg_extension_oid);
+	values[Anum_pg_extension_oid - 1] = ObjectIdGetDatum(extensionOid);
 	values[Anum_pg_extension_extname - 1] =
 		DirectFunctionCall1(namein, CStringGetDatum(extName));
 	values[Anum_pg_extension_extowner - 1] = ObjectIdGetDatum(extOwner);
@@ -1779,7 +1781,7 @@ InsertExtensionTuple(const char *extName, Oid extOwner,
 
 	tuple = heap_form_tuple(rel->rd_att, values, nulls);
 
-	extensionOid = CatalogTupleInsert(rel, tuple);
+	CatalogTupleInsert(rel, tuple);
 
 	heap_freetuple(tuple);
 	heap_close(rel, RowExclusiveLock);
@@ -1850,7 +1852,7 @@ RemoveExtensionById(Oid extId)
 	rel = heap_open(ExtensionRelationId, RowExclusiveLock);
 
 	ScanKeyInit(&entry[0],
-				ObjectIdAttributeNumber,
+				Anum_pg_extension_oid,
 				BTEqualStrategyNumber, F_OIDEQ,
 				ObjectIdGetDatum(extId));
 	scandesc = systable_beginscan(rel, ExtensionOidIndexId, true,
@@ -2346,8 +2348,8 @@ pg_extension_config_dump(PG_FUNCTION_ARGS)
 	if (!creating_extension)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("pg_extension_config_dump() can only be called "
-						"from an SQL script executed by CREATE EXTENSION")));
+				 errmsg("%s can only be called from an SQL script executed by CREATE EXTENSION",
+						"pg_extension_config_dump()")));
 
 	/*
 	 * Check that the table exists and is a member of the extension being
@@ -2378,7 +2380,7 @@ pg_extension_config_dump(PG_FUNCTION_ARGS)
 	extRel = heap_open(ExtensionRelationId, RowExclusiveLock);
 
 	ScanKeyInit(&key[0],
-				ObjectIdAttributeNumber,
+				Anum_pg_extension_oid,
 				BTEqualStrategyNumber, F_OIDEQ,
 				ObjectIdGetDatum(CurrentExtensionObject));
 
@@ -2526,7 +2528,7 @@ extension_config_remove(Oid extensionoid, Oid tableoid)
 	extRel = heap_open(ExtensionRelationId, RowExclusiveLock);
 
 	ScanKeyInit(&key[0],
-				ObjectIdAttributeNumber,
+				Anum_pg_extension_oid,
 				BTEqualStrategyNumber, F_OIDEQ,
 				ObjectIdGetDatum(extensionoid));
 
@@ -2599,14 +2601,13 @@ extension_config_remove(Oid extensionoid, Oid tableoid)
 	{
 		/* squeeze out the target element */
 		Datum	   *dvalues;
-		bool	   *dnulls;
 		int			nelems;
 		int			i;
 
+		/* We already checked there are no nulls */
 		deconstruct_array(a, OIDOID, sizeof(Oid), true, 'i',
-						  &dvalues, &dnulls, &nelems);
+						  &dvalues, NULL, &nelems);
 
-		/* We already checked there are no nulls, so ignore dnulls */
 		for (i = arrayIndex; i < arrayLength - 1; i++)
 			dvalues[i] = dvalues[i + 1];
 
@@ -2646,14 +2647,13 @@ extension_config_remove(Oid extensionoid, Oid tableoid)
 	{
 		/* squeeze out the target element */
 		Datum	   *dvalues;
-		bool	   *dnulls;
 		int			nelems;
 		int			i;
 
+		/* We already checked there are no nulls */
 		deconstruct_array(a, TEXTOID, -1, false, 'i',
-						  &dvalues, &dnulls, &nelems);
+						  &dvalues, NULL, &nelems);
 
-		/* We already checked there are no nulls, so ignore dnulls */
 		for (i = arrayIndex; i < arrayLength - 1; i++)
 			dvalues[i] = dvalues[i + 1];
 
@@ -2727,7 +2727,7 @@ AlterExtensionNamespace(const char *extensionName, const char *newschema, Oid *o
 	extRel = heap_open(ExtensionRelationId, RowExclusiveLock);
 
 	ScanKeyInit(&key[0],
-				ObjectIdAttributeNumber,
+				Anum_pg_extension_oid,
 				BTEqualStrategyNumber, F_OIDEQ,
 				ObjectIdGetDatum(extensionOid));
 
@@ -2907,7 +2907,7 @@ ExecAlterExtensionStmt(ParseState *pstate, AlterExtensionStmt *stmt)
 				 errmsg("extension \"%s\" does not exist",
 						stmt->extname)));
 
-	extensionOid = HeapTupleGetOid(extTup);
+	extensionOid = ((Form_pg_extension) GETSTRUCT(extTup))->oid;
 
 	/*
 	 * Determine the existing version we are updating from
@@ -3049,7 +3049,7 @@ ApplyExtensionUpdates(Oid extensionOid,
 		extRel = heap_open(ExtensionRelationId, RowExclusiveLock);
 
 		ScanKeyInit(&key[0],
-					ObjectIdAttributeNumber,
+					Anum_pg_extension_oid,
 					BTEqualStrategyNumber, F_OIDEQ,
 					ObjectIdGetDatum(extensionOid));
 

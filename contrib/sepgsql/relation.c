@@ -4,7 +4,7 @@
  *
  * Routines corresponding to relation/attribute objects
  *
- * Copyright (c) 2010-2018, PostgreSQL Global Development Group
+ * Copyright (c) 2010-2019, PostgreSQL Global Development Group
  *
  * -------------------------------------------------------------------------
  */
@@ -262,7 +262,7 @@ sepgsql_relation_post_create(Oid relOid)
 	rel = heap_open(RelationRelationId, AccessShareLock);
 
 	ScanKeyInit(&skey,
-				ObjectIdAttributeNumber,
+				Anum_pg_class_oid,
 				BTEqualStrategyNumber, F_OIDEQ,
 				ObjectIdGetDatum(relOid));
 
@@ -614,7 +614,7 @@ sepgsql_relation_setattr(Oid relOid)
 	rel = heap_open(RelationRelationId, AccessShareLock);
 
 	ScanKeyInit(&skey,
-				ObjectIdAttributeNumber,
+				Anum_pg_class_oid,
 				BTEqualStrategyNumber, F_OIDEQ,
 				ObjectIdGetDatum(relOid));
 

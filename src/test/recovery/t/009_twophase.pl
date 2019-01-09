@@ -20,6 +20,7 @@ sub configure_and_reload
 	));
 	$node->psql('postgres', "SELECT pg_reload_conf()", stdout => \$psql_out);
 	is($psql_out, 't', "reload node $name with $parameter");
+	return;
 }
 
 # Set up two nodes, which will alternately be master and replication standby.
@@ -229,7 +230,7 @@ is($psql_rc, '0', "Restore of prepared transaction on promoted standby");
 # restart old master as new standby
 $cur_standby->enable_streaming($cur_master);
 $cur_standby->append_conf(
-	'recovery.conf', qq(
+	'postgresql.conf', qq(
 recovery_target_timeline='latest'
 ));
 $cur_standby->start;
@@ -267,7 +268,7 @@ is($psql_out, '1',
 # restart old master as new standby
 $cur_standby->enable_streaming($cur_master);
 $cur_standby->append_conf(
-	'recovery.conf', qq(
+	'postgresql.conf', qq(
 recovery_target_timeline='latest'
 ));
 $cur_standby->start;
@@ -307,7 +308,7 @@ is($psql_out, '1',
 # restart old master as new standby
 $cur_standby->enable_streaming($cur_master);
 $cur_standby->append_conf(
-	'recovery.conf', qq(
+	'postgresql.conf', qq(
 recovery_target_timeline='latest'
 ));
 $cur_standby->start;

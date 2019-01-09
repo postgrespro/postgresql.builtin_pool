@@ -10,6 +10,8 @@ use strict;
 use warnings;
 use VSObjectFactory;
 
+no warnings qw(redefine);    ## no critic
+
 sub _new
 {
 	my $classname = shift;
@@ -75,6 +77,7 @@ sub DeterminePlatform
 	$? >> 8 == 0 or die "cl command not found";
 	$self->{platform} = ($output =~ /^\/favor:<.+AMD64/m) ? 'x64' : 'Win32';
 	print "Detected hardware platform: $self->{platform}\n";
+	return;
 }
 
 # Return 1 if $oldfile is newer than $newfile, or if $newfile doesn't exist.
@@ -112,6 +115,7 @@ sub copyFile
 	}
 	close($i);
 	close($o);
+	return;
 }
 
 sub GenerateFiles
@@ -265,16 +269,14 @@ sub GenerateFiles
 		"LIBPGTYPES");
 
 	chdir('src/backend/utils');
-	my $pg_language_dat = '../../../src/include/catalog/pg_language.dat';
 	my $pg_proc_dat     = '../../../src/include/catalog/pg_proc.dat';
 	if (   IsNewer('fmgr-stamp', 'Gen_fmgrtab.pl')
 		|| IsNewer('fmgr-stamp', '../catalog/Catalog.pm')
-		|| IsNewer('fmgr-stamp', $pg_language_dat)
 		|| IsNewer('fmgr-stamp', $pg_proc_dat)
 		|| IsNewer('fmgr-stamp', '../../../src/include/access/transam.h'))
 	{
 		system(
-			"perl -I ../catalog Gen_fmgrtab.pl -I../../../src/include/ $pg_language_dat $pg_proc_dat"
+			"perl -I ../catalog Gen_fmgrtab.pl -I../../../src/include/ $pg_proc_dat"
 		);
 		open(my $f, '>', 'fmgr-stamp')
 		  || confess "Could not touch fmgr-stamp";
@@ -315,13 +317,6 @@ sub GenerateFiles
 		copyFile(
 			'src/backend/storage/lmgr/lwlocknames.h',
 			'src/include/storage/lwlocknames.h');
-	}
-
-	if (IsNewer(
-			'src/include/dynloader.h', 'src/backend/port/dynloader/win32.h'))
-	{
-		copyFile('src/backend/port/dynloader/win32.h',
-			'src/include/dynloader.h');
 	}
 
 	if (IsNewer('src/include/utils/probes.h', 'src/backend/utils/probes.d'))
@@ -415,6 +410,42 @@ sub GenerateFiles
 	}
 
 	if (IsNewer(
+			'src/common/kwlist_d.h',
+			'src/include/parser/kwlist.h'))
+	{
+		print "Generating kwlist_d.h...\n";
+		system('perl src/tools/gen_keywordlist.pl --extern -o src/common src/include/parser/kwlist.h');
+	}
+
+	if (IsNewer(
+			'src/pl/plpgsql/src/pl_reserved_kwlist_d.h',
+			'src/pl/plpgsql/src/pl_reserved_kwlist.h')
+		|| IsNewer(
+			'src/pl/plpgsql/src/pl_unreserved_kwlist_d.h',
+			'src/pl/plpgsql/src/pl_unreserved_kwlist.h'))
+	{
+		print "Generating pl_reserved_kwlist_d.h and pl_unreserved_kwlist_d.h...\n";
+		chdir('src/pl/plpgsql/src');
+		system('perl ../../../tools/gen_keywordlist.pl --varname ReservedPLKeywords pl_reserved_kwlist.h');
+		system('perl ../../../tools/gen_keywordlist.pl --varname UnreservedPLKeywords pl_unreserved_kwlist.h');
+		chdir('../../../..');
+	}
+
+	if (IsNewer(
+			'src/interfaces/ecpg/preproc/c_kwlist_d.h',
+			'src/interfaces/ecpg/preproc/c_kwlist.h')
+		|| IsNewer(
+			'src/interfaces/ecpg/preproc/ecpg_kwlist_d.h',
+			'src/interfaces/ecpg/preproc/ecpg_kwlist.h'))
+	{
+		print "Generating c_kwlist_d.h and ecpg_kwlist_d.h...\n";
+		chdir('src/interfaces/ecpg/preproc');
+		system('perl ../../../tools/gen_keywordlist.pl --varname ScanCKeywords c_kwlist.h');
+		system('perl ../../../tools/gen_keywordlist.pl --varname ScanECPGKeywords ecpg_kwlist.h');
+		chdir('../../../..');
+	}
+
+	if (IsNewer(
 			'src/interfaces/ecpg/preproc/preproc.y',
 			'src/backend/parser/gram.y'))
 	{
@@ -496,12 +527,17 @@ EOF
 	{
 		chdir('src/backend/catalog');
 		my $bki_srcs = join(' ../../../src/include/catalog/', @bki_srcs);
-		system("perl genbki.pl --set-version=$self->{majorver} $bki_srcs");
+		system("perl genbki.pl  -I../../../src/include/ --set-version=$self->{majorver} $bki_srcs");
 		open(my $f, '>', 'bki-stamp')
 		  || confess "Could not touch bki-stamp";
 		close($f);
 		chdir('../../..');
+	}
 
+	if (IsNewer(
+			'src/include/catalog/header-stamp',
+			'src/backend/catalog/bki-stamp'))
+	{
 		# Copy generated headers to include directory.
 		opendir(my $dh, 'src/backend/catalog/')
 		  || die "Can't opendir src/backend/catalog/ $!";
@@ -516,6 +552,9 @@ EOF
 		copyFile(
 			'src/backend/catalog/schemapg.h',
 			'src/include/catalog/schemapg.h');
+		open(my $chs, '>', 'src/include/catalog/header-stamp')
+		  || confess "Could not touch header-stamp";
+		close($chs);
 	}
 
 	open(my $o, '>', "doc/src/sgml/version.sgml")
@@ -525,6 +564,7 @@ EOF
 <!ENTITY majorversion "$self->{majorver}">
 EOF
 	close($o);
+	return;
 }
 
 sub GenerateDefFile
@@ -547,6 +587,7 @@ sub GenerateDefFile
 		close($of);
 		close($if);
 	}
+	return;
 }
 
 sub AddProject
@@ -719,6 +760,7 @@ EOF
 EndGlobal
 EOF
 	close($sln);
+	return;
 }
 
 sub GetFakeConfigure
@@ -745,100 +787,6 @@ sub GetFakeConfigure
 	return $cfg;
 }
 
-package VS2005Solution;
-
-#
-# Package that encapsulates a Visual Studio 2005 solution file
-#
-
-use strict;
-use warnings;
-use base qw(Solution);
-
-sub new
-{
-	my $classname = shift;
-	my $self      = $classname->SUPER::_new(@_);
-	bless($self, $classname);
-
-	$self->{solutionFileVersion} = '9.00';
-	$self->{vcver}               = '8.00';
-	$self->{visualStudioName}    = 'Visual Studio 2005';
-
-	return $self;
-}
-
-package VS2008Solution;
-
-#
-# Package that encapsulates a Visual Studio 2008 solution file
-#
-
-use strict;
-use warnings;
-use base qw(Solution);
-
-sub new
-{
-	my $classname = shift;
-	my $self      = $classname->SUPER::_new(@_);
-	bless($self, $classname);
-
-	$self->{solutionFileVersion} = '10.00';
-	$self->{vcver}               = '9.00';
-	$self->{visualStudioName}    = 'Visual Studio 2008';
-
-	return $self;
-}
-
-package VS2010Solution;
-
-#
-# Package that encapsulates a Visual Studio 2010 solution file
-#
-
-use Carp;
-use strict;
-use warnings;
-use base qw(Solution);
-
-sub new
-{
-	my $classname = shift;
-	my $self      = $classname->SUPER::_new(@_);
-	bless($self, $classname);
-
-	$self->{solutionFileVersion} = '11.00';
-	$self->{vcver}               = '10.00';
-	$self->{visualStudioName}    = 'Visual Studio 2010';
-
-	return $self;
-}
-
-package VS2012Solution;
-
-#
-# Package that encapsulates a Visual Studio 2012 solution file
-#
-
-use Carp;
-use strict;
-use warnings;
-use base qw(Solution);
-
-sub new
-{
-	my $classname = shift;
-	my $self      = $classname->SUPER::_new(@_);
-	bless($self, $classname);
-
-	$self->{solutionFileVersion} = '12.00';
-	$self->{vcver}               = '11.00';
-	$self->{visualStudioName}    = 'Visual Studio 2012';
-
-	return $self;
-}
-
 package VS2013Solution;
 
 #
@@ -849,6 +797,8 @@ use Carp;
 use strict;
 use warnings;
 use base qw(Solution);
+
+no warnings qw(redefine);    ## no critic
 
 sub new
 {
@@ -876,6 +826,8 @@ use strict;
 use warnings;
 use base qw(Solution);
 
+no warnings qw(redefine);    ## no critic
+
 sub new
 {
 	my $classname = shift;
@@ -901,6 +853,8 @@ use Carp;
 use strict;
 use warnings;
 use base qw(Solution);
+
+no warnings qw(redefine);    ## no critic
 
 sub new
 {

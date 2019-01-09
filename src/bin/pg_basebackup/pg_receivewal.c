@@ -5,7 +5,7 @@
  *
  * Author: Magnus Hagander <magnus@hagander.net>
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *		  src/bin/pg_basebackup/pg_receivewal.c
@@ -55,11 +55,12 @@ static void StreamLog(void);
 static bool stop_streaming(XLogRecPtr segendpos, uint32 timeline,
 			   bool segment_finished);
 
-#define disconnect_and_exit(code)				\
-	{											\
-	if (conn != NULL) PQfinish(conn);			\
-	exit(code);									\
-	}
+static void
+disconnect_atexit(void)
+{
+	if (conn != NULL)
+		PQfinish(conn);
+}
 
 /* Routines to evaluate segment file format */
 #define IsCompressXLogFileName(fname)	 \
@@ -120,7 +121,7 @@ stop_streaming(XLogRecPtr xlogpos, uint32 timeline, bool segment_finished)
 	if (!XLogRecPtrIsInvalid(endpos) && endpos < xlogpos)
 	{
 		if (verbose)
-			fprintf(stderr, _("%s: stopped streaming at %X/%X (timeline %u)\n"),
+			fprintf(stderr, _("%s: stopped log streaming at %X/%X (timeline %u)\n"),
 					progname, (uint32) (xlogpos >> 32), (uint32) xlogpos,
 					timeline);
 		time_to_stop = true;
@@ -168,7 +169,7 @@ get_destination_dir(char *dest_folder)
 	{
 		fprintf(stderr, _("%s: could not open directory \"%s\": %s\n"),
 				progname, basedir, strerror(errno));
-		disconnect_and_exit(1);
+		exit(1);
 	}
 
 	return dir;
@@ -186,7 +187,7 @@ close_destination_dir(DIR *dest_dir, char *dest_folder)
 	{
 		fprintf(stderr, _("%s: could not close directory \"%s\": %s\n"),
 				progname, dest_folder, strerror(errno));
-		disconnect_and_exit(1);
+		exit(1);
 	}
 }
 
@@ -267,7 +268,7 @@ FindStreamingStart(uint32 *tli)
 			{
 				fprintf(stderr, _("%s: could not stat file \"%s\": %s\n"),
 						progname, fullpath, strerror(errno));
-				disconnect_and_exit(1);
+				exit(1);
 			}
 
 			if (statbuf.st_size != WalSegSz)
@@ -284,27 +285,33 @@ FindStreamingStart(uint32 *tli)
 			char		buf[4];
 			int			bytes_out;
 			char		fullpath[MAXPGPATH * 2];
+			int			r;
 
 			snprintf(fullpath, sizeof(fullpath), "%s/%s", basedir, dirent->d_name);
 
-			fd = open(fullpath, O_RDONLY | PG_BINARY);
+			fd = open(fullpath, O_RDONLY | PG_BINARY, 0);
 			if (fd < 0)
 			{
 				fprintf(stderr, _("%s: could not open compressed file \"%s\": %s\n"),
 						progname, fullpath, strerror(errno));
-				disconnect_and_exit(1);
+				exit(1);
 			}
 			if (lseek(fd, (off_t) (-4), SEEK_END) < 0)
 			{
 				fprintf(stderr, _("%s: could not seek in compressed file \"%s\": %s\n"),
 						progname, fullpath, strerror(errno));
-				disconnect_and_exit(1);
+				exit(1);
 			}
-			if (read(fd, (char *) buf, sizeof(buf)) != sizeof(buf))
+			r = read(fd, (char *) buf, sizeof(buf));
+			if (r != sizeof(buf))
 			{
-				fprintf(stderr, _("%s: could not read compressed file \"%s\": %s\n"),
-						progname, fullpath, strerror(errno));
-				disconnect_and_exit(1);
+				if (r < 0)
+					fprintf(stderr, _("%s: could not read compressed file \"%s\": %s\n"),
+							progname, fullpath, strerror(errno));
+				else
+					fprintf(stderr, _("%s: could not read compressed file \"%s\": read %d of %zu\n"),
+							progname, fullpath, r, sizeof(buf));
+				exit(1);
 			}
 
 			close(fd);
@@ -335,7 +342,7 @@ FindStreamingStart(uint32 *tli)
 	{
 		fprintf(stderr, _("%s: could not read directory \"%s\": %s\n"),
 				progname, basedir, strerror(errno));
-		disconnect_and_exit(1);
+		exit(1);
 	}
 
 	close_destination_dir(dir, basedir);
@@ -352,7 +359,7 @@ FindStreamingStart(uint32 *tli)
 		if (!high_ispartial)
 			high_segno++;
 
-		XLogSegNoOffsetToRecPtr(high_segno, 0, high_ptr, WalSegSz);
+		XLogSegNoOffsetToRecPtr(high_segno, 0, WalSegSz, high_ptr);
 
 		*tli = high_tli;
 		return high_ptr;
@@ -389,7 +396,7 @@ StreamLog(void)
 		 * There's no hope of recovering from a version mismatch, so don't
 		 * retry.
 		 */
-		disconnect_and_exit(1);
+		exit(1);
 	}
 
 	/*
@@ -398,7 +405,7 @@ StreamLog(void)
 	 * existing output directory.
 	 */
 	if (!RunIdentifySystem(conn, NULL, &servertli, &serverpos, NULL))
-		disconnect_and_exit(1);
+		exit(1);
 
 	/*
 	 * Figure out where to start streaming.
@@ -446,6 +453,7 @@ StreamLog(void)
 	}
 
 	PQfinish(conn);
+	conn = NULL;
 
 	FreeWalDirectoryMethod();
 	pg_free(stream.walmethod);
@@ -695,6 +703,7 @@ main(int argc, char **argv)
 	if (!conn)
 		/* error message already written in GetConnection() */
 		exit(1);
+	atexit(disconnect_atexit);
 
 	/*
 	 * Run IDENTIFY_SYSTEM to make sure we've successfully have established a
@@ -702,7 +711,7 @@ main(int argc, char **argv)
 	 * connection.
 	 */
 	if (!RunIdentifySystem(conn, NULL, NULL, NULL, &db_name))
-		disconnect_and_exit(1);
+		exit(1);
 
 	/*
 	 * Set umask so that directories/files are created with the same
@@ -716,7 +725,7 @@ main(int argc, char **argv)
 
 	/* determine remote server's xlog segment size */
 	if (!RetrieveWalSegSize(conn))
-		disconnect_and_exit(1);
+		exit(1);
 
 	/*
 	 * Check that there is a database associated with connection, none should
@@ -727,7 +736,7 @@ main(int argc, char **argv)
 		fprintf(stderr,
 				_("%s: replication connection using slot \"%s\" is unexpectedly database specific\n"),
 				progname, replication_slot);
-		disconnect_and_exit(1);
+		exit(1);
 	}
 
 	/*
@@ -741,8 +750,8 @@ main(int argc, char **argv)
 					progname, replication_slot);
 
 		if (!DropReplicationSlot(conn, replication_slot))
-			disconnect_and_exit(1);
-		disconnect_and_exit(0);
+			exit(1);
+		exit(0);
 	}
 
 	/* Create a replication slot */
@@ -755,8 +764,8 @@ main(int argc, char **argv)
 
 		if (!CreateReplicationSlot(conn, replication_slot, NULL, false, true, false,
 								   slot_exists_ok))
-			disconnect_and_exit(1);
-		disconnect_and_exit(0);
+			exit(1);
+		exit(0);
 	}
 
 	/*

@@ -2,7 +2,7 @@
  *
  * pg_waldump.c - decode and display WAL
  *
- * Copyright (c) 2013-2018, PostgreSQL Global Development Group
+ * Copyright (c) 2013-2019, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *		  src/bin/pg_waldump/pg_waldump.c
@@ -209,16 +209,20 @@ search_directory(const char *directory, const char *fname)
 	/* set WalSegSz if file is successfully opened */
 	if (fd >= 0)
 	{
-		char		buf[XLOG_BLCKSZ];
+		PGAlignedXLogBlock buf;
+		int			r;
 
-		if (read(fd, buf, XLOG_BLCKSZ) == XLOG_BLCKSZ)
+		r = read(fd, buf.data, XLOG_BLCKSZ);
+		if (r == XLOG_BLCKSZ)
 		{
-			XLogLongPageHeader longhdr = (XLogLongPageHeader) buf;
+			XLogLongPageHeader longhdr = (XLogLongPageHeader) buf.data;
 
 			WalSegSz = longhdr->xlp_seg_size;
 
 			if (!IsValidWalSegSize(WalSegSz))
-				fatal_error("WAL segment size must be a power of two between 1MB and 1GB, but the WAL file \"%s\" header specifies %d bytes",
+				fatal_error(ngettext("WAL segment size must be a power of two between 1 MB and 1 GB, but the WAL file \"%s\" header specifies %d byte",
+									 "WAL segment size must be a power of two between 1 MB and 1 GB, but the WAL file \"%s\" header specifies %d bytes",
+									 WalSegSz),
 							fname, WalSegSz);
 		}
 		else
@@ -227,7 +231,8 @@ search_directory(const char *directory, const char *fname)
 				fatal_error("could not read file \"%s\": %s",
 							fname, strerror(errno));
 			else
-				fatal_error("not enough data in file \"%s\"", fname);
+				fatal_error("could not read file \"%s\": read %d of %zu",
+							fname, r, (Size) XLOG_BLCKSZ);
 		}
 		close(fd);
 		return true;
@@ -409,11 +414,17 @@ XLogDumpXLogRead(const char *directory, TimeLineID timeline_id,
 		{
 			int			err = errno;
 			char		fname[MAXPGPATH];
+			int			save_errno = errno;
 
 			XLogFileName(fname, timeline_id, sendSegNo, WalSegSz);
+			errno = save_errno;
 
-			fatal_error("could not read from log file %s, offset %u, length %d: %s",
-						fname, sendOff, segbytes, strerror(err));
+			if (readbytes < 0)
+				fatal_error("could not read from log file %s, offset %u, length %d: %s",
+							fname, sendOff, segbytes, strerror(err));
+			else if (readbytes == 0)
+				fatal_error("could not read from log file %s, offset %u: read %d of %zu",
+							fname, sendOff, readbytes, (Size) segbytes);
 		}
 
 		/* Update state for read */
@@ -1037,7 +1048,7 @@ main(int argc, char **argv)
 		XLogFromFileName(fname, &private.timeline, &segno, WalSegSz);
 
 		if (XLogRecPtrIsInvalid(private.startptr))
-			XLogSegNoOffsetToRecPtr(segno, 0, private.startptr, WalSegSz);
+			XLogSegNoOffsetToRecPtr(segno, 0, WalSegSz, private.startptr);
 		else if (!XLByteInSeg(private.startptr, segno, WalSegSz))
 		{
 			fprintf(stderr,
@@ -1051,7 +1062,7 @@ main(int argc, char **argv)
 
 		/* no second file specified, set end position */
 		if (!(optind + 1 < argc) && XLogRecPtrIsInvalid(private.endptr))
-			XLogSegNoOffsetToRecPtr(segno + 1, 0, private.endptr, WalSegSz);
+			XLogSegNoOffsetToRecPtr(segno + 1, 0, WalSegSz, private.endptr);
 
 		/* parse ENDSEG if passed */
 		if (optind + 1 < argc)
@@ -1074,8 +1085,8 @@ main(int argc, char **argv)
 							argv[optind + 1], argv[optind]);
 
 			if (XLogRecPtrIsInvalid(private.endptr))
-				XLogSegNoOffsetToRecPtr(endsegno + 1, 0, private.endptr,
-										WalSegSz);
+				XLogSegNoOffsetToRecPtr(endsegno + 1, 0, WalSegSz,
+										private.endptr);
 
 			/* set segno to endsegno for check of --end */
 			segno = endsegno;

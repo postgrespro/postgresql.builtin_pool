@@ -40,7 +40,6 @@ REM Delete files created with GenerateFiles() in Solution.pm
 if exist src\include\pg_config.h del /q src\include\pg_config.h
 if exist src\include\pg_config_ext.h del /q src\include\pg_config_ext.h
 if exist src\include\pg_config_os.h del /q src\include\pg_config_os.h
-if exist src\include\dynloader.h del /q src\include\dynloader.h
 if %DIST%==1 if exist src\backend\parser\gram.h del /q src\backend\parser\gram.h
 if exist src\include\utils\errcodes.h del /q src\include\utils\errcodes.h
 if exist src\include\utils\fmgroids.h del /q src\include\utils\fmgroids.h
@@ -49,6 +48,7 @@ if exist src\include\storage\lwlocknames.h del /q src\include\storage\lwlockname
 if exist src\include\utils\probes.h del /q src\include\utils\probes.h
 if exist src\include\catalog\schemapg.h del /q src\include\catalog\schemapg.h
 if exist src\include\catalog\pg_*_d.h del /q src\include\catalog\pg_*_d.h
+if exist src\include\catalog\header-stamp del /q src\include\catalog\header-stamp
 if exist doc\src\sgml\version.sgml del /q doc\src\sgml\version.sgml
 
 if %DIST%==1 if exist src\backend\utils\fmgroids.h del /q src\backend\utils\fmgroids.h
@@ -64,6 +64,11 @@ if %DIST%==1 if exist src\pl\tcl\pltclerrcodes.h del /q src\pl\tcl\pltclerrcodes
 if %DIST%==1 if exist src\backend\utils\sort\qsort_tuple.c del /q src\backend\utils\sort\qsort_tuple.c
 if %DIST%==1 if exist src\bin\psql\sql_help.c del /q src\bin\psql\sql_help.c
 if %DIST%==1 if exist src\bin\psql\sql_help.h del /q src\bin\psql\sql_help.h
+if %DIST%==1 if exist src\common\kwlist_d.h del /q src\common\kwlist_d.h
+if %DIST%==1 if exist src\pl\plpgsql\src\pl_reserved_kwlist_d.h del /q src\pl\plpgsql\src\pl_reserved_kwlist_d.h
+if %DIST%==1 if exist src\pl\plpgsql\src\pl_unreserved_kwlist_d.h del /q src\pl\plpgsql\src\pl_unreserved_kwlist_d.h
+if %DIST%==1 if exist src\interfaces\ecpg\preproc\c_kwlist_d.h del /q src\interfaces\ecpg\preproc\c_kwlist_d.h
+if %DIST%==1 if exist src\interfaces\ecpg\preproc\ecpg_kwlist_d.h del /q src\interfaces\ecpg\preproc\ecpg_kwlist_d.h
 if %DIST%==1 if exist src\interfaces\ecpg\preproc\preproc.y del /q src\interfaces\ecpg\preproc\preproc.y
 if %DIST%==1 if exist src\backend\catalog\postgres.bki del /q src\backend\catalog\postgres.bki
 if %DIST%==1 if exist src\backend\catalog\postgres.description del /q src\backend\catalog\postgres.description
@@ -120,16 +125,8 @@ if exist src\test\regress\autoinc.dll del /q src\test\regress\autoinc.dll
 if %DIST%==1 if exist src\test\isolation\specscanner.c del /q src\test\isolation\specscanner.c
 if %DIST%==1 if exist src\test\isolation\specparse.c del /q src\test\isolation\specparse.c
 
-if exist src\bin\initdb\tmp_check rd /s /q src\bin\initdb\tmp_check
-if exist src\bin\pg_basebackup\tmp_check rd /s /q src\bin\pg_basebackup\tmp_check
-if exist src\bin\pg_config\tmp_check rd /s /q src\bin\pg_config\tmp_check
-if exist src\bin\pg_controldata\tmp_check rd /s /q src\bin\pg_controldata\tmp_check
-if exist src\bin\pg_ctl\tmp_check rd /s /q src\bin\pg_ctl\tmp_check
-if exist src\bin\pg_rewind\tmp_check rd /s /q src\bin\pg_rewind\tmp_check
-if exist src\bin\pg_upgrade\tmp_check rd /s /q src\bin\pg_upgrade\tmp_check
-if exist src\bin\pgbench\tmp_check rd /s /q src\bin\pgbench\tmp_check
-if exist src\bin\scripts\tmp_check rd /s /q src\bin\scripts\tmp_check
-if exist src\test\recovery\tmp_check rd /s /q src\test\recovery\tmp_check
+for /d %%f in (contrib\* src\bin\* src\test\* src\test\modules\*
+  ) do if exist %%f\tmp_check rd /s /q %%f\tmp_check
 
 REM Clean up datafiles built with contrib
 REM cd contrib

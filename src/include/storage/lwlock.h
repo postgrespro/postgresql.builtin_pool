@@ -4,7 +4,7 @@
  *	  Lightweight lock manager
  *
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/storage/lwlock.h
@@ -88,7 +88,7 @@ typedef union LWLockMinimallyPadded
 } LWLockMinimallyPadded;
 
 extern PGDLLIMPORT LWLockPadded *MainLWLockArray;
-extern char *MainLWLockNames[];
+extern const char *const MainLWLockNames[];
 
 /* struct for storing named tranche information */
 typedef struct NamedLWLockTranche

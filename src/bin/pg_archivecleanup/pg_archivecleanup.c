@@ -1,14 +1,10 @@
 /*
- * src/bin/pg_archivecleanup/pg_archivecleanup.c
- *
  * pg_archivecleanup.c
  *
- * Production-ready example of an archive_cleanup_command
- * used to clean an archive when using standby_mode = on in 9.0
- * or for standalone use for any version of PostgreSQL 8.0+.
+ * To be used as archive_cleanup_command to clean an archive when using
+ * standby mode.
  *
- * Original author:		Simon Riggs  simon@2ndquadrant.com
- * Current maintainer:	Simon Riggs
+ * src/bin/pg_archivecleanup/pg_archivecleanup.c
  */
 #include "postgres_fe.h"
 
@@ -269,7 +265,7 @@ usage(void)
 	printf(_("  -x EXT         clean up files if they have this extension\n"));
 	printf(_("  -?, --help     show this help, then exit\n"));
 	printf(_("\n"
-			 "For use as archive_cleanup_command in recovery.conf when standby_mode = on:\n"
+			 "For use as archive_cleanup_command in postgresql.conf:\n"
 			 "  archive_cleanup_command = 'pg_archivecleanup [OPTION]... ARCHIVELOCATION %%r'\n"
 			 "e.g.\n"
 			 "  archive_cleanup_command = 'pg_archivecleanup /mnt/server/archiverdir %%r'\n"));

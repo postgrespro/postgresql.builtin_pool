@@ -808,7 +808,7 @@ UPDATE pg_database SET datallowconn = false WHERE datname = 'template0';
 
     <listitem>
      <para>
-      In MSVC builds, handle the case where the <application>openssl</application>
+      In MSVC builds, handle the case where the <application>OpenSSL</application>
       library is not within a <filename>VC</filename> subdirectory (Andrew Dunstan)
      </para>
     </listitem>
@@ -5650,7 +5650,7 @@ Branch: REL9_2_STABLE [6b700301c] 2015-02-17 16:03:00 +0100
     <listitem>
      <para>
       Prevent foreign tables from being created with OIDS
-      when <xref linkend="guc-default-with-oids"/> is true
+      when <literal>default_with_oids</literal> is true
       (Etsuro Fujita)
      </para>
     </listitem>

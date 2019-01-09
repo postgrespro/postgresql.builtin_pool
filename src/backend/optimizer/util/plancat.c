@@ -4,7 +4,7 @@
  *	   routines for accessing the system catalogs
  *
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -138,9 +138,8 @@ get_relation_info(PlannerInfo *root, Oid relationObjectId, bool inhparent,
 
 	/*
 	 * Estimate relation size --- unless it's an inheritance parent, in which
-	 * case the size will be computed later in set_append_rel_pathlist, and we
-	 * must leave it zero for now to avoid bollixing the total_table_pages
-	 * calculation.
+	 * case the size we want is not the rel's own size but the size of its
+	 * inheritance tree.  That will be computed in set_append_rel_size().
 	 */
 	if (!inhparent)
 		estimate_rel_size(relation, rel->attr_widths - rel->min_attr,
@@ -202,9 +201,9 @@ get_relation_info(PlannerInfo *root, Oid relationObjectId, bool inhparent,
 			 * queries.  Note that this is OK because the data structure we
 			 * are constructing is only used by the planner --- the executor
 			 * still needs to insert into "invalid" indexes, if they're marked
-			 * IndexIsReady.
+			 * indisready.
 			 */
-			if (!IndexIsValid(index))
+			if (!index->indisvalid)
 			{
 				index_close(indexRelation, NoLock);
 				continue;
@@ -697,7 +696,7 @@ infer_arbiter_indexes(PlannerInfo *root)
 		idxRel = index_open(indexoid, RowExclusiveLock);
 		idxForm = idxRel->rd_index;
 
-		if (!IndexIsValid(idxForm))
+		if (!idxForm->indisvalid)
 			goto next;
 
 		/*
@@ -1692,11 +1691,10 @@ build_index_tlist(PlannerInfo *root, IndexOptInfo *index,
 		if (indexkey != 0)
 		{
 			/* simple column */
-			Form_pg_attribute att_tup;
+			const FormData_pg_attribute *att_tup;
 
 			if (indexkey < 0)
-				att_tup = SystemAttributeDefinition(indexkey,
-													heapRelation->rd_rel->relhasoids);
+				att_tup = SystemAttributeDefinition(indexkey);
 			else
 				att_tup = TupleDescAttr(heapRelation->rd_att, indexkey - 1);
 

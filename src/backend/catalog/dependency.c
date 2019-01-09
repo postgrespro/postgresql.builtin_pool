@@ -4,7 +4,7 @@
  *	  Routines to support inter-object dependencies.
  *
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -1415,6 +1415,7 @@ recordDependencyOnSingleRelExpr(const ObjectAddress *depender,
 	rte.rtekind = RTE_RELATION;
 	rte.relid = relId;
 	rte.relkind = RELKIND_RELATION; /* no need for exactness here */
+	rte.rellockmode = AccessShareLock;
 
 	context.rtables = list_make1(list_make1(&rte));
 

@@ -158,7 +158,6 @@
   &maintenance;
   &backup;
   &high-availability;
-  &recovery-config;
   &monitoring;
   &diskusage;
   &wal;
@@ -276,6 +275,7 @@
   &external-projects;
   &sourcerepo;
   &docguide;
+  &limits;
   &acronyms;
 
  </part>
