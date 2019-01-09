@@ -201,15 +201,14 @@ pq_configure(Port* port)
 {
 	if (port->use_compression)
 	{
-		char compression[2];
+		char compression[6] = {'z',0,0,0,5,0}; /* message length = 5 */
 		int rc;
-		compression[0] = 'z'; /* Request compression message */
-		compression[1] = zpq_algorithm();
+		compression[5] = zpq_algorithm();
 		/* Switch on compression at client side */
 		socket_set_nonblocking(false);
-		while ((rc = secure_write(MyProcPort, &compression, sizeof compression)) < 0
+		while ((rc = secure_write(MyProcPort, compression, sizeof(compression))) < 0
 			   && errno == EINTR);
-		if (rc != 2)
+		if ((size_t)rc != sizeof(compression))
 			return -1;
 
 		/* initialize compression */

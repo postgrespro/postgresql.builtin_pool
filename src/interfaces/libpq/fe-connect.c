@@ -2880,13 +2880,27 @@ keep_going:						/* We will come back to here until there is
 					if (beresp == 'z') /* Switch on compression */
 					{
 						char algorithm;
+						/* Read message length word */
+						if (pqGetInt(&msgLength, 4, conn))
+						{
+							/* We'll come back when there is more data */
+							return PGRES_POLLING_READING;
+						}
+						if (msgLength != 5)
+						{
+							appendPQExpBuffer(&conn->errorMessage,
+											  libpq_gettext(
+												  "expected compression algorithm specification message length is 5 bytes, but %d is recevied\n"),
+											  msgLength);
+							goto error_return;
+						}
 						pqGetc(&algorithm, conn);
 						if (zpq_algorithm() != algorithm)
 						{
 							appendPQExpBuffer(&conn->errorMessage,
 											  libpq_gettext(
 												  "server and client were configured with different libpq compression algorithms: %c vs. %c\n"),
-											  algorithm, zpq_algorithm());
+										  algorithm, zpq_algorithm());
 							goto error_return;
 						}
 						/* mark byte consumed */

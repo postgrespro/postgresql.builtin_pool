@@ -61,6 +61,15 @@ static int  pqSocketCheck(PGconn *conn, int forRead, int forWrite,
 						  time_t end_time);
 static int	pqSocketPoll(int sock, int forRead, int forWrite, time_t end_time);
 
+
+#define pq_read_conn(conn,processed)									\
+	(conn->zstream														\
+	 ? zpq_read(conn->zstream, conn->inBuffer + conn->inEnd,			\
+				conn->inBufSize - conn->inEnd, &processed)				\
+	 : pqsecure_read(conn, conn->inBuffer + conn->inEnd,				\
+					 conn->inBufSize - conn->inEnd))
+
+
 /*
  * PQlibVersion: return the libpq version number
  */
@@ -681,11 +690,7 @@ pqReadData(PGconn *conn)
 	/* OK, try to read some data */
 retry3:
 	processed = 0;
-	nread = conn->zstream
-		? zpq_read(conn->zstream, conn->inBuffer + conn->inEnd,
-				   conn->inBufSize - conn->inEnd, &processed)
-		: pqsecure_read(conn, conn->inBuffer + conn->inEnd,
-						conn->inBufSize - conn->inEnd);
+	nread = pq_read_conn(conn,processed);
 	conn->inEnd += processed;
 	if (nread < 0)
 	{
@@ -784,11 +789,7 @@ retry3:
 	 */
 retry4:
 	processed = 0;
-	nread = conn->zstream
-		? zpq_read(conn->zstream, conn->inBuffer + conn->inEnd,
-				   conn->inBufSize - conn->inEnd, &processed)
-		: pqsecure_read(conn, conn->inBuffer + conn->inEnd,
-						conn->inBufSize - conn->inEnd);
+	nread = pq_read_conn(conn,processed);
 	conn->inEnd += processed;
 
 	if (nread < 0)

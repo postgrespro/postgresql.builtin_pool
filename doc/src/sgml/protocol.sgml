@@ -93,10 +93,10 @@
   </para>
 
   <para>
-    Is is possible to compress protocol data to reduce traffic and speed-up client-server interaction.
-    Compression is especialy useful for importing/exprorting data to/from database using COPY command
-    and for replication (oth physical and logical). Also compression can reduce server response time
-    in case of queries, requestion larger amount of data (for example returning JSON, BLOBs, text,...)
+    It is possible to compress protocol data to reduce traffic and speed-up client-server interaction.
+    Compression is especial useful for importing/exporting data to/from database using COPY command
+    and for replication (both physical and logical). Also compression can reduce server response time
+    in case of queries returning large amount of data (for example returning JSON, BLOBs, text,...)
     Right now compression algorithm is hardcoded: is it is either zlib (default), either zstd (if Postgres was
     configured with --with-zstd option). In both cases streaming mode is used.
   </para>
@@ -3437,7 +3437,16 @@ CompressionOk (B)
   and exchange compressed messages.
 </para>
 </listitem>
-
+</varlistentry>
+<varlistentry>
+<term>
+        Int32
+</term>
+<listitem>
+<para>
+                Length of message contents in bytes, including self.
+</para>
+</listitem>
 </varlistentry>
 <varlistentry>
 <term>
