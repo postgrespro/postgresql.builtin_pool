@@ -1704,7 +1704,8 @@ AutoVacWorkerMain(int argc, char *argv[])
 		recentMulti = ReadNextMultiXactId();
 
 		LWLockAcquire(DoAutovacuumLock, LW_SHARED);
-		do_autovacuum();
+		if (!SFS_IN_SNAPSHOT()) 	/* Do not perform autovacuum in snapshot */
+			do_autovacuum();
 		LWLockRelease(DoAutovacuumLock);
 	}
 
@@ -1960,10 +1961,6 @@ do_autovacuum(void)
 	bool		did_vacuum = false;
 	bool		found_concurrent_worker = false;
 	int			i;
-
-	/* Do not perform autovacuum in snapshot */
-	if (!SFS_IN_SNAPSHOT())
-		return;
 
     /*
 	 * StartTransactionCommand and CommitTransactionCommand will automatically
