@@ -40,7 +40,7 @@ volatile uint32 CritSectionCount = 0;
 int			MyProcPid;
 pg_time_t	MyStartTime;
 TimestampTz	MyStartTimestamp;
-struct Port *MyProcPort;
+__thread struct Port *MyProcPort;
 int32		MyCancelKey;
 int			MyPMChildSlot;
 
@@ -131,6 +131,9 @@ int			max_parallel_maintenance_workers = 2;
 int			NBuffers = 1000;
 int			MaxConnections = 90;
 int			SessionPoolSize = 0;
+int			ConnectionProxiesNumber = 1;
+int			SessionSchedule = SESSION_SCHED_ROUND_ROBIN;
+
 int			max_worker_processes = 8;
 int			max_parallel_workers = 8;
 int			MaxBackends = 0;

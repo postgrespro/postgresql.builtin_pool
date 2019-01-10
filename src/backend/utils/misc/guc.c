@@ -451,6 +451,14 @@ const struct config_enum_entry ssl_protocol_versions_info[] = {
 	{NULL, 0, false}
 };
 
+static const struct config_enum_entry session_schedule_options[] = {
+	{"round-robin", SESSION_SCHED_ROUND_ROBIN, false},
+	{"random", SESSION_SCHED_RANDOM, false},
+	{"load-balancing", SESSION_SCHED_LOAD_BALANCING, false},
+	{NULL, 0, false}
+};
+
+
 /*
  * Options for enum values stored in other modules
  */
@@ -2062,6 +2070,18 @@ static struct config_int ConfigureNamesInt[] =
 		},
 		&SessionPoolSize,
 		10, 0, INT_MAX,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"connection_proxies", PGC_POSTMASTER, CONN_POOLING,
+			gettext_noop("Sets number of connection proxies."),
+			gettext_noop("Each proxy has its own thread. Postmaster scatters connections between proxies using round-robin algorithm."
+						 "Each proxy launches its own subset of backends. So maximal number of non-tainted backends is "
+						 "session_pool_size*connection_proxies*databases*roles.")
+		},
+		&ConnectionProxiesNumber,
+		1, 0, INT_MAX,
 		NULL, NULL, NULL
 	},
 
@@ -4423,6 +4443,16 @@ static struct config_enum ConfigureNamesEnum[] =
 		&ssl_max_protocol_version,
 		PG_TLS_ANY,
 		ssl_protocol_versions_info,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"session_schedule", PGC_POSTMASTER, RESOURCES_MEM,
+			gettext_noop("Session schedule policy for connection pool."),
+			NULL
+		},
+		&SessionSchedule,
+		SESSION_SCHED_ROUND_ROBIN, session_schedule_options,
 		NULL, NULL, NULL
 	},
 

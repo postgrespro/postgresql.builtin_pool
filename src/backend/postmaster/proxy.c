@@ -72,7 +72,6 @@ typedef struct Proxy
 	bool     shutdown;           /* Shutdown flag */
 	Channel* hangout;            /* List of disconncted backends */
 	pthread_t thread;
-	pthread_mutex_t mutex;
 } Proxy;
 
 typedef struct SessionPool
@@ -181,11 +180,13 @@ client_connect(Channel* chan, int startup_packet_size)
 
 	MemoryContextReset(chan->proxy->tmpctx);
 	MemoryContextSwitchTo(chan->proxy->tmpctx);
+	MyProcPort = chan->client_port;
 	if (ParseStartupPacket(chan->client_port, chan->proxy->tmpctx, startup_packet+4, startup_packet_size-4, false) != STATUS_OK) /* skip packet size */
 	{
 		ELOG(WARNING, "Failed to parse startup packet for client %p", chan);
 		return false;
 	}
+	pg_set_noblock(chan->client_port->sock);
 	memset(&key, 0, sizeof(key));
 	strlcpy(key.database, chan->client_port->database_name, NAMEDATALEN);
 	strlcpy(key.username, chan->client_port->user_name, NAMEDATALEN);
@@ -199,6 +200,7 @@ client_connect(Channel* chan, int startup_packet_size)
 		memset((char*)chan->pool + sizeof(SessionPoolKey), 0, sizeof(SessionPool) - sizeof(SessionPoolKey));
 		chan->pool->startup_packet = malloc(startup_packet_size);
 		memcpy(chan->pool->startup_packet, startup_packet, startup_packet_size);
+		*(ProtocolVersion *)chan->pool->startup_packet = PG_PROTOCOL_LATEST; /* disable SSL negotiation request */
 		chan->pool->startup_packet_size = startup_packet_size;
 	}
 	chan->pool->proxy = chan->proxy;
@@ -530,6 +532,7 @@ backend_start(SessionPool* pool, Port* client_port)
 	port->raddr = client_port->raddr;
 
 	postmaster_lock();
+	set_stack_base();
 	rc = BackendStartup(port, &pid);
 	free(port);
 
@@ -631,7 +634,6 @@ proxy_create(int max_backends)
 							   &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 	proxy->wait_events = CreateWaitEventSet(TopMemoryContext, MaxSessions*2); /* we need events both for clients and backends */
 	proxy->max_backends = max_backends;
-	pthread_mutex_init(&proxy->mutex, NULL);
 	return proxy;
 }
 
@@ -667,7 +669,6 @@ proxy_loop(void* arg)
 	int i, n_ready;
 	WaitEvent ready[MAX_READY_EVENTS];
 	Channel *chan, *next;
-	set_stack_base();
 	while (!proxy->shutdown)
 	{
 		/* Use timeout to allow normal proxy shutdown */
@@ -712,4 +713,12 @@ proxy_stop(Proxy* proxy)
 	void* status;
 	proxy->shutdown = true;
 	pthread_join(proxy->thread, &status);
+}
+
+/*
+ * Get proxy workload: currently just number of clients
+ */
+int  proxy_work_load(struct Proxy* proxy)
+{
+	return proxy->n_clients;
 }

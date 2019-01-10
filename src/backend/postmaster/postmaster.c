@@ -246,7 +246,8 @@ bool		enable_bonjour = false;
 char	   *bonjour_name;
 bool		restart_after_crash = true;
 
-static struct Proxy* ConnectionProxy;
+static struct Proxy** ConnectionProxies;
+static int CurrentConnectionProxy; /* index used for round-robin distribution of connections between proxies */
 
 /* PIDs of special child processes; 0 when not running */
 static pid_t StartupPID = 0,
@@ -1384,10 +1385,15 @@ PostmasterMain(int argc, char *argv[])
 	/* Some workers may be scheduled to start now */
 	maybe_start_bgworkers();
 
-	if (SessionPoolSize != 0)
+	if (SessionPoolSize > 0 && ConnectionProxiesNumber > 0)
 	{
-		ConnectionProxy = proxy_create(SessionPoolSize);
-		proxy_start(ConnectionProxy);
+		int i;
+		ConnectionProxies = malloc(sizeof(struct Proxy*)*ConnectionProxiesNumber);
+		for (i = 0; i < ConnectionProxiesNumber; i++)
+		{
+			ConnectionProxies[i] = proxy_create(SessionPoolSize);
+			proxy_start(ConnectionProxies[i]);
+		}
 	}
 	postmaster_lock();
 	status = ServerLoop();
@@ -1627,6 +1633,39 @@ DetermineSleepTime(struct timeval *timeout)
 	}
 }
 
+static struct Proxy* 
+SelectConnectionProxy(void)
+{
+	int i;
+	int min_work_load;
+	int least_loaded_proxy;
+
+	switch (SessionSchedule)
+	{
+	  case SESSION_SCHED_ROUND_ROBIN:
+		return ConnectionProxies[CurrentConnectionProxy++ % ConnectionProxiesNumber];
+	  case SESSION_SCHED_RANDOM:
+		return ConnectionProxies[random() % ConnectionProxiesNumber];
+	  case SESSION_SCHED_LOAD_BALANCING:
+		min_work_load = proxy_work_load(ConnectionProxies[0]);
+		least_loaded_proxy = 0;
+	    for (i = 1; i < ConnectionProxiesNumber; i++)
+		{
+			int work_load = proxy_work_load(ConnectionProxies[i]);
+			if (work_load < min_work_load)
+			{
+				least_loaded_proxy = i;
+				min_work_load = work_load;
+			}
+		}
+		return ConnectionProxies[least_loaded_proxy];
+	  default:
+		Assert(false);
+	}
+	return NULL;
+}
+
+
 /*
  * Main idle loop of postmaster
  *
@@ -1721,9 +1760,9 @@ ServerLoop(void)
 					port = ConnCreate(ListenSocket[i]);
 					if (port)
 					{
-						if (ConnectionProxy)
+						if (ConnectionProxies)
 						{
-							proxy_add_client(ConnectionProxy, port);
+							proxy_add_client(SelectConnectionProxy(), port);
 						}
 						else
 						{
@@ -5035,9 +5074,13 @@ SubPostmasterMain(int argc, char *argv[])
 static void
 ExitPostmaster(int status)
 {
-    if (ConnectionProxy)
+	if (ConnectionProxies)
 	{
-		proxy_stop(ConnectionProxy);
+		int i;
+		for (i = 0; i < ConnectionProxiesNumber; i++)
+		{
+			proxy_stop(ConnectionProxies[i]);
+		}
 	}
 	else
 	{

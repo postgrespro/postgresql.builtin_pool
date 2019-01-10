@@ -159,15 +159,25 @@ extern PGDLLIMPORT int data_directory_mode;
 extern PGDLLIMPORT int NBuffers;
 extern PGDLLIMPORT int MaxBackends;
 extern PGDLLIMPORT int MaxConnections;
-extern PGDLLIMPORT int SessionPoolSize;
+
+enum SessionSchedulePolicy
+{
+	SESSION_SCHED_ROUND_ROBIN,
+	SESSION_SCHED_RANDOM,
+	SESSION_SCHED_LOAD_BALANCING
+};
 extern PGDLLIMPORT int MaxSessions;
+extern PGDLLIMPORT int SessionPoolSize;
+extern PGDLLIMPORT int ConnectionProxiesNumber;
+extern PGDLLIMPORT int SessionSchedule;
+
 extern PGDLLIMPORT int max_worker_processes;
 extern PGDLLIMPORT int max_parallel_workers;
 
 extern PGDLLIMPORT int MyProcPid;
 extern PGDLLIMPORT pg_time_t MyStartTime;
 extern PGDLLIMPORT TimestampTz MyStartTimestamp;
-extern PGDLLIMPORT struct Port *MyProcPort;
+extern __thread PGDLLIMPORT struct Port *MyProcPort;
 extern PGDLLIMPORT struct Latch *MyLatch;
 extern int32 MyCancelKey;
 extern int	MyPMChildSlot;
