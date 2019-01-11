@@ -2144,6 +2144,16 @@ static struct config_int ConfigureNamesInt[] =
 	},
 
 	{
+		{"proxy_port", PGC_POSTMASTER, CONN_AUTH_SETTINGS,
+			gettext_noop("Sets the TCP port the connection pooler."),
+			NULL
+		},
+		&ProxyPortNumber,
+		6543, 1, 65535,
+		NULL, NULL, NULL
+	},
+
+	{
 		{"unix_socket_permissions", PGC_POSTMASTER, CONN_AUTH_SETTINGS,
 			gettext_noop("Sets the access permissions of the Unix-domain socket."),
 			gettext_noop("Unix-domain sockets use the usual Unix file system "

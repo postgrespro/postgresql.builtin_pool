@@ -329,7 +329,7 @@ socket_close(int code, Datum arg)
 int
 StreamServerPort(int family, char *hostName, unsigned short portNumber,
 				 char *unixSocketDir,
-				 pgsocket ListenSocket[], int MaxListen)
+				 pgsocket ListenSocket[], int ListenPort[], int MaxListen)
 {
 	pgsocket	fd;
 	int			err;
@@ -593,6 +593,7 @@ StreamServerPort(int family, char *hostName, unsigned short portNumber,
 							familyDesc, addrDesc, (int) portNumber)));
 
 		ListenSocket[listen_index] = fd;
+		ListenPort[listen_index] = portNumber;
 		added++;
 	}
 

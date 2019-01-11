@@ -17,6 +17,7 @@
 extern bool EnableSSL;
 extern int	ReservedBackends;
 extern PGDLLIMPORT int PostPortNumber;
+extern PGDLLIMPORT int ProxyPortNumber;
 extern int	Unix_socket_permissions;
 extern char *Unix_socket_group;
 extern char *Unix_socket_directories;
@@ -81,13 +82,6 @@ extern int	BackendStartup(struct Port* port, int* backend_pid);
  */
 #define MAX_BACKENDS	0x3FFFF
 
-extern struct Proxy* proxy_create(int max_backends);
-extern void proxy_start(struct Proxy* proxy);
-extern void proxy_stop(struct Proxy* proxy);
-extern void proxy_add_client(struct Proxy* proxy, struct Port* port);
-extern int  proxy_work_load(struct Proxy* proxy);
-
-extern int  postmaster_lock(void);
-extern int  postmaster_unlock(void);
+extern int ConnectionProxyStart(pgsocket socket);
 
 #endif							/* _POSTMASTER_H */

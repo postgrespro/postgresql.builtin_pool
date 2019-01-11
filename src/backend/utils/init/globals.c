@@ -40,7 +40,7 @@ volatile uint32 CritSectionCount = 0;
 int			MyProcPid;
 pg_time_t	MyStartTime;
 TimestampTz	MyStartTimestamp;
-__thread struct Port *MyProcPort;
+struct Port *MyProcPort;
 int32		MyCancelKey;
 int			MyPMChildSlot;
 

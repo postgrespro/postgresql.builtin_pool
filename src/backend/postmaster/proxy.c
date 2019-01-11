@@ -1,17 +1,24 @@
-#include <pthread.h>
 #include <unistd.h>
 #include <errno.h>
 
 #include "postgres.h"
 #include "miscadmin.h"
 #include "pgstat.h"
-#include "libpq/libpq.h"
-#include "libpq/libpq-be.h"
 #include "postmaster/postmaster.h"
+#include "postmaster/fork_process.h"
+#include "storage/ipc.h"
 #include "storage/latch.h"
 #include "storage/proc.h"
 #include "storage/procarray.h"
+#include "utils/builtins.h"
 #include "utils/memutils.h"
+#include "libpq/libpq.h"
+#include "libpq/libpq-be.h"
+#include "libpq/pqsignal.h"
+#include "tcop/tcopprot.h"
+#include "utils/timeout.h"
+#include "../interfaces/libpq/libpq-fe.h"
+#include "../interfaces/libpq/libpq-int.h"
 
 #define INIT_BUF_SIZE      (64*1024)
 #define MAX_READY_EVENTS   128
@@ -46,7 +53,6 @@ typedef struct Channel
 	bool     backend_is_ready;   /* ready for query */
 	bool     is_disconnected;
 
-	bool     skip_handshake_response;
 	int      handshake_response_size;
 	char*    handshake_response;
 
@@ -71,7 +77,6 @@ typedef struct Proxy
 	int      n_backends;         /* Total number of backends */
 	bool     shutdown;           /* Shutdown flag */
 	Channel* hangout;            /* List of disconncted backends */
-	pthread_t thread;
 } Proxy;
 
 typedef struct SessionPool
@@ -80,8 +85,6 @@ typedef struct SessionPool
 	Channel* idle_backends;
 	Channel* pending_clients;
 	Proxy*   proxy;
-	void*    startup_packet;      /* startup packet for this pool */
-	int      startup_packet_size; /* startup packet size */
 	int      n_launched_backends; /* Total number of launched backends */
 	int      n_idle_backends;     /* Number of backends in idle state */
 	int      n_tainted_backends;  /* Number of backends with pinned sessions */
@@ -91,15 +94,15 @@ typedef struct SessionPool
 }
 SessionPool;
 
-static pthread_mutex_t postmaster_mutex = PTHREAD_MUTEX_INITIALIZER;
-
 static void channel_remove(Channel* chan);
 static Channel* backend_start(SessionPool* pool, Port* client_port);
 static bool channel_read(Channel* chan);
 static bool channel_write(Channel* chan, bool synchronous);
 
-//#define ELOG(severity, fmt,...) do { postmaster_lock(); elog(severity, "PROXY: " fmt, ## __VA_ARGS__); postmaster_unlock(); } while (0)
+//#define ELOG(severity, fmt,...) elog(severity, "PROXY: " fmt, ## __VA_ARGS__)
 #define ELOG(severity,fmt,...)
+
+static Proxy* proxy;
 
 /**
  * Backend is ready for next command outside transaction block (idle state).
@@ -111,12 +114,8 @@ backend_reschedule(Channel* chan)
 	chan->backend_is_ready = false;
 	if (chan->backend_proc == NULL) /* Lazy resolving of PGPROC entry */
 	{
-		/*
-		 * Postmaster has no PGPROC entry so it can ont wait, so we have to use onn-sycnhronized version BackendPidGetProc.
-		 * Hoping that race condition here is not critical.
-		 */
 		Assert(chan->backend_pid != 0);
-		chan->backend_proc = BackendPidGetProcWithLock(chan->backend_pid);
+		chan->backend_proc = BackendPidGetProc(chan->backend_pid);
 		Assert(chan->backend_proc); /* If backend completes execution of some query, then it has definitely registered itself in procarray */
 	}
 	if (!chan->backend_proc->is_tainted) /* If backend is not storing some session context */
@@ -183,7 +182,7 @@ client_connect(Channel* chan, int startup_packet_size)
 	MyProcPort = chan->client_port;
 	if (ParseStartupPacket(chan->client_port, chan->proxy->tmpctx, startup_packet+4, startup_packet_size-4, false) != STATUS_OK) /* skip packet size */
 	{
-		ELOG(WARNING, "Failed to parse startup packet for client %p", chan);
+		elog(WARNING, "Failed to parse startup packet for client %p", chan);
 		return false;
 	}
 	pg_set_noblock(chan->client_port->sock);
@@ -198,10 +197,6 @@ client_connect(Channel* chan, int startup_packet_size)
 	{
 		chan->proxy->n_pools += 1;
 		memset((char*)chan->pool + sizeof(SessionPoolKey), 0, sizeof(SessionPool) - sizeof(SessionPoolKey));
-		chan->pool->startup_packet = malloc(startup_packet_size);
-		memcpy(chan->pool->startup_packet, startup_packet, startup_packet_size);
-		*(ProtocolVersion *)chan->pool->startup_packet = PG_PROTOCOL_LATEST; /* disable SSL negotiation request */
-		chan->pool->startup_packet_size = startup_packet_size;
 	}
 	chan->pool->proxy = chan->proxy;
 	chan->pool->n_connected_clients += 1;
@@ -212,7 +207,6 @@ client_connect(Channel* chan, int startup_packet_size)
 
 /*
  * Attach client to backend. Return true if new backend is attached, false otherwise.
- * It is necessary to send startup packet only to new backend.
  */
 static bool
 client_attach(Channel* chan)
@@ -241,7 +235,7 @@ client_attach(Channel* chan)
 					 idle_backend, idle_backend->backend_pid, chan);
 				chan->peer = idle_backend;
 				idle_backend->peer = chan;
-				return true; /* send startup packet to new backend */
+				return true;
 			}
 		}
 		/* Wait until some backend is available */
@@ -387,20 +381,6 @@ channel_read(Channel* chan)
 					&& chan->buf[msg_start] == 'Z'  /* ready for query */
 					&& chan->buf[msg_start+5] == 'I') /* Transaction block status is idle */
 				{
-					if (chan->handshake_response == NULL)
-					{
-						/* Save handshake response */
-						chan->handshake_response_size = response_size;
-						chan->handshake_response = malloc(response_size);
-						memcpy(chan->handshake_response, chan->buf, response_size);
-					}
-					if (chan->skip_handshake_response)
-					{
-						memmove(chan->buf, chan->buf + response_size, chan->rx_pos -= response_size);
-						chan->skip_handshake_response = false;
-						msg_start = 0;
-						continue;
-					}
 					Assert(chan->rx_pos - msg_start == msg_len); /* should be last message */
 					chan->backend_is_ready = true;
 				}
@@ -409,7 +389,7 @@ channel_read(Channel* chan)
 				{
 					if (chan->peer == NULL || !chan->peer->backend_is_tainted)
 					{
-						/* Skip terminate message to idle and non-tinted backends */
+						/* Skip terminate message to idle and non-tainted backends */
 						channel_hangout(chan, "terminate");
 						return false;
 					}
@@ -422,31 +402,16 @@ channel_read(Channel* chan)
 						channel_hangout(chan, "idle");
 						return false;
 					}
-					if (client_attach(chan)) /* new backend requires startup packet */
+					client_attach(chan);
+					if (handshake) /* send handshake response to the client */
 					{
-						if (!handshake) /* if it is existed client, then copy startup packet from pool */
-						{
-							if (response_size + chan->pool->startup_packet_size > chan->buf_size)
-							{
-								chan->buf_size = response_size + chan->pool->startup_packet_size;
-								chan->buf = realloc(chan->buf, chan->buf_size);
-							}
-							memmove(chan->buf + chan->pool->startup_packet_size, chan->buf, chan->rx_pos);
-							memcpy(chan->buf, chan->pool->startup_packet, chan->pool->startup_packet_size);
-							msg_start += chan->pool->startup_packet_size;
-							chan->rx_pos += chan->pool->startup_packet_size;
-							chan->peer->skip_handshake_response = true;
-						}
-					}
-					else if (handshake) /* Do not need to send startup packet to reused backend,
-										 * but we need to send hasndshale response to the client */
-					{
+                        /* If we attach new client to existed backend, then we need to send handshake response to the client */
 						Channel* backend = chan->peer;
 						Assert(chan->rx_pos == msg_len && msg_start == 0);
 						chan->rx_pos = 0; /* skip startup packet */
 						if (backend != NULL) /* if backend was assigned */
 						{
-							Assert(backend->handshake_response != NULL); /* backend already send handshake response */
+							Assert(backend->handshake_response != NULL); /* backend already sends handshake response */
 							Assert(backend->handshake_response_size < backend->buf_size);
 							memcpy(backend->buf, backend->handshake_response, backend->handshake_response_size);
 							backend->rx_pos = backend->tx_size = backend->handshake_response_size;
@@ -454,7 +419,7 @@ channel_read(Channel* chan)
 						}
 						else
 						{
-							/* dummy handshake response will be send to client later when backen is assiged */
+							/* Handshake response will be send to client later when backen is assigned */
 							return false;
 						}
 					}
@@ -521,46 +486,59 @@ channel_register(Proxy* proxy, Channel* chan)
 static Channel*
 backend_start(SessionPool* pool, Port* client_port)
 {
-	int socks[2];
-	int rc, pid;
-	Port* port = (Port*)calloc(1, sizeof(Port));
-	Channel* chan = NULL;
+	Channel* chan;
+	char postmaster_port[8];
+	char const* keywords[] = {"host","port","dbname","user","application_name",NULL};
+	char const* values[] = {"localhost",postmaster_port,pool->key.database, pool->key.username,"pool_worker",NULL};
+	PGconn* conn;
+	char* msg;
+	int int32_buf;
+	int msg_len;
 
-	socketpair(AF_UNIX, SOCK_STREAM, 0, socks);
-	port->sock = socks[0];
-	port->laddr = client_port->laddr;
-	port->raddr = client_port->raddr;
-
-	postmaster_lock();
-	set_stack_base();
-	rc = BackendStartup(port, &pid);
-	free(port);
-
-	if (rc == STATUS_OK)
+	pg_itoa(PostPortNumber, postmaster_port);
+	conn = PQconnectdbParams(keywords, values, false);
+	if (!conn || PQstatus(conn) != CONNECTION_OK)
 	{
-		chan = channel_create(pool->proxy);
-		close(socks[0]); /* not needed in parent process */
-		chan->pool = pool;
-		chan->backend_socket = socks[1];
-		chan->backend_pid = pid;
-		if (channel_register(pool->proxy, chan))
-		{
-			pool->proxy->n_backends += 1;
-			pool->n_launched_backends += 1;
-		}
-		else
-		{
-			free(chan->buf);
-			free(chan);
-			close(socks[1]);
-			chan = NULL;
-		}
+		ereport(WARNING,
+				(errcode(ERRCODE_SQLCLIENT_UNABLE_TO_ESTABLISH_SQLCONNECTION),
+				 errmsg("could not setup local connect to server"),
+				 errdetail_internal("%s", pchomp(PQerrorMessage(conn)))));
+		return NULL;
+	}
+	chan = channel_create(pool->proxy);
+	chan->pool = pool;
+	chan->backend_socket = conn->sock;
+	pg_set_noblock(conn->sock);
+
+	/* Save handshake response */
+	chan->handshake_response_size = conn->inEnd;
+	chan->handshake_response = malloc(chan->handshake_response_size);
+	memcpy(chan->handshake_response, conn->inBuffer, chan->handshake_response_size);
+
+	/* Extract backend pid */
+	msg = chan->handshake_response;
+	while (*msg != 'K')
+	{
+		memcpy(&int32_buf, ++msg, sizeof(int32_buf));
+		msg_len = ntohl(int32_buf);
+		msg += msg_len;
+		Assert(msg < chan->handshake_response + chan->handshake_response_size);
+	}
+	memcpy(&int32_buf, msg+5, sizeof(int32_buf));
+	chan->backend_pid = ntohl(int32_buf);
+
+	if (channel_register(pool->proxy, chan))
+	{
+		pool->proxy->n_backends += 1;
+		pool->n_launched_backends += 1;
 	}
 	else
 	{
-		elog(WARNING, "Failed to start backend: %d", rc);
+		free(chan->buf);
+		free(chan);
+		close(chan->backend_socket);
+		chan = NULL;
 	}
-	postmaster_unlock();
 	return chan;
 }
 
@@ -568,7 +546,7 @@ backend_start(SessionPool* pool, Port* client_port)
  * Add new client, accepted by postmaster. This client will be assigned to concrete session pool
  * when it's startup packet is received.
  */
-void
+static void
 proxy_add_client(Proxy* proxy, Port* port)
 {
 	Channel* chan = channel_create(proxy);
@@ -588,7 +566,6 @@ static void
 channel_remove(Channel* chan)
 {
 	Assert(chan->is_disconnected); /* should be marked as disconnected by channel_hangout */
-	postmaster_lock();
 	DeleteWaitEventFromSet(chan->proxy->wait_events, chan->event_pos);
 	if (chan->client_port)
 	{
@@ -609,14 +586,13 @@ channel_remove(Channel* chan)
 	}
 	free(chan->buf);
 	free(chan);
-	postmaster_unlock();
 }
 
 /*
  * Create new proxy.
  */
-Proxy*
-proxy_create(int max_backends)
+static Proxy*
+proxy_create(pgsocket postmaster_socket, int max_backends)
 {
 	HASHCTL ctl;
 	Proxy*  proxy = calloc(1, sizeof(Proxy));
@@ -633,55 +609,46 @@ proxy_create(int max_backends)
 	proxy->pools = hash_create("Pool by database and user", DB_HASH_SIZE,
 							   &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 	proxy->wait_events = CreateWaitEventSet(TopMemoryContext, MaxSessions*2); /* we need events both for clients and backends */
+	AddWaitEventToSet(proxy->wait_events, WL_SOCKET_READABLE,
+					  postmaster_socket, NULL, NULL);
 	proxy->max_backends = max_backends;
 	return proxy;
 }
 
 /*
- * Lock mutex to avoid race condition with postmaster
- */
-int
-postmaster_lock(void)
-{
-	int rc = pthread_mutex_lock(&postmaster_mutex);
-	Assert(rc == 0);
-	return rc;
-}
-
-/*
- * Unlock mutex
- */
-int
-postmaster_unlock(void)
-{
-	int rc = pthread_mutex_unlock(&postmaster_mutex);
-	return rc;
-}
-
-/*
  * Main proxy loop
  */
-static void*
-proxy_loop(void* arg)
+static void
+proxy_loop(Proxy* proxy)
 {
-	Proxy* proxy = (Proxy*)arg;
-
 	int i, n_ready;
 	WaitEvent ready[MAX_READY_EVENTS];
 	Channel *chan, *next;
+
 	while (!proxy->shutdown)
 	{
 		/* Use timeout to allow normal proxy shutdown */
 		n_ready = WaitEventSetWait(proxy->wait_events, PROXY_WAIT_TIMEOUT, ready, MAX_READY_EVENTS, PG_WAIT_CLIENT);
 		for (i = 0; i < n_ready; i++) {
 			chan = (Channel*)ready[i].user_data;
-			if (ready[i].events & WL_SOCKET_WRITEABLE) {
-				ELOG(LOG, "Channel %p is writable", chan);
-				channel_write(chan, false);
+			if (chan == NULL) /* new connection from postmaster */
+			{
+				Port* port = (Port*)calloc(1, sizeof(Port));
+				port->sock = pg_recv_sock(ready[i].fd);
+			    if (port->sock == PGINVALID_SOCKET)
+					elog(ERROR, "Failed to receive session socket: %m");
+				proxy_add_client(proxy, port);
 			}
-			if (ready[i].events & WL_SOCKET_READABLE) {
-				ELOG(LOG, "Channel %p is readable", chan);
-				channel_read(chan);
+			else
+			{
+				if (ready[i].events & WL_SOCKET_WRITEABLE) {
+					ELOG(LOG, "Channel %p is writable", chan);
+					channel_write(chan, false);
+				}
+				if (ready[i].events & WL_SOCKET_READABLE) {
+					ELOG(LOG, "Channel %p is readable", chan);
+					channel_read(chan);
+				}
 			}
 		}
 		/* Delayed deallocation of disconnected channels */
@@ -692,33 +659,114 @@ proxy_loop(void* arg)
 		}
 		proxy->hangout = NULL;
 	}
-	return NULL;
 }
 
-/*
- * Launch proxy thread
- */
-void
-proxy_start(Proxy* proxy)
+
+static void
+proxy_handle_sigterm(SIGNAL_ARGS)
 {
-	pthread_create(&proxy->thread, NULL, proxy_loop, proxy);
+	if (proxy)
+		proxy->shutdown = true;
 }
 
-/*
- * Wait completion of proy thread
- */
-void
-proxy_stop(Proxy* proxy)
+#ifdef EXEC_BACKEND
+static pid_t
+proxy_forkexec(void)
 {
-	void* status;
-	proxy->shutdown = true;
-	pthread_join(proxy->thread, &status);
+	char	   *av[10];
+	int			ac = 0;
+
+	av[ac++] = "postgres";
+	av[ac++] = "--forkproxy";
+	av[ac++] = NULL;			/* filled in by postmaster_forkexec */
+	av[ac] = NULL;
+
+	Assert(ac < lengthof(av));
+
+	return postmaster_forkexec(ac, av);
+}
+#endif
+
+
+int
+ConnectionProxyStart(pgsocket socket)
+{
+	pid_t		worker_pid;
+	sigjmp_buf	local_sigjmp_buf;
+
+#ifdef EXEC_BACKEND
+	switch ((worker_pid = proxy_forkexec()))
+#else
+	switch ((worker_pid = fork_process()))
+#endif
+	{
+		case -1:
+			ereport(LOG,
+					(errmsg("could not fork proxy worker process: %m")));
+			return 0;
+
+#ifndef EXEC_BACKEND
+		case 0:
+			/* in postmaster child ... */
+			InitPostmasterChild();
+
+		    /* Identify myself via ps */
+		    init_ps_display("connection proxy", "", "", "");
+
+			SetProcessingMode(InitProcessing);
+
+			pqsignal(SIGTERM, proxy_handle_sigterm);
+			pqsignal(SIGQUIT, quickdie);
+			InitializeTimeouts();		/* establishes SIGALRM handler */
+
+			/* Early initialization */
+			BaseInit();
+
+			/*
+			 * Create a per-backend PGPROC struct in shared memory, except in the
+			 * EXEC_BACKEND case where this was done in SubPostmasterMain. We must do
+			 * this before we can use LWLocks (and in the EXEC_BACKEND case we already
+			 * had to do some stuff with LWLocks).
+			 */
+			InitProcess();
+
+			/*
+			 * If an exception is encountered, processing resumes here.
+			 *
+			 * See notes in postgres.c about the design of this coding.
+			 */
+			if (sigsetjmp(local_sigjmp_buf, 1) != 0)
+			{
+				/* Prevents interrupts while cleaning up */
+				HOLD_INTERRUPTS();
+
+				/* Report the error to the server log */
+				EmitErrorReport();
+
+				/*
+				 * We can now go away.  Note that because we called InitProcess, a
+				 * callback was registered to do ProcKill, which will clean up
+				 * necessary state.
+				 */
+				proc_exit(0);
+			}
+			/* We can now handle ereport(ERROR) */
+			PG_exception_stack = &local_sigjmp_buf;
+
+			PG_SETMASK(&UnBlockSig);
+
+
+			proxy = proxy_create(socket, SessionPoolSize);
+			proxy_loop(proxy);
+
+			break;
+#endif
+		default:
+		  elog(LOG, "Start proxy process %d", (int) worker_pid);
+		  return (int) worker_pid;
+	}
+
+	/* shouldn't get here */
+	return 0;
 }
 
-/*
- * Get proxy workload: currently just number of clients
- */
-int  proxy_work_load(struct Proxy* proxy)
-{
-	return proxy->n_clients;
-}

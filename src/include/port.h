@@ -41,6 +41,10 @@ typedef SOCKET pgsocket;
 extern bool pg_set_noblock(pgsocket sock);
 extern bool pg_set_block(pgsocket sock);
 
+/* send/receive socket descriptor */
+extern int pg_send_sock(pgsocket chan, pgsocket sock, pid_t pid);
+extern pgsocket pg_recv_sock(pgsocket chan);
+
 /* Portable path handling for Unix/Win32 (in path.c) */
 
 extern bool has_drive_prefix(const char *filename);
