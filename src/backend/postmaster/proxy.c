@@ -17,6 +17,7 @@
 #include "libpq/pqsignal.h"
 #include "tcop/tcopprot.h"
 #include "utils/timeout.h"
+#include "utils/ps_status.h"
 #include "../interfaces/libpq/libpq-fe.h"
 #include "../interfaces/libpq/libpq-int.h"
 
@@ -180,11 +181,13 @@ client_connect(Channel* chan, int startup_packet_size)
 	MemoryContextReset(chan->proxy->tmpctx);
 	MemoryContextSwitchTo(chan->proxy->tmpctx);
 	MyProcPort = chan->client_port;
+	pq_init();
 	if (ParseStartupPacket(chan->client_port, chan->proxy->tmpctx, startup_packet+4, startup_packet_size-4, false) != STATUS_OK) /* skip packet size */
 	{
 		elog(WARNING, "Failed to parse startup packet for client %p", chan);
 		return false;
 	}
+	pq_flush();
 	pg_set_noblock(chan->client_port->sock);
 	memset(&key, 0, sizeof(key));
 	strlcpy(key.database, chan->client_port->database_name, NAMEDATALEN);
@@ -296,9 +299,16 @@ channel_write(Channel* chan, bool synchronous)
 
 	while (peer->tx_pos < peer->tx_size) /* has something to write */
 	{
-		ssize_t rc = chan->client_port
-			? secure_raw_write(chan->client_port, peer->buf + peer->tx_pos, peer->tx_size - peer->tx_pos)
-			: write(chan->backend_socket, peer->buf + peer->tx_pos, peer->tx_size - peer->tx_pos);
+		ssize_t rc;
+#ifdef USE_SSL
+		int waitfor = 0;
+		if (chan->client_port && chan->client_port->ssl_in_use)
+			rc = be_tls_write(chan->client_port, peer->buf + peer->tx_pos, peer->tx_size - peer->tx_pos, &waitfor);
+		else
+#endif
+			rc = chan->client_port
+				? secure_raw_write(chan->client_port, peer->buf + peer->tx_pos, peer->tx_size - peer->tx_pos)
+				: write(chan->backend_socket, peer->buf + peer->tx_pos, peer->tx_size - peer->tx_pos);
 		ELOG(LOG, "%p: write %d tx_pos=%d, tx_size=%d: %m", chan, (int)rc, peer->tx_pos, peer->tx_size);
 		if (rc <= 0)
 		{
@@ -329,9 +339,16 @@ channel_read(Channel* chan)
 	int  msg_start;
 	while (chan->tx_size == 0) /* there is no pending write op */
 	{
-		ssize_t rc = chan->client_port
-			? secure_raw_read(chan->client_port, chan->buf + chan->rx_pos, chan->buf_size - chan->rx_pos)
-			: read(chan->backend_socket, chan->buf + chan->rx_pos, chan->buf_size - chan->rx_pos);
+		ssize_t rc;
+#ifdef USE_SSL
+		int waitfor = 0;
+		if (chan->client_port && chan->client_port->ssl_in_use)
+			rc = be_tls_read(chan->client_port, chan->buf + chan->rx_pos, chan->buf_size - chan->rx_pos, &waitfor);
+		else
+#endif
+			rc = chan->client_port
+				? secure_raw_read(chan->client_port, chan->buf + chan->rx_pos, chan->buf_size - chan->rx_pos)
+				: read(chan->backend_socket, chan->buf + chan->rx_pos, chan->buf_size - chan->rx_pos);
 
 		ELOG(LOG, "%p: read %d: %m", chan, (int)rc);
 		if (rc <= 0)
@@ -488,8 +505,8 @@ backend_start(SessionPool* pool, Port* client_port)
 {
 	Channel* chan;
 	char postmaster_port[8];
-	char const* keywords[] = {"host","port","dbname","user","application_name",NULL};
-	char const* values[] = {"localhost",postmaster_port,pool->key.database, pool->key.username,"pool_worker",NULL};
+	char const* keywords[] = {"host","port","dbname","user","sslmode","application_name",NULL};
+	char const* values[] = {"localhost",postmaster_port,pool->key.database, pool->key.username,"disable","pool_worker",NULL};
 	PGconn* conn;
 	char* msg;
 	int int32_buf;
@@ -755,11 +772,10 @@ ConnectionProxyStart(pgsocket socket)
 
 			PG_SETMASK(&UnBlockSig);
 
-
 			proxy = proxy_create(socket, SessionPoolSize);
 			proxy_loop(proxy);
 
-			break;
+			proc_exit(0);
 #endif
 		default:
 		  elog(LOG, "Start proxy process %d", (int) worker_pid);
