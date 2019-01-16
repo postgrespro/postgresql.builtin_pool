@@ -10095,4 +10095,10 @@
   proargnames => '{rootrelid,relid,parentrelid,isleaf,level}',
   prosrc => 'pg_partition_tree' },
 
+{ oid => '3424', descr => 'information about connection pooler proxies workload',
+  proname => 'pg_pooler_state', proretset => 't',
+  provolatile => 'v', prorettype => 'record', proargtypes => '',
+  proallargtypes => '{int4,int4,int4,int4,int4,int4,int8,int8,int8}', proargmodes => '{o,o,o,o,o,o,o,o,o}',
+  proargnames => '{pid,n_clients,n_ssl_clients,n_pools,n_backends,n_dedicated_backends,tx_bytes,rx_bytes,n_transactions}', prosrc => 'pg_pooler_state' },
+
 ]

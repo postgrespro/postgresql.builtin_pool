@@ -704,6 +704,109 @@ include_dir 'conf.d'
       </listitem>
      </varlistentry>
 
+     <varlistentry id="guc-max-sessions" xreflabel="max_sessions">
+      <term><varname>max_sessions</varname> (<type>integer</type>)
+      <indexterm>
+       <primary><varname>max_sessions</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+        <para>
+          The maximum number of client sessions that can be handled by
+          one connection proxy when session pooling is switched on.
+          This parameter does not add any memory or CPU overhead, so
+          specifying a large <varname>max_sessions</varname> value
+          does not affect performance.
+          If the <varname>max_sessions</varname> limit is reached new connection are not accepted.
+        </para>
+        <para>
+          The default value is 1000. This parameter can only be set at server start.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-session-pool-size" xreflabel="session_pool_size">
+      <term><varname>session_pool_size</varname> (<type>integer</type>)
+      <indexterm>
+       <primary><varname>session_pool_size</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+        <para>
+          Enables session pooling and defines the maximum number of
+          backends that can be used by client sessions for each database/user combination.
+          Launched non-tainted backends are never terminated even if there are no active sessions.
+          Backend is considered as tainted if client updates GUCs, creates temporary table or prepared statements.
+          Tainted backend can server only one client.
+        </para>
+        <para>
+          The default value is 10, so up to 10 backends will server each database,
+        </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-proxy-port" xreflabel="proxy_port">
+      <term><varname>proxy_port</varname> (<type>integer</type>)
+      <indexterm>
+       <primary><varname>proxy_port</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+        <para>
+          Sets the TCP port for the connection pooler.
+          Clients connected to main "port" will be assigned dedicated backends,
+          while client connected to proxy port will be connected to backends through proxy which
+          performs transaction level scheduling. 
+       </para>
+        <para>
+          The default value is 6543.
+        </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-connection-proxies" xreflabel="connection_proxies">
+      <term><varname>connection_proxies</varname> (<type>integer</type>)
+      <indexterm>
+       <primary><varname>connection_proxies</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+        <para>
+          Sets number of connection proxies.
+          Postmaster spawns separate worker process for each proxy. Postmaster scatters connections between proxies using one of scheduling policies (round-robin, random, load-balancing)."
+		 "Each proxy launches its own subset of backends. So maximal number of non-tainted backends is "
+		  "session_pool_size*connection_proxies*databases*roles.
+       </para>
+        <para>
+          The default value is 0, so session pooling is disabled.
+        </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-session-schedule" xreflabel="session_schedule">
+      <term><varname>session_schedule</varname> (<type>enum</type>)
+      <indexterm>
+       <primary><varname>session_schedule</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+        <para>
+          Specifies scheduling policy for assigning session to proxies in case of
+          connection pooling. Default policy is <literal>round-robin</literal>.
+        </para>
+        <para>
+          With <literal>round-robin</literal> policy postmaster cyclicly scatter sessions between proxies.
+        </para>
+        <para>
+          With <literal>random</literal> policy postmaster randomly choose proxy for new session.
+        </para>
+        <para>
+          With <literal>load-balancing</literal> policy postmaster choose proxy with lowest load average.
+          Load average of proxy is estimated by number of clients connection assigned to this proxy with extra weight for SSL connections.
+       </para>
+      </listitem>
+     </varlistentry>
+
      <varlistentry id="guc-unix-socket-directories" xreflabel="unix_socket_directories">
       <term><varname>unix_socket_directories</varname> (<type>string</type>)
       <indexterm>

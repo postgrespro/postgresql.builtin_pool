@@ -114,6 +114,7 @@
 #include "postmaster/fork_process.h"
 #include "postmaster/pgarch.h"
 #include "postmaster/postmaster.h"
+#include "postmaster/proxy.h"
 #include "postmaster/syslogger.h"
 #include "replication/logicallauncher.h"
 #include "replication/walsender.h"
@@ -447,7 +448,7 @@ static pid_t StartChildProcess(AuxProcType type);
 static void StartAutovacuumWorker(void);
 static void MaybeStartWalReceiver(void);
 static void InitPostmasterDeathWatchHandle(void);
-static int  StartProxyWorker(pgsocket socket);
+static void StartProxyWorker(int id);
 
 /*
  * Archiver is allowed to start up at the current postmaster state?
@@ -500,6 +501,8 @@ typedef struct
 {
 	Port		port;
 	InheritableSocket portsocket;
+	InheritableSocket proxySocket;
+	int         proxyId;
 	char		DataDir[MAXPGPATH];
 	pgsocket	ListenSocket[MAXLISTEN];
 	int32		MyCancelKey;
@@ -595,18 +598,21 @@ StartConnectionProxies(void)
 				ereport(FATAL,
 						(errcode_for_file_access(),
 						 errmsg_internal("could not create socket pair for launching sessions: %m")));
-			ConnectionProxies[i].pid = StartProxyWorker(ConnectionProxies[i].socks[1]);
+			StartProxyWorker(i);
 		}
 	}
 }
 
+/*
+ * Send signal to connection proxies
+ */
 static void
-StopConnectionProxies(void)
+StopConnectionProxies(int signal)
 {
 	int i;
 	for (i = 0; i < ConnectionProxiesNumber; i++)
 	{
-		signal_child(ConnectionProxies[i].pid, SIGTERM);
+		signal_child(ConnectionProxies[i].pid, signal);
 	}
 }
 
@@ -1057,7 +1063,8 @@ PostmasterMain(int argc, char *argv[])
 
 	on_proc_exit(CloseServerPorts, 0);
 
-	if (ProxyPortNumber > 0)
+	/* Listen on proxy socket only if session pooling is enabled */
+	if (ProxyPortNumber > 0 && ConnectionProxiesNumber > 0 && SessionPoolSize > 0)
 		ports[n_ports++] = ProxyPortNumber;
 	ports[n_ports++] = PostPortNumber;
 
@@ -1691,9 +1698,31 @@ DetermineSleepTime(struct timeval *timeout)
 	}
 }
 
+/**
+ * This function tries to estimate workload of proxy.
+ * We have a lot of information about proxy state in ProxyState array:
+ * total number of clients, SSL clients, backends, traffic, number of transactions,...
+ * So in principle it is possible to implement much more sophisticated evaluation function,
+ * but right now we take in account only number of clients and SSL connections (which requires much more CPU)
+ */
+static uint64
+GetConnectionProxyWorkload(int id)
+{
+	return ProxyState[id].n_clients + ProxyState[id].n_ssl_clients*3;
+}
+
+/**
+ * Choose connection pool for this session.
+ * Right now sessions can not be moved between pools (in principle it is not so difficult to implement it),
+ * so to support order balancing we should do dome smart work here.
+ */
 static ConnectionProxy*
 SelectConnectionProxy(void)
 {
+	int i;
+	uint64 min_workload;
+	int least_loaded_proxy;
+
 	switch (SessionSchedule)
 	{
 	  case SESSION_SCHED_ROUND_ROBIN:
@@ -1701,10 +1730,22 @@ SelectConnectionProxy(void)
 	  case SESSION_SCHED_RANDOM:
 		return &ConnectionProxies[random() % ConnectionProxiesNumber];
 	  case SESSION_SCHED_LOAD_BALANCING:
-		elog(ERROR, "SESSION_SCHED_LOAD_BALANCING not implemented yet");
+		min_workload = GetConnectionProxyWorkload(0);
+		least_loaded_proxy = 0;
+		for (i = 1; i < ConnectionProxiesNumber; i++)
+		{
+			int workload = GetConnectionProxyWorkload(i);
+			if (workload < min_workload)
+			{
+				min_workload = workload;
+				least_loaded_proxy = i;
+			}
+		}
+		return &ConnectionProxies[least_loaded_proxy];
 	  default:
 		Assert(false);
 	}
+	return NULL;
 }
 
 
@@ -2801,7 +2842,7 @@ pmdie(SIGNAL_ARGS)
 				if (WalWriterPID != 0)
 					signal_child(WalWriterPID, SIGTERM);
 
-				StopConnectionProxies();
+				StopConnectionProxies(SIGTERM);
 
 				/*
 				 * If we're in recovery, we can't kill the startup process
@@ -2880,6 +2921,9 @@ pmdie(SIGNAL_ARGS)
 				/* and the walwriter too */
 				if (WalWriterPID != 0)
 					signal_child(WalWriterPID, SIGTERM);
+
+				StopConnectionProxies(SIGTERM);
+
 				pmState = PM_WAIT_BACKENDS;
 			}
 
@@ -4109,6 +4153,7 @@ TerminateChildren(int signal)
 		signal_child(PgArchPID, signal);
 	if (PgStatPID != 0)
 		signal_child(PgStatPID, signal);
+	StopConnectionProxies(signal);
 }
 
 /*
@@ -4921,6 +4966,7 @@ SubPostmasterMain(int argc, char *argv[])
 	if (strcmp(argv[1], "--forkbackend") == 0 ||
 		strcmp(argv[1], "--forkavlauncher") == 0 ||
 		strcmp(argv[1], "--forkavworker") == 0 ||
+		strcmp(argv[1], "--forkproxy") == 0 ||
 		strcmp(argv[1], "--forkboot") == 0 ||
 		strncmp(argv[1], "--forkbgworker=", 15) == 0)
 		PGSharedMemoryReAttach();
@@ -5060,6 +5106,19 @@ SubPostmasterMain(int argc, char *argv[])
 		CreateSharedMemoryAndSemaphores(false, 0);
 
 		AutoVacWorkerMain(argc - 2, argv + 2);	/* does not return */
+	}
+	if (strcmp(argv[1], "--forkproxy") == 0)
+	{
+		/* Restore basic shared memory pointers */
+		InitShmemAccess(UsedShmemSegAddr);
+
+		/* Need a PGPROC to run CreateSharedMemoryAndSemaphores */
+		InitProcess();
+
+		/* Attach process to shared data structures */
+		CreateSharedMemoryAndSemaphores(false, 0);
+
+		ConnectionProxyMain(argc - 2, argv + 2);	/* does not return */
 	}
 	if (strncmp(argv[1], "--forkbgworker=", 15) == 0)
 	{
@@ -5625,11 +5684,11 @@ StartAutovacuumWorker(void)
  *
  * NB -- this code very roughly matches BackendStartup.
  */
-static int
-StartProxyWorker(pgsocket socket)
+static void
+StartProxyWorker(int id)
 {
 	Backend    *bn;
-	int pid = -1;
+	int         pid;
 
 	/*
 	 * Compute the cancel key that will be assigned to this session. We
@@ -5642,7 +5701,7 @@ StartProxyWorker(pgsocket socket)
 		ereport(LOG,
 				(errcode(ERRCODE_INTERNAL_ERROR),
 				 errmsg("could not generate random cancel key")));
-		return -1;
+		return   ;
 	}
 	bn = (Backend *) malloc(sizeof(Backend));
 	if (bn)
@@ -5654,7 +5713,9 @@ StartProxyWorker(pgsocket socket)
 		bn->child_slot = MyPMChildSlot = AssignPostmasterChildSlot();
 		bn->bgworker_notify = false;
 
-		pid = ConnectionProxyStart(socket);
+		MyProxyId = id;
+		MyProxySocket = ConnectionProxies[id].socks[1];
+		pid = ConnectionProxyStart();
 		if (pid > 0)
 		{
 			bn->pid = pid;
@@ -5664,7 +5725,9 @@ StartProxyWorker(pgsocket socket)
 			ShmemBackendArrayAdd(bn);
 #endif
 			/* all OK */
-			return pid;
+			ConnectionProxies[id].pid = pid;
+			ProxyState[id].pid = pid;
+			return;
 		}
 
 		/*
@@ -5678,7 +5741,6 @@ StartProxyWorker(pgsocket socket)
 		ereport(LOG,
 				(errcode(ERRCODE_OUT_OF_MEMORY),
 				 errmsg("out of memory")));
-	return -1;
 }
 
 /*
@@ -6259,6 +6321,10 @@ save_backend_variables(BackendParameters *param, Port *port,
 
 	strlcpy(param->ExtraOptions, ExtraOptions, MAXPGPATH);
 
+	if (!write_inheritable_socket(&param->proxySocket, MyProxySocket, childPid))
+		return false;
+	param->proxyId = MyProxyId;
+
 	return true;
 }
 
@@ -6487,6 +6553,9 @@ restore_backend_variables(BackendParameters *param, Port *port)
 	strlcpy(pkglib_path, param->pkglib_path, MAXPGPATH);
 
 	strlcpy(ExtraOptions, param->ExtraOptions, MAXPGPATH);
+
+	read_inheritable_socket(&MyProxySock, &param->proxySocket);
+	MyProxyId = param->proxyId;
 }
 
 

@@ -82,6 +82,4 @@ extern int	BackendStartup(struct Port* port, int* backend_pid);
  */
 #define MAX_BACKENDS	0x3FFFF
 
-extern int ConnectionProxyStart(pgsocket socket);
-
 #endif							/* _POSTMASTER_H */

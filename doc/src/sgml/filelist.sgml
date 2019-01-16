@@ -29,6 +29,7 @@
 <!ENTITY syntax     SYSTEM "syntax.sgml">
 <!ENTITY textsearch SYSTEM "textsearch.sgml">
 <!ENTITY typeconv   SYSTEM "typeconv.sgml">
+<!ENTITY connpool   SYSTEM "connpool.sgml">
 
 <!-- administrator's guide -->
 <!ENTITY backup        SYSTEM "backup.sgml">

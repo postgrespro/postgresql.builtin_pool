@@ -2076,19 +2076,19 @@ static struct config_int ConfigureNamesInt[] =
 	{
 		{"connection_proxies", PGC_POSTMASTER, CONN_POOLING,
 			gettext_noop("Sets number of connection proxies."),
-			gettext_noop("Each proxy has its own thread. Postmaster scatters connections between proxies using round-robin algorithm."
+			gettext_noop("Postmaster spawns separate worker process for each proxy. Postmaster scatters connections between proxies using one of scheduling policies (round-robin, random, load-balancing)."
 						 "Each proxy launches its own subset of backends. So maximal number of non-tainted backends is "
 						 "session_pool_size*connection_proxies*databases*roles.")
 		},
 		&ConnectionProxiesNumber,
-		1, 0, INT_MAX,
+		0, 0, INT_MAX,
 		NULL, NULL, NULL
 	},
 
  	{
 		{"max_sessions", PGC_POSTMASTER, CONN_POOLING,
 			gettext_noop("Sets the maximum number of client session."),
-			gettext_noop("Maximal number of client sessions which can be handled by Postgres instance."
+			gettext_noop("Maximal number of client sessions which can be handled by ont connection proxy."
 						 "It can be greater than max_connections and actually be arbitrary large.")
 		},
 		&MaxSessions,
@@ -2145,7 +2145,7 @@ static struct config_int ConfigureNamesInt[] =
 
 	{
 		{"proxy_port", PGC_POSTMASTER, CONN_AUTH_SETTINGS,
-			gettext_noop("Sets the TCP port the connection pooler."),
+			gettext_noop("Sets the TCP port for the connection pooler."),
 			NULL
 		},
 		&ProxyPortNumber,

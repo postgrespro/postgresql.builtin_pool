@@ -1,0 +1,162 @@
+<!-- doc/src/sgml/connpool.sgml -->
+
+ <chapter id="connection-pooling">
+  <title>Connection pooling</title>
+
+  <indexterm zone="connection-pooling">
+   <primary>built-in connection pool proxy</primary>
+  </indexterm>
+
+  <para>
+    <productname>PostgreSQL</productname> spawns a separate process (backend) for each client.
+    For large number of clients such model can cause consumption of large number of system
+    resources and leads to significant performance degradation, especially at computers with large
+    number of CPU cores. The reason is high contention between backends for postgres resources.
+    Also size of many Postgres internal data structures are proportional to the number of
+    active backends as well as complexity of algorithms for this data structures.
+  </para>
+
+  <para>
+    This is why most of production Postgres installation are using some kind of connection pooling:
+    pgbouncer, J2EE, odyssey,... But external connection pooler requires additional efforts for installation,
+    configuration and maintenance. Also pgbouncer (the most popular connection pooler for Postgres) is
+    single-threaded and so can be bottleneck for highload system, so multiple instances of pgbouncer have to be launched.
+  </para>
+
+  <para>
+    Starting from version 12 <productname>PostgreSQL</productname> provides built-in connection pooler.
+    This chapter describes architecture and usage of built-in connection pooler.
+  </para>
+
+ <sect1 id="how-connection-pooler-works">
+  <title>How Built-in Connection Pooler Works</title>
+
+  <para>
+    Built-in connection pooler spawns one or more proxy processes which connect clients and backends.
+    Number of proxy processes is controlled by <varname>connection_proxies</varname> configuration parameter.
+    To avoid substantial changes in Postgres locking mechanism, only transaction level pooling policy is implemented.
+    It means that pooler is able to reschedule backend to another session only when it completes current transaction.
+  </para>
+
+  <para>
+    As far as each Postgres backend is able to work only with single database, each proxy process maintains
+    hash table of connections pools for each pair of <literal>dbname,role</literal>.
+    Maximal number of backends which can be spawned by connection pool is limited by
+    <varname>session_pool_size</varname> configuration variable.
+    So maximal number of non-dedicated backends in pooling mode is limited by
+    <varname>connection_proxies</varname>*<varname>session_pool_size</varname>*<literal>#databases</literal>*<literal>#roles</literal>.
+  </para>
+
+  <para>
+    To minimize number of changes in Postgres core, built-in connection pooler is not trying to save/restore
+    session context. If session context is modified by client application
+    (changing values of configuration variables (GUCs), creating temporary tables, preparing statements, advisory locking),
+    then backend executing this session is considered to be <emphasis>tainted</emphasis>.
+    It is now dedicated to this session and can not be rescheduled to other session.
+    Once this session is terminated, backend is terminated as well.
+    Non-tainted backends are not terminated even if there are no more connected sessions.
+  </para>
+
+  <para>
+    Built-in connection pooler is accepted connections on separate port (<varname>proxy_port</varname> configuration option, default value is 6543).
+    If client is connected to postgres through standard port (<varname>port</varname> configuration option, default value is 5432), then normal (<emphasis>dedicated</emphasis>) backend is created. It works only
+    with this client and is terminated when client is disconnected. Standard port is also used by proxy itself to
+    launch new worker backends. It means that to enable connection pooler Postgres should be configured
+    to accept local connections (<literal>pg_hba.conf</literal> file).
+  </para>
+
+  <para>
+    If client application is connected through proxy port, then its communication with backend is always
+    performed through proxy. Even if it changes session context and backend becomes <emphasis>tainted</emphasis>,
+    still all traffic between this client and backend comes through proxy.
+  </para>
+
+  <para>
+    Postmaster accepts connections on proxy port and redirects it to one of connection proxies.
+    Right now sessions and bounded to proxy and can not migrate between them.
+    To provide uniform load balancing of proxies, postmaster is using one of three scheduling policies:
+    <literal>round-robin</literal>, <literal>random</literal> and <literal>load-balancing</literal>.
+    In the last case postmaster choose proxy with smallest number of already attached clients, with
+    extra weight added to SSL connections (which consume more CPU).
+  </para>
+
+ </sect1>
+
+ <sect1 id="connection-pooler-configuration">
+  <title>Built-in Connection Pooler Configuration</title>
+
+  <para>
+    There are four main configuration variables controlling connection pooler:
+    <varname>session_pool_size</varname>, <varname>connection_proxies</varname>, <varname>max_sessions</varname> and <varname>proxy_port</varname>.
+    Connection pooler is enabled if all of them are non-zero. <varname>connection_proxies</varname> specifies number of connection proxy processes which will be spawned.
+    Default value is zero, so connection pooling is disabled by default.
+    <varname>session_pool_size</varname> specifies maximal number of backends per connection pool. Maximal number of laucnhed non-dedicated backends in pooling mode is limited by
+    <varname>connection_proxies</varname>*<varname>session_pool_size</varname>*<literal>#databases</literal>*<literal>#roles</literal>.
+    If number of backends is too small, then server will not be able to utilize all system resources.
+    But too large value can cause degradation of performance because of large snapshots and lock contention.
+  </para>
+
+  <para>
+    <varname>max_sessions</varname>parameter specifies maximal number of sessions which can be handled by one connection proxy.
+    Actually it affects only size of wait event set and so can be large enough without any  essential negative impact on system resources consumption.
+    Default value is 1000. So maximal number of connections to one database/role is limited by <varname>connection_proxies</varname>*<varname>max_sessions</varname>.
+  </para>
+
+  <para>
+    Connection proxy accepts connections on special port, defined by <varname>proxy_port</varname>.
+    Default value is 6543, but it can be changed to standard Postgres 4321, so by default all connections to the databases will be pooled.
+    But it is still necessary to have a port for direct connections to the database (dedicated backends).
+    It is needed for connection pooler itself to launch worker backends.
+  </para>
+
+  <para>
+    Postmaster scatters sessions between proxies using one of three available scheduling policies:
+    <literal>round-robin</literal>, <literal>random</literal> and <literal>load-balancing</literal>.
+    Policy can be set using <varname>session_schedule</varname> configuration variable. Default policy is
+    <literal>round-robin</literal> which cause cyclic distribution of sessions between proxies.
+    It should work well in case of more or less uniform workload.
+    The smartest policy is <literal>load-balancing</literal> which tries to choose least loaded proxy
+    based on the available statistic. It is possible to monitor proxies state using <varname>pg_pooler_state()</varname> function, which returns information about number of clients, backends and pools for each proxy as well
+    as some statistic information about number of proceeded transactions and amount of data
+    sent from client to backends (<varname>rx_bytes</varname>) and from backends to clients (<varname>tx_bytes</varname>).
+  </para>
+
+ </sect1>
+
+ <sect1 id="connection-pooler-configuration">
+  <title>Built-in Connection Pooler Pros and Cons</title>
+
+  <para>
+    Unlike pgbouncer and other external connection poolera, built-in connection pooler doesn't require installation and configuration of some other components.
+    Also it doesn't introduce any limitations for clients: existed clients can work through proxy and don't notice any difference.
+    If client application requires session context, then it will be served by dedicated backend. Such connection will not participate in
+    connection pooling but it will correctly work. This is the main difference with pgbouncer,
+    which may cause incorrect behavior of client application in case of using other session level pooling policy.
+    And if application is not changing session context, then it can be implicitly pooled, reducing number of active backends.
+  </para>
+
+  <para>
+    The main limitation of current built-in connection pooler implementation is that it is not able to save/resume session context.
+    Although it is not so difficult to do, but it requires more changes in Postgres core. So developers of client applications still have a choice
+    either to avoid using session-specific operations either not to use pooling. For example, using prepared statements can improve speed of simple queries
+    up to two times. But prepared statements can not be handled by pooled backend, so if all clients are using prepared statements, then there will be no connection pooling
+    even if connection pooling is enabled.
+  </para>
+
+  <para>
+    Redirecting connections through connection proxy definitely have negative effect on total system performance and especially latency.
+    Overhead of connection proxing depends on too many factors, such as characteristics of external and internal networks, complexity of queries and size of returned result set.
+    Pgbench benchmark in select-only mode shows almost two times worser performance for local connections through connection pooler comparing with direct local connections when
+    number of connections is small enough (10). For much larger number of connections (when pooling is actually required), pooling mode outperforms direct connection mode.
+  </para>
+
+  <para>
+    Another obvious limitation of transaction level pooling is that long living transaction can cause starvation of
+    other clients. It greatly depends on application design. If application opens database transaction and then waits for user input or some other external event, then backend can be in <emphasis>idle-in-transaction</emphasis>
+    state for long enough time. And such backend can not be rescheduled for some another session.
+    The obvious recommendation is to avoid long-living transaction and setup <varname>idle_in_transaction_session_timeout</varname> to implicitly abort such transactions.
+  </para>
+
+ </sect1>
+
+ </chapter>

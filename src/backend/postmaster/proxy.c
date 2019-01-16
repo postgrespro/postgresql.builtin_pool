@@ -2,10 +2,13 @@
 #include <errno.h>
 
 #include "postgres.h"
+#include "funcapi.h"
 #include "miscadmin.h"
 #include "pgstat.h"
 #include "postmaster/postmaster.h"
+#include "postmaster/proxy.h"
 #include "postmaster/fork_process.h"
+#include "access/htup_details.h"
 #include "storage/ipc.h"
 #include "storage/latch.h"
 #include "storage/proc.h"
@@ -70,14 +73,12 @@ typedef struct Proxy
 	MemoryContext tmpctx;        /* Temporary memory context used for parsing startup packet */
 	WaitEventSet* wait_events;   /* Set of socket descriptors of backends and clients socket descriptors */
 	HTAB*    pools;              /* Session pool map with dbname/role used as a key */
-	int      n_accepted_connections; /* Number of accepted but not yet established connections
-									  * (startup packeg is not received and db/role are not known) */
+	int      n_accepted_connections; /* Number of accepted, but not yet established connections
+									  * (startup package is not received and db/role are not known) */
 	int      max_backends;       /* Maximal number of backends per database */
-	int      n_pools;            /* Number of dbname/role combinations */
-	int      n_clients;          /* Total number of clients */
-	int      n_backends;         /* Total number of backends */
 	bool     shutdown;           /* Shutdown flag */
 	Channel* hangout;            /* List of disconncted backends */
+	ConnectionProxyState* state; /* State of proxy */
 } Proxy;
 
 typedef struct SessionPool
@@ -88,7 +89,6 @@ typedef struct SessionPool
 	Proxy*   proxy;
 	int      n_launched_backends; /* Total number of launched backends */
 	int      n_idle_backends;     /* Number of backends in idle state */
-	int      n_tainted_backends;  /* Number of backends with pinned sessions */
 	int      n_connected_clients; /* Total number of connected clients */
 	int      n_idle_clients;      /* Number of clients in idle state */
 	int      n_pending_clients;   /* Number of clients waiting for free backend */
@@ -104,6 +104,9 @@ static bool channel_write(Channel* chan, bool synchronous);
 #define ELOG(severity,fmt,...)
 
 static Proxy* proxy;
+int MyProxyId;
+pgsocket MyProxySocket;
+ConnectionProxyState* ProxyState;
 
 /**
  * Backend is ready for next command outside transaction block (idle state).
@@ -161,7 +164,7 @@ backend_reschedule(Channel* chan)
 	else if (!chan->backend_is_tainted) /* if it was not marked as tainted before... */
 	{
 		chan->backend_is_tainted = true;
-		chan->pool->n_tainted_backends += 1;
+		chan->proxy->state->n_dedicated_backends += 1;
 	}
 	return true;
 }
@@ -187,7 +190,7 @@ client_connect(Channel* chan, int startup_packet_size)
 		elog(WARNING, "Failed to parse startup packet for client %p", chan);
 		return false;
 	}
-	pq_flush();
+	chan->proxy->state->n_ssl_clients += chan->client_port->ssl_in_use;
 	pg_set_noblock(chan->client_port->sock);
 	memset(&key, 0, sizeof(key));
 	strlcpy(key.database, chan->client_port->database_name, NAMEDATALEN);
@@ -198,7 +201,7 @@ client_connect(Channel* chan, int startup_packet_size)
 	chan->pool = (SessionPool*)hash_search(chan->proxy->pools, &key, HASH_ENTER, &found);
 	if (!found)
 	{
-		chan->proxy->n_pools += 1;
+		chan->proxy->state->n_pools += 1;
 		memset((char*)chan->pool + sizeof(SessionPoolKey), 0, sizeof(SessionPool) - sizeof(SessionPoolKey));
 	}
 	chan->pool->proxy = chan->proxy;
@@ -316,6 +319,10 @@ channel_write(Channel* chan, bool synchronous)
 				channel_hangout(chan, "write");
 			return false;
 		}
+		if (chan->client_port)
+			chan->proxy->state->tx_bytes += rc;
+		else
+			chan->proxy->state->rx_bytes += rc;
 		peer->tx_pos += rc;
 	}
 	if (peer->tx_size != 0)
@@ -400,6 +407,7 @@ channel_read(Channel* chan)
 				{
 					Assert(chan->rx_pos - msg_start == msg_len); /* should be last message */
 					chan->backend_is_ready = true;
+					chan->proxy->state->n_transactions += 1;
 				}
 				else if (chan->client_port /* message from client */
 						 && chan->buf[msg_start] == 'X')	/* terminate message */
@@ -488,7 +496,7 @@ channel_register(Proxy* proxy, Channel* chan)
 	{
 		elog(WARNING, "PROXY: Failed to add new client - too much sessions: %d clients, %d backends. "
 					 "Try to increase 'max_sessions' configuration parameter.",
-					 proxy->n_clients, proxy->n_backends);
+					 proxy->state->n_clients, proxy->state->n_backends);
 		return false;
 	}
 	return true;
@@ -546,7 +554,7 @@ backend_start(SessionPool* pool, Port* client_port)
 
 	if (channel_register(pool->proxy, chan))
 	{
-		pool->proxy->n_backends += 1;
+		pool->proxy->state->n_backends += 1;
 		pool->n_launched_backends += 1;
 	}
 	else
@@ -570,9 +578,9 @@ proxy_add_client(Proxy* proxy, Port* port)
 	chan->client_port = port;
 	chan->backend_socket = PGINVALID_SOCKET;
 	if (channel_register(proxy, chan)) {
-		elog(LOG, "Add new client %p", chan);
+		ELOG(LOG, "Add new client %p", chan);
 		proxy->n_accepted_connections += 1;
-		proxy->n_clients += 1;
+		proxy->state->n_clients += 1;
 	}
 }
 
@@ -590,13 +598,15 @@ channel_remove(Channel* chan)
 			chan->pool->n_connected_clients -= 1;
 		else
 			chan->proxy->n_accepted_connections -= 1;
-		chan->proxy->n_clients -= 1;
+		chan->proxy->state->n_clients -= 1;
+		chan->proxy->state->n_ssl_clients -= chan->client_port->ssl_in_use;
 		close(chan->client_port->sock);
 		free(chan->client_port);
 	}
 	else
 	{
-		chan->proxy->n_backends -= 1;
+		chan->proxy->state->n_backends -= 1;
+		chan->proxy->state->n_dedicated_backends -= chan->backend_is_tainted;
 		chan->pool->n_launched_backends -= 1;
 		close(chan->backend_socket);
 		free(chan->handshake_response);
@@ -609,7 +619,7 @@ channel_remove(Channel* chan)
  * Create new proxy.
  */
 static Proxy*
-proxy_create(pgsocket postmaster_socket, int max_backends)
+proxy_create(pgsocket postmaster_socket, ConnectionProxyState* state, int max_backends)
 {
 	HASHCTL ctl;
 	Proxy*  proxy = calloc(1, sizeof(Proxy));
@@ -629,6 +639,7 @@ proxy_create(pgsocket postmaster_socket, int max_backends)
 	AddWaitEventToSet(proxy->wait_events, WL_SOCKET_READABLE,
 					  postmaster_socket, NULL, NULL);
 	proxy->max_backends = max_backends;
+	proxy->state = state;
 	return proxy;
 }
 
@@ -704,12 +715,68 @@ proxy_forkexec(void)
 }
 #endif
 
+NON_EXEC_STATIC void
+ConnectionProxyMain(int argc, char *argv[])
+{
+	sigjmp_buf	local_sigjmp_buf;
+
+	/* Identify myself via ps */
+	init_ps_display("connection proxy", "", "", "");
+
+	SetProcessingMode(InitProcessing);
+
+	pqsignal(SIGTERM, proxy_handle_sigterm);
+	pqsignal(SIGQUIT, quickdie);
+	InitializeTimeouts();		/* establishes SIGALRM handler */
+
+	/* Early initialization */
+	BaseInit();
+
+	/*
+	 * Create a per-backend PGPROC struct in shared memory, except in the
+	 * EXEC_BACKEND case where this was done in SubPostmasterMain. We must do
+	 * this before we can use LWLocks (and in the EXEC_BACKEND case we already
+	 * had to do some stuff with LWLocks).
+	 */
+#ifndef EXEC_BACKEND
+	InitProcess();
+#endif
+
+	/*
+	 * If an exception is encountered, processing resumes here.
+	 *
+	 * See notes in postgres.c about the design of this coding.
+	 */
+	if (sigsetjmp(local_sigjmp_buf, 1) != 0)
+	{
+		/* Prevents interrupts while cleaning up */
+		HOLD_INTERRUPTS();
+
+		/* Report the error to the server log */
+		EmitErrorReport();
+
+		/*
+		 * We can now go away.  Note that because we called InitProcess, a
+		 * callback was registered to do ProcKill, which will clean up
+		 * necessary state.
+		 */
+		proc_exit(0);
+	}
+	/* We can now handle ereport(ERROR) */
+	PG_exception_stack = &local_sigjmp_buf;
+
+	PG_SETMASK(&UnBlockSig);
+
+	proxy = proxy_create(MyProxySocket, &ProxyState[MyProxyId], SessionPoolSize);
+	proxy_loop(proxy);
+
+	proc_exit(0);
+}
 
 int
-ConnectionProxyStart(pgsocket socket)
+ConnectionProxyStart()
 {
 	pid_t		worker_pid;
-	sigjmp_buf	local_sigjmp_buf;
 
 #ifdef EXEC_BACKEND
 	switch ((worker_pid = proxy_forkexec()))
@@ -727,55 +794,8 @@ ConnectionProxyStart(pgsocket socket)
 			/* in postmaster child ... */
 			InitPostmasterChild();
 
-		    /* Identify myself via ps */
-		    init_ps_display("connection proxy", "", "", "");
-
-			SetProcessingMode(InitProcessing);
-
-			pqsignal(SIGTERM, proxy_handle_sigterm);
-			pqsignal(SIGQUIT, quickdie);
-			InitializeTimeouts();		/* establishes SIGALRM handler */
-
-			/* Early initialization */
-			BaseInit();
-
-			/*
-			 * Create a per-backend PGPROC struct in shared memory, except in the
-			 * EXEC_BACKEND case where this was done in SubPostmasterMain. We must do
-			 * this before we can use LWLocks (and in the EXEC_BACKEND case we already
-			 * had to do some stuff with LWLocks).
-			 */
-			InitProcess();
-
-			/*
-			 * If an exception is encountered, processing resumes here.
-			 *
-			 * See notes in postgres.c about the design of this coding.
-			 */
-			if (sigsetjmp(local_sigjmp_buf, 1) != 0)
-			{
-				/* Prevents interrupts while cleaning up */
-				HOLD_INTERRUPTS();
-
-				/* Report the error to the server log */
-				EmitErrorReport();
-
-				/*
-				 * We can now go away.  Note that because we called InitProcess, a
-				 * callback was registered to do ProcKill, which will clean up
-				 * necessary state.
-				 */
-				proc_exit(0);
-			}
-			/* We can now handle ereport(ERROR) */
-			PG_exception_stack = &local_sigjmp_buf;
-
-			PG_SETMASK(&UnBlockSig);
-
-			proxy = proxy_create(socket, SessionPoolSize);
-			proxy_loop(proxy);
-
-			proc_exit(0);
+			ConnectionProxyMain(0, NULL);
+			break;
 #endif
 		default:
 		  elog(LOG, "Start proxy process %d", (int) worker_pid);
@@ -784,5 +804,75 @@ ConnectionProxyStart(pgsocket socket)
 
 	/* shouldn't get here */
 	return 0;
+}
+
+int ConnectionProxyShmemSize(void)
+{
+	return ConnectionProxiesNumber*sizeof(ConnectionProxyState);
+}
+
+void ConnectionProxyShmemInit(void)
+{
+	bool found;
+	ProxyState = (ConnectionProxyState*)ShmemInitStruct("connection proxy contexts",
+															 ConnectionProxyShmemSize(), &found);
+	if (!found)
+		memset(ProxyState, 0, ConnectionProxyShmemSize());
+}
+
+PG_FUNCTION_INFO_V1(pg_pooler_state);
+
+typedef struct
+{
+	int proxy_id;
+	TupleDesc ret_desc;
+} PoolerStateContext;
+
+/**
+ * Return information about proxy state
+ */
+Datum pg_pooler_state(PG_FUNCTION_ARGS)
+{
+    FuncCallContext* srf_ctx;
+	MemoryContext old_context;
+	PoolerStateContext* ps_ctx;
+	HeapTuple tuple;
+	Datum values[9];
+	bool  nulls[9];
+	int id;
+	int i;
+
+	if (SRF_IS_FIRSTCALL())
+	{
+		srf_ctx = SRF_FIRSTCALL_INIT();
+		old_context = MemoryContextSwitchTo(srf_ctx->multi_call_memory_ctx);
+        ps_ctx = (PoolerStateContext*)palloc(sizeof(PoolerStateContext));
+        get_call_result_type(fcinfo, NULL, &ps_ctx->ret_desc);
+		ps_ctx->proxy_id = 0;
+		srf_ctx->user_fctx = ps_ctx;
+		MemoryContextSwitchTo(old_context);
+	}
+	srf_ctx = SRF_PERCALL_SETUP();
+	ps_ctx = srf_ctx->user_fctx;
+	id = ps_ctx->proxy_id;
+	if (id == ConnectionProxiesNumber)
+		SRF_RETURN_DONE(srf_ctx);
+
+	values[0] = Int32GetDatum(ProxyState[id].pid);
+	values[1] = Int32GetDatum(ProxyState[id].n_clients);
+	values[2] = Int32GetDatum(ProxyState[id].n_ssl_clients);
+	values[3] = Int32GetDatum(ProxyState[id].n_pools);
+	values[4] = Int32GetDatum(ProxyState[id].n_backends);
+	values[5] = Int32GetDatum(ProxyState[id].n_dedicated_backends);
+	values[6] = Int64GetDatum(ProxyState[id].tx_bytes);
+	values[7] = Int64GetDatum(ProxyState[id].rx_bytes);
+	values[8] = Int64GetDatum(ProxyState[id].n_transactions);
+
+	for (i = 0; i <= 8; i++)
+		nulls[i] = false;
+
+	ps_ctx->proxy_id += 1;
+	tuple = heap_form_tuple(ps_ctx->ret_desc, values, nulls);
+	SRF_RETURN_NEXT(srf_ctx, HeapTupleGetDatum(tuple));
 }
 
