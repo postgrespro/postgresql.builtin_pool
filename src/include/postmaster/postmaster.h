@@ -47,6 +47,8 @@ extern int	postmaster_alive_fds[2];
 
 extern PGDLLIMPORT const char *progname;
 
+extern PGDLLIMPORT void* (*LibpqConnectdbParams)(char const* keywords[], char const* values[]);
+
 struct Proxy;
 struct Port;
 

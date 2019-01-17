@@ -260,6 +260,8 @@ typedef struct ConnectionProxy
 ConnectionProxy* ConnectionProxies;
 static int CurrentConnectionProxy; /* index used for round-robin distribution of connections between proxies */
 
+void* (*LibpqConnectdbParams)(char const* keywords[], char const* values[]);
+
 /* PIDs of special child processes; 0 when not running */
 static pid_t StartupPID = 0,
 			BgWriterPID = 0,

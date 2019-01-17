@@ -520,17 +520,18 @@ backend_start(SessionPool* pool, Port* client_port)
 	char* msg;
 	int int32_buf;
 	int msg_len;
+	static bool libpqconn_loaded;
 
-	pg_itoa(PostPortNumber, postmaster_port);
-	conn = PQconnectdbParams(keywords, values, false);
-	if (!conn || PQstatus(conn) != CONNECTION_OK)
+	if (!libpqconn_loaded)
 	{
-		ereport(WARNING,
-				(errcode(ERRCODE_SQLCLIENT_UNABLE_TO_ESTABLISH_SQLCONNECTION),
-				 errmsg("could not setup local connect to server"),
-				 errdetail_internal("%s", pchomp(PQerrorMessage(conn)))));
-		return NULL;
+		load_file("libpqconn", false);
+		libpqconn_loaded = true;
 	}
+	pg_itoa(PostPortNumber, postmaster_port);
+	conn = LibpqConnectdbParams(keywords, values);
+	if (!conn)
+		return NULL;
+
 	chan = channel_create(pool->proxy);
 	chan->pool = pool;
 	chan->backend_socket = conn->sock;
