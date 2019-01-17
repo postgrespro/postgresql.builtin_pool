@@ -10,7 +10,7 @@
   <para>
     <productname>PostgreSQL</productname> spawns a separate process (backend) for each client.
     For large number of clients such model can cause consumption of large number of system
-    resources and leads to significant performance degradation, especially at computers with large
+    resources and lead to significant performance degradation, especially at computers with large
     number of CPU cores. The reason is high contention between backends for postgres resources.
     Also size of many Postgres internal data structures are proportional to the number of
     active backends as well as complexity of algorithms for this data structures.
@@ -35,7 +35,7 @@
     Built-in connection pooler spawns one or more proxy processes which connect clients and backends.
     Number of proxy processes is controlled by <varname>connection_proxies</varname> configuration parameter.
     To avoid substantial changes in Postgres locking mechanism, only transaction level pooling policy is implemented.
-    It means that pooler is able to reschedule backend to another session only when it completes current transaction.
+    It means that pooler is able to reschedule backend to another session only when it completed the current transaction.
   </para>
 
   <para>
@@ -76,7 +76,7 @@
     Right now sessions and bounded to proxy and can not migrate between them.
     To provide uniform load balancing of proxies, postmaster is using one of three scheduling policies:
     <literal>round-robin</literal>, <literal>random</literal> and <literal>load-balancing</literal>.
-    In the last case postmaster choose proxy with smallest number of already attached clients, with
+    In the last case postmaster will choose proxy with smallest number of already attached clients, with
     extra weight added to SSL connections (which consume more CPU).
   </para>
 
@@ -88,8 +88,15 @@
   <para>
     There are four main configuration variables controlling connection pooler:
     <varname>session_pool_size</varname>, <varname>connection_proxies</varname>, <varname>max_sessions</varname> and <varname>proxy_port</varname>.
-    Connection pooler is enabled if all of them are non-zero. <varname>connection_proxies</varname> specifies number of connection proxy processes which will be spawned.
+    Connection pooler is enabled if all of them are non-zero.
+  </para>
+
+  <para>
+    <varname>connection_proxies</varname> specifies number of connection proxy processes which will be spawned.
     Default value is zero, so connection pooling is disabled by default.
+  </para>
+
+  <para>
     <varname>session_pool_size</varname> specifies maximal number of backends per connection pool. Maximal number of laucnhed non-dedicated backends in pooling mode is limited by
     <varname>connection_proxies</varname>*<varname>session_pool_size</varname>*<literal>#databases</literal>*<literal>#roles</literal>.
     If number of backends is too small, then server will not be able to utilize all system resources.
@@ -99,7 +106,7 @@
   <para>
     <varname>max_sessions</varname>parameter specifies maximal number of sessions which can be handled by one connection proxy.
     Actually it affects only size of wait event set and so can be large enough without any  essential negative impact on system resources consumption.
-    Default value is 1000. So maximal number of connections to one database/role is limited by <varname>connection_proxies</varname>*<varname>max_sessions</varname>.
+    Default value is 1000. So maximal number of connections to one database/role is limited by <varname>connection_proxies</varname>*<varname>session_pool_size</varname>*<varname>max_sessions</varname>.
   </para>
 
   <para>
@@ -123,7 +130,7 @@
 
  </sect1>
 
- <sect1 id="connection-pooler-configuration">
+ <sect1 id="connection-pooler-constraints">
   <title>Built-in Connection Pooler Pros and Cons</title>
 
   <para>

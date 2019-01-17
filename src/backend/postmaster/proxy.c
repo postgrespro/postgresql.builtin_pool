@@ -100,7 +100,9 @@ static Channel* backend_start(SessionPool* pool, Port* client_port);
 static bool channel_read(Channel* chan);
 static bool channel_write(Channel* chan, bool synchronous);
 
-//#define ELOG(severity, fmt,...) elog(severity, "PROXY: " fmt, ## __VA_ARGS__)
+/*
+ * #define ELOG(severity, fmt,...) elog(severity, "PROXY: " fmt, ## __VA_ARGS__)
+ */
 #define ELOG(severity,fmt,...)
 
 static Proxy* proxy;
@@ -333,7 +335,6 @@ channel_write(Channel* chan, bool synchronous)
 		peer->rx_pos -= peer->tx_size;
 		peer->tx_pos = peer->tx_size = 0;
 	}
-	//	channel_read(chan);
 	return synchronous || channel_read(peer); /* write is not invoked from read */
 }
 
