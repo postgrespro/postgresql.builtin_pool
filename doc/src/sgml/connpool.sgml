@@ -123,9 +123,14 @@
     <literal>round-robin</literal> which cause cyclic distribution of sessions between proxies.
     It should work well in case of more or less uniform workload.
     The smartest policy is <literal>load-balancing</literal> which tries to choose least loaded proxy
-    based on the available statistic. It is possible to monitor proxies state using <varname>pg_pooler_state()</varname> function, which returns information about number of clients, backends and pools for each proxy as well
+    based on the available statistic. It is possible to monitor proxies state using <function>pg_pooler_state()</function> function, which returns information about number of clients, backends and pools for each proxy as well
     as some statistic information about number of proceeded transactions and amount of data
     sent from client to backends (<varname>rx_bytes</varname>) and from backends to clients (<varname>tx_bytes</varname>).
+  </para>
+
+  <para>
+    As far as pooled backends are not terminated on client exist, it will not
+    be possible to drop database to which them are connected.  It can be achieved without server restart using <varname>restart_pooler_on_reload</varname> variable. Setting this variable to <literal>true</literal> cause shutdown of all pooled backends after execution of <function>pg_reload_conf()</function> function. Then it will be possible to drop database.
   </para>
 
  </sect1>

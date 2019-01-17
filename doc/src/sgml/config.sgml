@@ -807,6 +807,20 @@ include_dir 'conf.d'
       </listitem>
      </varlistentry>
 
+     <varlistentry id="guc-restart-pooler-on-reload" xreflabel="restart_pooler_on_reload">
+      <term><varname>restart_pooler_on_reload</varname> (<type>string</type>)
+      <indexterm>
+       <primary><varname>restart_pooler_on_reload</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+        <para>
+          Restart session pool workers once <function>pg_reload_conf()</function> is called.
+          The default value is <literal>false</literal>.
+       </para>
+      </listitem>
+     </varlistentry>
+
      <varlistentry id="guc-unix-socket-directories" xreflabel="unix_socket_directories">
       <term><varname>unix_socket_directories</varname> (<type>string</type>)
       <indexterm>

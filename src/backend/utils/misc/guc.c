@@ -1234,6 +1234,16 @@ static struct config_bool ConfigureNamesBool[] =
 	},
 
 	{
+		{"restart_pooler_on_reload", PGC_SIGHUP, CONN_POOLING,
+		 gettext_noop("Restart session pool workers on pg_reload_conf()."),
+		 NULL,
+		},
+		&RestartPoolerOnReload,
+		false,
+		NULL, NULL, NULL
+	},
+
+	{
 		{"log_duration", PGC_SUSET, LOGGING_WHAT,
 			gettext_noop("Logs the duration of each completed SQL statement."),
 			NULL
