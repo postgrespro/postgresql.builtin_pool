@@ -258,6 +258,7 @@ typedef struct ConnectionProxy
 } ConnectionProxy;
 
 ConnectionProxy* ConnectionProxies;
+static bool ConnectionProxiesStarted;
 static int CurrentConnectionProxy; /* index used for round-robin distribution of connections between proxies */
 
 void* (*LibpqConnectdbParams)(char const* keywords[], char const* values[]);
@@ -590,18 +591,25 @@ HANDLE		PostmasterHandle;
 static void
 StartConnectionProxies(void)
 {
-	if (SessionPoolSize > 0 && ConnectionProxiesNumber > 0)
+	if (SessionPoolSize > 0 && ConnectionProxiesNumber > 0 && !ConnectionProxiesStarted)
 	{
 		int i;
-		ConnectionProxies = malloc(sizeof(ConnectionProxy*)*ConnectionProxiesNumber);
+		if (ConnectionProxies == NULL)
+		{
+			ConnectionProxies = malloc(sizeof(ConnectionProxy*)*ConnectionProxiesNumber);
+			for (i = 0; i < ConnectionProxiesNumber; i++)
+			{
+				if (socketpair(AF_UNIX, SOCK_STREAM, 0, ConnectionProxies[i].socks) < 0)
+					ereport(FATAL,
+							(errcode_for_file_access(),
+							 errmsg_internal("could not create socket pair for launching sessions: %m")));
+			}
+		}
 		for (i = 0; i < ConnectionProxiesNumber; i++)
 		{
-			if (socketpair(AF_UNIX, SOCK_STREAM, 0, ConnectionProxies[i].socks) < 0)
-				ereport(FATAL,
-						(errcode_for_file_access(),
-						 errmsg_internal("could not create socket pair for launching sessions: %m")));
 			StartProxyWorker(i);
 		}
+		ConnectionProxiesStarted = true;
 	}
 }
 
@@ -611,10 +619,14 @@ StartConnectionProxies(void)
 static void
 StopConnectionProxies(int signal)
 {
-	int i;
-	for (i = 0; i < ConnectionProxiesNumber; i++)
+	if (ConnectionProxiesStarted)
 	{
-		signal_child(ConnectionProxies[i].pid, signal);
+		int i;
+		for (i = 0; i < ConnectionProxiesNumber; i++)
+		{
+			signal_child(ConnectionProxies[i].pid, signal);
+		}
+		ConnectionProxiesStarted = false;
 	}
 }
 
@@ -1458,10 +1470,10 @@ PostmasterMain(int argc, char *argv[])
 	StartupStatus = STARTUP_RUNNING;
 	pmState = PM_STARTUP;
 
-	StartConnectionProxies();
-
 	/* Some workers may be scheduled to start now */
 	maybe_start_bgworkers();
+
+	StartConnectionProxies();
 
 	status = ServerLoop();
 
@@ -1931,6 +1943,8 @@ ServerLoop(void)
 		/* Get other worker processes running, if needed */
 		if (StartWorkerNeeded || HaveCrashedWorker)
 			maybe_start_bgworkers();
+
+		StartConnectionProxies();
 
 #ifdef HAVE_PTHREAD_IS_THREADED_NP
 
@@ -5734,7 +5748,7 @@ StartProxyWorker(int id)
 
 		/*
 		 * fork failed, fall through to report -- actual error message was
-		 * logged by StartAutoVacWorker
+		 * logged by ConnectionProxyStart
 		 */
 		(void) ReleasePostmasterChildSlot(bn->child_slot);
 		free(bn);
