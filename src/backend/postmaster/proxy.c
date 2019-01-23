@@ -55,6 +55,7 @@ typedef struct Channel
 	int      backend_pid;
 	bool     backend_is_tainted;
 	bool     backend_is_ready;   /* ready for query */
+	bool     is_interrupted;     /* client interrupts query execution */
 	bool     is_disconnected;
 
 	int      handshake_response_size;
@@ -263,6 +264,7 @@ client_attach(Channel* chan)
 static void
 channel_hangout(Channel* chan, char const* op)
 {
+	Channel* peer = chan->peer;
 	if (chan->is_disconnected)
 	   return;
 
@@ -275,16 +277,44 @@ channel_hangout(Channel* chan, char const* op)
 	chan->proxy->hangout = chan;
 	chan->is_disconnected = true;
 	chan->backend_is_ready = false;
-   	if (chan->client_port && chan->peer)
+	chan->peer = NULL;
+	if (chan->client_port && peer)
 	{
-		/* detach backend from client */
-		backend_reschedule(chan->peer);
+		if (!chan->is_interrupted) /* Client didn't sent 'X' command, so do it for him */
+		{
+			peer->is_interrupted = true;
+			channel_write(peer, false);
+		}
+		else
+		{
+			backend_reschedule(peer);
+		}
 	}
-#if 0
-	if (chan->peer && !chan->peer->is_disconnected)
-		channel_hangout(chan->peer, "peer");
-#endif
 }
+
+/*
+ * Try to write data to the socket.
+ */
+static ssize_t
+socket_write(Channel* chan, char const* buf, size_t size)
+{
+	ssize_t rc;
+#ifdef USE_SSL
+	int waitfor = 0;
+	if (chan->client_port && chan->client_port->ssl_in_use)
+		rc = be_tls_write(chan->client_port, buf, size, &waitfor);
+	else
+#endif
+		rc = chan->client_port
+			? secure_raw_write(chan->client_port, buf, size)
+			: write(chan->backend_socket, buf, size);
+	if (rc == 0 || (rc < 0 && (errno != EAGAIN && errno != EWOULDBLOCK)))
+	{
+		channel_hangout(chan, "write");
+	}
+	return rc;
+}
+
 
 /*
  * Try to send some data to the channel.
@@ -298,29 +328,25 @@ static bool
 channel_write(Channel* chan, bool synchronous)
 {
 	Channel* peer = chan->peer;
-
+	if (!chan->client_port && chan->is_interrupted)
+	{
+		char const terminate[] = {'X', 0, 0, 0, 4};
+		if (socket_write(chan, terminate, sizeof(terminate)) <= 0)
+			return false;
+		/* detach backend from client */
+		chan->is_interrupted = false;
+		backend_reschedule(chan);
+		return true;
+	}
 	if (peer == NULL)
 		return false;
 
 	while (peer->tx_pos < peer->tx_size) /* has something to write */
 	{
-		ssize_t rc;
-#ifdef USE_SSL
-		int waitfor = 0;
-		if (chan->client_port && chan->client_port->ssl_in_use)
-			rc = be_tls_write(chan->client_port, peer->buf + peer->tx_pos, peer->tx_size - peer->tx_pos, &waitfor);
-		else
-#endif
-			rc = chan->client_port
-				? secure_raw_write(chan->client_port, peer->buf + peer->tx_pos, peer->tx_size - peer->tx_pos)
-				: write(chan->backend_socket, peer->buf + peer->tx_pos, peer->tx_size - peer->tx_pos);
+		ssize_t rc = socket_write(chan, peer->buf + peer->tx_pos, peer->tx_size - peer->tx_pos);
 		ELOG(LOG, "%p: write %d tx_pos=%d, tx_size=%d: %m", chan, (int)rc, peer->tx_pos, peer->tx_size);
 		if (rc <= 0)
-		{
-			if (rc == 0 || (errno != EAGAIN && errno != EWOULDBLOCK))
-				channel_hangout(chan, "write");
 			return false;
-		}
 		if (chan->client_port)
 			chan->proxy->state->tx_bytes += rc;
 		else
@@ -413,6 +439,7 @@ channel_read(Channel* chan)
 				else if (chan->client_port /* message from client */
 						 && chan->buf[msg_start] == 'X')	/* terminate message */
 				{
+					chan->is_interrupted = true;
 					if (chan->peer == NULL || !chan->peer->backend_is_tainted)
 					{
 						/* Skip terminate message to idle and non-tainted backends */
