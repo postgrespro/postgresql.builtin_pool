@@ -3971,6 +3971,63 @@ RemoveOldXlogFiles(XLogSegNo segno, XLogRecPtr RedoRecPtr, XLogRecPtr endptr)
 }
 
 /*
+ * Find latest WAL LSN
+ */
+static XLogRecPtr
+GetLastLSN(void)
+{
+	DIR		   *xldir;
+	struct dirent *xlde;
+	XLogRecPtr  lastLsn;
+	uint64      logSegNo;
+	unsigned    tli;
+	uint64      lastSegNo = 0;
+	XLogReaderState *xlogreader;
+	char       *errormsg;
+
+	xldir = AllocateDir(XLOGDIR);
+
+	while ((xlde = ReadDir(xldir, XLOGDIR)) != NULL)
+	{
+		/* Ignore files that are not XLOG segments */
+		if (!IsXLogFileName(xlde->d_name))
+			continue;
+
+		XLogFromFileName(xlde->d_name, &tli, &logSegNo, wal_segment_size);
+		if (tli == ThisTimeLineID && logSegNo > lastSegNo)
+			lastSegNo = logSegNo;
+	}
+
+	FreeDir(xldir);
+
+	XLogSegNoOffsetToRecPtr(lastSegNo, SizeOfXLogLongPHD, wal_segment_size, lastLsn);
+
+	xlogreader = XLogReaderAllocate(wal_segment_size, &read_local_xlog_page, NULL);
+
+	while (XLogReadRecord(xlogreader, lastLsn, &errormsg))
+		lastLsn = xlogreader->EndRecPtr;
+
+	XLogReaderFree(xlogreader);
+
+	return lastLsn;
+}
+
+/*
+ * Launch WalReceiver starting from last LSN if not started yet.
+ */
+static void
+StartWalRcv(void)
+{
+	if (!WalRcvStreaming() && PrimaryConnInfo && strcmp(PrimaryConnInfo, "") != 0)
+	{
+		XLogRecPtr lastLSN = GetLastLSN();
+		curFileTLI = ThisTimeLineID;
+		RequestXLogStreaming(ThisTimeLineID, lastLSN, PrimaryConnInfo,
+							 PrimarySlotName);
+	}
+}
+
+/*
  * Remove WAL files that are not part of the given timeline's history.
  *
  * This is called during recovery, whenever we switch to follow a new
@@ -6003,6 +6060,12 @@ recoveryApplyDelay(XLogReaderState *record)
 						&secs, &microsecs);
 	if (secs <= 0 && microsecs <= 0)
 		return false;
+
+	/*
+	 * Start WAL receiver if not started yet, to avoid WALs overflow at primary node
+	 * or large gap between primary and replica when apply delay is specified.
+	 */
+	StartWalRcv();
 
 	while (true)
 	{
@@ -11821,6 +11884,13 @@ WaitForWALToBecomeAvailable(XLogRecPtr RecPtr, bool randAccess,
 						return false;
 
 					/*
+					 * If WAL receiver was altery started because of apply delay,
+					 * thre restart it.
+					 */
+					if (WalRcvStreaming())
+						ShutdownWalRcv();
+
+                    /*
 					 * If primary_conninfo is set, launch walreceiver to try
 					 * to stream the missing WAL.
 					 *
