@@ -5569,7 +5569,7 @@ pg_autoprepared_statement(PG_FUNCTION_ARGS)
 	 * build tupdesc for result tuples. This must match the definition of the
 	 * pg_prepared_statements view in system_views.sql
 	 */
-	tupdesc = CreateTemplateTupleDesc(3, false);
+	tupdesc = CreateTemplateTupleDesc(3);
 	TupleDescInitEntry(tupdesc, (AttrNumber) 1, "statement",
 					   TEXTOID, -1, 0);
 	TupleDescInitEntry(tupdesc, (AttrNumber) 2, "parameter_types",
