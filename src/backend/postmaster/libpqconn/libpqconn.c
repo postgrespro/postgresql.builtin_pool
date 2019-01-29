@@ -23,6 +23,8 @@
 
 PG_MODULE_MAGIC;
 
+void _PG_init(void);
+
 static void*
 libpq_connectdb(char const* keywords[], char const* values[])
 {

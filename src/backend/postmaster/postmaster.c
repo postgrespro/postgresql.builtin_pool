@@ -2119,6 +2119,9 @@ ParseStartupPacket(Port *port, MemoryContext memctx, void* buf, int len, bool SS
 	ProtocolVersion proto;
 	MemoryContext oldcontext;
 
+	am_walsender = false;
+	am_db_walsender = false;
+
 	/*
 	 * The first field is either a protocol version number or a special
 	 * request code.
