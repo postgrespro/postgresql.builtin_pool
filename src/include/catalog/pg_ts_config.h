@@ -5,7 +5,7 @@
  *	  (pg_ts_config)
  *
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/catalog/pg_ts_config.h
@@ -29,6 +29,7 @@
  */
 CATALOG(pg_ts_config,3602,TSConfigRelationId)
 {
+	Oid			oid;			/* oid */
 	NameData	cfgname;		/* name of configuration */
 	Oid			cfgnamespace;	/* name space */
 	Oid			cfgowner;		/* owner */

@@ -10,7 +10,7 @@
  * It doesn't matter whether the bits are on spinning rust or some other
  * storage technology.
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -171,7 +171,7 @@ static CycleCtr mdckpt_cycle_ctr = 0;
 #define EXTENSION_CREATE_RECOVERY	(1 << 3)
 /*
  * Allow opening segments which are preceded by segments smaller than
- * RELSEG_SIZE, e.g. inactive segments (see above). Note that this is breaks
+ * RELSEG_SIZE, e.g. inactive segments (see above). Note that this breaks
  * mdnblocks() and related functionality henceforth - which currently is ok,
  * because this is only required in the checkpointer which never uses
  * mdnblocks().
@@ -310,13 +310,7 @@ mdcreate(SMgrRelation reln, ForkNumber forkNum, bool isRedo)
 	{
 		int			save_errno = errno;
 
-		/*
-		 * During bootstrap, there are cases where a system relation will be
-		 * accessed (by internal backend processes) before the bootstrap
-		 * script nominally creates it.  Therefore, allow the file to exist
-		 * already, even if isRedo is not set.  (See also mdopen)
-		 */
-		if (isRedo || IsBootstrapProcessingMode())
+		if (isRedo)
 			fd = PathNameOpenFile(path, O_RDWR | PG_BINARY);
 		if (fd < 0)
 		{
@@ -522,22 +516,7 @@ mdextend(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
 
 	Assert(seekpos < (off_t) BLCKSZ * RELSEG_SIZE);
 
-	/*
-	 * Note: because caller usually obtained blocknum by calling mdnblocks,
-	 * which did a seek(SEEK_END), this seek is often redundant and will be
-	 * optimized away by fd.c.  It's not redundant, however, if there is a
-	 * partial page at the end of the file. In that case we want to try to
-	 * overwrite the partial page with a full page.  It's also not redundant
-	 * if bufmgr.c had to dump another buffer of the same file to make room
-	 * for the new page's buffer.
-	 */
-	if (FileSeek(v->mdfd_vfd, seekpos, SEEK_SET) != seekpos)
-		ereport(ERROR,
-				(errcode_for_file_access(),
-				 errmsg("could not seek to block %u in file \"%s\": %m",
-						blocknum, FilePathName(v->mdfd_vfd))));
-
-	if ((nbytes = FileWrite(v->mdfd_vfd, buffer, BLCKSZ, WAIT_EVENT_DATA_FILE_EXTEND)) != BLCKSZ)
+	if ((nbytes = FileWrite(v->mdfd_vfd, buffer, BLCKSZ, seekpos, WAIT_EVENT_DATA_FILE_EXTEND)) != BLCKSZ)
 	{
 		if (nbytes < 0)
 			ereport(ERROR,
@@ -587,26 +566,15 @@ mdopen(SMgrRelation reln, ForkNumber forknum, int behavior)
 
 	if (fd < 0)
 	{
-		/*
-		 * During bootstrap, there are cases where a system relation will be
-		 * accessed (by internal backend processes) before the bootstrap
-		 * script nominally creates it.  Therefore, accept mdopen() as a
-		 * substitute for mdcreate() in bootstrap mode only. (See mdcreate)
-		 */
-		if (IsBootstrapProcessingMode())
-			fd = PathNameOpenFile(path, O_RDWR | O_CREAT | O_EXCL | PG_BINARY);
-		if (fd < 0)
+		if ((behavior & EXTENSION_RETURN_NULL) &&
+			FILE_POSSIBLY_DELETED(errno))
 		{
-			if ((behavior & EXTENSION_RETURN_NULL) &&
-				FILE_POSSIBLY_DELETED(errno))
-			{
-				pfree(path);
-				return NULL;
-			}
-			ereport(ERROR,
-					(errcode_for_file_access(),
-					 errmsg("could not open file \"%s\": %m", path)));
+			pfree(path);
+			return NULL;
 		}
+		ereport(ERROR,
+				(errcode_for_file_access(),
+				 errmsg("could not open file \"%s\": %m", path)));
 	}
 
 	pfree(path);
@@ -748,13 +716,7 @@ mdread(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
 
 	Assert(seekpos < (off_t) BLCKSZ * RELSEG_SIZE);
 
-	if (FileSeek(v->mdfd_vfd, seekpos, SEEK_SET) != seekpos)
-		ereport(ERROR,
-				(errcode_for_file_access(),
-				 errmsg("could not seek to block %u in file \"%s\": %m",
-						blocknum, FilePathName(v->mdfd_vfd))));
-
-	nbytes = FileRead(v->mdfd_vfd, buffer, BLCKSZ, WAIT_EVENT_DATA_FILE_READ);
+	nbytes = FileRead(v->mdfd_vfd, buffer, BLCKSZ, seekpos, WAIT_EVENT_DATA_FILE_READ);
 
 	TRACE_POSTGRESQL_SMGR_MD_READ_DONE(forknum, blocknum,
 									   reln->smgr_rnode.node.spcNode,
@@ -824,13 +786,7 @@ mdwrite(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
 
 	Assert(seekpos < (off_t) BLCKSZ * RELSEG_SIZE);
 
-	if (FileSeek(v->mdfd_vfd, seekpos, SEEK_SET) != seekpos)
-		ereport(ERROR,
-				(errcode_for_file_access(),
-				 errmsg("could not seek to block %u in file \"%s\": %m",
-						blocknum, FilePathName(v->mdfd_vfd))));
-
-	nbytes = FileWrite(v->mdfd_vfd, buffer, BLCKSZ, WAIT_EVENT_DATA_FILE_WRITE);
+	nbytes = FileWrite(v->mdfd_vfd, buffer, BLCKSZ, seekpos, WAIT_EVENT_DATA_FILE_WRITE);
 
 	TRACE_POSTGRESQL_SMGR_MD_WRITE_DONE(forknum, blocknum,
 										reln->smgr_rnode.node.spcNode,
@@ -909,8 +865,8 @@ mdnblocks(SMgrRelation reln, ForkNumber forknum)
 		segno++;
 
 		/*
-		 * We used to pass O_CREAT here, but that's has the disadvantage that
-		 * it might create a segment which has vanished through some operating
+		 * We used to pass O_CREAT here, but that has the disadvantage that it
+		 * might create a segment which has vanished through some operating
 		 * system misadventure.  In such a case, creating the segment here
 		 * undermines _mdfd_getseg's attempts to notice and report an error
 		 * upon access to a missing segment.
@@ -1039,7 +995,7 @@ mdimmedsync(SMgrRelation reln, ForkNumber forknum)
 		MdfdVec    *v = &reln->md_seg_fds[forknum][segno - 1];
 
 		if (FileSync(v->mdfd_vfd, WAIT_EVENT_DATA_FILE_IMMEDIATE_SYNC) < 0)
-			ereport(ERROR,
+			ereport(data_sync_elevel(ERROR),
 					(errcode_for_file_access(),
 					 errmsg("could not fsync file \"%s\": %m",
 							FilePathName(v->mdfd_vfd))));
@@ -1150,10 +1106,8 @@ mdsync(void)
 		 * The bitmap manipulations are slightly tricky, because we can call
 		 * AbsorbFsyncRequests() inside the loop and that could result in
 		 * bms_add_member() modifying and even re-palloc'ing the bitmapsets.
-		 * This is okay because we unlink each bitmapset from the hashtable
-		 * entry before scanning it.  That means that any incoming fsync
-		 * requests will be processed now if they reach the table before we
-		 * begin to scan their fork.
+		 * So we detach it, but if we fail we'll merge it with any new
+		 * requests that have arrived in the meantime.
 		 */
 		for (forknum = 0; forknum <= MAX_FORKNUM; forknum++)
 		{
@@ -1163,7 +1117,8 @@ mdsync(void)
 			entry->requests[forknum] = NULL;
 			entry->canceled[forknum] = false;
 
-			while ((segno = bms_first_member(requests)) >= 0)
+			segno = -1;
+			while ((segno = bms_next_member(requests, segno)) >= 0)
 			{
 				int			failures;
 
@@ -1244,6 +1199,7 @@ mdsync(void)
 							longest = elapsed;
 						total_elapsed += elapsed;
 						processed++;
+						requests = bms_del_member(requests, segno);
 						if (log_checkpoints)
 							elog(DEBUG1, "checkpoint sync: number=%d file=%s time=%.3f msec",
 								 processed,
@@ -1272,10 +1228,23 @@ mdsync(void)
 					 */
 					if (!FILE_POSSIBLY_DELETED(errno) ||
 						failures > 0)
-						ereport(ERROR,
+					{
+						Bitmapset  *new_requests;
+
+						/*
+						 * We need to merge these unsatisfied requests with
+						 * any others that have arrived since we started.
+						 */
+						new_requests = entry->requests[forknum];
+						entry->requests[forknum] =
+							bms_join(new_requests, requests);
+
+						errno = save_errno;
+						ereport(data_sync_elevel(ERROR),
 								(errcode_for_file_access(),
 								 errmsg("could not fsync file \"%s\": %m",
 										path)));
+					}
 					else
 						ereport(DEBUG1,
 								(errcode_for_file_access(),
@@ -1445,7 +1414,7 @@ register_dirty_segment(SMgrRelation reln, ForkNumber forknum, MdfdVec *seg)
 				(errmsg("could not forward fsync request because request queue is full")));
 
 		if (FileSync(seg->mdfd_vfd, WAIT_EVENT_DATA_FILE_SYNC) < 0)
-			ereport(ERROR,
+			ereport(data_sync_elevel(ERROR),
 					(errcode_for_file_access(),
 					 errmsg("could not fsync file \"%s\": %m",
 							FilePathName(seg->mdfd_vfd))));
@@ -1979,7 +1948,7 @@ _mdnblocks(SMgrRelation reln, ForkNumber forknum, MdfdVec *seg)
 {
 	off_t		len;
 
-	len = FileSeek(seg->mdfd_vfd, 0L, SEEK_END);
+	len = FileSize(seg->mdfd_vfd);
 	if (len < 0)
 		ereport(ERROR,
 				(errcode_for_file_access(),

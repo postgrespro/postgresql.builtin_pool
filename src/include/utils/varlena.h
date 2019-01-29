@@ -3,7 +3,7 @@
  * varlena.h
  *	  Functions for the variable-length built-in types.
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/utils/varlena.h
@@ -17,7 +17,7 @@
 #include "utils/sortsupport.h"
 
 extern int	varstr_cmp(const char *arg1, int len1, const char *arg2, int len2, Oid collid);
-extern void varstr_sortsupport(SortSupport ssup, Oid collid, bool bpchar);
+extern void varstr_sortsupport(SortSupport ssup, Oid typid, Oid collid);
 extern int varstr_levenshtein(const char *source, int slen,
 				   const char *target, int tlen,
 				   int ins_c, int del_c, int sub_c,

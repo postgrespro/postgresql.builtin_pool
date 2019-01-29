@@ -3,7 +3,7 @@
  * execReplication.c
  *	  miscellaneous executor routines for logical replication
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -14,6 +14,8 @@
 
 #include "postgres.h"
 
+#include "access/genam.h"
+#include "access/heapam.h"
 #include "access/relscan.h"
 #include "access/transam.h"
 #include "access/xact.h"
@@ -32,7 +34,6 @@
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
 #include "utils/typcache.h"
-#include "utils/tqual.h"
 
 
 /*
@@ -146,7 +147,7 @@ retry:
 	if ((scantuple = index_getnext(scan, ForwardScanDirection)) != NULL)
 	{
 		found = true;
-		ExecStoreTuple(scantuple, outslot, InvalidBuffer, false);
+		ExecStoreHeapTuple(scantuple, outslot, false);
 		ExecMaterializeSlot(outslot);
 
 		xwait = TransactionIdIsValid(snap.xmin) ?
@@ -170,8 +171,11 @@ retry:
 		HeapUpdateFailureData hufd;
 		HTSU_Result res;
 		HeapTupleData locktup;
+		HeapTupleTableSlot *hslot = (HeapTupleTableSlot *)outslot;
 
-		ItemPointerCopy(&outslot->tts_tuple->t_self, &locktup.t_self);
+		/* Only a heap tuple has item pointers. */
+		Assert(TTS_IS_HEAPTUPLE(outslot) || TTS_IS_BUFFERTUPLE(outslot));
+		ItemPointerCopy(&hslot->tuple->t_self, &locktup.t_self);
 
 		PushActiveSnapshot(GetLatestSnapshot());
 
@@ -219,11 +223,6 @@ retry:
 
 /*
  * Compare the tuple and slot and check if they have equal values.
- *
- * We use binary datum comparison which might return false negatives but
- * that's the best we can do here as there may be multiple notions of
- * equality for the data types and table columns don't specify which one
- * to use.
  */
 static bool
 tuple_equals_slot(TupleDesc desc, HeapTuple tup, TupleTableSlot *slot)
@@ -310,7 +309,7 @@ retry:
 			continue;
 
 		found = true;
-		ExecStoreTuple(scantuple, outslot, InvalidBuffer, false);
+		ExecStoreHeapTuple(scantuple, outslot, false);
 		ExecMaterializeSlot(outslot);
 
 		xwait = TransactionIdIsValid(snap.xmin) ?
@@ -334,8 +333,11 @@ retry:
 		HeapUpdateFailureData hufd;
 		HTSU_Result res;
 		HeapTupleData locktup;
+		HeapTupleTableSlot *hslot = (HeapTupleTableSlot *)outslot;
 
-		ItemPointerCopy(&outslot->tts_tuple->t_self, &locktup.t_self);
+		/* Only a heap tuple has item pointers. */
+		Assert(TTS_IS_HEAPTUPLE(outslot) || TTS_IS_BUFFERTUPLE(outslot));
+		ItemPointerCopy(&hslot->tuple->t_self, &locktup.t_self);
 
 		PushActiveSnapshot(GetLatestSnapshot());
 
@@ -418,7 +420,7 @@ ExecSimpleRelationInsert(EState *estate, TupleTableSlot *slot)
 			ExecPartitionCheck(resultRelInfo, slot, estate, true);
 
 		/* Materialize slot into a tuple that we can scribble upon. */
-		tuple = ExecMaterializeSlot(slot);
+		tuple = ExecFetchSlotHeapTuple(slot, true, NULL);
 
 		/* OK, store the tuple and create index entries for it */
 		simple_heap_insert(rel, tuple);
@@ -456,6 +458,12 @@ ExecSimpleRelationUpdate(EState *estate, EPQState *epqstate,
 	HeapTuple	tuple;
 	ResultRelInfo *resultRelInfo = estate->es_result_relation_info;
 	Relation	rel = resultRelInfo->ri_RelationDesc;
+	HeapTupleTableSlot *hsearchslot = (HeapTupleTableSlot *)searchslot;
+	HeapTupleTableSlot *hslot = (HeapTupleTableSlot *)slot;
+
+	/* We expect both searchslot and the slot to contain a heap tuple. */
+	Assert(TTS_IS_HEAPTUPLE(searchslot) || TTS_IS_BUFFERTUPLE(searchslot));
+	Assert(TTS_IS_HEAPTUPLE(slot) || TTS_IS_BUFFERTUPLE(slot));
 
 	/* For now we support only tables. */
 	Assert(rel->rd_rel->relkind == RELKIND_RELATION);
@@ -467,8 +475,7 @@ ExecSimpleRelationUpdate(EState *estate, EPQState *epqstate,
 		resultRelInfo->ri_TrigDesc->trig_update_before_row)
 	{
 		slot = ExecBRUpdateTriggers(estate, epqstate, resultRelInfo,
-									&searchslot->tts_tuple->t_self,
-									NULL, slot);
+									&hsearchslot->tuple->t_self, NULL, slot);
 
 		if (slot == NULL)		/* "do nothing" */
 			skip_tuple = true;
@@ -485,22 +492,21 @@ ExecSimpleRelationUpdate(EState *estate, EPQState *epqstate,
 			ExecPartitionCheck(resultRelInfo, slot, estate, true);
 
 		/* Materialize slot into a tuple that we can scribble upon. */
-		tuple = ExecMaterializeSlot(slot);
+		tuple = ExecFetchSlotHeapTuple(slot, true, NULL);
 
 		/* OK, update the tuple and index entries for it */
-		simple_heap_update(rel, &searchslot->tts_tuple->t_self,
-						   slot->tts_tuple);
+		simple_heap_update(rel, &hsearchslot->tuple->t_self, hslot->tuple);
 
 		if (resultRelInfo->ri_NumIndices > 0 &&
-			!HeapTupleIsHeapOnly(slot->tts_tuple))
+			!HeapTupleIsHeapOnly(hslot->tuple))
 			recheckIndexes = ExecInsertIndexTuples(slot, &(tuple->t_self),
 												   estate, false, NULL,
 												   NIL);
 
 		/* AFTER ROW UPDATE Triggers */
 		ExecARUpdateTriggers(estate, resultRelInfo,
-							 &searchslot->tts_tuple->t_self,
-							 NULL, tuple, recheckIndexes, NULL);
+							 &hsearchslot->tuple->t_self, NULL, tuple,
+							 recheckIndexes, NULL);
 
 		list_free(recheckIndexes);
 	}
@@ -519,9 +525,11 @@ ExecSimpleRelationDelete(EState *estate, EPQState *epqstate,
 	bool		skip_tuple = false;
 	ResultRelInfo *resultRelInfo = estate->es_result_relation_info;
 	Relation	rel = resultRelInfo->ri_RelationDesc;
+	HeapTupleTableSlot *hsearchslot = (HeapTupleTableSlot *)searchslot;
 
-	/* For now we support only tables. */
+	/* For now we support only tables and heap tuples. */
 	Assert(rel->rd_rel->relkind == RELKIND_RELATION);
+	Assert(TTS_IS_HEAPTUPLE(searchslot) || TTS_IS_BUFFERTUPLE(searchslot));
 
 	CheckCmdReplicaIdentity(rel, CMD_DELETE);
 
@@ -530,8 +538,8 @@ ExecSimpleRelationDelete(EState *estate, EPQState *epqstate,
 		resultRelInfo->ri_TrigDesc->trig_delete_before_row)
 	{
 		skip_tuple = !ExecBRDeleteTriggers(estate, epqstate, resultRelInfo,
-										   &searchslot->tts_tuple->t_self,
-										   NULL, NULL);
+										   &hsearchslot->tuple->t_self, NULL,
+										   NULL);
 	}
 
 	if (!skip_tuple)
@@ -539,11 +547,11 @@ ExecSimpleRelationDelete(EState *estate, EPQState *epqstate,
 		List	   *recheckIndexes = NIL;
 
 		/* OK, delete the tuple */
-		simple_heap_delete(rel, &searchslot->tts_tuple->t_self);
+		simple_heap_delete(rel, &hsearchslot->tuple->t_self);
 
 		/* AFTER ROW DELETE Triggers */
 		ExecARDeleteTriggers(estate, resultRelInfo,
-							 &searchslot->tts_tuple->t_self, NULL, NULL);
+							 &hsearchslot->tuple->t_self, NULL, NULL);
 
 		list_free(recheckIndexes);
 	}
@@ -597,11 +605,29 @@ CheckSubscriptionRelkind(char relkind, const char *nspname,
 						 const char *relname)
 {
 	/*
-	 * We currently only support writing to regular tables.
+	 * We currently only support writing to regular tables.  However, give
+	 * a more specific error for partitioned and foreign tables.
 	 */
+	if (relkind == RELKIND_PARTITIONED_TABLE)
+		ereport(ERROR,
+				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
+				 errmsg("cannot use relation \"%s.%s\" as logical replication target",
+						nspname, relname),
+				 errdetail("\"%s.%s\" is a partitioned table.",
+						nspname, relname)));
+	else if (relkind == RELKIND_FOREIGN_TABLE)
+		ereport(ERROR,
+				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
+				 errmsg("cannot use relation \"%s.%s\" as logical replication target",
+						nspname, relname),
+				 errdetail("\"%s.%s\" is a foreign table.",
+						nspname, relname)));
+
 	if (relkind != RELKIND_RELATION)
 		ereport(ERROR,
 				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
-				 errmsg("logical replication target relation \"%s.%s\" is not a table",
+				 errmsg("cannot use relation \"%s.%s\" as logical replication target",
+						nspname, relname),
+				 errdetail("\"%s.%s\" is not a table.",
 						nspname, relname)));
 }

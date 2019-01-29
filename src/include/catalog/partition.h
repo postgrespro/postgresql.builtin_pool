@@ -4,7 +4,7 @@
  *		Header file for structures and utility functions related to
  *		partitioning
  *
- * Copyright (c) 2007-2018, PostgreSQL Global Development Group
+ * Copyright (c) 2007-2019, PostgreSQL Global Development Group
  *
  * src/include/catalog/partition.h
  *
@@ -13,7 +13,6 @@
 #ifndef PARTITION_H
 #define PARTITION_H
 
-#include "fmgr.h"
 #include "partitioning/partdefs.h"
 #include "utils/relcache.h"
 
@@ -26,7 +25,11 @@
 typedef struct PartitionDescData
 {
 	int			nparts;			/* Number of partitions */
-	Oid		   *oids;			/* OIDs of partitions */
+	Oid		   *oids;			/* Array of 'nparts' elements containing
+								 * partition OIDs in order of the their bounds */
+	bool	   *is_leaf;		/* Array of 'nparts' elements storing whether
+								 * the corresponding 'oids' element belongs to
+								 * a leaf partition or not */
 	PartitionBoundInfo boundinfo;	/* collection of partition bounds */
 } PartitionDescData;
 

@@ -80,7 +80,7 @@
  * general, after logging in, but let's do what we can here.
  *
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/backend/libpq/auth-scram.c
@@ -102,7 +102,6 @@
 #include "libpq/crypt.h"
 #include "libpq/scram.h"
 #include "miscadmin.h"
-#include "utils/backend_random.h"
 #include "utils/builtins.h"
 #include "utils/timestamp.h"
 
@@ -453,7 +452,7 @@ pg_be_scram_exchange(void *opaq, char *input, int inputlen,
 char *
 pg_be_scram_build_verifier(const char *password)
 {
-	char	   *prep_password = NULL;
+	char	   *prep_password;
 	pg_saslprep_rc rc;
 	char		saltbuf[SCRAM_DEFAULT_SALT_LEN];
 	char	   *result;
@@ -468,7 +467,7 @@ pg_be_scram_build_verifier(const char *password)
 		password = (const char *) prep_password;
 
 	/* Generate random salt */
-	if (!pg_backend_random(saltbuf, SCRAM_DEFAULT_SALT_LEN))
+	if (!pg_strong_random(saltbuf, SCRAM_DEFAULT_SALT_LEN))
 		ereport(ERROR,
 				(errcode(ERRCODE_INTERNAL_ERROR),
 				 errmsg("could not generate random salt")));
@@ -499,7 +498,7 @@ scram_verify_plain_password(const char *username, const char *password,
 	uint8		stored_key[SCRAM_KEY_LEN];
 	uint8		server_key[SCRAM_KEY_LEN];
 	uint8		computed_key[SCRAM_KEY_LEN];
-	char	   *prep_password = NULL;
+	char	   *prep_password;
 	pg_saslprep_rc rc;
 
 	if (!parse_scram_verifier(verifier, &iterations, &encoded_salt,
@@ -1123,7 +1122,7 @@ build_server_first_message(scram_state *state)
 	char		raw_nonce[SCRAM_RAW_NONCE_LEN];
 	int			encoded_len;
 
-	if (!pg_backend_random(raw_nonce, SCRAM_RAW_NONCE_LEN))
+	if (!pg_strong_random(raw_nonce, SCRAM_RAW_NONCE_LEN))
 		ereport(ERROR,
 				(errcode(ERRCODE_INTERNAL_ERROR),
 				 errmsg("could not generate random nonce")));

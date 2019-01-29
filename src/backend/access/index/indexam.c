@@ -3,7 +3,7 @@
  * indexam.c
  *	  general index access method routines
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -70,16 +70,17 @@
 #include "postgres.h"
 
 #include "access/amapi.h"
+#include "access/heapam.h"
 #include "access/relscan.h"
 #include "access/transam.h"
 #include "access/xlog.h"
 #include "catalog/index.h"
+#include "catalog/pg_type.h"
 #include "pgstat.h"
 #include "storage/bufmgr.h"
 #include "storage/lmgr.h"
 #include "storage/predicate.h"
 #include "utils/snapmgr.h"
-#include "utils/tqual.h"
 
 
 /* ----------------------------------------------------------------
@@ -97,7 +98,7 @@
 #define RELATION_CHECKS \
 ( \
 	AssertMacro(RelationIsValid(indexRelation)), \
-	AssertMacro(PointerIsValid(indexRelation->rd_amroutine)), \
+	AssertMacro(PointerIsValid(indexRelation->rd_indam)), \
 	AssertMacro(!ReindexIsProcessingIndex(RelationGetRelid(indexRelation))) \
 )
 
@@ -105,19 +106,19 @@
 ( \
 	AssertMacro(IndexScanIsValid(scan)), \
 	AssertMacro(RelationIsValid(scan->indexRelation)), \
-	AssertMacro(PointerIsValid(scan->indexRelation->rd_amroutine)) \
+	AssertMacro(PointerIsValid(scan->indexRelation->rd_indam)) \
 )
 
 #define CHECK_REL_PROCEDURE(pname) \
 do { \
-	if (indexRelation->rd_amroutine->pname == NULL) \
+	if (indexRelation->rd_indam->pname == NULL) \
 		elog(ERROR, "function %s is not defined for index %s", \
 			 CppAsString(pname), RelationGetRelationName(indexRelation)); \
 } while(0)
 
 #define CHECK_SCAN_PROCEDURE(pname) \
 do { \
-	if (scan->indexRelation->rd_amroutine->pname == NULL) \
+	if (scan->indexRelation->rd_indam->pname == NULL) \
 		elog(ERROR, "function %s is not defined for index %s", \
 			 CppAsString(pname), RelationGetRelationName(scan->indexRelation)); \
 } while(0)
@@ -202,14 +203,14 @@ index_insert(Relation indexRelation,
 	RELATION_CHECKS;
 	CHECK_REL_PROCEDURE(aminsert);
 
-	if (!(indexRelation->rd_amroutine->ampredlocks))
+	if (!(indexRelation->rd_indam->ampredlocks))
 		CheckForSerializableConflictIn(indexRelation,
 									   (HeapTuple) NULL,
 									   InvalidBuffer);
 
-	return indexRelation->rd_amroutine->aminsert(indexRelation, values, isnull,
-												 heap_t_ctid, heapRelation,
-												 checkUnique, indexInfo);
+	return indexRelation->rd_indam->aminsert(indexRelation, values, isnull,
+											 heap_t_ctid, heapRelation,
+											 checkUnique, indexInfo);
 }
 
 /*
@@ -274,7 +275,7 @@ index_beginscan_internal(Relation indexRelation,
 	RELATION_CHECKS;
 	CHECK_REL_PROCEDURE(ambeginscan);
 
-	if (!(indexRelation->rd_amroutine->ampredlocks))
+	if (!(indexRelation->rd_indam->ampredlocks))
 		PredicateLockRelation(indexRelation, snapshot);
 
 	/*
@@ -285,8 +286,8 @@ index_beginscan_internal(Relation indexRelation,
 	/*
 	 * Tell the AM to open a scan.
 	 */
-	scan = indexRelation->rd_amroutine->ambeginscan(indexRelation, nkeys,
-													norderbys);
+	scan = indexRelation->rd_indam->ambeginscan(indexRelation, nkeys,
+												norderbys);
 	/* Initialize information for parallel scan. */
 	scan->parallel_scan = pscan;
 	scan->xs_temp_snap = temp_snap;
@@ -328,8 +329,8 @@ index_rescan(IndexScanDesc scan,
 
 	scan->kill_prior_tuple = false; /* for safety */
 
-	scan->indexRelation->rd_amroutine->amrescan(scan, keys, nkeys,
-												orderbys, norderbys);
+	scan->indexRelation->rd_indam->amrescan(scan, keys, nkeys,
+											orderbys, norderbys);
 }
 
 /* ----------------
@@ -350,7 +351,7 @@ index_endscan(IndexScanDesc scan)
 	}
 
 	/* End the AM's scan */
-	scan->indexRelation->rd_amroutine->amendscan(scan);
+	scan->indexRelation->rd_indam->amendscan(scan);
 
 	/* Release index refcount acquired by index_beginscan */
 	RelationDecrementReferenceCount(scan->indexRelation);
@@ -372,7 +373,7 @@ index_markpos(IndexScanDesc scan)
 	SCAN_CHECKS;
 	CHECK_SCAN_PROCEDURE(ammarkpos);
 
-	scan->indexRelation->rd_amroutine->ammarkpos(scan);
+	scan->indexRelation->rd_indam->ammarkpos(scan);
 }
 
 /* ----------------
@@ -403,7 +404,7 @@ index_restrpos(IndexScanDesc scan)
 
 	scan->kill_prior_tuple = false; /* for safety */
 
-	scan->indexRelation->rd_amroutine->amrestrpos(scan);
+	scan->indexRelation->rd_indam->amrestrpos(scan);
 }
 
 /*
@@ -429,9 +430,9 @@ index_parallelscan_estimate(Relation indexRelation, Snapshot snapshot)
 	 * AM-specific data needed.  (It's hard to believe that could work, but
 	 * it's easy enough to cater to it here.)
 	 */
-	if (indexRelation->rd_amroutine->amestimateparallelscan != NULL)
+	if (indexRelation->rd_indam->amestimateparallelscan != NULL)
 		nbytes = add_size(nbytes,
-						  indexRelation->rd_amroutine->amestimateparallelscan());
+						  indexRelation->rd_indam->amestimateparallelscan());
 
 	return nbytes;
 }
@@ -464,12 +465,12 @@ index_parallelscan_initialize(Relation heapRelation, Relation indexRelation,
 	SerializeSnapshot(snapshot, target->ps_snapshot_data);
 
 	/* aminitparallelscan is optional; assume no-op if not provided by AM */
-	if (indexRelation->rd_amroutine->aminitparallelscan != NULL)
+	if (indexRelation->rd_indam->aminitparallelscan != NULL)
 	{
 		void	   *amtarget;
 
 		amtarget = OffsetToPointer(target, offset);
-		indexRelation->rd_amroutine->aminitparallelscan(amtarget);
+		indexRelation->rd_indam->aminitparallelscan(amtarget);
 	}
 }
 
@@ -483,8 +484,8 @@ index_parallelrescan(IndexScanDesc scan)
 	SCAN_CHECKS;
 
 	/* amparallelrescan is optional; assume no-op if not provided by AM */
-	if (scan->indexRelation->rd_amroutine->amparallelrescan != NULL)
-		scan->indexRelation->rd_amroutine->amparallelrescan(scan);
+	if (scan->indexRelation->rd_indam->amparallelrescan != NULL)
+		scan->indexRelation->rd_indam->amparallelrescan(scan);
 }
 
 /*
@@ -538,7 +539,7 @@ index_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 	 * scan->xs_recheck and possibly scan->xs_itup/scan->xs_hitup, though we
 	 * pay no attention to those fields here.
 	 */
-	found = scan->indexRelation->rd_amroutine->amgettuple(scan, direction);
+	found = scan->indexRelation->rd_indam->amgettuple(scan, direction);
 
 	/* Reset kill flag immediately for safety */
 	scan->kill_prior_tuple = false;
@@ -723,7 +724,7 @@ index_getbitmap(IndexScanDesc scan, TIDBitmap *bitmap)
 	/*
 	 * have the am's getbitmap proc do all the work.
 	 */
-	ntids = scan->indexRelation->rd_amroutine->amgetbitmap(scan, bitmap);
+	ntids = scan->indexRelation->rd_indam->amgetbitmap(scan, bitmap);
 
 	pgstat_count_index_tuples(scan->indexRelation, ntids);
 
@@ -750,8 +751,8 @@ index_bulk_delete(IndexVacuumInfo *info,
 	RELATION_CHECKS;
 	CHECK_REL_PROCEDURE(ambulkdelete);
 
-	return indexRelation->rd_amroutine->ambulkdelete(info, stats,
-													 callback, callback_state);
+	return indexRelation->rd_indam->ambulkdelete(info, stats,
+												 callback, callback_state);
 }
 
 /* ----------------
@@ -769,7 +770,7 @@ index_vacuum_cleanup(IndexVacuumInfo *info,
 	RELATION_CHECKS;
 	CHECK_REL_PROCEDURE(amvacuumcleanup);
 
-	return indexRelation->rd_amroutine->amvacuumcleanup(info, stats);
+	return indexRelation->rd_indam->amvacuumcleanup(info, stats);
 }
 
 /* ----------------
@@ -785,10 +786,10 @@ index_can_return(Relation indexRelation, int attno)
 	RELATION_CHECKS;
 
 	/* amcanreturn is optional; assume false if not provided by AM */
-	if (indexRelation->rd_amroutine->amcanreturn == NULL)
+	if (indexRelation->rd_indam->amcanreturn == NULL)
 		return false;
 
-	return indexRelation->rd_amroutine->amcanreturn(indexRelation, attno);
+	return indexRelation->rd_indam->amcanreturn(indexRelation, attno);
 }
 
 /* ----------------
@@ -826,7 +827,7 @@ index_getprocid(Relation irel,
 	int			nproc;
 	int			procindex;
 
-	nproc = irel->rd_amroutine->amsupport;
+	nproc = irel->rd_indam->amsupport;
 
 	Assert(procnum > 0 && procnum <= (uint16) nproc);
 
@@ -860,7 +861,7 @@ index_getprocinfo(Relation irel,
 	int			nproc;
 	int			procindex;
 
-	nproc = irel->rd_amroutine->amsupport;
+	nproc = irel->rd_indam->amsupport;
 
 	Assert(procnum > 0 && procnum <= (uint16) nproc);
 
@@ -896,4 +897,73 @@ index_getprocinfo(Relation irel,
 	}
 
 	return locinfo;
+}
+
+/* ----------------
+ *		index_store_float8_orderby_distances
+ *
+ *		Convert AM distance function's results (that can be inexact)
+ *		to ORDER BY types and save them into xs_orderbyvals/xs_orderbynulls
+ *		for a possible recheck.
+ * ----------------
+ */
+void
+index_store_float8_orderby_distances(IndexScanDesc scan, Oid *orderByTypes,
+									 double *distances, bool recheckOrderBy)
+{
+	int			i;
+
+	scan->xs_recheckorderby = recheckOrderBy;
+
+	if (!distances)
+	{
+		Assert(!scan->xs_recheckorderby);
+
+		for (i = 0; i < scan->numberOfOrderBys; i++)
+		{
+			scan->xs_orderbyvals[i] = (Datum) 0;
+			scan->xs_orderbynulls[i] = true;
+		}
+
+		return;
+	}
+
+	for (i = 0; i < scan->numberOfOrderBys; i++)
+	{
+		if (orderByTypes[i] == FLOAT8OID)
+		{
+#ifndef USE_FLOAT8_BYVAL
+			/* must free any old value to avoid memory leakage */
+			if (!scan->xs_orderbynulls[i])
+				pfree(DatumGetPointer(scan->xs_orderbyvals[i]));
+#endif
+			scan->xs_orderbyvals[i] = Float8GetDatum(distances[i]);
+			scan->xs_orderbynulls[i] = false;
+		}
+		else if (orderByTypes[i] == FLOAT4OID)
+		{
+			/* convert distance function's result to ORDER BY type */
+#ifndef USE_FLOAT4_BYVAL
+			/* must free any old value to avoid memory leakage */
+			if (!scan->xs_orderbynulls[i])
+				pfree(DatumGetPointer(scan->xs_orderbyvals[i]));
+#endif
+			scan->xs_orderbyvals[i] = Float4GetDatum((float4) distances[i]);
+			scan->xs_orderbynulls[i] = false;
+		}
+		else
+		{
+			/*
+			 * If the ordering operator's return value is anything else, we
+			 * don't know how to convert the float8 bound calculated by the
+			 * distance function to that.  The executor won't actually need
+			 * the order by values we return here, if there are no lossy
+			 * results, so only insist on converting if the *recheck flag is
+			 * set.
+			 */
+			if (scan->xs_recheckorderby)
+				elog(ERROR, "ORDER BY operator must return float8 or float4 if the distance function is lossy");
+			scan->xs_orderbynulls[i] = true;
+		}
+	}
 }

@@ -26,13 +26,13 @@ create unique index pkeys_i on pkeys (pkey1, pkey2);
 create trigger check_fkeys_pkey_exist
 	before insert or update on fkeys
 	for each row
-	execute procedure
+	execute function
 	check_primary_key ('fkey1', 'fkey2', 'pkeys', 'pkey1', 'pkey2');
 
 create trigger check_fkeys_pkey2_exist
 	before insert or update on fkeys
 	for each row
-	execute procedure check_primary_key ('fkey3', 'fkeys2', 'pkey23');
+	execute function check_primary_key ('fkey3', 'fkeys2', 'pkey23');
 
 --
 -- For fkeys2:
@@ -284,7 +284,13 @@ SELECT * FROM main_table ORDER BY a, b;
 SELECT pg_get_triggerdef(oid, true) FROM pg_trigger WHERE tgrelid = 'main_table'::regclass AND tgname = 'modified_a';
 SELECT pg_get_triggerdef(oid, false) FROM pg_trigger WHERE tgrelid = 'main_table'::regclass AND tgname = 'modified_a';
 SELECT pg_get_triggerdef(oid, true) FROM pg_trigger WHERE tgrelid = 'main_table'::regclass AND tgname = 'modified_any';
-DROP TRIGGER modified_a ON main_table;
+
+-- Test RENAME TRIGGER
+ALTER TRIGGER modified_a ON main_table RENAME TO modified_modified_a;
+SELECT count(*) FROM pg_trigger WHERE tgrelid = 'main_table'::regclass AND tgname = 'modified_a';
+SELECT count(*) FROM pg_trigger WHERE tgrelid = 'main_table'::regclass AND tgname = 'modified_modified_a';
+
+DROP TRIGGER modified_modified_a ON main_table;
 DROP TRIGGER modified_any ON main_table;
 DROP TRIGGER insert_a ON main_table;
 DROP TRIGGER delete_a ON main_table;
@@ -292,11 +298,11 @@ DROP TRIGGER insert_when ON main_table;
 DROP TRIGGER delete_when ON main_table;
 
 -- Test WHEN condition accessing system columns.
-create table table_with_oids(a int) with oids;
+create table table_with_oids(a int);
 insert into table_with_oids values (1);
 create trigger oid_unchanged_trig after update on table_with_oids
 	for each row
-	when (new.oid = old.oid AND new.oid <> 0)
+	when (new.tableoid = old.tableoid AND new.tableoid <> 0)
 	execute procedure trigger_func('after_upd_oid_unchanged');
 update table_with_oids set a = a + 1;
 drop table table_with_oids;
@@ -582,21 +588,10 @@ CREATE TABLE min_updates_test (
 	f2 int,
 	f3 int);
 
-CREATE TABLE min_updates_test_oids (
-	f1	text,
-	f2 int,
-	f3 int) WITH OIDS;
-
 INSERT INTO min_updates_test VALUES ('a',1,2),('b','2',null);
-
-INSERT INTO min_updates_test_oids VALUES ('a',1,2),('b','2',null);
 
 CREATE TRIGGER z_min_update
 BEFORE UPDATE ON min_updates_test
-FOR EACH ROW EXECUTE PROCEDURE suppress_redundant_updates_trigger();
-
-CREATE TRIGGER z_min_update
-BEFORE UPDATE ON min_updates_test_oids
 FOR EACH ROW EXECUTE PROCEDURE suppress_redundant_updates_trigger();
 
 \set QUIET false
@@ -607,21 +602,11 @@ UPDATE min_updates_test SET f2 = f2 + 1;
 
 UPDATE min_updates_test SET f3 = 2 WHERE f3 is null;
 
-UPDATE min_updates_test_oids SET f1 = f1;
-
-UPDATE min_updates_test_oids SET f2 = f2 + 1;
-
-UPDATE min_updates_test_oids SET f3 = 2 WHERE f3 is null;
-
 \set QUIET true
 
 SELECT * FROM min_updates_test;
 
-SELECT * FROM min_updates_test_oids;
-
 DROP TABLE min_updates_test;
-
-DROP TABLE min_updates_test_oids;
 
 --
 -- Test triggers on views

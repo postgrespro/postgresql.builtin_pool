@@ -8,7 +8,7 @@
  * or call FUNCAPI-callable functions or macros.
  *
  *
- * Copyright (c) 2002-2018, PostgreSQL Global Development Group
+ * Copyright (c) 2002-2019, PostgreSQL Global Development Group
  *
  * src/include/funcapi.h
  *
@@ -73,14 +73,6 @@ typedef struct FuncCallContext
 	 * is done.
 	 */
 	uint64		max_calls;
-
-	/*
-	 * OPTIONAL pointer to result slot
-	 *
-	 * This is obsolete and only present for backwards compatibility, viz,
-	 * user-defined SRFs that use the deprecated TupleDescGetSlot().
-	 */
-	TupleTableSlot *slot;
 
 	/*
 	 * OPTIONAL pointer to miscellaneous user-provided context information
@@ -221,8 +213,6 @@ extern TupleDesc build_function_result_tupdesc_t(HeapTuple procTuple);
  *		TupleDesc based on a named relation.
  * TupleDesc TypeGetTupleDesc(Oid typeoid, List *colaliases) - Use to get a
  *		TupleDesc based on a type OID.
- * TupleTableSlot *TupleDescGetSlot(TupleDesc tupdesc) - Builds a
- *		TupleTableSlot, which is not needed anymore.
  * TupleGetDatum(TupleTableSlot *slot, HeapTuple tuple) - get a Datum
  *		given a tuple and a slot.
  *----------
@@ -240,7 +230,6 @@ extern TupleDesc BlessTupleDesc(TupleDesc tupdesc);
 extern AttInMetadata *TupleDescGetAttInMetadata(TupleDesc tupdesc);
 extern HeapTuple BuildTupleFromCStrings(AttInMetadata *attinmeta, char **values);
 extern Datum HeapTupleHeaderGetDatum(HeapTupleHeader tuple);
-extern TupleTableSlot *TupleDescGetSlot(TupleDesc tupdesc);
 
 
 /*----------

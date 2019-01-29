@@ -3,7 +3,7 @@
  * llvmjit.c
  *	  Core part of the LLVM JIT provider.
  *
- * Copyright (c) 2016-2018, PostgreSQL Global Development Group
+ * Copyright (c) 2016-2019, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *	  src/backend/jit/llvm/llvmjit.c
@@ -53,6 +53,7 @@ LLVMTypeRef TypeSizeT;
 LLVMTypeRef TypeParamBool;
 LLVMTypeRef TypeStorageBool;
 LLVMTypeRef TypePGFunction;
+LLVMTypeRef StructNullableDatum;
 LLVMTypeRef StructHeapTupleFieldsField3;
 LLVMTypeRef StructHeapTupleFields;
 LLVMTypeRef StructHeapTupleHeaderData;
@@ -63,8 +64,10 @@ LLVMTypeRef StructItemPointerData;
 LLVMTypeRef StructBlockId;
 LLVMTypeRef StructFormPgAttribute;
 LLVMTypeRef StructTupleConstr;
-LLVMTypeRef StructtupleDesc;
+LLVMTypeRef StructTupleDescData;
 LLVMTypeRef StructTupleTableSlot;
+LLVMTypeRef StructHeapTupleTableSlot;
+LLVMTypeRef StructMinimalTupleTableSlot;
 LLVMTypeRef StructMemoryContextData;
 LLVMTypeRef StructPGFinfoRecord;
 LLVMTypeRef StructFmgrInfo;
@@ -79,11 +82,11 @@ LLVMTypeRef StructAggStatePerTransData;
 LLVMValueRef AttributeTemplate;
 LLVMValueRef FuncStrlen;
 LLVMValueRef FuncVarsizeAny;
-LLVMValueRef FuncSlotGetsomeattrs;
+LLVMValueRef FuncSlotGetsomeattrsInt;
 LLVMValueRef FuncSlotGetmissingattrs;
-LLVMValueRef FuncHeapGetsysattr;
 LLVMValueRef FuncMakeExpandedObjectReadOnlyInternal;
 LLVMValueRef FuncExecEvalArrayRefSubscript;
+LLVMValueRef FuncExecEvalSysVar;
 LLVMValueRef FuncExecAggTransReparent;
 LLVMValueRef FuncExecAggInitGroup;
 
@@ -224,7 +227,7 @@ llvm_expand_funcname(struct LLVMJitContext *context, const char *basename)
 {
 	Assert(context->module != NULL);
 
-	context->base.created_functions++;
+	context->base.instr.created_functions++;
 
 	/*
 	 * Previously we used dots to separate, but turns out some tools, e.g.
@@ -438,7 +441,7 @@ llvm_optimize_module(LLVMJitContext *context, LLVMModuleRef module)
 
 	if (context->base.flags & PGJIT_OPT3)
 	{
-		/* TODO: Unscientifically determined threshhold */
+		/* TODO: Unscientifically determined threshold */
 		LLVMPassManagerBuilderUseInlinerWithThreshold(llvm_pmb, 512);
 	}
 	else
@@ -504,7 +507,7 @@ llvm_compile_module(LLVMJitContext *context)
 		INSTR_TIME_SET_CURRENT(starttime);
 		llvm_inline(context->module);
 		INSTR_TIME_SET_CURRENT(endtime);
-		INSTR_TIME_ACCUM_DIFF(context->base.inlining_counter,
+		INSTR_TIME_ACCUM_DIFF(context->base.instr.inlining_counter,
 							  endtime, starttime);
 	}
 
@@ -524,7 +527,7 @@ llvm_compile_module(LLVMJitContext *context)
 	INSTR_TIME_SET_CURRENT(starttime);
 	llvm_optimize_module(context, context->module);
 	INSTR_TIME_SET_CURRENT(endtime);
-	INSTR_TIME_ACCUM_DIFF(context->base.optimization_counter,
+	INSTR_TIME_ACCUM_DIFF(context->base.instr.optimization_counter,
 						  endtime, starttime);
 
 	if (jit_dump_bitcode)
@@ -575,7 +578,7 @@ llvm_compile_module(LLVMJitContext *context)
 	}
 #endif
 	INSTR_TIME_SET_CURRENT(endtime);
-	INSTR_TIME_ACCUM_DIFF(context->base.emission_counter,
+	INSTR_TIME_ACCUM_DIFF(context->base.instr.emission_counter,
 						  endtime, starttime);
 
 	context->module = NULL;
@@ -596,9 +599,9 @@ llvm_compile_module(LLVMJitContext *context)
 
 	ereport(DEBUG1,
 			(errmsg("time to inline: %.3fs, opt: %.3fs, emit: %.3fs",
-					INSTR_TIME_GET_DOUBLE(context->base.inlining_counter),
-					INSTR_TIME_GET_DOUBLE(context->base.optimization_counter),
-					INSTR_TIME_GET_DOUBLE(context->base.emission_counter)),
+					INSTR_TIME_GET_DOUBLE(context->base.instr.inlining_counter),
+					INSTR_TIME_GET_DOUBLE(context->base.instr.optimization_counter),
+					INSTR_TIME_GET_DOUBLE(context->base.instr.emission_counter)),
 			 errhidestmt(true),
 			 errhidecontext(true)));
 }
@@ -805,14 +808,17 @@ llvm_create_types(void)
 	TypeParamBool = load_return_type(mod, "FunctionReturningBool");
 	TypeStorageBool = load_type(mod, "TypeStorageBool");
 	TypePGFunction = load_type(mod, "TypePGFunction");
+	StructNullableDatum = load_type(mod, "StructNullableDatum");
 	StructExprContext = load_type(mod, "StructExprContext");
 	StructExprEvalStep = load_type(mod, "StructExprEvalStep");
 	StructExprState = load_type(mod, "StructExprState");
 	StructFunctionCallInfoData = load_type(mod, "StructFunctionCallInfoData");
 	StructMemoryContextData = load_type(mod, "StructMemoryContextData");
 	StructTupleTableSlot = load_type(mod, "StructTupleTableSlot");
+	StructHeapTupleTableSlot = load_type(mod, "StructHeapTupleTableSlot");
+	StructMinimalTupleTableSlot = load_type(mod, "StructMinimalTupleTableSlot");
 	StructHeapTupleData = load_type(mod, "StructHeapTupleData");
-	StructtupleDesc = load_type(mod, "StructtupleDesc");
+	StructTupleDescData = load_type(mod, "StructTupleDescData");
 	StructAggState = load_type(mod, "StructAggState");
 	StructAggStatePerGroupData = load_type(mod, "StructAggStatePerGroupData");
 	StructAggStatePerTransData = load_type(mod, "StructAggStatePerTransData");
@@ -820,11 +826,11 @@ llvm_create_types(void)
 	AttributeTemplate = LLVMGetNamedFunction(mod, "AttributeTemplate");
 	FuncStrlen = LLVMGetNamedFunction(mod, "strlen");
 	FuncVarsizeAny = LLVMGetNamedFunction(mod, "varsize_any");
-	FuncSlotGetsomeattrs = LLVMGetNamedFunction(mod, "slot_getsomeattrs");
+	FuncSlotGetsomeattrsInt = LLVMGetNamedFunction(mod, "slot_getsomeattrs_int");
 	FuncSlotGetmissingattrs = LLVMGetNamedFunction(mod, "slot_getmissingattrs");
-	FuncHeapGetsysattr = LLVMGetNamedFunction(mod, "heap_getsysattr");
 	FuncMakeExpandedObjectReadOnlyInternal = LLVMGetNamedFunction(mod, "MakeExpandedObjectReadOnlyInternal");
 	FuncExecEvalArrayRefSubscript = LLVMGetNamedFunction(mod, "ExecEvalArrayRefSubscript");
+	FuncExecEvalSysVar = LLVMGetNamedFunction(mod, "ExecEvalSysVar");
 	FuncExecAggTransReparent = LLVMGetNamedFunction(mod, "ExecAggTransReparent");
 	FuncExecAggInitGroup = LLVMGetNamedFunction(mod, "ExecAggInitGroup");
 
@@ -853,7 +859,7 @@ llvm_split_symbol_name(const char *name, char **modname, char **funcname)
 	{
 		/*
 		 * Symbol names cannot contain a ., therefore we can split based on
-		 * first and last occurance of one.
+		 * first and last occurrence of one.
 		 */
 		*funcname = rindex(name, '.');
 		(*funcname)++;			/* jump over . */

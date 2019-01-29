@@ -5,7 +5,7 @@
  *	  Routines for CREATE and DROP FUNCTION commands and CREATE and DROP
  *	  CAST commands.
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -33,9 +33,10 @@
 #include "postgres.h"
 
 #include "access/genam.h"
-#include "access/heapam.h"
 #include "access/htup_details.h"
+#include "access/table.h"
 #include "access/sysattr.h"
+#include "catalog/catalog.h"
 #include "catalog/dependency.h"
 #include "catalog/indexing.h"
 #include "catalog/objectaccess.h"
@@ -60,6 +61,7 @@
 #include "parser/parse_expr.h"
 #include "parser/parse_func.h"
 #include "parser/parse_type.h"
+#include "pgstat.h"
 #include "utils/acl.h"
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
@@ -69,7 +71,6 @@
 #include "utils/rel.h"
 #include "utils/syscache.h"
 #include "utils/typcache.h"
-#include "utils/tqual.h"
 
 /*
  *	 Examine the RETURNS clause of the CREATE FUNCTION statement
@@ -937,8 +938,8 @@ CreateFunction(ParseState *pstate, CreateFunctionStmt *stmt)
 				 (PLTemplateExists(language) ?
 				  errhint("Use CREATE EXTENSION to load the language into the database.") : 0)));
 
-	languageOid = HeapTupleGetOid(languageTuple);
 	languageStruct = (Form_pg_language) GETSTRUCT(languageTuple);
+	languageOid = languageStruct->oid;
 
 	if (languageStruct->lanpltrusted)
 	{
@@ -1133,7 +1134,7 @@ RemoveFunctionById(Oid funcOid)
 	/*
 	 * Delete the pg_proc tuple.
 	 */
-	relation = heap_open(ProcedureRelationId, RowExclusiveLock);
+	relation = table_open(ProcedureRelationId, RowExclusiveLock);
 
 	tup = SearchSysCache1(PROCOID, ObjectIdGetDatum(funcOid));
 	if (!HeapTupleIsValid(tup)) /* should not happen */
@@ -1145,14 +1146,14 @@ RemoveFunctionById(Oid funcOid)
 
 	ReleaseSysCache(tup);
 
-	heap_close(relation, RowExclusiveLock);
+	table_close(relation, RowExclusiveLock);
 
 	/*
 	 * If there's a pg_aggregate tuple, delete that too.
 	 */
 	if (prokind == PROKIND_AGGREGATE)
 	{
-		relation = heap_open(AggregateRelationId, RowExclusiveLock);
+		relation = table_open(AggregateRelationId, RowExclusiveLock);
 
 		tup = SearchSysCache1(AGGFNOID, ObjectIdGetDatum(funcOid));
 		if (!HeapTupleIsValid(tup)) /* should not happen */
@@ -1162,7 +1163,7 @@ RemoveFunctionById(Oid funcOid)
 
 		ReleaseSysCache(tup);
 
-		heap_close(relation, RowExclusiveLock);
+		table_close(relation, RowExclusiveLock);
 	}
 }
 
@@ -1190,7 +1191,7 @@ AlterFunction(ParseState *pstate, AlterFunctionStmt *stmt)
 	DefElem    *parallel_item = NULL;
 	ObjectAddress address;
 
-	rel = heap_open(ProcedureRelationId, RowExclusiveLock);
+	rel = table_open(ProcedureRelationId, RowExclusiveLock);
 
 	funcOid = LookupFuncWithArgs(stmt->objtype, stmt->func, false);
 
@@ -1310,7 +1311,7 @@ AlterFunction(ParseState *pstate, AlterFunctionStmt *stmt)
 
 	ObjectAddressSet(address, ProcedureRelationId, funcOid);
 
-	heap_close(rel, NoLock);
+	table_close(rel, NoLock);
 	heap_freetuple(tup);
 
 	return address;
@@ -1332,7 +1333,7 @@ SetFunctionReturnType(Oid funcOid, Oid newRetType)
 	ObjectAddress func_address;
 	ObjectAddress type_address;
 
-	pg_proc_rel = heap_open(ProcedureRelationId, RowExclusiveLock);
+	pg_proc_rel = table_open(ProcedureRelationId, RowExclusiveLock);
 
 	tup = SearchSysCacheCopy1(PROCOID, ObjectIdGetDatum(funcOid));
 	if (!HeapTupleIsValid(tup)) /* should not happen */
@@ -1348,7 +1349,7 @@ SetFunctionReturnType(Oid funcOid, Oid newRetType)
 	/* update the catalog and its indexes */
 	CatalogTupleUpdate(pg_proc_rel, &tup->t_self, tup);
 
-	heap_close(pg_proc_rel, RowExclusiveLock);
+	table_close(pg_proc_rel, RowExclusiveLock);
 
 	/*
 	 * Also update the dependency to the new type. Opaque is a pinned type, so
@@ -1374,7 +1375,7 @@ SetFunctionArgType(Oid funcOid, int argIndex, Oid newArgType)
 	ObjectAddress func_address;
 	ObjectAddress type_address;
 
-	pg_proc_rel = heap_open(ProcedureRelationId, RowExclusiveLock);
+	pg_proc_rel = table_open(ProcedureRelationId, RowExclusiveLock);
 
 	tup = SearchSysCacheCopy1(PROCOID, ObjectIdGetDatum(funcOid));
 	if (!HeapTupleIsValid(tup)) /* should not happen */
@@ -1391,7 +1392,7 @@ SetFunctionArgType(Oid funcOid, int argIndex, Oid newArgType)
 	/* update the catalog and its indexes */
 	CatalogTupleUpdate(pg_proc_rel, &tup->t_self, tup);
 
-	heap_close(pg_proc_rel, RowExclusiveLock);
+	table_close(pg_proc_rel, RowExclusiveLock);
 
 	/*
 	 * Also update the dependency to the new type. Opaque is a pinned type, so
@@ -1649,7 +1650,7 @@ CreateCast(CreateCastStmt *stmt)
 			break;
 	}
 
-	relation = heap_open(CastRelationId, RowExclusiveLock);
+	relation = table_open(CastRelationId, RowExclusiveLock);
 
 	/*
 	 * Check for duplicate.  This is just to give a friendly error message,
@@ -1667,6 +1668,8 @@ CreateCast(CreateCastStmt *stmt)
 						format_type_be(targettypeid))));
 
 	/* ready to go */
+	castid = GetNewOidWithIndex(relation, CastOidIndexId, Anum_pg_cast_oid);
+	values[Anum_pg_cast_oid - 1] = ObjectIdGetDatum(castid);
 	values[Anum_pg_cast_castsource - 1] = ObjectIdGetDatum(sourcetypeid);
 	values[Anum_pg_cast_casttarget - 1] = ObjectIdGetDatum(targettypeid);
 	values[Anum_pg_cast_castfunc - 1] = ObjectIdGetDatum(funcid);
@@ -1677,7 +1680,7 @@ CreateCast(CreateCastStmt *stmt)
 
 	tuple = heap_form_tuple(RelationGetDescr(relation), values, nulls);
 
-	castid = CatalogTupleInsert(relation, tuple);
+	CatalogTupleInsert(relation, tuple);
 
 	/* make dependency entries */
 	myself.classId = CastRelationId;
@@ -1713,7 +1716,7 @@ CreateCast(CreateCastStmt *stmt)
 
 	heap_freetuple(tuple);
 
-	heap_close(relation, RowExclusiveLock);
+	table_close(relation, RowExclusiveLock);
 
 	return myself;
 }
@@ -1729,7 +1732,7 @@ get_cast_oid(Oid sourcetypeid, Oid targettypeid, bool missing_ok)
 {
 	Oid			oid;
 
-	oid = GetSysCacheOid2(CASTSOURCETARGET,
+	oid = GetSysCacheOid2(CASTSOURCETARGET, Anum_pg_cast_oid,
 						  ObjectIdGetDatum(sourcetypeid),
 						  ObjectIdGetDatum(targettypeid));
 	if (!OidIsValid(oid) && !missing_ok)
@@ -1749,10 +1752,10 @@ DropCastById(Oid castOid)
 	SysScanDesc scan;
 	HeapTuple	tuple;
 
-	relation = heap_open(CastRelationId, RowExclusiveLock);
+	relation = table_open(CastRelationId, RowExclusiveLock);
 
 	ScanKeyInit(&scankey,
-				ObjectIdAttributeNumber,
+				Anum_pg_cast_oid,
 				BTEqualStrategyNumber, F_OIDEQ,
 				ObjectIdGetDatum(castOid));
 	scan = systable_beginscan(relation, CastOidIndexId, true,
@@ -1764,7 +1767,7 @@ DropCastById(Oid castOid)
 	CatalogTupleDelete(relation, &tuple->t_self);
 
 	systable_endscan(scan);
-	heap_close(relation, RowExclusiveLock);
+	table_close(relation, RowExclusiveLock);
 }
 
 
@@ -1917,13 +1920,15 @@ CreateTransform(CreateTransformStmt *stmt)
 
 	MemSet(nulls, false, sizeof(nulls));
 
-	relation = heap_open(TransformRelationId, RowExclusiveLock);
+	relation = table_open(TransformRelationId, RowExclusiveLock);
 
 	tuple = SearchSysCache2(TRFTYPELANG,
 							ObjectIdGetDatum(typeid),
 							ObjectIdGetDatum(langid));
 	if (HeapTupleIsValid(tuple))
 	{
+		Form_pg_transform form = (Form_pg_transform) GETSTRUCT(tuple);
+
 		if (!stmt->replace)
 			ereport(ERROR,
 					(errcode(ERRCODE_DUPLICATE_OBJECT),
@@ -1938,14 +1943,17 @@ CreateTransform(CreateTransformStmt *stmt)
 		newtuple = heap_modify_tuple(tuple, RelationGetDescr(relation), values, nulls, replaces);
 		CatalogTupleUpdate(relation, &newtuple->t_self, newtuple);
 
-		transformid = HeapTupleGetOid(tuple);
+		transformid = form->oid;
 		ReleaseSysCache(tuple);
 		is_replace = true;
 	}
 	else
 	{
+		transformid = GetNewOidWithIndex(relation, TransformOidIndexId,
+										 Anum_pg_transform_oid);
+		values[Anum_pg_transform_oid - 1] = ObjectIdGetDatum(transformid);
 		newtuple = heap_form_tuple(RelationGetDescr(relation), values, nulls);
-		transformid = CatalogTupleInsert(relation, newtuple);
+		CatalogTupleInsert(relation, newtuple);
 		is_replace = false;
 	}
 
@@ -1993,7 +2001,7 @@ CreateTransform(CreateTransformStmt *stmt)
 
 	heap_freetuple(newtuple);
 
-	heap_close(relation, RowExclusiveLock);
+	table_close(relation, RowExclusiveLock);
 
 	return myself;
 }
@@ -2010,7 +2018,7 @@ get_transform_oid(Oid type_id, Oid lang_id, bool missing_ok)
 {
 	Oid			oid;
 
-	oid = GetSysCacheOid2(TRFTYPELANG,
+	oid = GetSysCacheOid2(TRFTYPELANG, Anum_pg_transform_oid,
 						  ObjectIdGetDatum(type_id),
 						  ObjectIdGetDatum(lang_id));
 	if (!OidIsValid(oid) && !missing_ok)
@@ -2031,10 +2039,10 @@ DropTransformById(Oid transformOid)
 	SysScanDesc scan;
 	HeapTuple	tuple;
 
-	relation = heap_open(TransformRelationId, RowExclusiveLock);
+	relation = table_open(TransformRelationId, RowExclusiveLock);
 
 	ScanKeyInit(&scankey,
-				ObjectIdAttributeNumber,
+				Anum_pg_transform_oid,
 				BTEqualStrategyNumber, F_OIDEQ,
 				ObjectIdGetDatum(transformOid));
 	scan = systable_beginscan(relation, TransformOidIndexId, true,
@@ -2046,7 +2054,7 @@ DropTransformById(Oid transformOid)
 	CatalogTupleDelete(relation, &tuple->t_self);
 
 	systable_endscan(scan);
-	heap_close(relation, RowExclusiveLock);
+	table_close(relation, RowExclusiveLock);
 }
 
 
@@ -2139,8 +2147,8 @@ ExecuteDoStmt(DoStmt *stmt, bool atomic)
 				 (PLTemplateExists(language) ?
 				  errhint("Use CREATE EXTENSION to load the language into the database.") : 0)));
 
-	codeblock->langOid = HeapTupleGetOid(languageTuple);
 	languageStruct = (Form_pg_language) GETSTRUCT(languageTuple);
+	codeblock->langOid = languageStruct->oid;
 	codeblock->langIsTrusted = languageStruct->lanpltrusted;
 	codeblock->atomic = atomic;
 
@@ -2208,21 +2216,23 @@ ExecuteDoStmt(DoStmt *stmt, bool atomic)
 void
 ExecuteCallStmt(CallStmt *stmt, ParamListInfo params, bool atomic, DestReceiver *dest)
 {
+	LOCAL_FCINFO(fcinfo, FUNC_MAX_ARGS);
 	ListCell   *lc;
 	FuncExpr   *fexpr;
 	int			nargs;
 	int			i;
 	AclResult	aclresult;
 	FmgrInfo	flinfo;
-	FunctionCallInfoData fcinfo;
 	CallContext *callcontext;
 	EState	   *estate;
 	ExprContext *econtext;
 	HeapTuple	tp;
+	PgStat_FunctionCallUsage fcusage;
 	Datum		retval;
 
 	fexpr = stmt->funcexpr;
 	Assert(fexpr);
+	Assert(IsA(fexpr, FuncExpr));
 
 	aclresult = pg_proc_aclcheck(fexpr->funcid, GetUserId(), ACL_EXECUTE);
 	if (aclresult != ACLCHECK_OK)
@@ -2251,13 +2261,25 @@ ExecuteCallStmt(CallStmt *stmt, ParamListInfo params, bool atomic, DestReceiver 
 	 * and AbortTransaction() resets the security context.  This could be
 	 * reorganized, but right now it doesn't work.
 	 */
-	if (((Form_pg_proc )GETSTRUCT(tp))->prosecdef)
+	if (((Form_pg_proc) GETSTRUCT(tp))->prosecdef)
 		callcontext->atomic = true;
 
 	/*
-	 * Expand named arguments, defaults, etc.
+	 * Expand named arguments, defaults, etc.  We do not want to scribble on
+	 * the passed-in CallStmt parse tree, so first flat-copy fexpr, allowing
+	 * us to replace its args field.  (Note that expand_function_arguments
+	 * will not modify any of the passed-in data structure.)
 	 */
-	fexpr->args = expand_function_arguments(fexpr->args, fexpr->funcresulttype, tp);
+	{
+		FuncExpr   *nexpr = makeNode(FuncExpr);
+
+		memcpy(nexpr, fexpr, sizeof(FuncExpr));
+		fexpr = nexpr;
+	}
+
+	fexpr->args = expand_function_arguments(fexpr->args,
+											fexpr->funcresulttype,
+											tp);
 	nargs = list_length(fexpr->args);
 
 	ReleaseSysCache(tp);
@@ -2275,7 +2297,8 @@ ExecuteCallStmt(CallStmt *stmt, ParamListInfo params, bool atomic, DestReceiver 
 	InvokeFunctionExecuteHook(fexpr->funcid);
 	fmgr_info(fexpr->funcid, &flinfo);
 	fmgr_info_set_expr((Node *) fexpr, &flinfo);
-	InitFunctionCallInfoData(fcinfo, &flinfo, nargs, fexpr->inputcollid, (Node *) callcontext, NULL);
+	InitFunctionCallInfoData(*fcinfo, &flinfo, nargs, fexpr->inputcollid,
+							 (Node *) callcontext, NULL);
 
 	/*
 	 * Evaluate procedure arguments inside a suitable execution context.  Note
@@ -2296,13 +2319,15 @@ ExecuteCallStmt(CallStmt *stmt, ParamListInfo params, bool atomic, DestReceiver 
 
 		val = ExecEvalExprSwitchContext(exprstate, econtext, &isnull);
 
-		fcinfo.arg[i] = val;
-		fcinfo.argnull[i] = isnull;
+		fcinfo->args[i].value = val;
+		fcinfo->args[i].isnull = isnull;
 
 		i++;
 	}
 
-	retval = FunctionCallInvoke(&fcinfo);
+	pgstat_init_function_usage(fcinfo, &fcusage);
+	retval = FunctionCallInvoke(fcinfo);
+	pgstat_end_function_usage(&fcusage, true);
 
 	if (fexpr->funcresulttype == VOIDOID)
 	{
@@ -2322,7 +2347,7 @@ ExecuteCallStmt(CallStmt *stmt, ParamListInfo params, bool atomic, DestReceiver 
 		TupOutputState *tstate;
 		TupleTableSlot *slot;
 
-		if (fcinfo.isnull)
+		if (fcinfo->isnull)
 			elog(ERROR, "procedure returned null record");
 
 		td = DatumGetHeapTupleHeader(retval);
@@ -2330,14 +2355,15 @@ ExecuteCallStmt(CallStmt *stmt, ParamListInfo params, bool atomic, DestReceiver 
 		tupTypmod = HeapTupleHeaderGetTypMod(td);
 		retdesc = lookup_rowtype_tupdesc(tupType, tupTypmod);
 
-		tstate = begin_tup_output_tupdesc(dest, retdesc);
+		tstate = begin_tup_output_tupdesc(dest, retdesc,
+										  &TTSOpsHeapTuple);
 
 		rettupdata.t_len = HeapTupleHeaderGetDatumLength(td);
 		ItemPointerSetInvalid(&(rettupdata.t_self));
 		rettupdata.t_tableOid = InvalidOid;
 		rettupdata.t_data = td;
 
-		slot = ExecStoreTuple(&rettupdata, tstate->slot, InvalidBuffer, false);
+		slot = ExecStoreHeapTuple(&rettupdata, tstate->slot, false);
 		tstate->dest->receiveSlot(slot, tstate->dest);
 
 		end_tup_output(tstate);
@@ -2358,8 +2384,8 @@ TupleDesc
 CallStmtResultDesc(CallStmt *stmt)
 {
 	FuncExpr   *fexpr;
-	HeapTuple   tuple;
-	TupleDesc   tupdesc;
+	HeapTuple	tuple;
+	TupleDesc	tupdesc;
 
 	fexpr = stmt->funcexpr;
 

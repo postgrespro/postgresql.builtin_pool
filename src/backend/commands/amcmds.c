@@ -3,7 +3,7 @@
  * amcmds.c
  *	  Routines for SQL commands that manipulate access methods.
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -13,8 +13,9 @@
  */
 #include "postgres.h"
 
-#include "access/heapam.h"
 #include "access/htup_details.h"
+#include "access/table.h"
+#include "catalog/catalog.h"
 #include "catalog/dependency.h"
 #include "catalog/indexing.h"
 #include "catalog/pg_am.h"
@@ -49,7 +50,7 @@ CreateAccessMethod(CreateAmStmt *stmt)
 	Datum		values[Natts_pg_am];
 	HeapTuple	tup;
 
-	rel = heap_open(AccessMethodRelationId, RowExclusiveLock);
+	rel = table_open(AccessMethodRelationId, RowExclusiveLock);
 
 	/* Must be super user */
 	if (!superuser())
@@ -60,7 +61,8 @@ CreateAccessMethod(CreateAmStmt *stmt)
 				 errhint("Must be superuser to create an access method.")));
 
 	/* Check if name is used */
-	amoid = GetSysCacheOid1(AMNAME, CStringGetDatum(stmt->amname));
+	amoid = GetSysCacheOid1(AMNAME,  Anum_pg_am_oid,
+							CStringGetDatum(stmt->amname));
 	if (OidIsValid(amoid))
 	{
 		ereport(ERROR,
@@ -80,6 +82,8 @@ CreateAccessMethod(CreateAmStmt *stmt)
 	memset(values, 0, sizeof(values));
 	memset(nulls, false, sizeof(nulls));
 
+	amoid = GetNewOidWithIndex(rel, AmOidIndexId, Anum_pg_am_oid);
+	values[Anum_pg_am_oid - 1] = ObjectIdGetDatum(amoid);
 	values[Anum_pg_am_amname - 1] =
 		DirectFunctionCall1(namein, CStringGetDatum(stmt->amname));
 	values[Anum_pg_am_amhandler - 1] = ObjectIdGetDatum(amhandler);
@@ -87,7 +91,7 @@ CreateAccessMethod(CreateAmStmt *stmt)
 
 	tup = heap_form_tuple(RelationGetDescr(rel), values, nulls);
 
-	amoid = CatalogTupleInsert(rel, tup);
+	CatalogTupleInsert(rel, tup);
 	heap_freetuple(tup);
 
 	myself.classId = AccessMethodRelationId;
@@ -103,7 +107,7 @@ CreateAccessMethod(CreateAmStmt *stmt)
 
 	recordDependencyOnCurrentExtension(&myself, false);
 
-	heap_close(rel, RowExclusiveLock);
+	table_close(rel, RowExclusiveLock);
 
 	return myself;
 }
@@ -122,7 +126,7 @@ RemoveAccessMethodById(Oid amOid)
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
 				 errmsg("must be superuser to drop access methods")));
 
-	relation = heap_open(AccessMethodRelationId, RowExclusiveLock);
+	relation = table_open(AccessMethodRelationId, RowExclusiveLock);
 
 	tup = SearchSysCache1(AMOID, ObjectIdGetDatum(amOid));
 	if (!HeapTupleIsValid(tup))
@@ -132,7 +136,7 @@ RemoveAccessMethodById(Oid amOid)
 
 	ReleaseSysCache(tup);
 
-	heap_close(relation, RowExclusiveLock);
+	table_close(relation, RowExclusiveLock);
 }
 
 /*
@@ -164,7 +168,7 @@ get_am_type_oid(const char *amname, char amtype, bool missing_ok)
 							NameStr(amform->amname),
 							get_am_type_string(amtype))));
 
-		oid = HeapTupleGetOid(tup);
+		oid = amform->oid;
 		ReleaseSysCache(tup);
 	}
 

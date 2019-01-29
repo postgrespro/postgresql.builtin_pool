@@ -3,7 +3,7 @@
  * reloptions.c
  *	  Core support for relation options (pg_class.reloptions)
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -126,15 +126,6 @@ static relopt_bool boolRelOpts[] =
 			"Enables \"fast update\" feature for this GIN index",
 			RELOPT_KIND_GIN,
 			AccessExclusiveLock
-		},
-		true
-	},
-	{
-		{
-			"recheck_on_update",
-			"Recheck functional index expression for changed value after update",
-			RELOPT_KIND_INDEX,
-			ShareUpdateExclusiveLock	/* since only applies to later UPDATEs */
 		},
 		true
 	},
@@ -757,8 +748,8 @@ add_string_reloption(bits32 kinds, const char *name, const char *desc, const cha
  * reloptions value (possibly NULL), and we replace or remove entries
  * as needed.
  *
- * If ignoreOids is true, then we should ignore any occurrence of "oids"
- * in the list (it will be or has been handled by interpretOidsOption()).
+ * If acceptOidsOff is true, then we allow oids = false, but throw error when
+ * on. This is solely needed for backwards compatibility.
  *
  * Note that this is not responsible for determining whether the options
  * are valid, but it does check that namespaces for all the options given are
@@ -771,7 +762,7 @@ add_string_reloption(bits32 kinds, const char *name, const char *desc, const cha
  */
 Datum
 transformRelOptions(Datum oldOptions, List *defList, const char *namspace,
-					char *validnsps[], bool ignoreOids, bool isReset)
+					char *validnsps[], bool acceptOidsOff, bool isReset)
 {
 	Datum		result;
 	ArrayBuildState *astate;
@@ -882,9 +873,6 @@ transformRelOptions(Datum oldOptions, List *defList, const char *namspace,
 									def->defnamespace)));
 			}
 
-			if (ignoreOids && strcmp(def->defname, "oids") == 0)
-				continue;
-
 			/* ignore if not in the same namespace */
 			if (namspace == NULL)
 			{
@@ -905,6 +893,24 @@ transformRelOptions(Datum oldOptions, List *defList, const char *namspace,
 				value = defGetString(def);
 			else
 				value = "true";
+
+			/*
+			 * This is not a great place for this test, but there's no other
+			 * convenient place to filter the option out. As WITH (oids =
+			 * false) will be removed someday, this seems like an acceptable
+			 * amount of ugly.
+			 */
+			if (acceptOidsOff && def->defnamespace == NULL &&
+				strcmp(def->defname, "oids") == 0)
+			{
+				if (defGetBoolean(def))
+					ereport(ERROR,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							 errmsg("tables declared WITH OIDS are not supported")));
+				/* skip over option, reloptions machinery doesn't know it */
+				continue;
+			}
+
 			len = VARHDRSZ + strlen(def->defname) + 1 + strlen(value);
 			/* +1 leaves room for sprintf's trailing null */
 			t = (text *) palloc(len + 1);
@@ -1328,7 +1334,7 @@ fillRelOptions(void *rdopts, Size basesize,
 				break;
 			}
 		}
-		if (validate && !found && options[i].gen->kinds != RELOPT_KIND_INDEX)
+		if (validate && !found)
 			elog(ERROR, "reloption \"%s\" not found in parse table",
 				 options[i].gen->name);
 	}
@@ -1484,40 +1490,6 @@ index_reloptions(amoptions_function amoptions, Datum reloptions, bool validate)
 		return NULL;
 
 	return amoptions(reloptions, validate);
-}
-
-/*
- * Parse generic options for all indexes.
- *
- *	reloptions	options as text[] datum
- *	validate	error flag
- */
-bytea *
-index_generic_reloptions(Datum reloptions, bool validate)
-{
-	int			numoptions;
-	GenericIndexOpts *idxopts;
-	relopt_value *options;
-	static const relopt_parse_elt tab[] = {
-		{"recheck_on_update", RELOPT_TYPE_BOOL, offsetof(GenericIndexOpts, recheck_on_update)}
-	};
-
-	options = parseRelOptions(reloptions, validate,
-							  RELOPT_KIND_INDEX,
-							  &numoptions);
-
-	/* if none set, we're done */
-	if (numoptions == 0)
-		return NULL;
-
-	idxopts = allocateReloptStruct(sizeof(GenericIndexOpts), options, numoptions);
-
-	fillRelOptions((void *) idxopts, sizeof(GenericIndexOpts), options, numoptions,
-				   validate, tab, lengthof(tab));
-
-	pfree(options);
-
-	return (bytea *) idxopts;
 }
 
 /*

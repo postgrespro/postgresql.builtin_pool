@@ -48,28 +48,26 @@ sub pgbench
 	return;
 }
 
-# Test concurrent insertion into table with UNIQUE oid column.  DDL expects
-# GetNewOidWithIndex() to successfully avoid violating uniqueness for indexes
-# like pg_class_oid_index and pg_proc_oid_index.  This indirectly exercises
-# LWLock and spinlock concurrency.  This test makes a 5-MiB table.
+# Test concurrent insertion into table with serial column.  This
+# indirectly exercises LWLock and spinlock concurrency.  This test
+# makes a 5-MiB table.
 
 $node->safe_psql('postgres',
-	    'CREATE UNLOGGED TABLE oid_tbl () WITH OIDS; '
-	  . 'ALTER TABLE oid_tbl ADD UNIQUE (oid);');
+				 'CREATE UNLOGGED TABLE insert_tbl (id serial primary key); ');
 
 pgbench(
 	'--no-vacuum --client=5 --protocol=prepared --transactions=25',
 	0,
 	[qr{processed: 125/125}],
 	[qr{^$}],
-	'concurrency OID generation',
+	'concurrent insert workload',
 	{
-		'001_pgbench_concurrent_oid_generation' =>
-		  'INSERT INTO oid_tbl SELECT FROM generate_series(1,1000);'
+		'001_pgbench_concurrent_insert' =>
+		  'INSERT INTO insert_tbl SELECT FROM generate_series(1,1000);'
 	});
 
 # cleanup
-$node->safe_psql('postgres', 'DROP TABLE oid_tbl;');
+$node->safe_psql('postgres', 'DROP TABLE insert_tbl;');
 
 # Trigger various connection errors
 pgbench(
@@ -255,17 +253,17 @@ COMMIT;
 # test expressions
 # command 1..3 and 23 depend on random seed which is used to call srandom.
 pgbench(
-	'--random-seed=5432 -t 1 -Dfoo=-10.1 -Dbla=false -Di=+3 -Dminint=-9223372036854775808 -Dn=null -Dt=t -Df=of -Dd=1.0',
+	'--random-seed=5432 -t 1 -Dfoo=-10.1 -Dbla=false -Di=+3 -Dn=null -Dt=t -Df=of -Dd=1.0',
 	0,
 	[ qr{type: .*/001_pgbench_expressions}, qr{processed: 1/1} ],
 	[
 		qr{setting random seed to 5432\b},
 
-		# After explicit seeding, the four * random checks (1-3,20) should be
-		# deterministic, but not necessarily portable.
-		qr{command=1.: int 1\d\b},        # uniform random: 12 on linux
-		qr{command=2.: int 1\d\d\b},      # exponential random: 106 on linux
-		qr{command=3.: int 1\d\d\d\b},    # gaussian random: 1462 on linux
+		# After explicit seeding, the four random checks (1-3,20) are
+		# deterministic
+		qr{command=1.: int 13\b},      # uniform random
+		qr{command=2.: int 116\b},     # exponential random
+		qr{command=3.: int 1498\b},    # gaussian random
 		qr{command=4.: int 4\b},
 		qr{command=5.: int 5\b},
 		qr{command=6.: int 6\b},
@@ -278,8 +276,7 @@ pgbench(
 		qr{command=15.: double 15\b},
 		qr{command=16.: double 16\b},
 		qr{command=17.: double 17\b},
-		qr{command=18.: int 9223372036854775807\b},
-		qr{command=20.: int \d\b},    # zipfian random: 1 on linux
+		qr{command=20.: int 1\b},      # zipfian random
 		qr{command=21.: double -27\b},
 		qr{command=22.: double 1024\b},
 		qr{command=23.: double 1\b},
@@ -322,6 +319,8 @@ pgbench(
 		qr{command=96.: int 1\b},       # :scale
 		qr{command=97.: int 0\b},       # :client_id
 		qr{command=98.: int 5432\b},    # :random_seed
+		qr{command=99.: int -9223372036854775808\b},    # min int
+		qr{command=100.: int 9223372036854775807\b},    # max int
 	],
 	'pgbench expressions',
 	{
@@ -345,10 +344,9 @@ pgbench(
 \set pi debug(pi() * 4.9)
 \set d4 debug(greatest(4, 2, -1.17) * 4.0 * Ln(Exp(1.0)))
 \set d5 debug(least(-5.18, .0E0, 1.0/0) * -3.3)
--- forced overflow
-\set maxint debug(:minint - 1)
--- reset a variable
+-- reset variables
 \set i1 0
+\set d1 false
 -- yet another integer function
 \set id debug(random_zipfian(1, 9, 1.3))
 --- pow and power
@@ -447,6 +445,9 @@ SELECT :v0, :v1, :v2, :v3;
 \set sc debug(:scale)
 \set ci debug(:client_id)
 \set rs debug(:random_seed)
+-- minint constant parsing
+\set min debug(-9223372036854775808)
+\set max debug(-(:min + 1))
 }
 	});
 
@@ -470,7 +471,7 @@ for my $i (1, 2)
 \set ur random(1000, 1999)
 \set er random_exponential(2000, 2999, 2.0)
 \set gr random_gaussian(3000, 3999, 3.0)
-\set zr random_zipfian(4000, 4999, 2.5)
+\set zr random_zipfian(4000, 4999, 1.5)
 INSERT INTO seeded_random(seed, rand, val) VALUES
   (:random_seed, 'uniform', :ur),
   (:random_seed, 'exponential', :er),
@@ -527,6 +528,48 @@ pgbench(
 }
 	});
 
+# working \gset and \cset
+pgbench(
+	'-t 1', 0,
+	[ qr{type: .*/001_pgbench_gset_and_cset}, qr{processed: 1/1} ],
+	[   qr{command=3.: int 0\b},
+		qr{command=5.: int 1\b},
+		qr{command=6.: int 2\b},
+		qr{command=8.: int 3\b},
+		qr{command=9.: int 4\b},
+		qr{command=10.: int 5\b},
+		qr{command=12.: int 6\b},
+		qr{command=13.: int 7\b},
+		qr{command=14.: int 8\b},
+		qr{command=16.: int 9\b} ],
+	'pgbench gset and cset commands',
+	{   '001_pgbench_gset_and_cset' => q{-- test gset and cset
+-- no columns
+SELECT \gset
+-- one value
+SELECT 0 AS i0 \gset
+\set i debug(:i0)
+-- two values
+SELECT 1 AS i1, 2 AS i2 \gset
+\set i debug(:i1)
+\set i debug(:i2)
+-- cset & gset to follow
+SELECT :i2 + 1 AS i3, :i2 * :i2 AS i4 \cset
+  SELECT 5 AS i5 \gset
+\set i debug(:i3)
+\set i debug(:i4)
+\set i debug(:i5)
+-- with prefix
+SELECT 6 AS i6, 7 AS i7 \cset x_
+  SELECT 8 AS i8 \gset y_
+\set i debug(:x_i6)
+\set i debug(:x_i7)
+\set i debug(:y_i8)
+-- overwrite existing variable
+SELECT 0 AS i9, 9 AS i9 \gset
+\set i debug(:i9)
+} });
+
 # trigger many expression errors
 my @errors = (
 
@@ -534,7 +577,7 @@ my @errors = (
 	# SQL
 	[
 		'sql syntax error',
-		0,
+		2,
 		[
 			qr{ERROR:  syntax error},
 			qr{prepared statement .* does not exist}
@@ -553,11 +596,11 @@ SELECT LEAST(:i, :i, :i, :i, :i, :i, :i, :i, :i, :i, :i);
 
 	# SHELL
 	[
-		'shell bad command',                    0,
+		'shell bad command',                    2,
 		[qr{\(shell\) .* meta-command failed}], q{\shell no-such-command}
 	],
 	[
-		'shell undefined variable', 0,
+		'shell undefined variable', 2,
 		[qr{undefined variable ":nosuchvariable"}],
 		q{-- undefined variable in shell
 \shell echo ::foo :nosuchvariable
@@ -597,81 +640,75 @@ SELECT LEAST(:i, :i, :i, :i, :i, :i, :i, :i, :i, :i, :i);
 		[qr{unexpected function name}], q{\set i noSuchFunction()}
 	],
 	[
-		'set invalid variable name', 0,
+		'set invalid variable name', 2,
 		[qr{invalid variable name}], q{\set . 1}
 	],
 	[
-		'set int overflow',                   0,
-		[qr{double to int overflow for 100}], q{\set i int(1E32)}
+		'set division by zero', 2,
+		[qr{division by zero}], q{\set i 1/0}
 	],
-	[ 'set division by zero', 0, [qr{division by zero}], q{\set i 1/0} ],
-	[
-		'set bigint out of range', 0,
-		[qr{bigint out of range}], q{\set i 9223372036854775808 / -1}
-	],
-	[
-		'set undefined variable',
-		0,
+	[   'set undefined variable',
+		2,
 		[qr{undefined variable "nosuchvariable"}],
 		q{\set i :nosuchvariable}
 	],
 	[ 'set unexpected char', 1, [qr{unexpected character .;.}], q{\set i ;} ],
 	[
 		'set too many args',
-		0,
+		2,
 		[qr{too many function arguments}],
 		q{\set i least(0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16)}
 	],
 	[
-		'set empty random range',          0,
+		'set empty random range',          2,
 		[qr{empty range given to random}], q{\set i random(5,3)}
 	],
 	[
 		'set random range too large',
-		0,
+		2,
 		[qr{random range is too large}],
-		q{\set i random(-9223372036854775808, 9223372036854775807)}
+		q{\set i random(:minint, :maxint)}
 	],
 	[
 		'set gaussian param too small',
-		0,
+		2,
 		[qr{gaussian param.* at least 2}],
 		q{\set i random_gaussian(0, 10, 1.0)}
 	],
 	[
 		'set exponential param greater 0',
-		0,
+		2,
 		[qr{exponential parameter must be greater }],
 		q{\set i random_exponential(0, 10, 0.0)}
 	],
 	[
 		'set zipfian param to 1',
-		0,
+		2,
 		[qr{zipfian parameter must be in range \(0, 1\) U \(1, \d+\]}],
 		q{\set i random_zipfian(0, 10, 1)}
 	],
 	[
 		'set zipfian param too large',
-		0,
+		2,
 		[qr{zipfian parameter must be in range \(0, 1\) U \(1, \d+\]}],
 		q{\set i random_zipfian(0, 10, 1000000)}
 	],
 	[
-		'set non numeric value',                     0,
+		'set non numeric value',                     2,
 		[qr{malformed variable "foo" value: "bla"}], q{\set i :foo + 1}
 	],
 	[ 'set no expression',    1, [qr{syntax error}],      q{\set i} ],
 	[ 'set missing argument', 1, [qr{missing argument}i], q{\set} ],
 	[
-		'set not a bool',                      0,
+		'set not a bool',                      2,
 		[qr{cannot coerce double to boolean}], q{\set b NOT 0.0}
 	],
 	[
-		'set not an int',                   0,
+		'set not an int',                   2,
 		[qr{cannot coerce boolean to int}], q{\set i TRUE + 2}
 	],
 	[
-		'set not a double',                    0,
+		'set not a double',                    2,
 		[qr{cannot coerce boolean to double}], q{\set d ln(TRUE)}
 	],
 	[
@@ -681,7 +718,7 @@ SELECT LEAST(:i, :i, :i, :i, :i, :i, :i, :i, :i, :i, :i);
 		q{\set i CASE TRUE THEN 1 ELSE 0 END}
 	],
 	[
-		'set random error',                 0,
+		'set random error',                 2,
 		[qr{cannot coerce boolean to int}], q{\set b random(FALSE, TRUE)}
 	],
 	[
@@ -693,20 +730,32 @@ SELECT LEAST(:i, :i, :i, :i, :i, :i, :i, :i, :i, :i, :i);
 		[qr{at least one argument expected}], q{\set i greatest())}
 	],
 
+	# SET: ARITHMETIC OVERFLOW DETECTION
+	[ 'set double to int overflow',                   2,
+		[ qr{double to int overflow for 100} ], q{\set i int(1E32)} ],
+	[ 'set bigint add overflow', 2,
+		[ qr{int add out} ], q{\set i (1<<62) + (1<<62)} ],
+	[ 'set bigint sub overflow', 2,
+		[ qr{int sub out} ], q{\set i 0 - (1<<62) - (1<<62) - (1<<62)} ],
+	[ 'set bigint mul overflow', 2,
+		[ qr{int mul out} ], q{\set i 2 * (1<<62)} ],
+	[ 'set bigint div out of range', 2,
+		[ qr{bigint div out of range} ], q{\set i :minint / -1} ],
+
 	# SETSHELL
 	[
-		'setshell not an int',                0,
+		'setshell not an int',                2,
 		[qr{command must return an integer}], q{\setshell i echo -n one}
 	],
 	[ 'setshell missing arg', 1, [qr{missing argument }], q{\setshell var} ],
 	[
-		'setshell no such command',   0,
+		'setshell no such command',   2,
 		[qr{could not read result }], q{\setshell var no-such-command}
 	],
 
 	# SLEEP
 	[
-		'sleep undefined variable',      0,
+		'sleep undefined variable',      2,
 		[qr{sleep: undefined variable}], q{\sleep :nosuchvariable}
 	],
 	[
@@ -728,21 +777,47 @@ SELECT LEAST(:i, :i, :i, :i, :i, :i, :i, :i, :i, :i, :i);
 		[qr{invalid command .* "nosuchcommand"}], q{\nosuchcommand}
 	],
 	[ 'misc empty script', 1, [qr{empty command list for script}], q{} ],
-	[
-		'bad boolean',                     0,
-		[qr{malformed variable.*trueXXX}], q{\set b :badtrue or true}
-	],);
+	[   'bad boolean',                     2,
+		[qr{malformed variable.*trueXXX}], q{\set b :badtrue or true} ],
 
+	# GSET & CSET
+	[   'gset no row',                    2,
+		[qr{expected one row, got 0\b}], q{SELECT WHERE FALSE \gset} ],
+	[   'cset no row',                    2,
+		[qr{expected one row, got 0\b}], q{SELECT WHERE FALSE \cset
+SELECT 1 AS i\gset}, 1 ],
+	[ 'gset alone', 1, [qr{gset/cset cannot start a script}], q{\gset} ],
+	[   'gset no SQL',                        1,
+		[qr{gset/cset must follow a SQL command}], q{\set i +1
+\gset} ],
+	[   'gset too many arguments',                   1,
+		[qr{too many arguments}], q{SELECT 1 \gset a b} ],
+	[   'gset after gset',                        1,
+	    [qr{gset/cset cannot follow one another}], q{SELECT 1 AS i \gset
+\gset} ],
+	[   'gset non SELECT', 2,
+		[qr{expected one row, got 0}],
+		q{DROP TABLE IF EXISTS no_such_table \gset} ],
+	[   'gset bad default name', 2,
+		[qr{error storing into variable \?column\?}],
+		q{SELECT 1 \gset} ],
+	[   'gset bad name', 2,
+		[qr{error storing into variable bad name!}],
+		q{SELECT 1 AS "bad name!" \gset} ],
+	);
 
 for my $e (@errors)
 {
-	my ($name, $status, $re, $script) = @$e;
+	my ($name, $status, $re, $script, $no_prepare) = @$e;
+	$status != 0 or die "invalid expected status for test \"$name\"";
 	my $n = '001_pgbench_error_' . $name;
 	$n =~ s/ /_/g;
 	pgbench(
-		'-n -t 1 -Dfoo=bla -Dnull=null -Dtrue=true -Done=1 -Dzero=0.0 -Dbadtrue=trueXXX -M prepared',
+		'-n -t 1 -Dfoo=bla -Dnull=null -Dtrue=true -Done=1 -Dzero=0.0 -Dbadtrue=trueXXX' .
+		' -Dmaxint=9223372036854775807 -Dminint=-9223372036854775808' .
+			($no_prepare ? '' : ' -M prepared'),
 		$status,
-		[ $status ? qr{^$} : qr{processed: 0/1} ],
+		[ $status == 1 ? qr{^$} : qr{processed: 0/1} ],
 		$re,
 		'pgbench script error: ' . $name,
 		{ $n => $script });

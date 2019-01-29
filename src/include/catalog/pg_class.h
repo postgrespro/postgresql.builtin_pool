@@ -4,7 +4,7 @@
  *	  definition of the "relation" system catalog (pg_class)
  *
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/catalog/pg_class.h
@@ -28,6 +28,7 @@
  */
 CATALOG(pg_class,1259,RelationRelationId) BKI_BOOTSTRAP BKI_ROWTYPE_OID(83,RelationRelation_Rowtype_Id) BKI_SCHEMA_MACRO
 {
+	Oid			oid;			/* oid */
 	NameData	relname;		/* class name */
 	Oid			relnamespace;	/* OID of namespace containing this class */
 	Oid			reltype;		/* OID of entry in pg_type for table's
@@ -57,10 +58,9 @@ CATALOG(pg_class,1259,RelationRelationId) BKI_BOOTSTRAP BKI_ROWTYPE_OID(83,Relat
 	 * contain entries with negative attnums for system attributes.
 	 */
 	int16		relchecks;		/* # of CHECK constraints for class */
-	bool		relhasoids;		/* T if we generate OIDs for rows of rel */
 	bool		relhasrules;	/* has (or has had) any rules */
 	bool		relhastriggers; /* has (or has had) any TRIGGERs */
-	bool		relhassubclass; /* has (or has had) derived classes */
+	bool		relhassubclass; /* has (or has had) child tables or indexes */
 	bool		relrowsecurity; /* row security is enabled or not */
 	bool		relforcerowsecurity;	/* row security forced for owners or
 										 * not */
@@ -121,6 +121,19 @@ typedef FormData_pg_class *Form_pg_class;
  * has the same meaning as 'd'.
  */
 #define		  REPLICA_IDENTITY_INDEX	'i'
+
+/*
+ * Relation kinds that have physical storage. These relations normally have
+ * relfilenode set to non-zero, but it can also be zero if the relation is
+ * mapped.
+ */
+#define RELKIND_HAS_STORAGE(relkind) \
+	((relkind) == RELKIND_RELATION || \
+	 (relkind) == RELKIND_INDEX || \
+	 (relkind) == RELKIND_SEQUENCE || \
+	 (relkind) == RELKIND_TOASTVALUE || \
+	 (relkind) == RELKIND_MATVIEW)
+
 
 #endif							/* EXPOSE_TO_CLIENT_CODE */
 

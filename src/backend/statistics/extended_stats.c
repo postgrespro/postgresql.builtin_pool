@@ -6,7 +6,7 @@
  * Generic code supporting statistics objects created via CREATE STATISTICS.
  *
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -17,8 +17,8 @@
 #include "postgres.h"
 
 #include "access/genam.h"
-#include "access/heapam.h"
 #include "access/htup_details.h"
+#include "access/table.h"
 #include "catalog/indexing.h"
 #include "catalog/pg_collation.h"
 #include "catalog/pg_statistic_ext.h"
@@ -79,7 +79,7 @@ BuildRelationExtStatistics(Relation onerel, double totalrows,
 								ALLOCSET_DEFAULT_SIZES);
 	oldcxt = MemoryContextSwitchTo(cxt);
 
-	pg_stext = heap_open(StatisticExtRelationId, RowExclusiveLock);
+	pg_stext = table_open(StatisticExtRelationId, RowExclusiveLock);
 	stats = fetch_statentries_for_relation(pg_stext, RelationGetRelid(onerel));
 
 	foreach(lc, stats)
@@ -130,7 +130,7 @@ BuildRelationExtStatistics(Relation onerel, double totalrows,
 		statext_store(pg_stext, stat->statOid, ndistinct, dependencies, stats);
 	}
 
-	heap_close(pg_stext, RowExclusiveLock);
+	table_close(pg_stext, RowExclusiveLock);
 
 	MemoryContextSwitchTo(oldcxt);
 	MemoryContextDelete(cxt);
@@ -196,8 +196,8 @@ fetch_statentries_for_relation(Relation pg_statext, Oid relid)
 		Form_pg_statistic_ext staForm;
 
 		entry = palloc0(sizeof(StatExtEntry));
-		entry->statOid = HeapTupleGetOid(htup);
 		staForm = (Form_pg_statistic_ext) GETSTRUCT(htup);
+		entry->statOid = staForm->oid;
 		entry->schema = get_namespace_name(staForm->stxnamespace);
 		entry->name = pstrdup(NameStr(staForm->stxname));
 		for (i = 0; i < staForm->stxkeys.dim1; i++)
@@ -363,18 +363,18 @@ multi_sort_init(int ndims)
 }
 
 /*
- * Prepare sort support info using the given sort operator
+ * Prepare sort support info using the given sort operator and collation
  * at the position 'sortdim'
  */
 void
-multi_sort_add_dimension(MultiSortSupport mss, int sortdim, Oid oper)
+multi_sort_add_dimension(MultiSortSupport mss, int sortdim,
+						 Oid oper, Oid collation)
 {
 	SortSupport ssup = &mss->ssup[sortdim];
 
 	ssup->ssup_cxt = CurrentMemoryContext;
-	ssup->ssup_collation = DEFAULT_COLLATION_OID;
+	ssup->ssup_collation = collation;
 	ssup->ssup_nulls_first = false;
-	ssup->ssup_cxt = CurrentMemoryContext;
 
 	PrepareSortSupportFromOrderingOp(oper, ssup);
 }

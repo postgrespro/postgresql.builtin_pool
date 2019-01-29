@@ -29,7 +29,7 @@
  * that because it's faster in typical non-inherited cases.
  *
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -40,8 +40,8 @@
 
 #include "postgres.h"
 
-#include "access/heapam.h"
 #include "access/sysattr.h"
+#include "access/table.h"
 #include "catalog/pg_type.h"
 #include "nodes/makefuncs.h"
 #include "optimizer/prep.h"
@@ -94,7 +94,7 @@ preprocess_targetlist(PlannerInfo *root)
 		if (target_rte->rtekind != RTE_RELATION)
 			elog(ERROR, "result relation must be a regular relation");
 
-		target_relation = heap_open(target_rte->relid, NoLock);
+		target_relation = table_open(target_rte->relid, NoLock);
 	}
 	else
 		Assert(command_type == CMD_SELECT);
@@ -233,7 +233,7 @@ preprocess_targetlist(PlannerInfo *root)
 							  target_relation);
 
 	if (target_relation)
-		heap_close(target_relation, NoLock);
+		table_close(target_relation, NoLock);
 
 	return tlist;
 }

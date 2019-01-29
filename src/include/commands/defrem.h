@@ -4,7 +4,7 @@
  *	  POSTGRES define and remove utility definitions.
  *
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/commands/defrem.h
@@ -41,7 +41,8 @@ extern void ReindexMultipleTables(const char *objectName, ReindexObjectType obje
 extern char *makeObjectName(const char *name1, const char *name2,
 			   const char *label);
 extern char *ChooseRelationName(const char *name1, const char *name2,
-				   const char *label, Oid namespaceid);
+				   const char *label, Oid namespaceid,
+				   bool isconstraint);
 extern bool CheckIndexCompatible(Oid oldId,
 					 const char *accessMethodName,
 					 List *attributeList,

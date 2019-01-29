@@ -4,7 +4,7 @@
  *	  prototypes for partprune.c
  *
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/partitioning/partprune.h
@@ -23,8 +23,6 @@
  *		Stores information needed at runtime for pruning computations
  *		related to a single partitioned table.
  *
- * partrel			Relcache pointer for the partitioned table,
- *					if we have it open (else NULL).
  * strategy			Partition strategy, e.g. LIST, RANGE, HASH.
  * partnatts		Number of columns in the partition key.
  * nparts			Number of partitions in this partitioned table.
@@ -50,7 +48,6 @@
  */
 typedef struct PartitionPruneContext
 {
-	Relation	partrel;
 	char		strategy;
 	int			partnatts;
 	int			nparts;

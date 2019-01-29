@@ -103,6 +103,8 @@
 #ssl_ciphers = 'HIGH:MEDIUM:+3DES:!aNULL' # allowed SSL ciphers
 #ssl_prefer_server_ciphers = on
 #ssl_ecdh_curve = 'prime256v1'
+#ssl_min_protocol_version = 'TLSv1'
+#ssl_max_protocol_version = ''
 #ssl_dh_params_file = ''
 #ssl_passphrase_command = ''
 #ssl_passphrase_command_supports_reload = off
@@ -226,6 +228,44 @@
 #archive_timeout = 0		# force a logfile segment switch after this
 				# number of seconds; 0 disables
 
+# - Archive Recovery -
+
+# These are only used in recovery mode.
+
+#restore_command = ''		# command to use to restore an archived logfile segment
+				# placeholders: %p = path of file to restore
+				#               %f = file name only
+				# e.g. 'cp /mnt/server/archivedir/%f %p'
+				# (change requires restart)
+#archive_cleanup_command = ''	# command to execute at every restartpoint
+				# (change requires restart)
+#recovery_end_command = ''	# command to execute at completion of recovery
+				# (change requires restart)
+
+# - Recovery Target -
+
+# Set these only when performing a targeted recovery.
+
+#recovery_target = ''		# 'immediate' to end recovery as soon as a
+                                # consistent state is reached
+				# (change requires restart)
+#recovery_target_name = ''	# the named restore point to which recovery will proceed
+				# (change requires restart)
+#recovery_target_time = ''	# the time stamp up to which recovery will proceed
+				# (change requires restart)
+#recovery_target_xid = ''	# the transaction ID up to which recovery will proceed
+				# (change requires restart)
+#recovery_target_lsn = ''	# the WAL LSN up to which recovery will proceed
+				# (change requires restart)
+#recovery_target_inclusive = on # Specifies whether to stop:
+				# just after the specified recovery target (on)
+				# just before the recovery target (off)
+				# (change requires restart)
+#recovery_target_timeline = 'latest'	# 'current', 'latest', or timeline ID
+				# (change requires restart)
+#recovery_target_action = 'pause'	# 'pause', 'promote', 'shutdown'
+				# (change requires restart)
+
 
 #------------------------------------------------------------------------------
 # REPLICATION
@@ -259,6 +299,12 @@
 
 # These settings are ignored on a master server.
 
+#primary_conninfo = ''			# connection string to sending server
+					# (change requires restart)
+#primary_slot_name = ''			# replication slot on sending server
+					# (change requires restart)
+#promote_trigger_file = ''		# file name whose presence ends recovery
+					# (change requires restart)
 #hot_standby = on			# "off" disallows queries during recovery
 					# (change requires restart)
 #max_standby_archive_delay = 30s	# max delay before canceling queries
@@ -276,6 +322,8 @@
 					# in milliseconds; 0 disables
 #wal_retrieve_retry_interval = 5s	# time to wait before retrying to
 					# retrieve WAL after a failed attempt
+#recovery_min_apply_delay = 0		# minimum delay for applying changes during recovery
+					# (change requires restart)
 
 # - Subscribers -
 
@@ -320,11 +368,12 @@
 #parallel_setup_cost = 1000.0	# same scale as above
 
 #jit_above_cost = 100000		# perform JIT compilation if available
-					# and query more expensive, -1 disables
-#jit_optimize_above_cost = 500000	# optimize JITed functions if query is
-					# more expensive, -1 disables
-#jit_inline_above_cost = 500000		# attempt to inline operators and
-					# functions if query is more expensive,
+					# and query more expensive than this;
+					# -1 disables
+#jit_inline_above_cost = 500000		# inline small functions if query is
+					# more expensive than this; -1 disables
+#jit_optimize_above_cost = 500000	# use expensive JIT optimizations if
+					# query is more expensive than this;
 					# -1 disables
 
 #min_parallel_table_scan_size = 8MB
@@ -350,7 +399,9 @@
 #join_collapse_limit = 8		# 1 disables collapsing of explicit
 					# JOIN clauses
 #force_parallel_mode = off
-#plan_cache_mode = auto
+#jit = on				# allow JIT compilation
+#plan_cache_mode = auto			# auto, force_generic_plan or
+					# force_custom_plan
 
 
 #------------------------------------------------------------------------------
@@ -403,17 +454,6 @@
 
 # - When to Log -
 
-#client_min_messages = notice		# values in order of decreasing detail:
-					#   debug5
-					#   debug4
-					#   debug3
-					#   debug2
-					#   debug1
-					#   log
-					#   notice
-					#   warning
-					#   error
-
 #log_min_messages = warning		# values in order of decreasing detail:
 					#   debug5
 					#   debug4
@@ -442,11 +482,14 @@
 					#   fatal
 					#   panic (effectively off)
 
-#log_min_duration_statement = -1	# -1 is disabled, 0 logs all statements
-					# and their durations, > 0 logs only
-					# statements running at least this number
-					# of milliseconds
+#log_min_duration_statement = -1	# logs statements and their durations
+					# according to log_statement_sample_rate. -1 is disabled,
+					# 0 logs all statement, > 0 logs only statements running at
+					# least this number of milliseconds.
 
+#log_statement_sample_rate = 1	# Fraction of logged statements over
+					# log_min_duration_statement. 1.0 logs all statements,
+					# 0 never logs.
 
 # - What to Log -
 
@@ -558,6 +601,16 @@
 
 # - Statement Behavior -
 
+#client_min_messages = notice		# values in order of decreasing detail:
+					#   debug5
+					#   debug4
+					#   debug3
+					#   debug2
+					#   debug1
+					#   log
+					#   notice
+					#   warning
+					#   error
 #search_path = '"$user", public'	# schema names
 #row_security = on
 #default_tablespace = ''		# a tablespace name, '' uses the default
@@ -615,13 +668,12 @@
 #shared_preload_libraries = ''	# (change requires restart)
 #local_preload_libraries = ''
 #session_preload_libraries = ''
+#jit_provider = 'llvmjit'		# JIT library to use
 
 # - Other Defaults -
 
 #dynamic_library_path = '$libdir'
 
-#jit = on				# allow JIT compilation
-#jit_provider = 'llvmjit'		# JIT implementation to use
 
 #------------------------------------------------------------------------------
 # LOCK MANAGEMENT
@@ -646,7 +698,6 @@
 
 #array_nulls = on
 #backslash_quote = safe_encoding	# on, off, or safe_encoding
-#default_with_oids = off
 #escape_string_warning = on
 #lo_compat_privileges = off
 #operator_precedence_warning = off
@@ -665,6 +716,7 @@
 
 #exit_on_error = off			# terminate session on any error?
 #restart_after_crash = on		# reinitialize after backend crash?
+#data_sync_retry = off			# retry or panic on failure to fsync data?
 
 
 #------------------------------------------------------------------------------

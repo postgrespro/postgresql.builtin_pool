@@ -34,7 +34,7 @@
  * same flex version, or if they don't use the same flex options.
  *
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/fe_utils/psqlscan_int.h
@@ -112,6 +112,7 @@ typedef struct PsqlScanStateData
 	int			start_state;	/* yylex's starting/finishing state */
 	int			paren_depth;	/* depth of nesting in parentheses */
 	int			xcdepth;		/* depth of nesting in slash-star comments */
+	int			escaped_semicolons;	/* number of embedded (\;) semicolons */
 	char	   *dolqstart;		/* current $foo$ quote start string */
 
 	/*

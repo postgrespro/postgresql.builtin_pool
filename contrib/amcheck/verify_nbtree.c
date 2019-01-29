@@ -14,7 +14,7 @@
  * that every visible heap tuple has a matching index tuple.
  *
  *
- * Copyright (c) 2017-2018, PostgreSQL Global Development Group
+ * Copyright (c) 2017-2019, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *	  contrib/amcheck/verify_nbtree.c
@@ -23,6 +23,7 @@
  */
 #include "postgres.h"
 
+#include "access/heapam.h"
 #include "access/htup_details.h"
 #include "access/nbtree.h"
 #include "access/transam.h"
@@ -218,7 +219,7 @@ bt_index_check_internal(Oid indrelid, bool parentcheck, bool heapallindexed)
 	 */
 	heapid = IndexGetRelation(indrelid, true);
 	if (OidIsValid(heapid))
-		heaprel = heap_open(heapid, lockmode);
+		heaprel = table_open(heapid, lockmode);
 	else
 		heaprel = NULL;
 
@@ -260,7 +261,7 @@ bt_index_check_internal(Oid indrelid, bool parentcheck, bool heapallindexed)
 	 */
 	index_close(indrel, lockmode);
 	if (heaprel)
-		heap_close(heaprel, lockmode);
+		table_close(heaprel, lockmode);
 }
 
 /*
@@ -289,12 +290,12 @@ btree_index_checkable(Relation rel)
 				 errdetail("Index \"%s\" is associated with temporary relation.",
 						   RelationGetRelationName(rel))));
 
-	if (!IndexIsValid(rel->rd_index))
+	if (!rel->rd_index->indisvalid)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("cannot check index \"%s\"",
 						RelationGetRelationName(rel)),
-				 errdetail("Index is not valid")));
+				 errdetail("Index is not valid.")));
 }
 
 /*

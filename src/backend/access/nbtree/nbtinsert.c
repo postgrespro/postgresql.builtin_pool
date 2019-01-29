@@ -3,7 +3,7 @@
  * nbtinsert.c
  *	  Item insertion in Lehman and Yao btrees for Postgres.
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -24,7 +24,6 @@
 #include "storage/lmgr.h"
 #include "storage/predicate.h"
 #include "storage/smgr.h"
-#include "utils/tqual.h"
 
 /* Minimum tree height for application of fastpath optimization */
 #define BTREE_FASTPATH_MIN_LEVEL	2
@@ -814,10 +813,7 @@ _bt_findinsertloc(Relation rel,
  *		INCOMPLETE_SPLIT flag on it, and release the buffer.
  *
  *		The locking interactions in this code are critical.  You should
- *		grok Lehman and Yao's paper before making any changes.  In addition,
- *		you need to understand how we disambiguate duplicate keys in this
- *		implementation, in order to be able to find our location using
- *		L&Y "move right" operations.
+ *		grok Lehman and Yao's paper before making any changes.
  *----------
  */
 static void
@@ -876,10 +872,10 @@ _bt_insertonpg(Relation rel,
 		 * all the required conditions, including the fact that this page has
 		 * enough freespace. Note that this routine can in theory deal with
 		 * the situation where a NULL stack pointer is passed (that's what
-		 * would happen if the fastpath is taken), like it does during crash
-		 * recovery. But that path is much slower, defeating the very purpose
-		 * of the optimization.  The following assertion should protect us
-		 * from any future code changes that invalidate those assumptions.
+		 * would happen if the fastpath is taken). But that path is much
+		 * slower, defeating the very purpose of the optimization.  The
+		 * following assertion should protect us from any future code changes
+		 * that invalidate those assumptions.
 		 *
 		 * Note that whenever we fail to take the fastpath, we clear the
 		 * cached block. Checking for a valid cached block at this point is
@@ -1807,8 +1803,8 @@ _bt_checksplitloc(FindSplitData *state,
  * and it'd be possible for some other process to try to split or delete
  * one of these pages, and get confused because it cannot find the downlink.)
  *
- * stack - stack showing how we got here.  May be NULL in cases that don't
- *			have to be efficient (concurrent ROOT split, WAL recovery)
+ * stack - stack showing how we got here.  Will be NULL when splitting true
+ *			root, or during concurrent root split, where we can be inefficient
  * is_root - we split the true root
  * is_only - we split a page alone on its level (might have been fast root)
  */

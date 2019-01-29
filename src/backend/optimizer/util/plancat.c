@@ -4,7 +4,7 @@
  *	   routines for accessing the system catalogs
  *
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -18,10 +18,10 @@
 #include <math.h>
 
 #include "access/genam.h"
-#include "access/heapam.h"
 #include "access/htup_details.h"
 #include "access/nbtree.h"
 #include "access/sysattr.h"
+#include "access/table.h"
 #include "access/transam.h"
 #include "access/xlog.h"
 #include "catalog/catalog.h"
@@ -118,7 +118,7 @@ get_relation_info(PlannerInfo *root, Oid relationObjectId, bool inhparent,
 	 * the rewriter or when expand_inherited_rtentry() added it to the query's
 	 * rangetable.
 	 */
-	relation = heap_open(relationObjectId, NoLock);
+	relation = table_open(relationObjectId, NoLock);
 
 	/* Temporary and unlogged relations are inaccessible during recovery. */
 	if (!RelationNeedsWAL(relation) && RecoveryInProgress())
@@ -138,9 +138,8 @@ get_relation_info(PlannerInfo *root, Oid relationObjectId, bool inhparent,
 
 	/*
 	 * Estimate relation size --- unless it's an inheritance parent, in which
-	 * case the size will be computed later in set_append_rel_pathlist, and we
-	 * must leave it zero for now to avoid bollixing the total_table_pages
-	 * calculation.
+	 * case the size we want is not the rel's own size but the size of its
+	 * inheritance tree.  That will be computed in set_append_rel_size().
 	 */
 	if (!inhparent)
 		estimate_rel_size(relation, rel->attr_widths - rel->min_attr,
@@ -202,9 +201,9 @@ get_relation_info(PlannerInfo *root, Oid relationObjectId, bool inhparent,
 			 * queries.  Note that this is OK because the data structure we
 			 * are constructing is only used by the planner --- the executor
 			 * still needs to insert into "invalid" indexes, if they're marked
-			 * IndexIsReady.
+			 * indisready.
 			 */
-			if (!IndexIsValid(index))
+			if (!index->indisvalid)
 			{
 				index_close(indexRelation, NoLock);
 				continue;
@@ -264,8 +263,8 @@ get_relation_info(PlannerInfo *root, Oid relationObjectId, bool inhparent,
 
 			info->relam = indexRelation->rd_rel->relam;
 
-			/* We copy just the fields we need, not all of rd_amroutine */
-			amroutine = indexRelation->rd_amroutine;
+			/* We copy just the fields we need, not all of rd_indam */
+			amroutine = indexRelation->rd_indam;
 			info->amcanorderbyop = amroutine->amcanorderbyop;
 			info->amoptionalkey = amroutine->amoptionalkey;
 			info->amsearcharray = amroutine->amsearcharray;
@@ -451,7 +450,7 @@ get_relation_info(PlannerInfo *root, Oid relationObjectId, bool inhparent,
 	if (inhparent && relation->rd_rel->relkind == RELKIND_PARTITIONED_TABLE)
 		set_relation_partition_info(root, rel, relation);
 
-	heap_close(relation, NoLock);
+	table_close(relation, NoLock);
 
 	/*
 	 * Allow a plugin to editorialize on the info we obtained from the
@@ -622,7 +621,7 @@ infer_arbiter_indexes(PlannerInfo *root)
 	relationObjectId = rt_fetch(root->parse->resultRelation,
 								root->parse->rtable)->relid;
 
-	relation = heap_open(relationObjectId, NoLock);
+	relation = table_open(relationObjectId, NoLock);
 
 	/*
 	 * Build normalized/BMS representation of plain indexed attributes, as
@@ -697,7 +696,7 @@ infer_arbiter_indexes(PlannerInfo *root)
 		idxRel = index_open(indexoid, RowExclusiveLock);
 		idxForm = idxRel->rd_index;
 
-		if (!IndexIsValid(idxForm))
+		if (!idxForm->indisvalid)
 			goto next;
 
 		/*
@@ -721,7 +720,7 @@ infer_arbiter_indexes(PlannerInfo *root)
 			results = lappend_oid(results, idxForm->indexrelid);
 			list_free(indexList);
 			index_close(idxRel, NoLock);
-			heap_close(relation, NoLock);
+			table_close(relation, NoLock);
 			return results;
 		}
 		else if (indexOidFromConstraint != InvalidOid)
@@ -816,7 +815,7 @@ next:
 	}
 
 	list_free(indexList);
-	heap_close(relation, NoLock);
+	table_close(relation, NoLock);
 
 	if (results == NIL)
 		ereport(ERROR,
@@ -1144,11 +1143,11 @@ get_relation_data_width(Oid relid, int32 *attr_widths)
 	Relation	relation;
 
 	/* As above, assume relation is already locked */
-	relation = heap_open(relid, NoLock);
+	relation = table_open(relid, NoLock);
 
 	result = get_rel_data_width(relation, attr_widths);
 
-	heap_close(relation, NoLock);
+	table_close(relation, NoLock);
 
 	return result;
 }
@@ -1184,7 +1183,7 @@ get_relation_constraints(PlannerInfo *root,
 	/*
 	 * We assume the relation has already been safely locked.
 	 */
-	relation = heap_open(relationObjectId, NoLock);
+	relation = table_open(relationObjectId, NoLock);
 
 	constr = relation->rd_att->constr;
 	if (constr != NULL)
@@ -1295,7 +1294,7 @@ get_relation_constraints(PlannerInfo *root,
 		}
 	}
 
-	heap_close(relation, NoLock);
+	table_close(relation, NoLock);
 
 	return result;
 }
@@ -1572,7 +1571,7 @@ build_physical_tlist(PlannerInfo *root, RelOptInfo *rel)
 	{
 		case RTE_RELATION:
 			/* Assume we already have adequate lock */
-			relation = heap_open(rte->relid, NoLock);
+			relation = table_open(rte->relid, NoLock);
 
 			numattrs = RelationGetNumberOfAttributes(relation);
 			for (attrno = 1; attrno <= numattrs; attrno++)
@@ -1601,7 +1600,7 @@ build_physical_tlist(PlannerInfo *root, RelOptInfo *rel)
 												false));
 			}
 
-			heap_close(relation, NoLock);
+			table_close(relation, NoLock);
 			break;
 
 		case RTE_SUBQUERY:
@@ -1692,11 +1691,10 @@ build_index_tlist(PlannerInfo *root, IndexOptInfo *index,
 		if (indexkey != 0)
 		{
 			/* simple column */
-			Form_pg_attribute att_tup;
+			const FormData_pg_attribute *att_tup;
 
 			if (indexkey < 0)
-				att_tup = SystemAttributeDefinition(indexkey,
-													heapRelation->rd_rel->relhasoids);
+				att_tup = SystemAttributeDefinition(indexkey);
 			else
 				att_tup = TupleDescAttr(heapRelation->rd_att, indexkey - 1);
 
@@ -1859,7 +1857,7 @@ has_row_triggers(PlannerInfo *root, Index rti, CmdType event)
 	bool		result = false;
 
 	/* Assume we already have adequate lock */
-	relation = heap_open(rte->relid, NoLock);
+	relation = table_open(rte->relid, NoLock);
 
 	trigDesc = relation->trigdesc;
 	switch (event)
@@ -1887,7 +1885,7 @@ has_row_triggers(PlannerInfo *root, Index rti, CmdType event)
 			break;
 	}
 
-	heap_close(relation, NoLock);
+	table_close(relation, NoLock);
 	return result;
 }
 

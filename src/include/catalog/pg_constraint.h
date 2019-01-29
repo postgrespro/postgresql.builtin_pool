@@ -4,7 +4,7 @@
  *	  definition of the "constraint" system catalog (pg_constraint)
  *
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/catalog/pg_constraint.h
@@ -31,6 +31,8 @@
  */
 CATALOG(pg_constraint,2606,ConstraintRelationId)
 {
+	Oid			oid;			/* oid */
+
 	/*
 	 * conname + connamespace is deliberately not unique; we allow, for
 	 * example, the same name to be used for constraints of different
@@ -39,6 +41,10 @@ CATALOG(pg_constraint,2606,ConstraintRelationId)
 	 * global lock to generate a globally unique name for a nameless
 	 * constraint.  We associate a namespace with constraint names only for
 	 * SQL-spec compatibility.
+	 *
+	 * However, we do require conname to be unique among the constraints of a
+	 * single relation or domain.  This is enforced by a unique index on
+	 * conrelid + contypid + conname.
 	 */
 	NameData	conname;		/* name of this constraint */
 	Oid			connamespace;	/* OID of namespace containing constraint */
@@ -106,12 +112,6 @@ CATALOG(pg_constraint,2606,ConstraintRelationId)
 	int16		conkey[1];
 
 	/*
-	 * Columns of conrelid that the constraint does not apply to, but are
-	 * included into the same index as the key columns
-	 */
-	int16		conincluding[1];
-
-	/*
 	 * If a foreign key, the referenced columns of confrelid
 	 */
 	int16		confkey[1];
@@ -144,11 +144,6 @@ CATALOG(pg_constraint,2606,ConstraintRelationId)
 	 * If a check constraint, nodeToString representation of expression
 	 */
 	pg_node_tree conbin;
-
-	/*
-	 * If a check constraint, source-text representation of expression
-	 */
-	text		consrc;
 #endif
 } FormData_pg_constraint;
 
@@ -226,20 +221,17 @@ extern Oid CreateConstraintEntry(const char *constraintName,
 					  const Oid *exclOp,
 					  Node *conExpr,
 					  const char *conBin,
-					  const char *conSrc,
 					  bool conIsLocal,
 					  int conInhCount,
 					  bool conNoInherit,
 					  bool is_internal);
 
-extern void CloneForeignKeyConstraints(Oid parentId, Oid relationId,
-						   List **cloned);
-
 extern void RemoveConstraintById(Oid conId);
 extern void RenameConstraintById(Oid conId, const char *newname);
 
 extern bool ConstraintNameIsUsed(ConstraintCategory conCat, Oid objId,
-					 Oid objNamespace, const char *conname);
+					 const char *conname);
+extern bool ConstraintNameExists(const char *conname, Oid namespaceid);
 extern char *ChooseConstraintName(const char *name1, const char *name2,
 					 const char *label, Oid namespaceid,
 					 List *others);
@@ -256,6 +248,9 @@ extern Oid	get_relation_idx_constraint_oid(Oid relationId, Oid indexId);
 
 extern Bitmapset *get_primary_key_attnos(Oid relid, bool deferrableOk,
 					   Oid *constraintOid);
+extern void DeconstructFkConstraintRow(HeapTuple tuple, int *numfks,
+						   AttrNumber *conkey, AttrNumber *confkey,
+						   Oid *pf_eq_oprs, Oid *pp_eq_oprs, Oid *ff_eq_oprs);
 
 extern bool check_functional_grouping(Oid relid,
 						  Index varno, Index varlevelsup,

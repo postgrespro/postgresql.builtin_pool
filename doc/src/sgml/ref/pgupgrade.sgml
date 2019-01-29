@@ -164,6 +164,14 @@
      </varlistentry>
 
      <varlistentry>
+      <term><option>-s</option> <replaceable>dir</replaceable></term>
+      <term><option>--socketdir=</option><replaceable>dir</replaceable></term>
+      <listitem><para>directory to use for postmaster sockets during upgrade;
+      default is current working directory; environment
+      variable <envar>PGSOCKETDIR</envar></para></listitem>
+     </varlistentry>
+
+     <varlistentry>
       <term><option>-U</option> <replaceable>username</replaceable></term>
       <term><option>--username=</option><replaceable>username</replaceable></term>
       <listitem><para>cluster's install user name; environment
@@ -180,6 +188,28 @@
       <term><option>-V</option></term>
       <term><option>--version</option></term>
       <listitem><para>display version information, then exit</para></listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><option>--clone</option></term>
+      <listitem>
+       <para>
+        Use efficient file cloning (also known as <quote>reflinks</quote> on
+        some systems) instead of copying files to the new cluster.  This can
+        result in near-instantaneous copying of the data files, giving the
+        speed advantages of <option>-k</option>/<option>--link</option> while
+        leaving the old cluster untouched.
+       </para>
+
+       <para>
+        File cloning is only supported on some operating systems and file
+        systems.  If it is selected but not supported, the
+        <application>pg_upgrade</application> run will error.  At present, it
+        is supported on Linux (kernel 4.5 or later) with Btrfs and XFS (on
+        file systems created with reflink support, which is not the default
+        for XFS at this writing), and on macOS with APFS.
+       </para>
+      </listitem>
      </varlistentry>
 
      <varlistentry>
@@ -326,7 +356,8 @@ NET STOP postgresql-&majorversion;
      against the old primary and standby clusters.  Verify that the
      <quote>Latest checkpoint location</quote> values match in all clusters.
      (There will be a mismatch if old standby servers were shut down
-     before the old primary.)  Also, change <varname>wal_level</varname> to
+     before the old primary or if the old standby servers are still running.)
+     Also, change <varname>wal_level</varname> to
      <literal>replica</literal> in the <filename>postgresql.conf</filename> file on the
      new primary cluster.
     </para>
@@ -339,7 +370,7 @@ NET STOP postgresql-&majorversion;
      Always run the <application>pg_upgrade</application> binary of the new server, not the old one.
      <application>pg_upgrade</application> requires the specification of the old and new cluster's
      data and executable (<filename>bin</filename>) directories. You can also specify
-     user and port values, and whether you want the data files linked
+     user and port values, and whether you want the data files linked or cloned
      instead of the default copy behavior.
     </para>
 
@@ -350,8 +381,12 @@ NET STOP postgresql-&majorversion;
      once you start the new cluster after the upgrade.  Link mode also
      requires that the old and new cluster data directories be in the
      same file system.  (Tablespaces and <filename>pg_wal</filename> can be on
-     different file systems.)  See <literal>pg_upgrade --help</literal> for a full
-     list of options.
+     different file systems.)
+     The clone mode provides the same speed and disk space advantages but will
+     not leave the old cluster unusable after the upgrade.  The clone mode
+     also requires that the old and new data directories be in the same file
+     system.  The clone mode is only available on certain operating systems
+     and file systems.
     </para>
 
     <para>
@@ -387,8 +422,9 @@ pg_upgrade.exe
      to perform only the checks, even if the old server is still
      running. <command>pg_upgrade --check</command> will also outline any
      manual adjustments you will need to make after the upgrade.  If you
-     are going to be using link mode, you should use the <option>--link</option>
-     option with <option>--check</option> to enable link-mode-specific checks.
+     are going to be using link or clone mode, you should use the option
+     <option>--link</option> or <option>--clone</option> with
+     <option>--check</option> to enable mode-specific checks.
      <command>pg_upgrade</command> requires write permission in the current directory.
     </para>
 
@@ -478,7 +514,7 @@ pg_upgrade.exe
       <para>
        Save any configuration files from the old standbys' configuration
        directories you need to keep, e.g.  <filename>postgresql.conf</filename>,
-       <literal>recovery.conf</literal>, because these will be overwritten or
+       <literal>pg_hba.conf</literal>, because these will be overwritten or
        removed in the next step.
       </para>
      </step>
@@ -681,11 +717,21 @@ psql --username=postgres --file=script.sql postgres
   <title>Notes</title>
 
   <para>
-   <application>pg_upgrade</application> does not support upgrading of databases
-   containing table columns using these <type>reg*</type> OID-referencing system data types:
-   <type>regproc</type>, <type>regprocedure</type>, <type>regoper</type>,
-   <type>regoperator</type>, <type>regconfig</type>, and
-   <type>regdictionary</type>.  (<type>regtype</type> can be upgraded.)
+   <application>pg_upgrade</application> creates various working files, such
+   as schema dumps, in the current working directory.  For security, be sure
+   that that directory is not readable or writable by any other users.
+  </para>
+
+  <para>
+   <application>pg_upgrade</application> launches short-lived postmasters in
+   the old and new data directories.  Temporary Unix socket files for
+   communication with these postmasters are, by default, made in the current
+   working directory.  In some situations the path name for the current
+   directory might be too long to be a valid socket name.  In that case you
+   can use the <option>-s</option> option to put the socket files in some
+   directory with a shorter path name.  For security, be sure that that
+   directory is not readable or writable by any other users.
+   (This is not relevant on Windows.)
   </para>
 
   <para>
@@ -705,6 +751,14 @@ psql --username=postgres --file=script.sql postgres
   </para>
 
   <para>
+   <application>pg_upgrade</application> does not support upgrading of databases
+   containing table columns using these <type>reg*</type> OID-referencing system data types:
+   <type>regproc</type>, <type>regprocedure</type>, <type>regoper</type>,
+   <type>regoperator</type>, <type>regconfig</type>, and
+   <type>regdictionary</type>.  (<type>regtype</type> can be upgraded.)
+  </para>
+
+  <para>
    If you are upgrading a pre-<productname>PostgreSQL</productname> 9.2 cluster
    that uses a configuration-file-only directory, you must pass the
    real data directory location to <application>pg_upgrade</application>, and
@@ -721,7 +775,8 @@ psql --username=postgres --file=script.sql postgres
 
   <para>
    If you want to use link mode and you do not want your old cluster
-   to be modified when the new cluster is started, make a copy of the
+   to be modified when the new cluster is started, consider using the clone mode.
+   If that is not available, make a copy of the
    old cluster and upgrade that in link mode. To make a valid copy
    of the old cluster, use <command>rsync</command> to create a dirty
    copy of the old cluster while the server is running, then shut down

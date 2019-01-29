@@ -2,7 +2,7 @@
  * logical.c
  *	   PostgreSQL logical decoding coordination
  *
- * Copyright (c) 2012-2018, PostgreSQL Global Development Group
+ * Copyright (c) 2012-2019, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *	  src/backend/replication/logical/logical.c
@@ -78,6 +78,11 @@ void
 CheckLogicalDecodingRequirements(void)
 {
 	CheckSlotRequirements();
+
+	/*
+	 * NB: Adding a new requirement likely means that RestoreSlotFromDisk()
+	 * needs the same check.
+	 */
 
 	if (wal_level < WAL_LEVEL_LOGICAL)
 		ereport(ERROR,

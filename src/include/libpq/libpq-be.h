@@ -8,7 +8,7 @@
  *	  Structs that need to be client-visible are in pqcomm.h.
  *
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/libpq/libpq-be.h
@@ -139,16 +139,16 @@ typedef struct Port
 	List	   *guc_options;
 
 	/*
+	 * The startup packet application name, only used here for the "connection
+	 * authorized" log message. We shouldn't use this post-startup, instead
+	 * the GUC should be used as application can change it afterward.
+	 */
+	char	   *application_name;
+
+	/*
 	 * Information that needs to be held during the authentication cycle.
 	 */
 	HbaLine    *hba;
-
-	/*
-	 * Information that really has no business at all being in struct Port,
-	 * but since it gets used by elog.c in the same way as database_name and
-	 * other members of this struct, we may as well keep it here.
-	 */
-	TimestampTz SessionStartTime;	/* backend start time */
 
 	/*
 	 * TCP keepalive settings.

@@ -4,7 +4,7 @@
  *	  Search code for postgres btrees.
  *
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -22,7 +22,6 @@
 #include "storage/predicate.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
-#include "utils/tqual.h"
 
 
 static bool _bt_readpage(IndexScanDesc scan, ScanDirection dir,
@@ -184,7 +183,7 @@ _bt_search(Relation rel, int keysz, ScanKey scankey, bool nextkey,
 
 	/*
 	 * If we're asked to lock leaf in write mode, but didn't manage to, then
-	 * relock.  That may happend when root page appears to be leaf.
+	 * relock.  That may happen when the root page appears to be leaf.
 	 */
 	if (access == BT_WRITE && page_access == BT_READ)
 	{
@@ -530,7 +529,7 @@ _bt_compare(Relation rel,
 													 scankey->sk_argument));
 
 			if (!(scankey->sk_flags & SK_BT_DESC))
-				result = -result;
+				INVERT_COMPARE_RESULT(result);
 		}
 
 		/* if the keys are unequal, return the difference */

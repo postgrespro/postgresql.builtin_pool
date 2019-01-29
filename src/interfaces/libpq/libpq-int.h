@@ -9,7 +9,7 @@
  *	  more likely to break across PostgreSQL releases than code that uses
  *	  only the official API.
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/interfaces/libpq/libpq-int.h
@@ -208,6 +208,8 @@ struct pg_result
 	PGresult_data *curBlock;	/* most recently allocated block */
 	int			curOffset;		/* start offset of free space in block */
 	int			spaceLeft;		/* number of free bytes remaining in block */
+
+	size_t		memorySize;		/* total space allocated for this PGresult */
 };
 
 /* PGAsyncStatusType defines the state of the query-execution state machine */
@@ -312,7 +314,6 @@ typedef struct pg_conn_host
 	char	   *password;		/* password for this host, read from the
 								 * password file; NULL if not sought or not
 								 * found in password file. */
-	struct addrinfo *addrlist;	/* list of possible backend addresses */
 } pg_conn_host;
 
 /*
@@ -396,6 +397,7 @@ struct pg_conn
 	int			nconnhost;		/* # of hosts named in conn string */
 	int			whichhost;		/* host we're currently trying/connected to */
 	pg_conn_host *connhost;		/* details about each named host */
+	char	   *connip;			/* IP address for current network connection */
 
 	/* Connection data */
 	pgsocket	sock;			/* FD for socket, PGINVALID_SOCKET if
@@ -412,7 +414,9 @@ struct pg_conn
 	/* Transient state needed while establishing connection */
 	bool		try_next_addr;	/* time to advance to next address/host? */
 	bool		try_next_host;	/* time to advance to next connhost[]? */
-	struct addrinfo *addr_cur;	/* backend address currently being tried */
+	struct addrinfo *addrlist;	/* list of addresses for current connhost */
+	struct addrinfo *addr_cur;	/* the one currently being tried */
+	int			addrlist_family;	/* needed to know how to free addrlist */
 	PGSetenvStatusType setenv_state;	/* for 2.0 protocol only */
 	const PQEnvironmentOption *next_eo;
 	bool		send_appname;	/* okay to send application_name? */
@@ -770,7 +774,7 @@ extern char *libpq_ngettext(const char *msgid, const char *msgid_plural, unsigne
 #define SOCK_ERRNO_SET(e) WSASetLastError(e)
 #else
 #define SOCK_ERRNO errno
-#define SOCK_STRERROR pqStrerror
+#define SOCK_STRERROR strerror_r
 #define SOCK_ERRNO_SET(e) (errno = (e))
 #endif
 

@@ -6,7 +6,7 @@
  * See src/backend/utils/misc/README for more information.
  *
  *
- * Copyright (c) 2000-2018, PostgreSQL Global Development Group
+ * Copyright (c) 2000-2019, PostgreSQL Global Development Group
  * Written by Peter Eisentraut <peter_e@gmx.net>.
  *
  * IDENTIFICATION
@@ -41,6 +41,7 @@
 #include "commands/vacuum.h"
 #include "commands/variable.h"
 #include "commands/trigger.h"
+#include "common/string.h"
 #include "funcapi.h"
 #include "jit/jit.h"
 #include "libpq/auth.h"
@@ -83,6 +84,7 @@
 #include "utils/float.h"
 #include "utils/memutils.h"
 #include "utils/pg_locale.h"
+#include "utils/pg_lsn.h"
 #include "utils/plancache.h"
 #include "utils/portal.h"
 #include "utils/ps_status.h"
@@ -194,6 +196,20 @@ static bool check_cluster_name(char **newval, void **extra, GucSource source);
 static const char *show_unix_socket_permissions(void);
 static const char *show_log_file_mode(void);
 static const char *show_data_directory_mode(void);
+static bool check_recovery_target_timeline(char **newval, void **extra, GucSource source);
+static void assign_recovery_target_timeline(const char *newval, void *extra);
+static bool check_recovery_target(char **newval, void **extra, GucSource source);
+static void assign_recovery_target(const char *newval, void *extra);
+static bool check_recovery_target_xid(char **newval, void **extra, GucSource source);
+static void assign_recovery_target_xid(const char *newval, void *extra);
+static bool check_recovery_target_time(char **newval, void **extra, GucSource source);
+static void assign_recovery_target_time(const char *newval, void *extra);
+static bool check_recovery_target_name(char **newval, void **extra, GucSource source);
+static void assign_recovery_target_name(const char *newval, void *extra);
+static bool check_recovery_target_lsn(char **newval, void **extra, GucSource source);
+static void assign_recovery_target_lsn(const char *newval, void *extra);
+static bool check_primary_slot_name(char **newval, void **extra, GucSource source);
+static bool check_default_with_oids(bool *newval, void **extra, GucSource source);
 
 /* Private functions in guc-file.l that need to be called from guc.c */
 static ConfigVariable *ProcessConfigFileInternal(GucContext context,
@@ -214,7 +230,8 @@ static const struct config_enum_entry bytea_output_options[] = {
 
 /*
  * We have different sets for client and server message level options because
- * they sort slightly different (see "log" level)
+ * they sort slightly different (see "log" level), and because "fatal"/"panic"
+ * aren't sensible for client_min_messages.
  */
 static const struct config_enum_entry client_message_level_options[] = {
 	{"debug5", DEBUG5, false},
@@ -228,8 +245,6 @@ static const struct config_enum_entry client_message_level_options[] = {
 	{"notice", NOTICE, false},
 	{"warning", WARNING, false},
 	{"error", ERROR, false},
-	{"fatal", FATAL, true},
-	{"panic", PANIC, true},
 	{NULL, 0, false}
 };
 
@@ -428,11 +443,21 @@ static const struct config_enum_entry password_encryption_options[] = {
 	{NULL, 0, false}
 };
 
+const struct config_enum_entry ssl_protocol_versions_info[] = {
+	{"", PG_TLS_ANY, false},
+	{"TLSv1", PG_TLS1_VERSION, false},
+	{"TLSv1.1", PG_TLS1_1_VERSION, false},
+	{"TLSv1.2", PG_TLS1_2_VERSION, false},
+	{"TLSv1.3", PG_TLS1_3_VERSION, false},
+	{NULL, 0, false}
+};
+
 /*
  * Options for enum values stored in other modules
  */
 extern const struct config_enum_entry wal_level_options[];
 extern const struct config_enum_entry archive_mode_options[];
+extern const struct config_enum_entry recovery_target_action_options[];
 extern const struct config_enum_entry sync_method_options[];
 extern const struct config_enum_entry dynamic_shared_memory_options[];
 
@@ -455,6 +480,11 @@ char	   *event_source;
 
 bool		row_security;
 bool		check_function_bodies = true;
+
+/*
+ * This GUC exists solely for backward compatibility, check its definition for
+ * details.
+ */
 bool		default_with_oids = false;
 bool		session_auth_is_superuser;
 
@@ -463,6 +493,7 @@ int			log_min_messages = WARNING;
 int			client_min_messages = NOTICE;
 int			log_min_duration_statement = -1;
 int			log_temp_files = -1;
+double		log_statement_sample_rate = 1.0;
 int			trace_recovery_messages = LOG;
 
 int			temp_file_limit = -1;
@@ -519,7 +550,6 @@ static int	server_version_num;
 static char *timezone_string;
 static char *log_timezone_string;
 static char *timezone_abbreviations_string;
-static char *XactIsoLevel_string;
 static char *data_directory;
 static char *session_authorization_string;
 static int	max_function_args;
@@ -531,6 +561,13 @@ static int	wal_block_size;
 static bool data_checksums;
 static bool integer_datetimes;
 static bool assert_enabled;
+static char *recovery_target_timeline_string;
+static char *recovery_target_string;
+static char *recovery_target_xid_string;
+static char *recovery_target_time_string;
+static char *recovery_target_name_string;
+static char *recovery_target_lsn_string;
+
 
 /* should be static, but commands/variable.c needs to get at this */
 char	   *role_string;
@@ -614,6 +651,10 @@ const char *const config_group_names[] =
 	gettext_noop("Write-Ahead Log / Checkpoints"),
 	/* WAL_ARCHIVING */
 	gettext_noop("Write-Ahead Log / Archiving"),
+	/* WAL_ARCHIVE_RECOVERY */
+	gettext_noop("Write-Ahead Log / Archive Recovery"),
+	/* WAL_RECOVERY_TARGET */
+	gettext_noop("Write-Ahead Log / Recovery Target"),
 	/* REPLICATION */
 	gettext_noop("Replication"),
 	/* REPLICATION_SENDING */
@@ -967,7 +1008,7 @@ static struct config_bool ConfigureNamesBool[] =
 	},
 	{
 		{"enable_parallel_hash", PGC_USERSET, QUERY_TUNING_METHOD,
-			gettext_noop("Enables the planner's user of parallel hash plans."),
+			gettext_noop("Enables the planner's use of parallel hash plans."),
 			NULL
 		},
 		&enable_parallel_hash,
@@ -1509,14 +1550,20 @@ static struct config_bool ConfigureNamesBool[] =
 		true,
 		NULL, NULL, NULL
 	},
+	/*
+	 * WITH OIDS support, and consequently default_with_oids, was removed in
+	 * PostgreSQL 12, but we tolerate the parameter being set to false to
+	 * avoid unnecessarily breaking older dump files.
+	 */
 	{
 		{"default_with_oids", PGC_USERSET, COMPAT_OPTIONS_PREVIOUS,
-			gettext_noop("Create new tables with OIDs by default."),
-			NULL
+			gettext_noop("WITH OIDS is no longer supported; this can only be false."),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NOT_IN_SAMPLE
 		},
 		&default_with_oids,
 		false,
-		NULL, NULL, NULL
+		check_default_with_oids, NULL, NULL
 	},
 	{
 		{"logging_collector", PGC_POSTMASTER, LOGGING_WHERE,
@@ -1640,6 +1687,16 @@ static struct config_bool ConfigureNamesBool[] =
 			NULL
 		},
 		&synchronize_seqscans,
+		true,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"recovery_target_inclusive", PGC_POSTMASTER, WAL_RECOVERY_TARGET,
+			gettext_noop("Sets whether to include or exclude transaction with recovery target."),
+			NULL
+		},
+		&recoveryTargetInclusive,
 		true,
 		NULL, NULL, NULL
 	},
@@ -1836,6 +1893,15 @@ static struct config_bool ConfigureNamesBool[] =
 		NULL, NULL, NULL
 	},
 
+	{
+		{"data_sync_retry", PGC_POSTMASTER, ERROR_HANDLING_OPTIONS,
+			gettext_noop("Whether to continue running after a failure to sync data files."),
+		},
+		&data_sync_retry,
+		false,
+		NULL, NULL, NULL
+	},
+
 	/* End-of-list marker */
 	{
 		{NULL, 0, 0, NULL, NULL}, NULL, false, NULL, NULL, NULL
@@ -1972,8 +2038,19 @@ static struct config_int ConfigureNamesInt[] =
 	},
 
 	{
+		{"recovery_min_apply_delay", PGC_POSTMASTER, REPLICATION_STANDBY,
+			gettext_noop("Sets the minimum delay for applying changes during recovery."),
+			NULL,
+			GUC_UNIT_MS
+		},
+		&recovery_min_apply_delay,
+		0, 0, INT_MAX,
+		NULL, NULL, NULL
+	},
+
+	{
 		{"wal_receiver_status_interval", PGC_SIGHUP, REPLICATION_STANDBY,
-			gettext_noop("Sets the maximum interval between WAL receiver status reports to the primary."),
+			gettext_noop("Sets the maximum interval between WAL receiver status reports to the sending server."),
 			NULL,
 			GUC_UNIT_S
 		},
@@ -1984,7 +2061,7 @@ static struct config_int ConfigureNamesInt[] =
 
 	{
 		{"wal_receiver_timeout", PGC_SIGHUP, REPLICATION_STANDBY,
-			gettext_noop("Sets the maximum wait time to receive data from the primary."),
+			gettext_noop("Sets the maximum wait time to receive data from the sending server."),
 			NULL,
 			GUC_UNIT_MS
 		},
@@ -2577,7 +2654,7 @@ static struct config_int ConfigureNamesInt[] =
 	},
 
 	{
-		{"wal_sender_timeout", PGC_SIGHUP, REPLICATION_SENDING,
+		{"wal_sender_timeout", PGC_USERSET, REPLICATION_SENDING,
 			gettext_noop("Sets the maximum time to wait for WAL replication."),
 			NULL,
 			GUC_UNIT_MS
@@ -2626,7 +2703,8 @@ static struct config_int ConfigureNamesInt[] =
 		{"log_min_duration_statement", PGC_SUSET, LOGGING_WHEN,
 			gettext_noop("Sets the minimum execution time above which "
 						 "statements will be logged."),
-			gettext_noop("Zero prints all queries. -1 turns this feature off."),
+			gettext_noop("Zero prints all queries, subject to log_statement_sample_rate. "
+						 "-1 turns this feature off."),
 			GUC_UNIT_MS
 		},
 		&log_min_duration_statement,
@@ -2687,10 +2765,11 @@ static struct config_int ConfigureNamesInt[] =
 		},
 		&effective_io_concurrency,
 #ifdef USE_PREFETCH
-		1, 0, MAX_IO_CONCURRENCY,
+		1,
 #else
-		0, 0, 0,
+		0,
 #endif
+		0, MAX_IO_CONCURRENCY,
 		check_effective_io_concurrency, assign_effective_io_concurrency, NULL
 	},
 
@@ -3024,10 +3103,9 @@ static struct config_int ConfigureNamesInt[] =
 
 	{
 		{"effective_cache_size", PGC_USERSET, QUERY_TUNING_COST,
-			gettext_noop("Sets the planner's assumption about the size of the disk cache."),
-			gettext_noop("That is, the portion of the kernel's disk cache that "
-						 "will be used for PostgreSQL data files. This is measured in disk "
-						 "pages, which are normally 8 kB each."),
+			gettext_noop("Sets the planner's assumption about the total size of the data caches."),
+			gettext_noop("That is, the total size of the caches (kernel cache and shared buffers) used for PostgreSQL data files. "
+						 "This is measured in disk pages, which are normally 8 kB each."),
 			GUC_UNIT_BLOCKS,
 		},
 		&effective_cache_size,
@@ -3303,6 +3381,17 @@ static struct config_real ConfigureNamesReal[] =
 		NULL, NULL, NULL
 	},
 
+	{
+		{"log_statement_sample_rate", PGC_SUSET, LOGGING_WHEN,
+			gettext_noop("Fraction of statements over log_min_duration_statement to log."),
+			gettext_noop("If you only want a sample, use a value between 0 (never "
+						 "log) and 1.0 (always log).")
+		},
+		&log_statement_sample_rate,
+		1.0, 0.0, 1.0,
+		NULL, NULL, NULL
+	},
+
 	/* End-of-list marker */
 	{
 		{NULL, 0, 0, NULL, NULL}, NULL, 0.0, 0.0, 0.0, NULL, NULL, NULL
@@ -3320,6 +3409,123 @@ static struct config_string ConfigureNamesString[] =
 		&XLogArchiveCommand,
 		"",
 		NULL, NULL, show_archive_command
+	},
+
+	{
+		{"restore_command", PGC_POSTMASTER, WAL_ARCHIVE_RECOVERY,
+			gettext_noop("Sets the shell command that will retrieve an archived WAL file."),
+			NULL
+		},
+		&recoveryRestoreCommand,
+		"",
+		NULL, NULL, NULL
+	},
+
+	{
+		{"archive_cleanup_command", PGC_POSTMASTER, WAL_ARCHIVE_RECOVERY,
+			gettext_noop("Sets the shell command that will be executed at every restart point."),
+			NULL
+		},
+		&archiveCleanupCommand,
+		"",
+		NULL, NULL, NULL
+	},
+
+	{
+		{"recovery_end_command", PGC_POSTMASTER, WAL_ARCHIVE_RECOVERY,
+			gettext_noop("Sets the shell command that will be executed once at the end of recovery."),
+			NULL
+		},
+		&recoveryEndCommand,
+		"",
+		NULL, NULL, NULL
+	},
+
+	{
+		{"recovery_target_timeline", PGC_POSTMASTER, WAL_RECOVERY_TARGET,
+			gettext_noop("Specifies the timeline to recovery into."),
+			NULL
+		},
+		&recovery_target_timeline_string,
+		"latest",
+		check_recovery_target_timeline, assign_recovery_target_timeline, NULL
+	},
+
+	{
+		{"recovery_target", PGC_POSTMASTER, WAL_RECOVERY_TARGET,
+			gettext_noop("Set to 'immediate' to end recovery as soon as a consistent state is reached."),
+			NULL
+		},
+		&recovery_target_string,
+		"",
+		check_recovery_target, assign_recovery_target, NULL
+	},
+	{
+		{"recovery_target_xid", PGC_POSTMASTER, WAL_RECOVERY_TARGET,
+			gettext_noop("Sets the transaction ID up to which recovery will proceed."),
+			NULL
+		},
+		&recovery_target_xid_string,
+		"",
+		check_recovery_target_xid, assign_recovery_target_xid, NULL
+	},
+	{
+		{"recovery_target_time", PGC_POSTMASTER, WAL_RECOVERY_TARGET,
+			gettext_noop("Sets the time stamp up to which recovery will proceed."),
+			NULL
+		},
+		&recovery_target_time_string,
+		"",
+		check_recovery_target_time, assign_recovery_target_time, NULL
+	},
+	{
+		{"recovery_target_name", PGC_POSTMASTER, WAL_RECOVERY_TARGET,
+			gettext_noop("Sets the named restore point up to which recovery will proceed."),
+			NULL
+		},
+		&recovery_target_name_string,
+		"",
+		check_recovery_target_name, assign_recovery_target_name, NULL
+	},
+	{
+		{"recovery_target_lsn", PGC_POSTMASTER, WAL_RECOVERY_TARGET,
+			gettext_noop("Sets the LSN of the write-ahead log location up to which recovery will proceed."),
+			NULL
+		},
+		&recovery_target_lsn_string,
+		"",
+		check_recovery_target_lsn, assign_recovery_target_lsn, NULL
+	},
+
+	{
+		{"promote_trigger_file", PGC_POSTMASTER, REPLICATION_STANDBY,
+			gettext_noop("Specifies a file name whose presence ends recovery in the standby."),
+			NULL
+		},
+		&PromoteTriggerFile,
+		"",
+		NULL, NULL, NULL
+	},
+
+	{
+		{"primary_conninfo", PGC_POSTMASTER, REPLICATION_STANDBY,
+			gettext_noop("Sets the connection string to be used to connect to the sending server."),
+			NULL,
+			GUC_SUPERUSER_ONLY
+		},
+		&PrimaryConnInfo,
+		"",
+		NULL, NULL, NULL
+	},
+
+	{
+		{"primary_slot_name", PGC_POSTMASTER, REPLICATION_STANDBY,
+			gettext_noop("Sets the name of the replication slot to use on the sending server."),
+			NULL
+		},
+		&PrimarySlotName,
+		"",
+		check_primary_slot_name, NULL, NULL
 	},
 
 	{
@@ -3655,17 +3861,6 @@ static struct config_string ConfigureNamesString[] =
 	},
 
 	{
-		{"transaction_isolation", PGC_USERSET, CLIENT_CONN_STATEMENT,
-			gettext_noop("Sets the current transaction's isolation level."),
-			NULL,
-			GUC_NO_RESET_ALL | GUC_NOT_IN_SAMPLE | GUC_DISALLOW_IN_FILE
-		},
-		&XactIsoLevel_string,
-		"default",
-		check_XactIsoLevel, assign_XactIsoLevel, show_XactIsoLevel
-	},
-
-	{
 		{"unix_socket_group", PGC_POSTMASTER, CONN_AUTH_SETTINGS,
 			gettext_noop("Sets the owning group of the Unix-domain socket."),
 			gettext_noop("The owning user of the socket is always the user "
@@ -3933,7 +4128,7 @@ static struct config_string ConfigureNamesString[] =
 	},
 
 	{
-		{"jit_provider", PGC_POSTMASTER, FILE_LOCATIONS,
+		{"jit_provider", PGC_POSTMASTER, CLIENT_CONN_PRELOAD,
 			gettext_noop("JIT provider to use."),
 			NULL,
 			GUC_SUPERUSER_ONLY
@@ -3973,7 +4168,7 @@ static struct config_enum ConfigureNamesEnum[] =
 	},
 
 	{
-		{"client_min_messages", PGC_USERSET, LOGGING_WHEN,
+		{"client_min_messages", PGC_USERSET, CLIENT_CONN_STATEMENT,
 			gettext_noop("Sets the message levels that are sent to the client."),
 			gettext_noop("Each level includes all the levels that follow it. The later"
 						 " the level, the fewer messages are sent.")
@@ -4002,6 +4197,17 @@ static struct config_enum ConfigureNamesEnum[] =
 		&DefaultXactIsoLevel,
 		XACT_READ_COMMITTED, isolation_level_options,
 		NULL, NULL, NULL
+	},
+
+	{
+		{"transaction_isolation", PGC_USERSET, CLIENT_CONN_STATEMENT,
+			gettext_noop("Sets the current transaction's isolation level."),
+			NULL,
+			GUC_NO_RESET_ALL | GUC_NOT_IN_SAMPLE | GUC_DISALLOW_IN_FILE
+		},
+		&XactIsoLevel,
+		XACT_READ_COMMITTED, isolation_level_options,
+		check_XactIsoLevel, NULL, NULL
 	},
 
 	{
@@ -4099,6 +4305,16 @@ static struct config_enum ConfigureNamesEnum[] =
 		},
 		&XLogArchiveMode,
 		ARCHIVE_MODE_OFF, archive_mode_options,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"recovery_target_action", PGC_POSTMASTER, WAL_RECOVERY_TARGET,
+			gettext_noop("Sets the action to perform upon reaching the recovery target."),
+			NULL
+		},
+		&recoveryTargetAction,
+		RECOVERY_TARGET_ACTION_PAUSE, recovery_target_action_options,
 		NULL, NULL, NULL
 	},
 
@@ -4220,6 +4436,30 @@ static struct config_enum ConfigureNamesEnum[] =
 		},
 		&plan_cache_mode,
 		PLAN_CACHE_MODE_AUTO, plan_cache_mode_options,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"ssl_min_protocol_version", PGC_SIGHUP, CONN_AUTH_SSL,
+			gettext_noop("Sets the minimum SSL/TLS protocol version to use."),
+			NULL,
+			GUC_SUPERUSER_ONLY
+		},
+		&ssl_min_protocol_version,
+		PG_TLS1_VERSION,
+		ssl_protocol_versions_info + 1, /* don't allow PG_TLS_ANY */
+		NULL, NULL, NULL
+	},
+
+	{
+		{"ssl_max_protocol_version", PGC_SIGHUP, CONN_AUTH_SSL,
+			gettext_noop("Sets the maximum SSL/TLS protocol version to use."),
+			NULL,
+			GUC_SUPERUSER_ONLY
+		},
+		&ssl_max_protocol_version,
+		PG_TLS_ANY,
+		ssl_protocol_versions_info,
 		NULL, NULL, NULL
 	},
 
@@ -4812,7 +5052,7 @@ InitializeGUCOptions(void)
 	 * Prevent any attempt to override the transaction modes from
 	 * non-interactive sources.
 	 */
-	SetConfigOption("transaction_isolation", "default",
+	SetConfigOption("transaction_isolation", "read committed",
 					PGC_POSTMASTER, PGC_S_OVERRIDE);
 	SetConfigOption("transaction_read_only", "no",
 					PGC_POSTMASTER, PGC_S_OVERRIDE);
@@ -8257,7 +8497,7 @@ GetPGVariableResultDesc(const char *name)
 	if (guc_name_compare(name, "all") == 0)
 	{
 		/* need a tuple descriptor representing three TEXT columns */
-		tupdesc = CreateTemplateTupleDesc(3, false);
+		tupdesc = CreateTemplateTupleDesc(3);
 		TupleDescInitEntry(tupdesc, (AttrNumber) 1, "name",
 						   TEXTOID, -1, 0);
 		TupleDescInitEntry(tupdesc, (AttrNumber) 2, "setting",
@@ -8273,7 +8513,7 @@ GetPGVariableResultDesc(const char *name)
 		(void) GetConfigOptionByName(name, &varname, false);
 
 		/* need a tuple descriptor representing a single TEXT column */
-		tupdesc = CreateTemplateTupleDesc(1, false);
+		tupdesc = CreateTemplateTupleDesc(1);
 		TupleDescInitEntry(tupdesc, (AttrNumber) 1, varname,
 						   TEXTOID, -1, 0);
 	}
@@ -8296,12 +8536,12 @@ ShowGUCConfigOption(const char *name, DestReceiver *dest)
 	value = GetConfigOptionByName(name, &varname, false);
 
 	/* need a tuple descriptor representing a single TEXT column */
-	tupdesc = CreateTemplateTupleDesc(1, false);
+	tupdesc = CreateTemplateTupleDesc(1);
 	TupleDescInitBuiltinEntry(tupdesc, (AttrNumber) 1, varname,
 							  TEXTOID, -1, 0);
 
 	/* prepare for projection of tuples */
-	tstate = begin_tup_output_tupdesc(dest, tupdesc);
+	tstate = begin_tup_output_tupdesc(dest, tupdesc, &TTSOpsVirtual);
 
 	/* Send it */
 	do_text_output_oneline(tstate, value);
@@ -8322,7 +8562,7 @@ ShowAllGUCConfig(DestReceiver *dest)
 	bool		isnull[3] = {false, false, false};
 
 	/* need a tuple descriptor representing three TEXT columns */
-	tupdesc = CreateTemplateTupleDesc(3, false);
+	tupdesc = CreateTemplateTupleDesc(3);
 	TupleDescInitBuiltinEntry(tupdesc, (AttrNumber) 1, "name",
 							  TEXTOID, -1, 0);
 	TupleDescInitBuiltinEntry(tupdesc, (AttrNumber) 2, "setting",
@@ -8331,7 +8571,7 @@ ShowAllGUCConfig(DestReceiver *dest)
 							  TEXTOID, -1, 0);
 
 	/* prepare for projection of tuples */
-	tstate = begin_tup_output_tupdesc(dest, tupdesc);
+	tstate = begin_tup_output_tupdesc(dest, tupdesc, &TTSOpsVirtual);
 
 	for (i = 0; i < num_guc_variables; i++)
 	{
@@ -8492,13 +8732,13 @@ GetConfigOptionByNum(int varnum, const char **values, bool *noshow)
 		values[2] = NULL;
 
 	/* group */
-	values[3] = config_group_names[conf->group];
+	values[3] = _(config_group_names[conf->group]);
 
 	/* short_desc */
-	values[4] = conf->short_desc;
+	values[4] = _(conf->short_desc);
 
 	/* extra_desc */
-	values[5] = conf->long_desc;
+	values[5] = _(conf->long_desc);
 
 	/* context */
 	values[6] = GucContext_Names[conf->context];
@@ -8764,7 +9004,7 @@ show_all_settings(PG_FUNCTION_ARGS)
 		 * need a tuple descriptor representing NUM_PG_SETTINGS_ATTS columns
 		 * of the appropriate types
 		 */
-		tupdesc = CreateTemplateTupleDesc(NUM_PG_SETTINGS_ATTS, false);
+		tupdesc = CreateTemplateTupleDesc(NUM_PG_SETTINGS_ATTS);
 		TupleDescInitEntry(tupdesc, (AttrNumber) 1, "name",
 						   TEXTOID, -1, 0);
 		TupleDescInitEntry(tupdesc, (AttrNumber) 2, "setting",
@@ -8904,7 +9144,7 @@ show_all_file_settings(PG_FUNCTION_ARGS)
 	oldcontext = MemoryContextSwitchTo(per_query_ctx);
 
 	/* Build a tuple descriptor for our result type */
-	tupdesc = CreateTemplateTupleDesc(NUM_PG_FILE_SETTINGS_ATTS, false);
+	tupdesc = CreateTemplateTupleDesc(NUM_PG_FILE_SETTINGS_ATTS);
 	TupleDescInitEntry(tupdesc, (AttrNumber) 1, "sourcefile",
 					   TEXTOID, -1, 0);
 	TupleDescInitEntry(tupdesc, (AttrNumber) 2, "sourceline",
@@ -9483,20 +9723,15 @@ do_serialize(char **destptr, Size *maxbytes, const char *fmt,...)
 	n = vsnprintf(*destptr, *maxbytes, fmt, vargs);
 	va_end(vargs);
 
-	/*
-	 * Cater to portability hazards in the vsnprintf() return value just like
-	 * appendPQExpBufferVA() does.  Note that this requires an extra byte of
-	 * slack at the end of the buffer.  Since serialize_variable() ends with a
-	 * do_serialize_binary() rather than a do_serialize(), we'll always have
-	 * that slack; estimate_variable_size() need not add a byte for it.
-	 */
-	if (n < 0 || n >= *maxbytes - 1)
+	if (n < 0)
 	{
-		if (n < 0 && errno != 0 && errno != ENOMEM)
-			/* Shouldn't happen. Better show errno description. */
-			elog(ERROR, "vsnprintf failed: %m");
-		else
-			elog(ERROR, "not enough space to serialize GUC state");
+		/* Shouldn't happen. Better show errno description. */
+		elog(ERROR, "vsnprintf failed: %m with format string \"%s\"", fmt);
+	}
+	if (n >= *maxbytes)
+	{
+		/* This shouldn't happen either, really. */
+		elog(ERROR, "not enough space to serialize GUC state");
 	}
 
 	/* Shift the destptr ahead of the null terminator */
@@ -10752,6 +10987,11 @@ check_effective_io_concurrency(int *newval, void **extra, GucSource source)
 	else
 		return false;
 #else
+	if (*newval != 0)
+	{
+		GUC_check_errdetail("effective_io_concurrency must be set to 0 on platforms that lack posix_fadvise().");
+		return false;
+	}
 	return true;
 #endif							/* USE_PREFETCH */
 }
@@ -10797,13 +11037,7 @@ static bool
 check_application_name(char **newval, void **extra, GucSource source)
 {
 	/* Only allow clean ASCII chars in the application name */
-	char	   *p;
-
-	for (p = *newval; *p; p++)
-	{
-		if (*p < 32 || *p > 126)
-			*p = '?';
-	}
+	pg_clean_ascii(*newval);
 
 	return true;
 }
@@ -10819,13 +11053,7 @@ static bool
 check_cluster_name(char **newval, void **extra, GucSource source)
 {
 	/* Only allow clean ASCII chars in the cluster name */
-	char	   *p;
-
-	for (p = *newval; *p; p++)
-	{
-		if (*p < 32 || *p > 126)
-			*p = '?';
-	}
+	pg_clean_ascii(*newval);
 
 	return true;
 }
@@ -10855,6 +11083,307 @@ show_data_directory_mode(void)
 
 	snprintf(buf, sizeof(buf), "%04o", data_directory_mode);
 	return buf;
+}
+
+static bool
+check_recovery_target_timeline(char **newval, void **extra, GucSource source)
+{
+	RecoveryTargetTimeLineGoal rttg;
+	RecoveryTargetTimeLineGoal *myextra;
+
+	if (strcmp(*newval, "current") == 0)
+		rttg = RECOVERY_TARGET_TIMELINE_CONTROLFILE;
+	else if (strcmp(*newval, "latest") == 0)
+		rttg = RECOVERY_TARGET_TIMELINE_LATEST;
+	else
+	{
+		rttg = RECOVERY_TARGET_TIMELINE_NUMERIC;
+
+		errno = 0;
+		strtoul(*newval, NULL, 0);
+		if (errno == EINVAL || errno == ERANGE)
+		{
+			GUC_check_errdetail("recovery_target_timeline is not a valid number.");
+			return false;
+		}
+	}
+
+	myextra = (RecoveryTargetTimeLineGoal *) guc_malloc(ERROR, sizeof(RecoveryTargetTimeLineGoal));
+	*myextra = rttg;
+	*extra = (void *) myextra;
+
+	return true;
+}
+
+static void
+assign_recovery_target_timeline(const char *newval, void *extra)
+{
+	recoveryTargetTimeLineGoal = *((RecoveryTargetTimeLineGoal *) extra);
+	if (recoveryTargetTimeLineGoal == RECOVERY_TARGET_TIMELINE_NUMERIC)
+		recoveryTargetTLIRequested = (TimeLineID) strtoul(newval, NULL, 0);
+	else
+		recoveryTargetTLIRequested = 0;
+}
+
+/*
+ * Recovery target settings: Only one of the several recovery_target* settings
+ * may be set.  Setting a second one results in an error.  The global variable
+ * recoveryTarget tracks which kind of recovery target was chosen.  Other
+ * variables store the actual target value (for example a string or a xid).
+ * The assign functions of the parameters check whether a competing parameter
+ * was already set.  But we want to allow setting the same parameter multiple
+ * times.  We also want to allow unsetting a parameter and setting a different
+ * one, so we unset recoveryTarget when the parameter is set to an empty
+ * string.
+ */
+
+static void
+pg_attribute_noreturn()
+error_multiple_recovery_targets(void)
+{
+	ereport(ERROR,
+			(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+			 errmsg("multiple recovery targets specified"),
+			 errdetail("At most one of recovery_target, recovery_target_lsn, recovery_target_name, recovery_target_time, recovery_target_xid may be set.")));
+}
+
+static bool
+check_recovery_target(char **newval, void **extra, GucSource source)
+{
+	if (strcmp(*newval, "immediate") != 0 && strcmp(*newval, "") != 0)
+	{
+		GUC_check_errdetail("The only allowed value is \"immediate\".");
+		return false;
+	}
+	return true;
+}
+
+static void
+assign_recovery_target(const char *newval, void *extra)
+{
+	if (recoveryTarget != RECOVERY_TARGET_UNSET &&
+		recoveryTarget != RECOVERY_TARGET_IMMEDIATE)
+		error_multiple_recovery_targets();
+
+	if (newval && strcmp(newval, "") != 0)
+		recoveryTarget = RECOVERY_TARGET_IMMEDIATE;
+	else
+		recoveryTarget = RECOVERY_TARGET_UNSET;
+}
+
+static bool
+check_recovery_target_xid(char **newval, void **extra, GucSource source)
+{
+	if (strcmp(*newval, "") != 0)
+	{
+		TransactionId xid;
+		TransactionId *myextra;
+
+		errno = 0;
+		xid = (TransactionId) strtoul(*newval, NULL, 0);
+		if (errno == EINVAL || errno == ERANGE)
+			return false;
+
+		myextra = (TransactionId *) guc_malloc(ERROR, sizeof(TransactionId));
+		*myextra = xid;
+		*extra = (void *) myextra;
+	}
+	return true;
+}
+
+static void
+assign_recovery_target_xid(const char *newval, void *extra)
+{
+	if (recoveryTarget != RECOVERY_TARGET_UNSET &&
+		recoveryTarget != RECOVERY_TARGET_XID)
+		error_multiple_recovery_targets();
+
+	if (newval && strcmp(newval, "") != 0)
+	{
+		recoveryTarget = RECOVERY_TARGET_XID;
+		recoveryTargetXid = *((TransactionId *) extra);
+	}
+	else
+		recoveryTarget = RECOVERY_TARGET_UNSET;
+}
+
+static bool
+check_recovery_target_time(char **newval, void **extra, GucSource source)
+{
+	if (strcmp(*newval, "") != 0)
+	{
+		TimestampTz time;
+		TimestampTz *myextra;
+		MemoryContext oldcontext = CurrentMemoryContext;
+
+		/* reject some special values */
+		if (strcmp(*newval, "epoch") == 0 ||
+			strcmp(*newval, "infinity") == 0 ||
+			strcmp(*newval, "-infinity") == 0 ||
+			strcmp(*newval, "now") == 0 ||
+			strcmp(*newval, "today") == 0 ||
+			strcmp(*newval, "tomorrow") == 0 ||
+			strcmp(*newval, "yesterday") == 0)
+		{
+			return false;
+		}
+
+		PG_TRY();
+		{
+			time = DatumGetTimestampTz(DirectFunctionCall3(timestamptz_in,
+														   CStringGetDatum(*newval),
+														   ObjectIdGetDatum(InvalidOid),
+														   Int32GetDatum(-1)));
+		}
+		PG_CATCH();
+		{
+			ErrorData  *edata;
+
+			/* Save error info */
+			MemoryContextSwitchTo(oldcontext);
+			edata = CopyErrorData();
+			FlushErrorState();
+
+			/* Pass the error message */
+			GUC_check_errdetail("%s", edata->message);
+			FreeErrorData(edata);
+			return false;
+		}
+		PG_END_TRY();
+
+		myextra = (TimestampTz *) guc_malloc(ERROR, sizeof(TimestampTz));
+		*myextra = time;
+		*extra = (void *) myextra;
+	}
+	return true;
+}
+
+static void
+assign_recovery_target_time(const char *newval, void *extra)
+{
+	if (recoveryTarget != RECOVERY_TARGET_UNSET &&
+		recoveryTarget != RECOVERY_TARGET_TIME)
+		error_multiple_recovery_targets();
+
+	if (newval && strcmp(newval, "") != 0)
+	{
+		recoveryTarget = RECOVERY_TARGET_TIME;
+		recoveryTargetTime = *((TimestampTz *) extra);
+	}
+	else
+		recoveryTarget = RECOVERY_TARGET_UNSET;
+}
+
+static bool
+check_recovery_target_name(char **newval, void **extra, GucSource source)
+{
+	/* Use the value of newval directly */
+	if (strlen(*newval) >= MAXFNAMELEN)
+	{
+		GUC_check_errdetail("recovery_target_name is too long (maximum %d characters).",
+							MAXFNAMELEN - 1);
+		return false;
+	}
+	return true;
+}
+
+static void
+assign_recovery_target_name(const char *newval, void *extra)
+{
+	if (recoveryTarget != RECOVERY_TARGET_UNSET &&
+		recoveryTarget != RECOVERY_TARGET_NAME)
+		error_multiple_recovery_targets();
+
+	if (newval && strcmp(newval, "") != 0)
+	{
+		recoveryTarget = RECOVERY_TARGET_NAME;
+		recoveryTargetName = (char *) newval;
+	}
+	else
+		recoveryTarget = RECOVERY_TARGET_UNSET;
+}
+
+static bool
+check_recovery_target_lsn(char **newval, void **extra, GucSource source)
+{
+	if (strcmp(*newval, "") != 0)
+	{
+		XLogRecPtr	lsn;
+		XLogRecPtr *myextra;
+		MemoryContext oldcontext = CurrentMemoryContext;
+
+		/*
+		 * Convert the LSN string given by the user to XLogRecPtr form.
+		 */
+		PG_TRY();
+		{
+			lsn = DatumGetLSN(DirectFunctionCall3(pg_lsn_in,
+												  CStringGetDatum(*newval),
+												  ObjectIdGetDatum(InvalidOid),
+												  Int32GetDatum(-1)));
+		}
+		PG_CATCH();
+		{
+			ErrorData  *edata;
+
+			/* Save error info */
+			MemoryContextSwitchTo(oldcontext);
+			edata = CopyErrorData();
+			FlushErrorState();
+
+			/* Pass the error message */
+			GUC_check_errdetail("%s", edata->message);
+			FreeErrorData(edata);
+			return false;
+		}
+		PG_END_TRY();
+
+		myextra = (XLogRecPtr *) guc_malloc(ERROR, sizeof(XLogRecPtr));
+		*myextra = lsn;
+		*extra = (void *) myextra;
+	}
+	return true;
+}
+
+static void
+assign_recovery_target_lsn(const char *newval, void *extra)
+{
+	if (recoveryTarget != RECOVERY_TARGET_UNSET &&
+		recoveryTarget != RECOVERY_TARGET_LSN)
+		error_multiple_recovery_targets();
+
+	if (newval && strcmp(newval, "") != 0)
+	{
+		recoveryTarget = RECOVERY_TARGET_LSN;
+		recoveryTargetLSN = *((XLogRecPtr *) extra);
+	}
+	else
+		recoveryTarget = RECOVERY_TARGET_UNSET;
+}
+
+static bool
+check_primary_slot_name(char **newval, void **extra, GucSource source)
+{
+	if (*newval && strcmp(*newval, "") != 0 &&
+		!ReplicationSlotValidateName(*newval, WARNING))
+		return false;
+
+	return true;
+}
+
+static bool
+check_default_with_oids(bool *newval, void **extra, GucSource source)
+{
+	if (*newval)
+	{
+		/* check the GUC's definition for an explanation */
+		GUC_check_errcode(ERRCODE_FEATURE_NOT_SUPPORTED);
+		GUC_check_errmsg("tables declared WITH OIDS are not supported");
+
+		return false;
+	}
+
+	return true;
 }
 
 #include "guc-file.c"

@@ -13,7 +13,7 @@
  * we must return a tuples-processed count in the completionTag.  (We no
  * longer do that for CTAS ... WITH NO DATA, however.)
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -24,6 +24,7 @@
  */
 #include "postgres.h"
 
+#include "access/heapam.h"
 #include "access/reloptions.h"
 #include "access/htup_details.h"
 #include "access/sysattr.h"
@@ -391,20 +392,7 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 int
 GetIntoRelEFlags(IntoClause *intoClause)
 {
-	int			flags;
-
-	/*
-	 * We need to tell the executor whether it has to produce OIDs or not,
-	 * because it doesn't have enough information to do so itself (since we
-	 * can't build the target relation until after ExecutorStart).
-	 *
-	 * Disallow the OIDS option for materialized views.
-	 */
-	if (interpretOidsOption(intoClause->options,
-							(intoClause->viewQuery == NULL)))
-		flags = EXEC_FLAG_WITH_OIDS;
-	else
-		flags = EXEC_FLAG_WITHOUT_OIDS;
+	int			flags = 0;
 
 	if (intoClause->skipData)
 		flags |= EXEC_FLAG_WITH_NO_DATA;
@@ -516,7 +504,7 @@ intorel_startup(DestReceiver *self, int operation, TupleDesc typeinfo)
 	/*
 	 * Finally we can open the target table
 	 */
-	intoRelationDesc = heap_open(intoRelationAddr.objectId, AccessExclusiveLock);
+	intoRelationDesc = table_open(intoRelationAddr.objectId, AccessExclusiveLock);
 
 	/*
 	 * Check INSERT permission on the constructed table.
@@ -528,6 +516,7 @@ intorel_startup(DestReceiver *self, int operation, TupleDesc typeinfo)
 	rte->rtekind = RTE_RELATION;
 	rte->relid = intoRelationAddr.objectId;
 	rte->relkind = relkind;
+	rte->rellockmode = RowExclusiveLock;
 	rte->requiredPerms = ACL_INSERT;
 
 	for (attnum = 1; attnum <= intoRelationDesc->rd_att->natts; attnum++)
@@ -588,13 +577,7 @@ intorel_receive(TupleTableSlot *slot, DestReceiver *self)
 	 * get the heap tuple out of the tuple table slot, making sure we have a
 	 * writable copy
 	 */
-	tuple = ExecMaterializeSlot(slot);
-
-	/*
-	 * force assignment of new OID (see comments in ExecInsert)
-	 */
-	if (myState->rel->rd_rel->relhasoids)
-		HeapTupleSetOid(tuple, InvalidOid);
+	tuple = ExecCopySlotHeapTuple(slot);
 
 	heap_insert(myState->rel,
 				tuple,
@@ -622,7 +605,7 @@ intorel_shutdown(DestReceiver *self)
 		heap_sync(myState->rel);
 
 	/* close rel, but keep lock until commit */
-	heap_close(myState->rel, NoLock);
+	table_close(myState->rel, NoLock);
 	myState->rel = NULL;
 }
 

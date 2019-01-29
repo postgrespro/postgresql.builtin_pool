@@ -4,7 +4,7 @@
  *	  prototypes for files in optimizer/prep/
  *
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/optimizer/prep.h
@@ -46,23 +46,5 @@ extern PlanRowMark *get_plan_rowmark(List *rowmarks, Index rtindex);
  * prototypes for prepunion.c
  */
 extern RelOptInfo *plan_set_operations(PlannerInfo *root);
-
-extern void expand_inherited_tables(PlannerInfo *root);
-
-extern Node *adjust_appendrel_attrs(PlannerInfo *root, Node *node,
-					   int nappinfos, AppendRelInfo **appinfos);
-
-extern Node *adjust_appendrel_attrs_multilevel(PlannerInfo *root, Node *node,
-								  Relids child_relids,
-								  Relids top_parent_relids);
-
-extern AppendRelInfo **find_appinfos_by_relids(PlannerInfo *root,
-						Relids relids, int *nappinfos);
-
-extern SpecialJoinInfo *build_child_join_sjinfo(PlannerInfo *root,
-						SpecialJoinInfo *parent_sjinfo,
-						Relids left_relids, Relids right_relids);
-extern Relids adjust_child_relids_multilevel(PlannerInfo *root, Relids relids,
-							   Relids child_relids, Relids top_parent_relids);
 
 #endif							/* PREP_H */

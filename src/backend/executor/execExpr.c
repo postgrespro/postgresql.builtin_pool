@@ -19,7 +19,7 @@
  *	and "Expression Evaluation" sections.
  *
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -65,6 +65,7 @@ static void ExecInitFunc(ExprEvalStep *scratch, Expr *node, List *args,
 static void ExecInitExprSlots(ExprState *state, Node *node);
 static void ExecPushExprSlots(ExprState *state, LastAttnumInfo *info);
 static bool get_last_attnums_walker(Node *node, LastAttnumInfo *info);
+static void ExecComputeSlotInfo(ExprState *state, ExprEvalStep *op);
 static void ExecInitWholeRowVar(ExprEvalStep *scratch, Var *variable,
 					ExprState *state);
 static void ExecInitArrayRef(ExprEvalStep *scratch, ArrayRef *aref,
@@ -965,7 +966,7 @@ ExecInitExprRec(Expr *node, ExprState *state,
 
 				/* Set up the primary fmgr lookup information */
 				finfo = palloc0(sizeof(FmgrInfo));
-				fcinfo = palloc0(sizeof(FunctionCallInfoData));
+				fcinfo = palloc0(SizeForFunctionCallInfo(2));
 				fmgr_info(opexpr->opfuncid, finfo);
 				fmgr_info_set_expr((Node *) node, finfo);
 				InitFunctionCallInfoData(*fcinfo, finfo, 2,
@@ -973,7 +974,7 @@ ExecInitExprRec(Expr *node, ExprState *state,
 
 				/* Evaluate scalar directly into left function argument */
 				ExecInitExprRec(scalararg, state,
-								&fcinfo->arg[0], &fcinfo->argnull[0]);
+								&fcinfo->args[0].value, &fcinfo->args[0].isnull);
 
 				/*
 				 * Evaluate array argument into our return value.  There's no
@@ -1262,7 +1263,7 @@ ExecInitExprRec(Expr *node, ExprState *state,
 
 				/* lookup the source type's output function */
 				scratch.d.iocoerce.finfo_out = palloc0(sizeof(FmgrInfo));
-				scratch.d.iocoerce.fcinfo_data_out = palloc0(sizeof(FunctionCallInfoData));
+				scratch.d.iocoerce.fcinfo_data_out = palloc0(SizeForFunctionCallInfo(1));
 
 				getTypeOutputInfo(exprType((Node *) iocoerce->arg),
 								  &iofunc, &typisvarlena);
@@ -1274,7 +1275,7 @@ ExecInitExprRec(Expr *node, ExprState *state,
 
 				/* lookup the result type's input function */
 				scratch.d.iocoerce.finfo_in = palloc0(sizeof(FmgrInfo));
-				scratch.d.iocoerce.fcinfo_data_in = palloc0(sizeof(FunctionCallInfoData));
+				scratch.d.iocoerce.fcinfo_data_in = palloc0(SizeForFunctionCallInfo(3));
 
 				getTypeInputInfo(iocoerce->resulttype,
 								 &iofunc, &typioparam);
@@ -1289,10 +1290,10 @@ ExecInitExprRec(Expr *node, ExprState *state,
 				 * function, since they're constants.
 				 */
 				fcinfo_in = scratch.d.iocoerce.fcinfo_data_in;
-				fcinfo_in->arg[1] = ObjectIdGetDatum(typioparam);
-				fcinfo_in->argnull[1] = false;
-				fcinfo_in->arg[2] = Int32GetDatum(-1);
-				fcinfo_in->argnull[2] = false;
+				fcinfo_in->args[1].value = ObjectIdGetDatum(typioparam);
+				fcinfo_in->args[1].isnull = false;
+				fcinfo_in->args[2].value = Int32GetDatum(-1);
+				fcinfo_in->args[2].isnull = false;
 
 				ExprEvalPushStep(state, &scratch);
 				break;
@@ -1516,10 +1517,11 @@ ExecInitExprRec(Expr *node, ExprState *state,
 				/*
 				 * Read from location identified by innermost_caseval.  Note
 				 * that innermost_caseval could be NULL, if this node isn't
-				 * actually within a CASE structure; some parts of the system
-				 * abuse CaseTestExpr to cause a read of a value externally
-				 * supplied in econtext->caseValue_datum.  We'll take care of
-				 * that scenario at runtime.
+				 * actually within a CaseExpr, ArrayCoerceExpr, etc structure.
+				 * That can happen because some parts of the system abuse
+				 * CaseTestExpr to cause a read of a value externally supplied
+				 * in econtext->caseValue_datum.  We'll take care of that
+				 * scenario at runtime.
 				 */
 				scratch.opcode = EEOP_CASE_TESTVAL;
 				scratch.d.casetest.value = state->innermost_caseval;
@@ -1733,7 +1735,7 @@ ExecInitExprRec(Expr *node, ExprState *state,
 
 					/* Set up the primary fmgr lookup information */
 					finfo = palloc0(sizeof(FmgrInfo));
-					fcinfo = palloc0(sizeof(FunctionCallInfoData));
+					fcinfo = palloc0(SizeForFunctionCallInfo(2));
 					fmgr_info(proc, finfo);
 					fmgr_info_set_expr((Node *) node, finfo);
 					InitFunctionCallInfoData(*fcinfo, finfo, 2,
@@ -1748,9 +1750,9 @@ ExecInitExprRec(Expr *node, ExprState *state,
 
 					/* evaluate left and right args directly into fcinfo */
 					ExecInitExprRec(left_expr, state,
-									&fcinfo->arg[0], &fcinfo->argnull[0]);
+									&fcinfo->args[0].value, &fcinfo->args[0].isnull);
 					ExecInitExprRec(right_expr, state,
-									&fcinfo->arg[1], &fcinfo->argnull[1]);
+									&fcinfo->args[1].value, &fcinfo->args[1].isnull);
 
 					scratch.opcode = EEOP_ROWCOMPARE_STEP;
 					scratch.d.rowcompare_step.finfo = finfo;
@@ -1876,7 +1878,7 @@ ExecInitExprRec(Expr *node, ExprState *state,
 
 				/* Perform function lookup */
 				finfo = palloc0(sizeof(FmgrInfo));
-				fcinfo = palloc0(sizeof(FunctionCallInfoData));
+				fcinfo = palloc0(SizeForFunctionCallInfo(2));
 				fmgr_info(typentry->cmp_proc, finfo);
 				fmgr_info_set_expr((Node *) node, finfo);
 				InitFunctionCallInfoData(*fcinfo, finfo, 2,
@@ -2185,7 +2187,7 @@ ExecInitFunc(ExprEvalStep *scratch, Expr *node, List *args, Oid funcid,
 
 	/* Allocate function lookup data and parameter workspace for this call */
 	scratch->d.func.finfo = palloc0(sizeof(FmgrInfo));
-	scratch->d.func.fcinfo_data = palloc0(sizeof(FunctionCallInfoData));
+	scratch->d.func.fcinfo_data = palloc0(SizeForFunctionCallInfo(nargs));
 	flinfo = scratch->d.func.finfo;
 	fcinfo = scratch->d.func.fcinfo_data;
 
@@ -2224,13 +2226,14 @@ ExecInitFunc(ExprEvalStep *scratch, Expr *node, List *args, Oid funcid,
 			 */
 			Const	   *con = (Const *) arg;
 
-			fcinfo->arg[argno] = con->constvalue;
-			fcinfo->argnull[argno] = con->constisnull;
+			fcinfo->args[argno].value = con->constvalue;
+			fcinfo->args[argno].isnull = con->constisnull;
 		}
 		else
 		{
 			ExecInitExprRec(arg, state,
-							&fcinfo->arg[argno], &fcinfo->argnull[argno]);
+							&fcinfo->args[argno].value,
+							&fcinfo->args[argno].isnull);
 		}
 		argno++;
 	}
@@ -2287,21 +2290,30 @@ ExecPushExprSlots(ExprState *state, LastAttnumInfo *info)
 	{
 		scratch.opcode = EEOP_INNER_FETCHSOME;
 		scratch.d.fetch.last_var = info->last_inner;
+		scratch.d.fetch.fixed = false;
+		scratch.d.fetch.kind = NULL;
 		scratch.d.fetch.known_desc = NULL;
+		ExecComputeSlotInfo(state, &scratch);
 		ExprEvalPushStep(state, &scratch);
 	}
 	if (info->last_outer > 0)
 	{
 		scratch.opcode = EEOP_OUTER_FETCHSOME;
 		scratch.d.fetch.last_var = info->last_outer;
+		scratch.d.fetch.fixed = false;
+		scratch.d.fetch.kind = NULL;
 		scratch.d.fetch.known_desc = NULL;
+		ExecComputeSlotInfo(state, &scratch);
 		ExprEvalPushStep(state, &scratch);
 	}
 	if (info->last_scan > 0)
 	{
 		scratch.opcode = EEOP_SCAN_FETCHSOME;
 		scratch.d.fetch.last_var = info->last_scan;
+		scratch.d.fetch.fixed = false;
+		scratch.d.fetch.kind = NULL;
 		scratch.d.fetch.known_desc = NULL;
+		ExecComputeSlotInfo(state, &scratch);
 		ExprEvalPushStep(state, &scratch);
 	}
 }
@@ -2352,6 +2364,94 @@ get_last_attnums_walker(Node *node, LastAttnumInfo *info)
 		return false;
 	return expression_tree_walker(node, get_last_attnums_walker,
 								  (void *) info);
+}
+
+/*
+ * Compute additional information for EEOP_*_FETCHSOME ops.
+ *
+ * The goal is to determine whether a slot is 'fixed', that is, every
+ * evaluation of the the expression will have the same type of slot, with an
+ * equivalent descriptor.
+ */
+static void
+ExecComputeSlotInfo(ExprState *state, ExprEvalStep *op)
+{
+	PlanState *parent = state->parent;
+	TupleDesc	desc = NULL;
+	const TupleTableSlotOps *tts_ops = NULL;
+	bool isfixed = false;
+
+	if (op->d.fetch.known_desc != NULL)
+	{
+		desc = op->d.fetch.known_desc;
+		tts_ops = op->d.fetch.kind;
+		isfixed = op->d.fetch.kind != NULL;
+	}
+	else if (!parent)
+	{
+		isfixed = false;
+	}
+	else if (op->opcode == EEOP_INNER_FETCHSOME)
+	{
+		PlanState  *is = innerPlanState(parent);
+
+		if (parent->inneropsset && !parent->inneropsfixed)
+		{
+			isfixed = false;
+		}
+		else if (parent->inneropsset && parent->innerops)
+		{
+			isfixed = true;
+			tts_ops = parent->innerops;
+		}
+		else if (is)
+		{
+			tts_ops = ExecGetResultSlotOps(is, &isfixed);
+			desc = ExecGetResultType(is);
+		}
+	}
+	else if (op->opcode == EEOP_OUTER_FETCHSOME)
+	{
+		PlanState  *os = outerPlanState(parent);
+
+		if (parent->outeropsset && !parent->outeropsfixed)
+		{
+			isfixed = false;
+		}
+		else if (parent->outeropsset && parent->outerops)
+		{
+			isfixed = true;
+			tts_ops = parent->outerops;
+		}
+		else if (os)
+		{
+			tts_ops = ExecGetResultSlotOps(os, &isfixed);
+			desc = ExecGetResultType(os);
+		}
+	}
+	else if (op->opcode == EEOP_SCAN_FETCHSOME)
+	{
+		desc = parent->scandesc;
+
+		if (parent && parent->scanops)
+			tts_ops = parent->scanops;
+
+		if (parent->scanopsset)
+			isfixed = parent->scanopsfixed;
+	}
+
+	if (isfixed && desc != NULL && tts_ops != NULL)
+	{
+		op->d.fetch.fixed = true;
+		op->d.fetch.kind = tts_ops;
+		op->d.fetch.known_desc = desc;
+	}
+	else
+	{
+		op->d.fetch.fixed = false;
+		op->d.fetch.kind = NULL;
+		op->d.fetch.known_desc = NULL;
+	}
 }
 
 /*
@@ -2421,8 +2521,8 @@ ExecInitWholeRowVar(ExprEvalStep *scratch, Var *variable, ExprState *state)
 			{
 				scratch->d.wholerow.junkFilter =
 					ExecInitJunkFilter(subplan->plan->targetlist,
-									   ExecGetResultType(subplan)->tdhasoid,
-									   ExecInitExtraTupleSlot(parent->state, NULL));
+									   ExecInitExtraTupleSlot(parent->state, NULL,
+															  &TTSOpsVirtual));
 			}
 		}
 	}
@@ -2860,13 +2960,13 @@ ExecBuildAggTrans(AggState *aggstate, AggStatePerPhase phase,
 	for (transno = 0; transno < aggstate->numtrans; transno++)
 	{
 		AggStatePerTrans pertrans = &aggstate->pertrans[transno];
-		int			numInputs = pertrans->numInputs;
 		int			argno;
 		int			setno;
-		FunctionCallInfo trans_fcinfo = &pertrans->transfn_fcinfo;
+		FunctionCallInfo trans_fcinfo = pertrans->transfn_fcinfo;
 		ListCell   *arg;
 		ListCell   *bail;
 		List	   *adjust_bailout = NIL;
+		NullableDatum *strictargs = NULL;
 		bool	   *strictnulls = NULL;
 
 		/*
@@ -2904,7 +3004,7 @@ ExecBuildAggTrans(AggState *aggstate, AggStatePerPhase phase,
 			Assert(pertrans->numSortCols == 0);
 			Assert(list_length(pertrans->aggref->args) == 1);
 
-			strictnulls = trans_fcinfo->argnull + 1;
+			strictargs = trans_fcinfo->args + 1;
 			source_tle = (TargetEntry *) linitial(pertrans->aggref->args);
 
 			/*
@@ -2918,21 +3018,21 @@ ExecBuildAggTrans(AggState *aggstate, AggStatePerPhase phase,
 				 * value
 				 */
 				ExecInitExprRec(source_tle->expr, state,
-								&trans_fcinfo->arg[argno + 1],
-								&trans_fcinfo->argnull[argno + 1]);
+								&trans_fcinfo->args[argno + 1].value,
+								&trans_fcinfo->args[argno + 1].isnull);
 			}
 			else
 			{
-				FunctionCallInfo ds_fcinfo = &pertrans->deserialfn_fcinfo;
+				FunctionCallInfo ds_fcinfo = pertrans->deserialfn_fcinfo;
 
 				/* evaluate argument */
 				ExecInitExprRec(source_tle->expr, state,
-								&ds_fcinfo->arg[0],
-								&ds_fcinfo->argnull[0]);
+								&ds_fcinfo->args[0].value,
+								&ds_fcinfo->args[0].isnull);
 
 				/* Dummy second argument for type-safety reasons */
-				ds_fcinfo->arg[1] = PointerGetDatum(NULL);
-				ds_fcinfo->argnull[1] = false;
+				ds_fcinfo->args[1].value = PointerGetDatum(NULL);
+				ds_fcinfo->args[1].isnull = false;
 
 				/*
 				 * Don't call a strict deserialization function with NULL
@@ -2946,8 +3046,8 @@ ExecBuildAggTrans(AggState *aggstate, AggStatePerPhase phase,
 				scratch.d.agg_deserialize.aggstate = aggstate;
 				scratch.d.agg_deserialize.fcinfo_data = ds_fcinfo;
 				scratch.d.agg_deserialize.jumpnull = -1;	/* adjust later */
-				scratch.resvalue = &trans_fcinfo->arg[argno + 1];
-				scratch.resnull = &trans_fcinfo->argnull[argno + 1];
+				scratch.resvalue = &trans_fcinfo->args[argno + 1].value;
+				scratch.resnull = &trans_fcinfo->args[argno + 1].isnull;
 
 				ExprEvalPushStep(state, &scratch);
 				adjust_bailout = lappend_int(adjust_bailout,
@@ -2964,7 +3064,7 @@ ExecBuildAggTrans(AggState *aggstate, AggStatePerPhase phase,
 			/*
 			 * Normal transition function without ORDER BY / DISTINCT.
 			 */
-			strictnulls = trans_fcinfo->argnull + 1;
+			strictargs = trans_fcinfo->args + 1;
 
 			foreach(arg, pertrans->aggref->args)
 			{
@@ -2975,8 +3075,8 @@ ExecBuildAggTrans(AggState *aggstate, AggStatePerPhase phase,
 				 * value
 				 */
 				ExecInitExprRec(source_tle->expr, state,
-								&trans_fcinfo->arg[argno + 1],
-								&trans_fcinfo->argnull[argno + 1]);
+								&trans_fcinfo->args[argno + 1].value,
+								&trans_fcinfo->args[argno + 1].isnull);
 				argno++;
 			}
 		}
@@ -3015,19 +3115,23 @@ ExecBuildAggTrans(AggState *aggstate, AggStatePerPhase phase,
 				argno++;
 			}
 		}
-		Assert(numInputs == argno);
+		Assert(pertrans->numInputs == argno);
 
 		/*
 		 * For a strict transfn, nothing happens when there's a NULL input; we
 		 * just keep the prior transValue. This is true for both plain and
 		 * sorted/distinct aggregates.
 		 */
-		if (trans_fcinfo->flinfo->fn_strict && numInputs > 0)
+		if (trans_fcinfo->flinfo->fn_strict && pertrans->numTransInputs > 0)
 		{
-			scratch.opcode = EEOP_AGG_STRICT_INPUT_CHECK;
+			if (strictnulls)
+				scratch.opcode = EEOP_AGG_STRICT_INPUT_CHECK_NULLS;
+			else
+				scratch.opcode = EEOP_AGG_STRICT_INPUT_CHECK_ARGS;
 			scratch.d.agg_strict_input_check.nulls = strictnulls;
+			scratch.d.agg_strict_input_check.args = strictargs;
 			scratch.d.agg_strict_input_check.jumpnull = -1; /* adjust later */
-			scratch.d.agg_strict_input_check.nargs = numInputs;
+			scratch.d.agg_strict_input_check.nargs = pertrans->numTransInputs;
 			ExprEvalPushStep(state, &scratch);
 			adjust_bailout = lappend_int(adjust_bailout,
 										 state->steps_len - 1);
@@ -3079,7 +3183,8 @@ ExecBuildAggTrans(AggState *aggstate, AggStatePerPhase phase,
 				Assert(as->d.jump.jumpdone == -1);
 				as->d.jump.jumpdone = state->steps_len;
 			}
-			else if (as->opcode == EEOP_AGG_STRICT_INPUT_CHECK)
+			else if (as->opcode == EEOP_AGG_STRICT_INPUT_CHECK_ARGS ||
+					 as->opcode == EEOP_AGG_STRICT_INPUT_CHECK_NULLS)
 			{
 				Assert(as->d.agg_strict_input_check.jumpnull == -1);
 				as->d.agg_strict_input_check.jumpnull = state->steps_len;
@@ -3214,9 +3319,10 @@ ExecBuildAggTransCall(ExprState *state, AggState *aggstate,
  */
 ExprState *
 ExecBuildGroupingEqual(TupleDesc ldesc, TupleDesc rdesc,
+					   const TupleTableSlotOps * lops, const TupleTableSlotOps * rops,
 					   int numCols,
-					   AttrNumber *keyColIdx,
-					   Oid *eqfunctions,
+					   const AttrNumber *keyColIdx,
+					   const Oid *eqfunctions,
 					   PlanState *parent)
 {
 	ExprState  *state = makeNode(ExprState);
@@ -3253,12 +3359,18 @@ ExecBuildGroupingEqual(TupleDesc ldesc, TupleDesc rdesc,
 	/* push deform steps */
 	scratch.opcode = EEOP_INNER_FETCHSOME;
 	scratch.d.fetch.last_var = maxatt;
+	scratch.d.fetch.fixed = false;
 	scratch.d.fetch.known_desc = ldesc;
+	scratch.d.fetch.kind = lops;
+	ExecComputeSlotInfo(state, &scratch);
 	ExprEvalPushStep(state, &scratch);
 
 	scratch.opcode = EEOP_OUTER_FETCHSOME;
 	scratch.d.fetch.last_var = maxatt;
+	scratch.d.fetch.fixed = false;
 	scratch.d.fetch.known_desc = rdesc;
+	scratch.d.fetch.kind = rops;
+	ExecComputeSlotInfo(state, &scratch);
 	ExprEvalPushStep(state, &scratch);
 
 	/*
@@ -3284,7 +3396,7 @@ ExecBuildGroupingEqual(TupleDesc ldesc, TupleDesc rdesc,
 
 		/* Set up the primary fmgr lookup information */
 		finfo = palloc0(sizeof(FmgrInfo));
-		fcinfo = palloc0(sizeof(FunctionCallInfoData));
+		fcinfo = palloc0(SizeForFunctionCallInfo(2));
 		fmgr_info(foid, finfo);
 		fmgr_info_set_expr(NULL, finfo);
 		InitFunctionCallInfoData(*fcinfo, finfo, 2,
@@ -3294,16 +3406,16 @@ ExecBuildGroupingEqual(TupleDesc ldesc, TupleDesc rdesc,
 		scratch.opcode = EEOP_INNER_VAR;
 		scratch.d.var.attnum = attno - 1;
 		scratch.d.var.vartype = latt->atttypid;
-		scratch.resvalue = &fcinfo->arg[0];
-		scratch.resnull = &fcinfo->argnull[0];
+		scratch.resvalue = &fcinfo->args[0].value;
+		scratch.resnull = &fcinfo->args[0].isnull;
 		ExprEvalPushStep(state, &scratch);
 
 		/* right arg */
 		scratch.opcode = EEOP_OUTER_VAR;
 		scratch.d.var.attnum = attno - 1;
 		scratch.d.var.vartype = ratt->atttypid;
-		scratch.resvalue = &fcinfo->arg[1];
-		scratch.resnull = &fcinfo->argnull[1];
+		scratch.resvalue = &fcinfo->args[1].value;
+		scratch.resnull = &fcinfo->args[1].isnull;
 		ExprEvalPushStep(state, &scratch);
 
 		/* evaluate distinctness */

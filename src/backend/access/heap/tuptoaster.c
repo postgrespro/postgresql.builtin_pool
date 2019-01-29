@@ -4,7 +4,7 @@
  *	  Support routines for external and compressed storage of
  *	  variable size attributes.
  *
- * Copyright (c) 2000-2018, PostgreSQL Global Development Group
+ * Copyright (c) 2000-2019, PostgreSQL Global Development Group
  *
  *
  * IDENTIFICATION
@@ -42,7 +42,6 @@
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
 #include "utils/typcache.h"
-#include "utils/tqual.h"
 
 
 #undef TOAST_DEBUG
@@ -723,8 +722,6 @@ toast_insert_or_update(Relation rel, HeapTuple newtup, HeapTuple oldtup,
 	hoff = SizeofHeapTupleHeader;
 	if (has_nulls)
 		hoff += BITMAPLEN(numAttrs);
-	if (newtup->t_data->t_infomask & HEAP_HASOID)
-		hoff += sizeof(Oid);
 	hoff = MAXALIGN(hoff);
 	/* now convert to a limit on the tuple data size */
 	maxDataLen = RelationGetToastTupleTarget(rel, TOAST_TUPLE_TARGET) - hoff;
@@ -1013,8 +1010,6 @@ toast_insert_or_update(Relation rel, HeapTuple newtup, HeapTuple oldtup,
 		new_header_len = SizeofHeapTupleHeader;
 		if (has_nulls)
 			new_header_len += BITMAPLEN(numAttrs);
-		if (olddata->t_infomask & HEAP_HASOID)
-			new_header_len += sizeof(Oid);
 		new_header_len = MAXALIGN(new_header_len);
 		new_data_len = heap_compute_data_size(tupleDesc,
 											  toast_values, toast_isnull);
@@ -1036,8 +1031,6 @@ toast_insert_or_update(Relation rel, HeapTuple newtup, HeapTuple oldtup,
 		memcpy(new_data, olddata, SizeofHeapTupleHeader);
 		HeapTupleHeaderSetNatts(new_data, numAttrs);
 		new_data->t_hoff = new_header_len;
-		if (olddata->t_infomask & HEAP_HASOID)
-			HeapTupleHeaderSetOid(new_data, HeapTupleHeaderGetOid(olddata));
 
 		/* Copy over the data, and fill the null bitmap if needed */
 		heap_fill_tuple(tupleDesc,
@@ -1124,13 +1117,10 @@ toast_flatten_tuple(HeapTuple tup, TupleDesc tupleDesc)
 	new_tuple = heap_form_tuple(tupleDesc, toast_values, toast_isnull);
 
 	/*
-	 * Be sure to copy the tuple's OID and identity fields.  We also make a
-	 * point of copying visibility info, just in case anybody looks at those
-	 * fields in a syscache entry.
+	 * Be sure to copy the tuple's identity fields.  We also make a point of
+	 * copying visibility info, just in case anybody looks at those fields in
+	 * a syscache entry.
 	 */
-	if (tupleDesc->tdhasoid)
-		HeapTupleSetOid(new_tuple, HeapTupleGetOid(tup));
-
 	new_tuple->t_self = tup->t_self;
 	new_tuple->t_tableOid = tup->t_tableOid;
 
@@ -1244,8 +1234,6 @@ toast_flatten_tuple_to_datum(HeapTupleHeader tup,
 	new_header_len = SizeofHeapTupleHeader;
 	if (has_nulls)
 		new_header_len += BITMAPLEN(numAttrs);
-	if (tup->t_infomask & HEAP_HASOID)
-		new_header_len += sizeof(Oid);
 	new_header_len = MAXALIGN(new_header_len);
 	new_data_len = heap_compute_data_size(tupleDesc,
 										  toast_values, toast_isnull);
@@ -1259,8 +1247,6 @@ toast_flatten_tuple_to_datum(HeapTupleHeader tup,
 	memcpy(new_data, tup, SizeofHeapTupleHeader);
 	HeapTupleHeaderSetNatts(new_data, numAttrs);
 	new_data->t_hoff = new_header_len;
-	if (tup->t_infomask & HEAP_HASOID)
-		HeapTupleHeaderSetOid(new_data, HeapTupleHeaderGetOid(tup));
 
 	/* Set the composite-Datum header fields correctly */
 	HeapTupleHeaderSetDatumLength(new_data, new_tuple_len);
@@ -1435,7 +1421,7 @@ toast_get_valid_index(Oid toastoid, LOCKMODE lock)
 	Relation	toastrel;
 
 	/* Open the toast relation */
-	toastrel = heap_open(toastoid, lock);
+	toastrel = table_open(toastoid, lock);
 
 	/* Look for the valid index of the toast relation */
 	validIndex = toast_open_indexes(toastrel,
@@ -1446,7 +1432,7 @@ toast_get_valid_index(Oid toastoid, LOCKMODE lock)
 
 	/* Close the toast relation and all its indexes */
 	toast_close_indexes(toastidxs, num_indexes, lock);
-	heap_close(toastrel, lock);
+	table_close(toastrel, lock);
 
 	return validIndexOid;
 }
@@ -1500,7 +1486,7 @@ toast_save_datum(Relation rel, Datum value,
 	 * uniqueness of the OID we assign to the toasted item, even though it has
 	 * additional columns besides OID.
 	 */
-	toastrel = heap_open(rel->rd_rel->reltoastrelid, RowExclusiveLock);
+	toastrel = table_open(rel->rd_rel->reltoastrelid, RowExclusiveLock);
 	toasttupDesc = toastrel->rd_att;
 
 	/* Open all the toast indexes and look for the valid one */
@@ -1680,7 +1666,7 @@ toast_save_datum(Relation rel, Datum value,
 		for (i = 0; i < num_indexes; i++)
 		{
 			/* Only index relations marked as ready can be updated */
-			if (IndexIsReady(toastidxs[i]->rd_index))
+			if (toastidxs[i]->rd_index->indisready)
 				index_insert(toastidxs[i], t_values, t_isnull,
 							 &(toasttup->t_self),
 							 toastrel,
@@ -1705,7 +1691,7 @@ toast_save_datum(Relation rel, Datum value,
 	 * Done - close toast relation and its indexes
 	 */
 	toast_close_indexes(toastidxs, num_indexes, RowExclusiveLock);
-	heap_close(toastrel, RowExclusiveLock);
+	table_close(toastrel, RowExclusiveLock);
 
 	/*
 	 * Create the TOAST pointer value that we'll return
@@ -1747,7 +1733,7 @@ toast_delete_datum(Relation rel, Datum value, bool is_speculative)
 	/*
 	 * Open the toast relation and its indexes
 	 */
-	toastrel = heap_open(toast_pointer.va_toastrelid, RowExclusiveLock);
+	toastrel = table_open(toast_pointer.va_toastrelid, RowExclusiveLock);
 
 	/* Fetch valid relation used for process */
 	validIndex = toast_open_indexes(toastrel,
@@ -1787,7 +1773,7 @@ toast_delete_datum(Relation rel, Datum value, bool is_speculative)
 	 */
 	systable_endscan_ordered(toastscan);
 	toast_close_indexes(toastidxs, num_indexes, RowExclusiveLock);
-	heap_close(toastrel, RowExclusiveLock);
+	table_close(toastrel, RowExclusiveLock);
 }
 
 
@@ -1796,7 +1782,7 @@ toast_delete_datum(Relation rel, Datum value, bool is_speculative)
  *
  *	Test whether a toast value with the given ID exists in the toast relation.
  *	For safety, we consider a value to exist if there are either live or dead
- *	toast rows with that ID; see notes for GetNewOid().
+ *	toast rows with that ID; see notes for GetNewOidWithIndex().
  * ----------
  */
 static bool
@@ -1853,11 +1839,11 @@ toastid_valueid_exists(Oid toastrelid, Oid valueid)
 	bool		result;
 	Relation	toastrel;
 
-	toastrel = heap_open(toastrelid, AccessShareLock);
+	toastrel = table_open(toastrelid, AccessShareLock);
 
 	result = toastrel_valueid_exists(toastrel, valueid);
 
-	heap_close(toastrel, AccessShareLock);
+	table_close(toastrel, AccessShareLock);
 
 	return result;
 }
@@ -1912,7 +1898,7 @@ toast_fetch_datum(struct varlena *attr)
 	/*
 	 * Open the toast relation and its indexes
 	 */
-	toastrel = heap_open(toast_pointer.va_toastrelid, AccessShareLock);
+	toastrel = table_open(toast_pointer.va_toastrelid, AccessShareLock);
 	toasttupDesc = toastrel->rd_att;
 
 	/* Look for the valid index of the toast relation */
@@ -2029,7 +2015,7 @@ toast_fetch_datum(struct varlena *attr)
 	 */
 	systable_endscan_ordered(toastscan);
 	toast_close_indexes(toastidxs, num_indexes, AccessShareLock);
-	heap_close(toastrel, AccessShareLock);
+	table_close(toastrel, AccessShareLock);
 
 	return result;
 }
@@ -2039,6 +2025,8 @@ toast_fetch_datum(struct varlena *attr)
  *
  *	Reconstruct a segment of a Datum from the chunks saved
  *	in the toast relation
+ *
+ *	Note that this function only supports non-compressed external datums.
  * ----------
  */
 static struct varlena *
@@ -2098,10 +2086,7 @@ toast_fetch_datum_slice(struct varlena *attr, int32 sliceoffset, int32 length)
 
 	result = (struct varlena *) palloc(length + VARHDRSZ);
 
-	if (VARATT_EXTERNAL_IS_COMPRESSED(toast_pointer))
-		SET_VARSIZE_COMPRESSED(result, length + VARHDRSZ);
-	else
-		SET_VARSIZE(result, length + VARHDRSZ);
+	SET_VARSIZE(result, length + VARHDRSZ);
 
 	if (length == 0)
 		return result;			/* Can save a lot of work at this point! */
@@ -2116,7 +2101,7 @@ toast_fetch_datum_slice(struct varlena *attr, int32 sliceoffset, int32 length)
 	/*
 	 * Open the toast relation and its indexes
 	 */
-	toastrel = heap_open(toast_pointer.va_toastrelid, AccessShareLock);
+	toastrel = table_open(toast_pointer.va_toastrelid, AccessShareLock);
 	toasttupDesc = toastrel->rd_att;
 
 	/* Look for the valid index of toast relation */
@@ -2263,7 +2248,7 @@ toast_fetch_datum_slice(struct varlena *attr, int32 sliceoffset, int32 length)
 	 */
 	systable_endscan_ordered(toastscan);
 	toast_close_indexes(toastidxs, num_indexes, AccessShareLock);
-	heap_close(toastrel, AccessShareLock);
+	table_close(toastrel, AccessShareLock);
 
 	return result;
 }

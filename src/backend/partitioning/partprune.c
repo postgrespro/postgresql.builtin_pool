@@ -25,7 +25,7 @@
  *
  * See gen_partprune_steps_internal() for more details on step generation.
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -44,6 +44,7 @@
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
+#include "optimizer/appendinfo.h"
 #include "optimizer/clauses.h"
 #include "optimizer/pathnode.h"
 #include "optimizer/planner.h"
@@ -347,8 +348,6 @@ make_partitionedrel_pruneinfo(PlannerInfo *root, RelOptInfo *parentrel,
 		Assert(rti < root->simple_rel_array_size);
 		/* No duplicates please */
 		Assert(relid_subpart_map[rti] == 0);
-		/* Same rel cannot be both leaf and non-leaf */
-		Assert(relid_subplan_map[rti] == 0);
 
 		relid_subpart_map[rti] = i++;
 	}
@@ -359,7 +358,6 @@ make_partitionedrel_pruneinfo(PlannerInfo *root, RelOptInfo *parentrel,
 		Index		rti = lfirst_int(lc);
 		RelOptInfo *subpart = find_base_rel(root, rti);
 		PartitionedRelPruneInfo *pinfo;
-		RangeTblEntry *rte;
 		Bitmapset  *present_parts;
 		int			nparts = subpart->nparts;
 		int			partnatts = subpart->part_scheme->partnatts;
@@ -384,7 +382,7 @@ make_partitionedrel_pruneinfo(PlannerInfo *root, RelOptInfo *parentrel,
 			 * because in later iterations of the loop for child partitions,
 			 * we want to translate from parent to child variables.
 			 */
-			if (parentrel != subpart)
+			if (!bms_equal(parentrel->relids, subpart->relids))
 			{
 				int			nappinfos;
 				AppendRelInfo **appinfos = find_appinfos_by_relids(root,
@@ -461,10 +459,8 @@ make_partitionedrel_pruneinfo(PlannerInfo *root, RelOptInfo *parentrel,
 				present_parts = bms_add_member(present_parts, i);
 		}
 
-		rte = root->simple_rte_array[subpart->relid];
-
 		pinfo = makeNode(PartitionedRelPruneInfo);
-		pinfo->reloid = rte->relid;
+		pinfo->rtindex = rti;
 		pinfo->pruning_steps = pruning_steps;
 		pinfo->present_parts = present_parts;
 		pinfo->nparts = nparts;
@@ -589,7 +585,6 @@ prune_append_rel_partitions(RelOptInfo *rel)
 	context.ppccontext = CurrentMemoryContext;
 
 	/* These are not valid when being called from the planner */
-	context.partrel = NULL;
 	context.planstate = NULL;
 	context.exprstates = NULL;
 	context.exprhasexecparam = NULL;
@@ -1430,7 +1425,7 @@ gen_prune_steps_from_opexps(PartitionScheme part_scheme,
 					/*
 					 * For each clause for the "last" column, after appending
 					 * the clause's own expression to the 'prefix', we'll
-					 * generate one step using the so generated vector and and
+					 * generate one step using the so generated vector and
 					 * assign = as its strategy.  Actually, 'prefix' might
 					 * contain multiple clauses for the same key, in which
 					 * case, we must generate steps for various combinations
@@ -2406,7 +2401,7 @@ get_matching_list_bounds(PartitionPruneContext *context,
 
 
 /*
- * get_matching_range_datums
+ * get_matching_range_bounds
  *		Determine the offsets of range bounds matching the specified values,
  *		according to the semantics of the given operator strategy
  *
@@ -2485,7 +2480,7 @@ get_matching_range_bounds(PartitionPruneContext *context,
 
 	/*
 	 * If the query does not constrain all key columns, we'll need to scan the
-	 * the default partition, if any.
+	 * default partition, if any.
 	 */
 	if (nvalues < partnatts)
 		result->scan_default = partition_bound_has_default(boundinfo);
@@ -2830,9 +2825,9 @@ get_matching_range_bounds(PartitionPruneContext *context,
 	}
 
 	/*
-	 * Skip a gap.  See the above comment about how we decide whether or or
-	 * not to scan the default partition based whether the datum that will
-	 * become the maximum datum is finite or not.
+	 * Skip a gap.  See the above comment about how we decide whether or not
+	 * to scan the default partition based whether the datum that will become
+	 * the maximum datum is finite or not.
 	 */
 	if (maxoff >= 1 && partindices[maxoff] < 0)
 	{

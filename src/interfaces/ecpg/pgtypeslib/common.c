@@ -2,7 +2,7 @@
 
 #include "postgres_fe.h"
 
-#include "extern.h"
+#include "pgtypeslib_extern.h"
 #include "pgtypes.h"
 
 /* Return value is zero-filled. */
@@ -110,7 +110,7 @@ pgtypes_fmt_replace(union un_fmt_comb replace_val, int replace_type, char **outp
 						break;
 				}
 
-				if (i < 0)
+				if (i < 0 || i >= PGTYPES_FMT_NUM_MAX_DIGITS)
 				{
 					free(t);
 					return -1;

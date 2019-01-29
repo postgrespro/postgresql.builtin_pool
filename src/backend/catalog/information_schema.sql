@@ -2,7 +2,7 @@
  * SQL Information Schema
  * as defined in ISO/IEC 9075-11:2011
  *
- * Copyright (c) 2003-2018, PostgreSQL Global Development Group
+ * Copyright (c) 2003-2019, PostgreSQL Global Development Group
  *
  * src/backend/catalog/information_schema.sql
  *
@@ -186,7 +186,7 @@ CREATE FUNCTION _pg_interval_type(typid oid, mod int4) RETURNS text
     AS
 $$SELECT
   CASE WHEN $1 IN (1186) /* interval */
-           THEN upper(substring(format_type($1, $2) from 'interval[()0-9]* #"%#"' for '#'))
+           THEN pg_catalog.upper(substring(pg_catalog.format_type($1, $2) from 'interval[()0-9]* #"%#"' for '#'))
        ELSE null
   END$$;
 
@@ -208,7 +208,7 @@ CREATE DOMAIN cardinal_number AS integer
  * CHARACTER_DATA domain
  */
 
-CREATE DOMAIN character_data AS character varying;
+CREATE DOMAIN character_data AS character varying COLLATE "C";
 
 
 /*
@@ -216,7 +216,7 @@ CREATE DOMAIN character_data AS character varying;
  * SQL_IDENTIFIER domain
  */
 
-CREATE DOMAIN sql_identifier AS character varying;
+CREATE DOMAIN sql_identifier AS name;
 
 
 /*
@@ -243,7 +243,7 @@ CREATE DOMAIN time_stamp AS timestamp(2) with time zone
  * YES_OR_NO domain
  */
 
-CREATE DOMAIN yes_or_no AS character varying(3)
+CREATE DOMAIN yes_or_no AS character varying(3) COLLATE "C"
     CONSTRAINT yes_or_no_check CHECK (value IN ('YES', 'NO'));
 
 
@@ -416,7 +416,7 @@ CREATE VIEW check_constraint_routine_usage AS
            CAST(c.conname AS sql_identifier) AS constraint_name,
            CAST(current_database() AS sql_identifier) AS specific_catalog,
            CAST(np.nspname AS sql_identifier) AS specific_schema,
-           CAST(p.proname || '_' || CAST(p.oid AS text) AS sql_identifier) AS specific_name
+           CAST(nameconcatoid(p.proname, p.oid) AS sql_identifier) AS specific_name
     FROM pg_namespace nc, pg_constraint c, pg_depend d, pg_proc p, pg_namespace np
     WHERE nc.oid = c.connamespace
       AND c.contype = 'c'
@@ -1115,7 +1115,7 @@ GRANT SELECT ON key_column_usage TO PUBLIC;
 CREATE VIEW parameters AS
     SELECT CAST(current_database() AS sql_identifier) AS specific_catalog,
            CAST(n_nspname AS sql_identifier) AS specific_schema,
-           CAST(proname || '_' || CAST(p_oid AS text) AS sql_identifier) AS specific_name,
+           CAST(nameconcatoid(proname, p_oid) AS sql_identifier) AS specific_name,
            CAST((ss.x).n AS cardinal_number) AS ordinal_position,
            CAST(
              CASE WHEN proargmodes IS NULL THEN 'IN'
@@ -1320,7 +1320,7 @@ CREATE VIEW routine_privileges AS
            CAST(grantee.rolname AS sql_identifier) AS grantee,
            CAST(current_database() AS sql_identifier) AS specific_catalog,
            CAST(n.nspname AS sql_identifier) AS specific_schema,
-           CAST(p.proname || '_' || CAST(p.oid AS text) AS sql_identifier) AS specific_name,
+           CAST(nameconcatoid(p.proname, p.oid) AS sql_identifier) AS specific_name,
            CAST(current_database() AS sql_identifier) AS routine_catalog,
            CAST(n.nspname AS sql_identifier) AS routine_schema,
            CAST(p.proname AS sql_identifier) AS routine_name,
@@ -1409,7 +1409,7 @@ GRANT SELECT ON role_routine_grants TO PUBLIC;
 CREATE VIEW routines AS
     SELECT CAST(current_database() AS sql_identifier) AS specific_catalog,
            CAST(n.nspname AS sql_identifier) AS specific_schema,
-           CAST(p.proname || '_' || CAST(p.oid AS text) AS sql_identifier) AS specific_name,
+           CAST(nameconcatoid(p.proname, p.oid) AS sql_identifier) AS specific_name,
            CAST(current_database() AS sql_identifier) AS routine_catalog,
            CAST(n.nspname AS sql_identifier) AS routine_schema,
            CAST(p.proname AS sql_identifier) AS routine_name,
@@ -1583,7 +1583,7 @@ CREATE TABLE sql_features (
     is_supported        yes_or_no,
     is_verified_by      character_data,
     comments            character_data
-) WITHOUT OIDS;
+);
 
 -- Will be filled with external data by initdb.
 
@@ -1604,7 +1604,7 @@ CREATE TABLE sql_implementation_info (
     integer_value               cardinal_number,
     character_value             character_data,
     comments                    character_data
-) WITHOUT OIDS;
+);
 
 INSERT INTO sql_implementation_info VALUES ('10003', 'CATALOG NAME', NULL, 'Y', NULL);
 INSERT INTO sql_implementation_info VALUES ('10004', 'COLLATING SEQUENCE', NULL, (SELECT default_collate_name FROM character_sets), NULL);
@@ -1635,7 +1635,7 @@ CREATE TABLE sql_languages (
     sql_language_implementation character_data,
     sql_language_binding_style  character_data,
     sql_language_programming_language character_data
-) WITHOUT OIDS;
+);
 
 INSERT INTO sql_languages VALUES ('ISO 9075', '1999', 'CORE', NULL, NULL, 'DIRECT', NULL);
 INSERT INTO sql_languages VALUES ('ISO 9075', '1999', 'CORE', NULL, NULL, 'EMBEDDED', 'C');
@@ -1656,7 +1656,7 @@ CREATE TABLE sql_packages (
     is_supported    yes_or_no,
     is_verified_by  character_data,
     comments        character_data
-) WITHOUT OIDS;
+);
 
 INSERT INTO sql_packages VALUES ('PKG000', 'Core', 'NO', NULL, '');
 INSERT INTO sql_packages VALUES ('PKG001', 'Enhanced datetime facilities', 'YES', NULL, '');
@@ -1683,7 +1683,7 @@ CREATE TABLE sql_parts (
     is_supported    yes_or_no,
     is_verified_by  character_data,
     comments        character_data
-) WITHOUT OIDS;
+);
 
 INSERT INTO sql_parts VALUES ('1', 'Framework (SQL/Framework)', 'NO', NULL, '');
 INSERT INTO sql_parts VALUES ('2', 'Foundation (SQL/Foundation)', 'NO', NULL, '');
@@ -1708,7 +1708,7 @@ CREATE TABLE sql_sizing (
     sizing_name     character_data,
     supported_value cardinal_number,
     comments        character_data
-) WITHOUT OIDS;
+);
 
 INSERT INTO sql_sizing VALUES (34,    'MAXIMUM CATALOG NAME LENGTH', 63, NULL);
 INSERT INTO sql_sizing VALUES (30,    'MAXIMUM COLUMN NAME LENGTH', 63, NULL);
@@ -1757,7 +1757,7 @@ CREATE TABLE sql_sizing_profiles (
     profile_id      character_data,
     required_value  cardinal_number,
     comments        character_data
-) WITHOUT OIDS;
+);
 
 GRANT SELECT ON sql_sizing_profiles TO PUBLIC;
 
@@ -1964,7 +1964,7 @@ CREATE VIEW transforms AS
            CAST(t.typname AS sql_identifier) AS udt_name,
            CAST(current_database() AS sql_identifier) AS specific_catalog,
            CAST(np.nspname AS sql_identifier) AS specific_schema,
-           CAST(p.proname || '_' || CAST(p.oid AS text) AS sql_identifier) AS specific_name,
+           CAST(nameconcatoid(p.proname, p.oid) AS sql_identifier) AS specific_name,
            CAST(l.lanname AS sql_identifier) AS group_name,
            CAST('FROM SQL' AS character_data) AS transform_type
     FROM pg_type t JOIN pg_transform x ON t.oid = x.trftype
@@ -1980,7 +1980,7 @@ CREATE VIEW transforms AS
            CAST(t.typname AS sql_identifier) AS udt_name,
            CAST(current_database() AS sql_identifier) AS specific_catalog,
            CAST(np.nspname AS sql_identifier) AS specific_schema,
-           CAST(p.proname || '_' || CAST(p.oid AS text) AS sql_identifier) AS specific_name,
+           CAST(nameconcatoid(p.proname, p.oid) AS sql_identifier) AS specific_name,
            CAST(l.lanname AS sql_identifier) AS group_name,
            CAST('TO SQL' AS character_data) AS transform_type
     FROM pg_type t JOIN pg_transform x ON t.oid = x.trftype
@@ -2495,7 +2495,7 @@ CREATE VIEW view_routine_usage AS
            CAST(v.relname AS sql_identifier) AS table_name,
            CAST(current_database() AS sql_identifier) AS specific_catalog,
            CAST(np.nspname AS sql_identifier) AS specific_schema,
-           CAST(p.proname || '_' || CAST(p.oid AS text)  AS sql_identifier) AS specific_name
+           CAST(nameconcatoid(p.proname, p.oid) AS sql_identifier) AS specific_name
 
     FROM pg_namespace nv, pg_class v, pg_depend dv,
          pg_depend dp, pg_proc p, pg_namespace np
@@ -2712,7 +2712,8 @@ CREATE VIEW element_types AS
            UNION ALL
 
            /* parameters */
-           SELECT pronamespace, CAST(proname || '_' || CAST(oid AS text) AS sql_identifier),
+           SELECT pronamespace,
+                  CAST(nameconcatoid(proname, oid) AS sql_identifier),
                   'ROUTINE'::text, (ss.x).n, (ss.x).x, 0
            FROM (SELECT p.pronamespace, p.proname, p.oid,
                         _pg_expandarray(coalesce(p.proallargtypes, p.proargtypes::oid[])) AS x
@@ -2721,7 +2722,8 @@ CREATE VIEW element_types AS
            UNION ALL
 
            /* result types */
-           SELECT p.pronamespace, CAST(p.proname || '_' || CAST(p.oid AS text) AS sql_identifier),
+           SELECT p.pronamespace,
+                  CAST(nameconcatoid(p.proname, p.oid) AS sql_identifier),
                   'ROUTINE'::text, 0, p.prorettype, 0
            FROM pg_proc p
 

@@ -13,7 +13,7 @@
  *	plan --- consider improving this someday.
  *
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  *
  * src/backend/utils/adt/ri_triggers.c
  *
@@ -30,8 +30,10 @@
 
 #include "postgres.h"
 
+#include "access/heapam.h"
 #include "access/htup_details.h"
 #include "access/sysattr.h"
+#include "access/table.h"
 #include "access/xact.h"
 #include "catalog/pg_collation.h"
 #include "catalog/pg_constraint.h"
@@ -56,7 +58,6 @@
 #include "utils/rls.h"
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
-#include "utils/tqual.h"
 
 
 /* ----------
@@ -300,7 +301,7 @@ RI_FKey_check(TriggerData *trigdata)
 	 * SELECT FOR KEY SHARE will get on it.
 	 */
 	fk_rel = trigdata->tg_relation;
-	pk_rel = heap_open(riinfo->pk_relid, RowShareLock);
+	pk_rel = table_open(riinfo->pk_relid, RowShareLock);
 
 	if (riinfo->confmatchtype == FKCONSTR_MATCH_PARTIAL)
 		ereport(ERROR,
@@ -315,7 +316,7 @@ RI_FKey_check(TriggerData *trigdata)
 			 * No further check needed - an all-NULL key passes every type of
 			 * foreign key constraint.
 			 */
-			heap_close(pk_rel, RowShareLock);
+			table_close(pk_rel, RowShareLock);
 			return PointerGetDatum(NULL);
 
 		case RI_KEYS_SOME_NULL:
@@ -340,7 +341,7 @@ RI_FKey_check(TriggerData *trigdata)
 							 errdetail("MATCH FULL does not allow mixing of null and nonnull key values."),
 							 errtableconstraint(fk_rel,
 												NameStr(riinfo->conname))));
-					heap_close(pk_rel, RowShareLock);
+					table_close(pk_rel, RowShareLock);
 					return PointerGetDatum(NULL);
 
 				case FKCONSTR_MATCH_SIMPLE:
@@ -349,7 +350,7 @@ RI_FKey_check(TriggerData *trigdata)
 					 * MATCH SIMPLE - if ANY column is null, the key passes
 					 * the constraint.
 					 */
-					heap_close(pk_rel, RowShareLock);
+					table_close(pk_rel, RowShareLock);
 					return PointerGetDatum(NULL);
 
 				case FKCONSTR_MATCH_PARTIAL:
@@ -363,7 +364,7 @@ RI_FKey_check(TriggerData *trigdata)
 					ereport(ERROR,
 							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 							 errmsg("MATCH PARTIAL not yet implemented")));
-					heap_close(pk_rel, RowShareLock);
+					table_close(pk_rel, RowShareLock);
 					return PointerGetDatum(NULL);
 
 				default:
@@ -444,7 +445,7 @@ RI_FKey_check(TriggerData *trigdata)
 	if (SPI_finish() != SPI_OK_FINISH)
 		elog(ERROR, "SPI_finish failed");
 
-	heap_close(pk_rel, RowShareLock);
+	table_close(pk_rel, RowShareLock);
 
 	return PointerGetDatum(NULL);
 }
@@ -706,7 +707,7 @@ ri_restrict(TriggerData *trigdata, bool is_no_action)
 	 * fk_rel is opened in RowShareLock mode since that's what our eventual
 	 * SELECT FOR KEY SHARE will get on it.
 	 */
-	fk_rel = heap_open(riinfo->fk_relid, RowShareLock);
+	fk_rel = table_open(riinfo->fk_relid, RowShareLock);
 	pk_rel = trigdata->tg_relation;
 	old_row = trigdata->tg_trigtuple;
 
@@ -724,39 +725,6 @@ ri_restrict(TriggerData *trigdata, bool is_no_action)
 			 */
 		case FKCONSTR_MATCH_SIMPLE:
 		case FKCONSTR_MATCH_FULL:
-			switch (ri_NullCheck(RelationGetDescr(pk_rel), old_row, riinfo, true))
-			{
-				case RI_KEYS_ALL_NULL:
-				case RI_KEYS_SOME_NULL:
-
-					/*
-					 * No check needed - there cannot be any reference to old
-					 * key if it contains a NULL
-					 */
-					heap_close(fk_rel, RowShareLock);
-					return PointerGetDatum(NULL);
-
-				case RI_KEYS_NONE_NULL:
-
-					/*
-					 * Have a full qualified key - continue below
-					 */
-					break;
-			}
-
-			/*
-			 * In UPDATE, no need to do anything if old and new keys are equal
-			 */
-			if (TRIGGER_FIRED_BY_UPDATE(trigdata->tg_event))
-			{
-				HeapTuple	new_row = trigdata->tg_newtuple;
-
-				if (ri_KeysEqual(pk_rel, old_row, new_row, riinfo, true))
-				{
-					heap_close(fk_rel, RowShareLock);
-					return PointerGetDatum(NULL);
-				}
-			}
 
 			/*
 			 * If another PK row now exists providing the old key values, we
@@ -767,7 +735,7 @@ ri_restrict(TriggerData *trigdata, bool is_no_action)
 			if (is_no_action &&
 				ri_Check_Pk_Match(pk_rel, fk_rel, old_row, riinfo))
 			{
-				heap_close(fk_rel, RowShareLock);
+				table_close(fk_rel, RowShareLock);
 				return PointerGetDatum(NULL);
 			}
 
@@ -840,7 +808,7 @@ ri_restrict(TriggerData *trigdata, bool is_no_action)
 			if (SPI_finish() != SPI_OK_FINISH)
 				elog(ERROR, "SPI_finish failed");
 
-			heap_close(fk_rel, RowShareLock);
+			table_close(fk_rel, RowShareLock);
 
 			return PointerGetDatum(NULL);
 
@@ -899,7 +867,7 @@ RI_FKey_cascade_del(PG_FUNCTION_ARGS)
 	 * fk_rel is opened in RowExclusiveLock mode since that's what our
 	 * eventual DELETE will get on it.
 	 */
-	fk_rel = heap_open(riinfo->fk_relid, RowExclusiveLock);
+	fk_rel = table_open(riinfo->fk_relid, RowExclusiveLock);
 	pk_rel = trigdata->tg_relation;
 	old_row = trigdata->tg_trigtuple;
 
@@ -914,26 +882,6 @@ RI_FKey_cascade_del(PG_FUNCTION_ARGS)
 			 */
 		case FKCONSTR_MATCH_SIMPLE:
 		case FKCONSTR_MATCH_FULL:
-			switch (ri_NullCheck(RelationGetDescr(pk_rel), old_row, riinfo, true))
-			{
-				case RI_KEYS_ALL_NULL:
-				case RI_KEYS_SOME_NULL:
-
-					/*
-					 * No check needed - there cannot be any reference to old
-					 * key if it contains a NULL
-					 */
-					heap_close(fk_rel, RowExclusiveLock);
-					return PointerGetDatum(NULL);
-
-				case RI_KEYS_NONE_NULL:
-
-					/*
-					 * Have a full qualified key - continue below
-					 */
-					break;
-			}
-
 			if (SPI_connect() != SPI_OK_CONNECT)
 				elog(ERROR, "SPI_connect failed");
 
@@ -1000,7 +948,7 @@ RI_FKey_cascade_del(PG_FUNCTION_ARGS)
 			if (SPI_finish() != SPI_OK_FINISH)
 				elog(ERROR, "SPI_finish failed");
 
-			heap_close(fk_rel, RowExclusiveLock);
+			table_close(fk_rel, RowExclusiveLock);
 
 			return PointerGetDatum(NULL);
 
@@ -1062,7 +1010,7 @@ RI_FKey_cascade_upd(PG_FUNCTION_ARGS)
 	 * fk_rel is opened in RowExclusiveLock mode since that's what our
 	 * eventual UPDATE will get on it.
 	 */
-	fk_rel = heap_open(riinfo->fk_relid, RowExclusiveLock);
+	fk_rel = table_open(riinfo->fk_relid, RowExclusiveLock);
 	pk_rel = trigdata->tg_relation;
 	new_row = trigdata->tg_newtuple;
 	old_row = trigdata->tg_trigtuple;
@@ -1078,35 +1026,6 @@ RI_FKey_cascade_upd(PG_FUNCTION_ARGS)
 			 */
 		case FKCONSTR_MATCH_SIMPLE:
 		case FKCONSTR_MATCH_FULL:
-			switch (ri_NullCheck(RelationGetDescr(pk_rel), old_row, riinfo, true))
-			{
-				case RI_KEYS_ALL_NULL:
-				case RI_KEYS_SOME_NULL:
-
-					/*
-					 * No check needed - there cannot be any reference to old
-					 * key if it contains a NULL
-					 */
-					heap_close(fk_rel, RowExclusiveLock);
-					return PointerGetDatum(NULL);
-
-				case RI_KEYS_NONE_NULL:
-
-					/*
-					 * Have a full qualified key - continue below
-					 */
-					break;
-			}
-
-			/*
-			 * No need to do anything if old and new keys are equal
-			 */
-			if (ri_KeysEqual(pk_rel, old_row, new_row, riinfo, true))
-			{
-				heap_close(fk_rel, RowExclusiveLock);
-				return PointerGetDatum(NULL);
-			}
-
 			if (SPI_connect() != SPI_OK_CONNECT)
 				elog(ERROR, "SPI_connect failed");
 
@@ -1185,7 +1104,7 @@ RI_FKey_cascade_upd(PG_FUNCTION_ARGS)
 			if (SPI_finish() != SPI_OK_FINISH)
 				elog(ERROR, "SPI_finish failed");
 
-			heap_close(fk_rel, RowExclusiveLock);
+			table_close(fk_rel, RowExclusiveLock);
 
 			return PointerGetDatum(NULL);
 
@@ -1278,7 +1197,7 @@ ri_setnull(TriggerData *trigdata)
 	 * fk_rel is opened in RowExclusiveLock mode since that's what our
 	 * eventual UPDATE will get on it.
 	 */
-	fk_rel = heap_open(riinfo->fk_relid, RowExclusiveLock);
+	fk_rel = table_open(riinfo->fk_relid, RowExclusiveLock);
 	pk_rel = trigdata->tg_relation;
 	old_row = trigdata->tg_trigtuple;
 
@@ -1296,40 +1215,6 @@ ri_setnull(TriggerData *trigdata)
 			 */
 		case FKCONSTR_MATCH_SIMPLE:
 		case FKCONSTR_MATCH_FULL:
-			switch (ri_NullCheck(RelationGetDescr(pk_rel), old_row, riinfo, true))
-			{
-				case RI_KEYS_ALL_NULL:
-				case RI_KEYS_SOME_NULL:
-
-					/*
-					 * No check needed - there cannot be any reference to old
-					 * key if it contains a NULL
-					 */
-					heap_close(fk_rel, RowExclusiveLock);
-					return PointerGetDatum(NULL);
-
-				case RI_KEYS_NONE_NULL:
-
-					/*
-					 * Have a full qualified key - continue below
-					 */
-					break;
-			}
-
-			/*
-			 * In UPDATE, no need to do anything if old and new keys are equal
-			 */
-			if (TRIGGER_FIRED_BY_UPDATE(trigdata->tg_event))
-			{
-				HeapTuple	new_row = trigdata->tg_newtuple;
-
-				if (ri_KeysEqual(pk_rel, old_row, new_row, riinfo, true))
-				{
-					heap_close(fk_rel, RowExclusiveLock);
-					return PointerGetDatum(NULL);
-				}
-			}
-
 			if (SPI_connect() != SPI_OK_CONNECT)
 				elog(ERROR, "SPI_connect failed");
 
@@ -1406,7 +1291,7 @@ ri_setnull(TriggerData *trigdata)
 			if (SPI_finish() != SPI_OK_FINISH)
 				elog(ERROR, "SPI_finish failed");
 
-			heap_close(fk_rel, RowExclusiveLock);
+			table_close(fk_rel, RowExclusiveLock);
 
 			return PointerGetDatum(NULL);
 
@@ -1498,7 +1383,7 @@ ri_setdefault(TriggerData *trigdata)
 	 * fk_rel is opened in RowExclusiveLock mode since that's what our
 	 * eventual UPDATE will get on it.
 	 */
-	fk_rel = heap_open(riinfo->fk_relid, RowExclusiveLock);
+	fk_rel = table_open(riinfo->fk_relid, RowExclusiveLock);
 	pk_rel = trigdata->tg_relation;
 	old_row = trigdata->tg_trigtuple;
 
@@ -1516,40 +1401,6 @@ ri_setdefault(TriggerData *trigdata)
 			 */
 		case FKCONSTR_MATCH_SIMPLE:
 		case FKCONSTR_MATCH_FULL:
-			switch (ri_NullCheck(RelationGetDescr(pk_rel), old_row, riinfo, true))
-			{
-				case RI_KEYS_ALL_NULL:
-				case RI_KEYS_SOME_NULL:
-
-					/*
-					 * No check needed - there cannot be any reference to old
-					 * key if it contains a NULL
-					 */
-					heap_close(fk_rel, RowExclusiveLock);
-					return PointerGetDatum(NULL);
-
-				case RI_KEYS_NONE_NULL:
-
-					/*
-					 * Have a full qualified key - continue below
-					 */
-					break;
-			}
-
-			/*
-			 * In UPDATE, no need to do anything if old and new keys are equal
-			 */
-			if (TRIGGER_FIRED_BY_UPDATE(trigdata->tg_event))
-			{
-				HeapTuple	new_row = trigdata->tg_newtuple;
-
-				if (ri_KeysEqual(pk_rel, old_row, new_row, riinfo, true))
-				{
-					heap_close(fk_rel, RowExclusiveLock);
-					return PointerGetDatum(NULL);
-				}
-			}
-
 			if (SPI_connect() != SPI_OK_CONNECT)
 				elog(ERROR, "SPI_connect failed");
 
@@ -1627,7 +1478,7 @@ ri_setdefault(TriggerData *trigdata)
 			if (SPI_finish() != SPI_OK_FINISH)
 				elog(ERROR, "SPI_finish failed");
 
-			heap_close(fk_rel, RowExclusiveLock);
+			table_close(fk_rel, RowExclusiveLock);
 
 			/*
 			 * If we just deleted or updated the PK row whose key was equal to
@@ -1668,11 +1519,13 @@ ri_setdefault(TriggerData *trigdata)
 /* ----------
  * RI_FKey_pk_upd_check_required -
  *
- *	Check if we really need to fire the RI trigger for an update to a PK
+ *	Check if we really need to fire the RI trigger for an update or delete to a PK
  *	relation.  This is called by the AFTER trigger queue manager to see if
  *	it can skip queuing an instance of an RI trigger.  Returns true if the
  *	trigger must be fired, false if we can prove the constraint will still
  *	be satisfied.
+ *
+ *	new_row will be NULL if this is called for a delete.
  * ----------
  */
 bool
@@ -1699,7 +1552,7 @@ RI_FKey_pk_upd_check_required(Trigger *trigger, Relation pk_rel,
 				return false;
 
 			/* If all old and new key values are equal, no check is needed */
-			if (ri_KeysEqual(pk_rel, old_row, new_row, riinfo, true))
+			if (new_row && ri_KeysEqual(pk_rel, old_row, new_row, riinfo, true))
 				return false;
 
 			/* Else we need to fire the trigger. */
@@ -1878,12 +1731,14 @@ RI_Initial_Check(Trigger *trigger, Relation fk_rel, Relation pk_rel)
 	pkrte->rtekind = RTE_RELATION;
 	pkrte->relid = RelationGetRelid(pk_rel);
 	pkrte->relkind = pk_rel->rd_rel->relkind;
+	pkrte->rellockmode = AccessShareLock;
 	pkrte->requiredPerms = ACL_SELECT;
 
 	fkrte = makeNode(RangeTblEntry);
 	fkrte->rtekind = RTE_RELATION;
 	fkrte->relid = RelationGetRelid(fk_rel);
 	fkrte->relkind = fk_rel->rd_rel->relkind;
+	fkrte->rellockmode = AccessShareLock;
 	fkrte->requiredPerms = ACL_SELECT;
 
 	for (i = 0; i < riinfo->nkeys; i++)
@@ -2334,10 +2189,6 @@ ri_LoadConstraintInfo(Oid constraintOid)
 	bool		found;
 	HeapTuple	tup;
 	Form_pg_constraint conForm;
-	Datum		adatum;
-	bool		isNull;
-	ArrayType  *arr;
-	int			numkeys;
 
 	/*
 	 * On the first call initialize the hashtable
@@ -2379,84 +2230,13 @@ ri_LoadConstraintInfo(Oid constraintOid)
 	riinfo->confdeltype = conForm->confdeltype;
 	riinfo->confmatchtype = conForm->confmatchtype;
 
-	/*
-	 * We expect the arrays to be 1-D arrays of the right types; verify that.
-	 * We don't need to use deconstruct_array() since the array data is just
-	 * going to look like a C array of values.
-	 */
-	adatum = SysCacheGetAttr(CONSTROID, tup,
-							 Anum_pg_constraint_conkey, &isNull);
-	if (isNull)
-		elog(ERROR, "null conkey for constraint %u", constraintOid);
-	arr = DatumGetArrayTypeP(adatum);	/* ensure not toasted */
-	if (ARR_NDIM(arr) != 1 ||
-		ARR_HASNULL(arr) ||
-		ARR_ELEMTYPE(arr) != INT2OID)
-		elog(ERROR, "conkey is not a 1-D smallint array");
-	numkeys = ARR_DIMS(arr)[0];
-	if (numkeys <= 0 || numkeys > RI_MAX_NUMKEYS)
-		elog(ERROR, "foreign key constraint cannot have %d columns", numkeys);
-	riinfo->nkeys = numkeys;
-	memcpy(riinfo->fk_attnums, ARR_DATA_PTR(arr), numkeys * sizeof(int16));
-	if ((Pointer) arr != DatumGetPointer(adatum))
-		pfree(arr);				/* free de-toasted copy, if any */
-
-	adatum = SysCacheGetAttr(CONSTROID, tup,
-							 Anum_pg_constraint_confkey, &isNull);
-	if (isNull)
-		elog(ERROR, "null confkey for constraint %u", constraintOid);
-	arr = DatumGetArrayTypeP(adatum);	/* ensure not toasted */
-	if (ARR_NDIM(arr) != 1 ||
-		ARR_DIMS(arr)[0] != numkeys ||
-		ARR_HASNULL(arr) ||
-		ARR_ELEMTYPE(arr) != INT2OID)
-		elog(ERROR, "confkey is not a 1-D smallint array");
-	memcpy(riinfo->pk_attnums, ARR_DATA_PTR(arr), numkeys * sizeof(int16));
-	if ((Pointer) arr != DatumGetPointer(adatum))
-		pfree(arr);				/* free de-toasted copy, if any */
-
-	adatum = SysCacheGetAttr(CONSTROID, tup,
-							 Anum_pg_constraint_conpfeqop, &isNull);
-	if (isNull)
-		elog(ERROR, "null conpfeqop for constraint %u", constraintOid);
-	arr = DatumGetArrayTypeP(adatum);	/* ensure not toasted */
-	/* see TryReuseForeignKey if you change the test below */
-	if (ARR_NDIM(arr) != 1 ||
-		ARR_DIMS(arr)[0] != numkeys ||
-		ARR_HASNULL(arr) ||
-		ARR_ELEMTYPE(arr) != OIDOID)
-		elog(ERROR, "conpfeqop is not a 1-D Oid array");
-	memcpy(riinfo->pf_eq_oprs, ARR_DATA_PTR(arr), numkeys * sizeof(Oid));
-	if ((Pointer) arr != DatumGetPointer(adatum))
-		pfree(arr);				/* free de-toasted copy, if any */
-
-	adatum = SysCacheGetAttr(CONSTROID, tup,
-							 Anum_pg_constraint_conppeqop, &isNull);
-	if (isNull)
-		elog(ERROR, "null conppeqop for constraint %u", constraintOid);
-	arr = DatumGetArrayTypeP(adatum);	/* ensure not toasted */
-	if (ARR_NDIM(arr) != 1 ||
-		ARR_DIMS(arr)[0] != numkeys ||
-		ARR_HASNULL(arr) ||
-		ARR_ELEMTYPE(arr) != OIDOID)
-		elog(ERROR, "conppeqop is not a 1-D Oid array");
-	memcpy(riinfo->pp_eq_oprs, ARR_DATA_PTR(arr), numkeys * sizeof(Oid));
-	if ((Pointer) arr != DatumGetPointer(adatum))
-		pfree(arr);				/* free de-toasted copy, if any */
-
-	adatum = SysCacheGetAttr(CONSTROID, tup,
-							 Anum_pg_constraint_conffeqop, &isNull);
-	if (isNull)
-		elog(ERROR, "null conffeqop for constraint %u", constraintOid);
-	arr = DatumGetArrayTypeP(adatum);	/* ensure not toasted */
-	if (ARR_NDIM(arr) != 1 ||
-		ARR_DIMS(arr)[0] != numkeys ||
-		ARR_HASNULL(arr) ||
-		ARR_ELEMTYPE(arr) != OIDOID)
-		elog(ERROR, "conffeqop is not a 1-D Oid array");
-	memcpy(riinfo->ff_eq_oprs, ARR_DATA_PTR(arr), numkeys * sizeof(Oid));
-	if ((Pointer) arr != DatumGetPointer(adatum))
-		pfree(arr);				/* free de-toasted copy, if any */
+	DeconstructFkConstraintRow(tup,
+							   &riinfo->nkeys,
+							   riinfo->fk_attnums,
+							   riinfo->pk_attnums,
+							   riinfo->pf_eq_oprs,
+							   riinfo->pp_eq_oprs,
+							   riinfo->ff_eq_oprs);
 
 	ReleaseSysCache(tup);
 

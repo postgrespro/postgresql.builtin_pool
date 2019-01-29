@@ -19,7 +19,7 @@
     <itemizedlist>
      <listitem>
       <para>
-       can be used to create functions and trigger procedures,
+       can be used to create functions and triggers,
       </para>
      </listitem>
      <listitem>
@@ -305,10 +305,9 @@ $$ LANGUAGE plpgsql;
      for transaction
      control.  <application>PL/pgSQL</application>'s <command>BEGIN</command>/<command>END</command>
      are only for grouping; they do not start or end a transaction.
-     Functions and trigger procedures are always executed within a transaction
-     established by an outer query &mdash; they cannot start or commit that
-     transaction, since there would be no context for them to execute in.
-     However, a block containing an <literal>EXCEPTION</literal> clause effectively
+     See <xref linkend="plpgsql-transactions"/> for information on managing
+     transactions in <application>PL/pgSQL</application>.
+     Also, a block containing an <literal>EXCEPTION</literal> clause effectively
      forms a subtransaction that can be rolled back without affecting the
      outer transaction.  For more about that see <xref
      linkend="plpgsql-error-trapping"/>.
@@ -579,7 +578,7 @@ $$ LANGUAGE plpgsql;
     function parameters.  The main practical use for this is to assign
     a different name for variables with predetermined names, such as
     <varname>NEW</varname> or <varname>OLD</varname> within
-    a trigger procedure.
+    a trigger function.
    </para>
 
    <para>
@@ -1415,7 +1414,7 @@ EXECUTE 'UPDATE tbl SET '
     <para>
      Dynamic SQL statements can also be safely constructed using the
      <function>format</function> function (see <xref
-     linkend="functions-string"/>). For example:
+     linkend="functions-string-format"/>). For example:
 <programlisting>
 EXECUTE format('UPDATE tbl SET %I = %L '
    'WHERE key = %L', colname, newvalue, keyvalue);
@@ -1485,14 +1484,6 @@ GET DIAGNOSTICS integer_var = ROW_COUNT;
          <entry><type>bigint</type></entry>
          <entry>the number of rows processed by the most
           recent <acronym>SQL</acronym> command</entry>
-        </row>
-        <row>
-         <entry><varname>RESULT_OID</varname></entry>
-         <entry><type>oid</type></entry>
-         <entry>the OID of the last row inserted by the most
-          recent <acronym>SQL</acronym> command (only useful after
-          an <command>INSERT</command> command into a table having
-          OIDs)</entry>
         </row>
         <row>
          <entry><literal>PG_CONTEXT</literal></entry>
@@ -1865,15 +1856,29 @@ SELECT * FROM get_available_flightid(CURRENT_DATE);
 
     <para>
      A procedure does not have a return value.  A procedure can therefore end
-     without a <command>RETURN</command> statement.  If
-     a <command>RETURN</command> statement is desired to exit the code early,
-     then <symbol>NULL</symbol> must be returned.  Returning any other value
-     will result in an error.
+     without a <command>RETURN</command> statement.  If you wish to use
+     a <command>RETURN</command> statement to exit the code early, write
+     just <command>RETURN</command> with no expression.
     </para>
 
     <para>
-     If a procedure has output parameters, then the output values can be
-     assigned to the parameters as if they were variables.  For example:
+     If the procedure has output parameters, the final values of the output
+     parameter variables will be returned to the caller.
+    </para>
+   </sect2>
+
+   <sect2 id="plpgsql-statements-calling-procedure">
+    <title>Calling a Procedure</title>
+
+    <para>
+     A <application>PL/pgSQL</application> function, procedure,
+     or <command>DO</command> block can call a procedure
+     using <command>CALL</command>.  Output parameters are handled
+     differently from the way that <command>CALL</command> works in plain
+     SQL.  Each <literal>INOUT</literal> parameter of the procedure must
+     correspond to a variable in the <command>CALL</command> statement, and
+     whatever the procedure returns is assigned back to that variable after
+     it returns.  For example:
 <programlisting>
 CREATE PROCEDURE triple(INOUT x int)
 LANGUAGE plpgsql
@@ -1883,7 +1888,13 @@ BEGIN
 END;
 $$;
 
-CALL triple(5);
+DO $$
+DECLARE myvar int := 5;
+BEGIN
+  CALL triple(myvar);
+  RAISE NOTICE 'myvar = %', myvar;  -- prints 15
+END
+$$;
 </programlisting>
     </para>
    </sect2>
@@ -3796,7 +3807,7 @@ ASSERT <replaceable class="parameter">condition</replaceable> <optional> , <repl
  </sect1>
 
  <sect1 id="plpgsql-trigger">
-  <title>Trigger Procedures</title>
+  <title>Trigger Functions</title>
 
   <indexterm zone="plpgsql-trigger">
    <primary>trigger</primary>
@@ -3805,8 +3816,8 @@ ASSERT <replaceable class="parameter">condition</replaceable> <optional> , <repl
 
   <para>
    <application>PL/pgSQL</application> can be used to define trigger
-   procedures on data changes or database events.
-   A trigger procedure is created with the <command>CREATE FUNCTION</command>
+   functions on data changes or database events.
+   A trigger function is created with the <command>CREATE FUNCTION</command>
    command, declaring it as a function with no arguments and a return type of
    <type>trigger</type> (for data change triggers) or
    <type>event_trigger</type> (for database event triggers).
@@ -3838,7 +3849,7 @@ ASSERT <replaceable class="parameter">condition</replaceable> <optional> , <repl
       <para>
        Data type <type>RECORD</type>; variable holding the new
        database row for <command>INSERT</command>/<command>UPDATE</command> operations in row-level
-       triggers. This variable is unassigned in statement-level triggers
+       triggers. This variable is null in statement-level triggers
        and for <command>DELETE</command> operations.
       </para>
      </listitem>
@@ -3850,7 +3861,7 @@ ASSERT <replaceable class="parameter">condition</replaceable> <optional> , <repl
       <para>
        Data type <type>RECORD</type>; variable holding the old
        database row for <command>UPDATE</command>/<command>DELETE</command> operations in row-level
-       triggers. This variable is unassigned in statement-level triggers
+       triggers. This variable is null in statement-level triggers
        and for <command>INSERT</command> operations.
       </para>
      </listitem>
@@ -3946,7 +3957,7 @@ ASSERT <replaceable class="parameter">condition</replaceable> <optional> , <repl
      <listitem>
       <para>
        Data type <type>integer</type>; the number of arguments given to the trigger
-       procedure in the <command>CREATE TRIGGER</command> statement.
+       function in the <command>CREATE TRIGGER</command> statement.
       </para>
      </listitem>
     </varlistentry>
@@ -4025,11 +4036,11 @@ ASSERT <replaceable class="parameter">condition</replaceable> <optional> , <repl
 
    <para>
     <xref linkend="plpgsql-trigger-example"/> shows an example of a
-    trigger procedure in <application>PL/pgSQL</application>.
+    trigger function in <application>PL/pgSQL</application>.
    </para>
 
    <example id="plpgsql-trigger-example">
-    <title>A <application>PL/pgSQL</application> Trigger Procedure</title>
+    <title>A <application>PL/pgSQL</application> Trigger Function</title>
 
     <para>
      This example trigger ensures that any time a row is inserted or updated
@@ -4069,7 +4080,7 @@ CREATE FUNCTION emp_stamp() RETURNS trigger AS $emp_stamp$
 $emp_stamp$ LANGUAGE plpgsql;
 
 CREATE TRIGGER emp_stamp BEFORE INSERT OR UPDATE ON emp
-    FOR EACH ROW EXECUTE PROCEDURE emp_stamp();
+    FOR EACH ROW EXECUTE FUNCTION emp_stamp();
 </programlisting>
    </example>
 
@@ -4078,11 +4089,11 @@ CREATE TRIGGER emp_stamp BEFORE INSERT OR UPDATE ON emp
     holds a row for each insert, update, or delete that occurs. This approach
     can be thought of as auditing changes to a table.
     <xref linkend="plpgsql-trigger-audit-example"/> shows an example of an
-    audit trigger procedure in <application>PL/pgSQL</application>.
+    audit trigger function in <application>PL/pgSQL</application>.
    </para>
 
    <example id="plpgsql-trigger-audit-example">
-    <title>A <application>PL/pgSQL</application> Trigger Procedure For Auditing</title>
+    <title>A <application>PL/pgSQL</application> Trigger Function For Auditing</title>
 
     <para>
      This example trigger ensures that any insert, update or delete of a row
@@ -4124,7 +4135,7 @@ $emp_audit$ LANGUAGE plpgsql;
 
 CREATE TRIGGER emp_audit
 AFTER INSERT OR UPDATE OR DELETE ON emp
-    FOR EACH ROW EXECUTE PROCEDURE process_emp_audit();
+    FOR EACH ROW EXECUTE FUNCTION process_emp_audit();
 </programlisting>
    </example>
 
@@ -4139,7 +4150,7 @@ AFTER INSERT OR UPDATE OR DELETE ON emp
    </para>
 
    <example id="plpgsql-view-trigger-audit-example">
-    <title>A <application>PL/pgSQL</application> View Trigger Procedure For Auditing</title>
+    <title>A <application>PL/pgSQL</application> View Trigger Function For Auditing</title>
 
     <para>
      This example uses a trigger on the view to make it updatable, and
@@ -4203,7 +4214,7 @@ $$ LANGUAGE plpgsql;
 
 CREATE TRIGGER emp_audit
 INSTEAD OF INSERT OR UPDATE OR DELETE ON emp_view
-    FOR EACH ROW EXECUTE PROCEDURE update_emp_view();
+    FOR EACH ROW EXECUTE FUNCTION update_emp_view();
 </programlisting>
    </example>
 
@@ -4215,13 +4226,13 @@ INSTEAD OF INSERT OR UPDATE OR DELETE ON emp_view
     This technique is commonly used in Data Warehousing, where the tables
     of measured or observed data (called fact tables) might be extremely large.
     <xref linkend="plpgsql-trigger-summary-example"/> shows an example of a
-    trigger procedure in <application>PL/pgSQL</application> that maintains
+    trigger function in <application>PL/pgSQL</application> that maintains
     a summary table for a fact table in a data warehouse.
    </para>
 
 
    <example id="plpgsql-trigger-summary-example">
-    <title>A <application>PL/pgSQL</application> Trigger Procedure For Maintaining A Summary Table</title>
+    <title>A <application>PL/pgSQL</application> Trigger Function For Maintaining A Summary Table</title>
 
     <para>
      The schema detailed here is partly based on the <emphasis>Grocery Store
@@ -4348,7 +4359,7 @@ $maint_sales_summary_bytime$ LANGUAGE plpgsql;
 
 CREATE TRIGGER maint_sales_summary_bytime
 AFTER INSERT OR UPDATE OR DELETE ON sales_fact
-    FOR EACH ROW EXECUTE PROCEDURE maint_sales_summary_bytime();
+    FOR EACH ROW EXECUTE FUNCTION maint_sales_summary_bytime();
 
 INSERT INTO sales_fact VALUES(1,1,1,10,3,15);
 INSERT INTO sales_fact VALUES(1,2,1,20,5,35);
@@ -4425,15 +4436,15 @@ $emp_audit$ LANGUAGE plpgsql;
 CREATE TRIGGER emp_audit_ins
     AFTER INSERT ON emp
     REFERENCING NEW TABLE AS new_table
-    FOR EACH STATEMENT EXECUTE PROCEDURE process_emp_audit();
+    FOR EACH STATEMENT EXECUTE FUNCTION process_emp_audit();
 CREATE TRIGGER emp_audit_upd
     AFTER UPDATE ON emp
     REFERENCING OLD TABLE AS old_table NEW TABLE AS new_table
-    FOR EACH STATEMENT EXECUTE PROCEDURE process_emp_audit();
+    FOR EACH STATEMENT EXECUTE FUNCTION process_emp_audit();
 CREATE TRIGGER emp_audit_del
     AFTER DELETE ON emp
     REFERENCING OLD TABLE AS old_table
-    FOR EACH STATEMENT EXECUTE PROCEDURE process_emp_audit();
+    FOR EACH STATEMENT EXECUTE FUNCTION process_emp_audit();
 </programlisting>
    </example>
 
@@ -4445,7 +4456,7 @@ CREATE TRIGGER emp_audit_del
    <para>
     <application>PL/pgSQL</application> can be used to define
     <link linkend="event-triggers">event triggers</link>.
-    <productname>PostgreSQL</productname> requires that a procedure that
+    <productname>PostgreSQL</productname> requires that a function that
     is to be called as an event trigger must be declared as a function with
     no arguments and a return type of <literal>event_trigger</literal>.
    </para>
@@ -4480,11 +4491,11 @@ CREATE TRIGGER emp_audit_del
 
    <para>
     <xref linkend="plpgsql-event-trigger-example"/> shows an example of an
-    event trigger procedure in <application>PL/pgSQL</application>.
+    event trigger function in <application>PL/pgSQL</application>.
    </para>
 
    <example id="plpgsql-event-trigger-example">
-    <title>A <application>PL/pgSQL</application> Event Trigger Procedure</title>
+    <title>A <application>PL/pgSQL</application> Event Trigger Function</title>
 
     <para>
      This example trigger simply raises a <literal>NOTICE</literal> message
@@ -4498,7 +4509,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-CREATE EVENT TRIGGER snitch ON ddl_command_start EXECUTE PROCEDURE snitch();
+CREATE EVENT TRIGGER snitch ON ddl_command_start EXECUTE FUNCTION snitch();
 </programlisting>
    </example>
   </sect2>
@@ -5182,7 +5193,7 @@ HINT:  Make sure the query returns the exact list of columns.
   <para>
    <application>PL/pgSQL</application> is similar to PL/SQL in many
    aspects. It is a block-structured, imperative language, and all
-   variables have to be declared.  Assignments, loops, conditionals
+   variables have to be declared.  Assignments, loops, and conditionals
    are similar.  The main differences you should keep in mind when
    porting from <application>PL/SQL</application> to
    <application>PL/pgSQL</application> are:

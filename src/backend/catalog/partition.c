@@ -3,7 +3,7 @@
  * partition.c
  *		  Partitioning related data structures and functions.
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -15,8 +15,8 @@
 #include "postgres.h"
 
 #include "access/genam.h"
-#include "access/heapam.h"
 #include "access/htup_details.h"
+#include "access/table.h"
 #include "access/tupconvert.h"
 #include "access/sysattr.h"
 #include "catalog/indexing.h"
@@ -55,14 +55,14 @@ get_partition_parent(Oid relid)
 	Relation	catalogRelation;
 	Oid			result;
 
-	catalogRelation = heap_open(InheritsRelationId, AccessShareLock);
+	catalogRelation = table_open(InheritsRelationId, AccessShareLock);
 
 	result = get_partition_parent_worker(catalogRelation, relid);
 
 	if (!OidIsValid(result))
 		elog(ERROR, "could not find tuple for parent of relation %u", relid);
 
-	heap_close(catalogRelation, AccessShareLock);
+	table_close(catalogRelation, AccessShareLock);
 
 	return result;
 }
@@ -120,11 +120,11 @@ get_partition_ancestors(Oid relid)
 	List	   *result = NIL;
 	Relation	inhRel;
 
-	inhRel = heap_open(InheritsRelationId, AccessShareLock);
+	inhRel = table_open(InheritsRelationId, AccessShareLock);
 
 	get_partition_ancestors_worker(inhRel, relid, &result);
 
-	heap_close(inhRel, AccessShareLock);
+	table_close(inhRel, AccessShareLock);
 
 	return result;
 }
@@ -310,7 +310,7 @@ update_default_partition_oid(Oid parentId, Oid defaultPartId)
 	Relation	pg_partitioned_table;
 	Form_pg_partitioned_table part_table_form;
 
-	pg_partitioned_table = heap_open(PartitionedRelationId, RowExclusiveLock);
+	pg_partitioned_table = table_open(PartitionedRelationId, RowExclusiveLock);
 
 	tuple = SearchSysCacheCopy1(PARTRELID, ObjectIdGetDatum(parentId));
 
@@ -323,7 +323,7 @@ update_default_partition_oid(Oid parentId, Oid defaultPartId)
 	CatalogTupleUpdate(pg_partitioned_table, &tuple->t_self, tuple);
 
 	heap_freetuple(tuple);
-	heap_close(pg_partitioned_table, RowExclusiveLock);
+	table_close(pg_partitioned_table, RowExclusiveLock);
 }
 
 /*

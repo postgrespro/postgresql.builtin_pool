@@ -8,7 +8,7 @@
  * doesn't actually run the executor for them.
  *
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -689,13 +689,23 @@ PreCommit_Portals(bool isPrepare)
 
 		/*
 		 * Do not touch active portals --- this can only happen in the case of
-		 * a multi-transaction utility command, such as VACUUM.
+		 * a multi-transaction utility command, such as VACUUM, or a commit in
+		 * a procedure.
 		 *
 		 * Note however that any resource owner attached to such a portal is
-		 * still going to go away, so don't leave a dangling pointer.
+		 * still going to go away, so don't leave a dangling pointer.  Also
+		 * unregister any snapshots held by the portal, mainly to avoid
+		 * snapshot leak warnings from ResourceOwnerRelease().
 		 */
 		if (portal->status == PORTAL_ACTIVE)
 		{
+			if (portal->holdSnapshot)
+			{
+				if (portal->resowner)
+					UnregisterSnapshotFromOwner(portal->holdSnapshot,
+												portal->resowner);
+				portal->holdSnapshot = NULL;
+			}
 			portal->resowner = NULL;
 			continue;
 		}
@@ -1136,7 +1146,7 @@ pg_cursor(PG_FUNCTION_ARGS)
 	 * build tupdesc for result tuples. This must match the definition of the
 	 * pg_cursors view in system_views.sql
 	 */
-	tupdesc = CreateTemplateTupleDesc(6, false);
+	tupdesc = CreateTemplateTupleDesc(6);
 	TupleDescInitEntry(tupdesc, (AttrNumber) 1, "name",
 					   TEXTOID, -1, 0);
 	TupleDescInitEntry(tupdesc, (AttrNumber) 2, "statement",

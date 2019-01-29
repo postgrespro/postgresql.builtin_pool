@@ -119,13 +119,21 @@
    if you don't. */
 #define HAVE_DECL_LLVMGETHOSTCPUNAME 0
 
+/* Define to 1 if you have the declaration of `LLVMGetHostCPUFeatures', and to 0
+   if you don't. */
+#define HAVE_DECL_LLVMGETHOSTCPUFEATURES 0
+
 /* Define to 1 if you have the declaration of `LLVMOrcGetSymbolAddressIn', and
    to 0 if you don't. */
 #define HAVE_DECL_LLVMORCGETSYMBOLADDRESSIN 0
 
-/* Define to 1 if you have the declaration of `snprintf', and to 0 if you
+/* Define to 1 if you have the declaration of `RTLD_GLOBAL', and to 0 if you
    don't. */
-#define HAVE_DECL_SNPRINTF 1
+#define HAVE_DECL_RTLD_GLOBAL 0
+
+/* Define to 1 if you have the declaration of `RTLD_NOW', and to 0 if you
+   don't. */
+#define HAVE_DECL_RTLD_NOW 0
 
 /* Define to 1 if you have the declaration of `strnlen', and to 0 if you
    don't. */
@@ -138,13 +146,6 @@
 /* Define to 1 if you have the declaration of `strtoull', and to 0 if you
    don't. */
 #define HAVE_DECL_STRTOULL 1
-
-/* Define to 1 if you have the declaration of `vsnprintf', and to 0 if you
-   don't. */
-#define HAVE_DECL_VSNPRINTF 1
-
-/* Define to 1 if you have the <dld.h> header file. */
-/* #undef HAVE_DLD_H */
 
 /* Define to 1 if you have the `dlopen' function. */
 /* #undef HAVE_DLOPEN */
@@ -318,11 +319,20 @@
 /* Define to 1 if you have the `posix_fallocate' function. */
 /* #undef HAVE_POSIX_FALLOCATE */
 
+/* Define to 1 if you have the `ppoll' function. */
+/* #undef HAVE_PPOLL */
+
+/* Define to 1 if you have the `pread' function. */
+/* #undef HAVE_PREAD */
+
 /* Define to 1 if you have the `pstat' function. */
 /* #undef HAVE_PSTAT */
 
 /* Define to 1 if the PS_STRINGS thing exists. */
 /* #undef HAVE_PS_STRINGS */
+
+/* Define to 1 if you have the `pwrite' function. */
+/* #undef HAVE_PWRITE */
 
 /* Define to 1 if you have the `random' function. */
 /* #undef HAVE_RANDOM */
@@ -364,9 +374,6 @@
 /* Define to 1 if you have the `setsid' function. */
 /* #undef HAVE_SETSID */
 
-/* Define to 1 if you have the `snprintf' function. */
-/* #undef HAVE_SNPRINTF */
-
 /* Define to 1 if you have spinlocks. */
 #define HAVE_SPINLOCKS 1
 
@@ -393,10 +400,8 @@
 /* Define to 1 if you have the <stdlib.h> header file. */
 #define HAVE_STDLIB_H 1
 
-/* Define to 1 if you have the `strerror' function. */
-#ifndef HAVE_STRERROR
-#define HAVE_STRERROR 1
-#endif
+/* Define to 1 if you have the `strchrnul' function. */
+/* #undef HAVE_STRCHRNUL */
 
 /* Define to 1 if you have the `strerror_r' function. */
 /* #undef HAVE_STRERROR_R */
@@ -407,8 +412,8 @@
 /* Define to 1 if you have the <string.h> header file. */
 #define HAVE_STRING_H 1
 
-/* Define to use have a strong random number source */
-#define HAVE_STRONG_RANDOM 1
+/* Define to 1 if you have the `strsignal' function. */
+/* #undef HAVE_STRSIGNAL */
 
 /* Define to 1 if you have the `strtoll' function. */
 #ifdef HAVE_LONG_LONG_INT_64
@@ -540,6 +545,9 @@
 /* Define to 1 if you have the `unsetenv' function. */
 /* #undef HAVE_UNSETENV */
 
+/* Define to 1 if you have the `uselocale' function. */
+/* #undef HAVE_USELOCALE */
+
 /* Define to 1 if you have the `utime' function. */
 #define HAVE_UTIME 1
 
@@ -548,9 +556,6 @@
 
 /* Define to 1 if you have the <utime.h> header file. */
 #define HAVE_UTIME_H 1
-
-/* Define to 1 if you have the `vsnprintf' function. */
-#define HAVE_VSNPRINTF 1
 
 /* Define to 1 if you have the <wchar.h> header file. */
 #define HAVE_WCHAR_H 1
@@ -591,6 +596,9 @@
 /* Define to 1 if your compiler understands __builtin_unreachable. */
 /* #undef HAVE__BUILTIN_UNREACHABLE */
 
+/* Define to 1 if you have the `_configthreadlocale' function. */
+#define HAVE__CONFIGTHREADLOCALE 1
+
 /* Define to 1 if you have __cpuid. */
 #define HAVE__CPUID 1
 
@@ -599,9 +607,6 @@
 
 /* Define to 1 if your compiler understands _Static_assert. */
 /* #undef HAVE__STATIC_ASSERT */
-
-/* Define to 1 if your compiler understands __VA_ARGS__ in macros. */
-#define HAVE__VA_ARGS 1
 
 /* Define to the appropriate printf length modifier for 64-bit ints. */
 #define INT64_MODIFIER "ll"
@@ -619,7 +624,7 @@
 #define MEMSET_LOOP_LIMIT 1024
 
 /* Define to the address where bug reports for this package should be sent. */
-#define PACKAGE_BUGREPORT "pgsql-bugs@postgresql.org"
+#define PACKAGE_BUGREPORT "pgsql-bugs@lists.postgresql.org"
 
 /* Define to the full name of this package. */
 #define PACKAGE_NAME "PostgreSQL"
@@ -675,7 +680,7 @@
 /* Define to 1 if you have the ANSI C header files. */
 #define STDC_HEADERS 1
 
-/* Define to 1 if strerror_r() returns a int. */
+/* Define to 1 if strerror_r() returns int. */
 /* #undef STRERROR_R_INT */
 
 /* Define to 1 if your <sys/time.h> declares `struct tm'. */
@@ -710,9 +715,6 @@
 
 /* Define to 1 to build with PAM support. (--with-pam) */
 /* #undef USE_PAM */
-
-/* Use replacement snprintf() functions. */
-#define USE_REPL_SNPRINTF 1
 
 /* Define to 1 to use software CRC-32C implementation (slicing-by-8). */
 #if (_MSC_VER < 1500)

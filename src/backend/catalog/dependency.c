@@ -4,7 +4,7 @@
  *	  Routines to support inter-object dependencies.
  *
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -14,7 +14,9 @@
  */
 #include "postgres.h"
 
+#include "access/genam.h"
 #include "access/htup_details.h"
+#include "access/table.h"
 #include "access/xact.h"
 #include "catalog/dependency.h"
 #include "catalog/heap.h"
@@ -79,7 +81,6 @@
 #include "utils/guc.h"
 #include "utils/lsyscache.h"
 #include "utils/syscache.h"
-#include "utils/tqual.h"
 
 
 /*
@@ -100,6 +101,7 @@ typedef struct
 #define DEPFLAG_INTERNAL	0x0008	/* reached via internal dependency */
 #define DEPFLAG_EXTENSION	0x0010	/* reached via extension dependency */
 #define DEPFLAG_REVERSE		0x0020	/* reverse internal/extension link */
+#define DEPFLAG_SUBOBJECT	0x0040	/* subobject of another deletable object */
 
 
 /* expansible list of ObjectAddresses */
@@ -120,6 +122,13 @@ typedef struct ObjectAddressStack
 	int			flags;			/* its current flag bits */
 	struct ObjectAddressStack *next;	/* next outer stack level */
 } ObjectAddressStack;
+
+/* temporary storage in findDependentObjects */
+typedef struct
+{
+	ObjectAddress obj;			/* object to be deleted --- MUST BE FIRST */
+	int			subflags;		/* flags to pass down when recursing to obj */
+} ObjectAddressAndFlags;
 
 /* for find_expr_references_walker */
 typedef struct
@@ -307,7 +316,7 @@ performDeletion(const ObjectAddress *object,
 	 * We save some cycles by opening pg_depend just once and passing the
 	 * Relation pointer down to all the recursive deletion steps.
 	 */
-	depRel = heap_open(DependRelationId, RowExclusiveLock);
+	depRel = table_open(DependRelationId, RowExclusiveLock);
 
 	/*
 	 * Acquire deletion lock on the target object.  (Ideally the caller has
@@ -343,7 +352,7 @@ performDeletion(const ObjectAddress *object,
 	/* And clean up */
 	free_object_addresses(targetObjects);
 
-	heap_close(depRel, RowExclusiveLock);
+	table_close(depRel, RowExclusiveLock);
 }
 
 /*
@@ -371,7 +380,7 @@ performMultipleDeletions(const ObjectAddresses *objects,
 	 * We save some cycles by opening pg_depend just once and passing the
 	 * Relation pointer down to all the recursive deletion steps.
 	 */
-	depRel = heap_open(DependRelationId, RowExclusiveLock);
+	depRel = table_open(DependRelationId, RowExclusiveLock);
 
 	/*
 	 * Construct a list of objects to delete (ie, the given objects plus
@@ -419,7 +428,7 @@ performMultipleDeletions(const ObjectAddresses *objects,
 	/* And clean up */
 	free_object_addresses(targetObjects);
 
-	heap_close(depRel, RowExclusiveLock);
+	table_close(depRel, RowExclusiveLock);
 }
 
 /*
@@ -469,6 +478,9 @@ findDependentObjects(const ObjectAddress *object,
 	SysScanDesc scan;
 	HeapTuple	tup;
 	ObjectAddress otherObject;
+	ObjectAddressAndFlags *dependentObjects;
+	int			numDependentObjects;
+	int			maxDependentObjects;
 	ObjectAddressStack mystack;
 	ObjectAddressExtra extra;
 
@@ -701,12 +713,17 @@ findDependentObjects(const ObjectAddress *object,
 	systable_endscan(scan);
 
 	/*
-	 * Now recurse to any dependent objects.  We must visit them first since
-	 * they have to be deleted before the current object.
+	 * Next, identify all objects that directly depend on the current object.
+	 * To ensure predictable deletion order, we collect them up in
+	 * dependentObjects and sort the list before actually recursing.  (The
+	 * deletion order would be valid in any case, but doing this ensures
+	 * consistent output from DROP CASCADE commands, which is helpful for
+	 * regression testing.)
 	 */
-	mystack.object = object;	/* set up a new stack level */
-	mystack.flags = objflags;
-	mystack.next = stack;
+	maxDependentObjects = 128;	/* arbitrary initial allocation */
+	dependentObjects = (ObjectAddressAndFlags *)
+		palloc(maxDependentObjects * sizeof(ObjectAddressAndFlags));
+	numDependentObjects = 0;
 
 	ScanKeyInit(&key[0],
 				Anum_pg_depend_refclassid,
@@ -759,7 +776,10 @@ findDependentObjects(const ObjectAddress *object,
 			continue;
 		}
 
-		/* Recurse, passing objflags indicating the dependency type */
+		/*
+		 * We do need to delete it, so identify objflags to be passed down,
+		 * which depend on the dependency type.
+		 */
 		switch (foundDep->deptype)
 		{
 			case DEPENDENCY_NORMAL:
@@ -795,8 +815,47 @@ findDependentObjects(const ObjectAddress *object,
 				break;
 		}
 
-		findDependentObjects(&otherObject,
-							 subflags,
+		/* And add it to the pending-objects list */
+		if (numDependentObjects >= maxDependentObjects)
+		{
+			/* enlarge array if needed */
+			maxDependentObjects *= 2;
+			dependentObjects = (ObjectAddressAndFlags *)
+				repalloc(dependentObjects,
+						 maxDependentObjects * sizeof(ObjectAddressAndFlags));
+		}
+
+		dependentObjects[numDependentObjects].obj = otherObject;
+		dependentObjects[numDependentObjects].subflags = subflags;
+		numDependentObjects++;
+	}
+
+	systable_endscan(scan);
+
+	/*
+	 * Now we can sort the dependent objects into a stable visitation order.
+	 * It's safe to use object_address_comparator here since the obj field is
+	 * first within ObjectAddressAndFlags.
+	 */
+	if (numDependentObjects > 1)
+		qsort((void *) dependentObjects, numDependentObjects,
+			  sizeof(ObjectAddressAndFlags),
+			  object_address_comparator);
+
+	/*
+	 * Now recurse to the dependent objects.  We must visit them first since
+	 * they have to be deleted before the current object.
+	 */
+	mystack.object = object;	/* set up a new stack level */
+	mystack.flags = objflags;
+	mystack.next = stack;
+
+	for (int i = 0; i < numDependentObjects; i++)
+	{
+		ObjectAddressAndFlags *depObj = dependentObjects + i;
+
+		findDependentObjects(&depObj->obj,
+							 depObj->subflags,
 							 flags,
 							 &mystack,
 							 targetObjects,
@@ -804,7 +863,7 @@ findDependentObjects(const ObjectAddress *object,
 							 depRel);
 	}
 
-	systable_endscan(scan);
+	pfree(dependentObjects);
 
 	/*
 	 * Finally, we can add the target object to targetObjects.  Be careful to
@@ -882,6 +941,10 @@ reportDependentObjects(const ObjectAddresses *targetObjects,
 
 		/* Ignore the original deletion target(s) */
 		if (extra->flags & DEPFLAG_ORIGINAL)
+			continue;
+
+		/* Also ignore sub-objects; we'll report the whole object elsewhere */
+		if (extra->flags & DEPFLAG_SUBOBJECT)
 			continue;
 
 		objDesc = getObjectDescription(obj);
@@ -1022,7 +1085,7 @@ deleteOneObject(const ObjectAddress *object, Relation *depRel, int flags)
 	 * relation open across doDeletion().
 	 */
 	if (flags & PERFORM_DELETION_CONCURRENTLY)
-		heap_close(*depRel, RowExclusiveLock);
+		table_close(*depRel, RowExclusiveLock);
 
 	/*
 	 * Delete the object itself, in an object-type-dependent way.
@@ -1039,7 +1102,7 @@ deleteOneObject(const ObjectAddress *object, Relation *depRel, int flags)
 	 * Reopen depRel if we closed it above
 	 */
 	if (flags & PERFORM_DELETION_CONCURRENTLY)
-		*depRel = heap_open(DependRelationId, RowExclusiveLock);
+		*depRel = table_open(DependRelationId, RowExclusiveLock);
 
 	/*
 	 * Now remove any pg_depend records that link from this object to others.
@@ -1415,6 +1478,7 @@ recordDependencyOnSingleRelExpr(const ObjectAddress *depender,
 	rte.rtekind = RTE_RELATION;
 	rte.relid = relId;
 	rte.relkind = RELKIND_RELATION; /* no need for exactness here */
+	rte.rellockmode = AccessShareLock;
 
 	context.rtables = list_make1(list_make1(&rte));
 
@@ -2101,18 +2165,31 @@ object_address_comparator(const void *a, const void *b)
 	const ObjectAddress *obja = (const ObjectAddress *) a;
 	const ObjectAddress *objb = (const ObjectAddress *) b;
 
+	/*
+	 * Primary sort key is OID descending.  Most of the time, this will result
+	 * in putting newer objects before older ones, which is likely to be the
+	 * right order to delete in.
+	 */
+	if (obja->objectId > objb->objectId)
+		return -1;
+	if (obja->objectId < objb->objectId)
+		return 1;
+
+	/*
+	 * Next sort on catalog ID, in case identical OIDs appear in different
+	 * catalogs.  Sort direction is pretty arbitrary here.
+	 */
 	if (obja->classId < objb->classId)
 		return -1;
 	if (obja->classId > objb->classId)
 		return 1;
-	if (obja->objectId < objb->objectId)
-		return -1;
-	if (obja->objectId > objb->objectId)
-		return 1;
 
 	/*
-	 * We sort the subId as an unsigned int so that 0 will come first. See
-	 * logic in eliminate_duplicate_dependencies.
+	 * Last, sort on object subId.
+	 *
+	 * We sort the subId as an unsigned int so that 0 (the whole object) will
+	 * come first.  This is essential for eliminate_duplicate_dependencies,
+	 * and is also the best order for findDependentObjects.
 	 */
 	if ((unsigned int) obja->objectSubId < (unsigned int) objb->objectSubId)
 		return -1;
@@ -2317,13 +2394,19 @@ object_address_present_add_flags(const ObjectAddress *object,
 				 * DROP COLUMN action even though we know we're gonna delete
 				 * the table later.
 				 *
+				 * What we can do, though, is mark this as a subobject so that
+				 * we don't report it separately, which is confusing because
+				 * it's unpredictable whether it happens or not.  But do so
+				 * only if flags != 0 (flags == 0 is a read-only probe).
+				 *
 				 * Because there could be other subobjects of this object in
 				 * the array, this case means we always have to loop through
 				 * the whole array; we cannot exit early on a match.
 				 */
 				ObjectAddressExtra *thisextra = addrs->extras + i;
 
-				thisextra->flags |= flags;
+				if (flags)
+					thisextra->flags |= (flags | DEPFLAG_SUBOBJECT);
 			}
 		}
 	}
@@ -2371,7 +2454,8 @@ stack_address_present_add_flags(const ObjectAddress *object,
 				 * object_address_present_add_flags(), we should propagate
 				 * flags for the whole object to each of its subobjects.
 				 */
-				stackptr->flags |= flags;
+				if (flags)
+					stackptr->flags |= (flags | DEPFLAG_SUBOBJECT);
 			}
 		}
 	}
@@ -2555,7 +2639,7 @@ DeleteInitPrivs(const ObjectAddress *object)
 	SysScanDesc scan;
 	HeapTuple	oldtuple;
 
-	relation = heap_open(InitPrivsRelationId, RowExclusiveLock);
+	relation = table_open(InitPrivsRelationId, RowExclusiveLock);
 
 	ScanKeyInit(&key[0],
 				Anum_pg_init_privs_objoid,
@@ -2578,5 +2662,5 @@ DeleteInitPrivs(const ObjectAddress *object)
 
 	systable_endscan(scan);
 
-	heap_close(relation, RowExclusiveLock);
+	table_close(relation, RowExclusiveLock);
 }

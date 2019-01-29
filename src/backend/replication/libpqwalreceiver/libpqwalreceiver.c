@@ -6,7 +6,7 @@
  * loaded as a dynamic module to avoid linking the main server binary with
  * libpq.
  *
- * Portions Copyright (c) 2010-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 2010-2019, PostgreSQL Global Development Group
  *
  *
  * IDENTIFICATION
@@ -186,15 +186,10 @@ libpqrcv_connect(const char *conninfo, bool logical, const char *appname,
 			io_flag = WL_SOCKET_WRITEABLE;
 
 		rc = WaitLatchOrSocket(MyLatch,
-							   WL_POSTMASTER_DEATH |
-							   WL_LATCH_SET | io_flag,
+							   WL_EXIT_ON_PM_DEATH | WL_LATCH_SET | io_flag,
 							   PQsocket(conn->streamConn),
 							   0,
 							   WAIT_EVENT_LIBPQWALRECEIVER_CONNECT);
-
-		/* Emergency bailout? */
-		if (rc & WL_POSTMASTER_DEATH)
-			exit(1);
 
 		/* Interrupted? */
 		if (rc & WL_LATCH_SET)
@@ -610,15 +605,11 @@ libpqrcv_PQexec(PGconn *streamConn, const char *query)
 			 * replication connection.
 			 */
 			rc = WaitLatchOrSocket(MyLatch,
-								   WL_POSTMASTER_DEATH | WL_SOCKET_READABLE |
+								   WL_EXIT_ON_PM_DEATH | WL_SOCKET_READABLE |
 								   WL_LATCH_SET,
 								   PQsocket(streamConn),
 								   0,
 								   WAIT_EVENT_LIBPQWALRECEIVER_RECEIVE);
-
-			/* Emergency bailout? */
-			if (rc & WL_POSTMASTER_DEATH)
-				exit(1);
 
 			/* Interrupted? */
 			if (rc & WL_LATCH_SET)
@@ -868,7 +859,7 @@ libpqrcv_processTuples(PGresult *pgres, WalRcvExecResult *walres,
 	walres->tuplestore = tuplestore_begin_heap(true, false, work_mem);
 
 	/* Create tuple descriptor corresponding to expected result. */
-	walres->tupledesc = CreateTemplateTupleDesc(nRetTypes, false);
+	walres->tupledesc = CreateTemplateTupleDesc(nRetTypes);
 	for (coln = 0; coln < nRetTypes; coln++)
 		TupleDescInitEntry(walres->tupledesc, (AttrNumber) coln + 1,
 						   PQfname(pgres, coln), retTypes[coln], -1, 0);

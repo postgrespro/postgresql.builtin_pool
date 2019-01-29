@@ -3,7 +3,7 @@
  * parse_target.c
  *	  handle target lists
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -691,7 +691,13 @@ transformAssignmentIndirection(ParseState *pstate,
 
 	if (indirection && !basenode)
 	{
-		/* Set up a substitution.  We reuse CaseTestExpr for this. */
+		/*
+		 * Set up a substitution.  We abuse CaseTestExpr for this.  It's safe
+		 * to do so because the only nodes that will be above the CaseTestExpr
+		 * in the finished expression will be FieldStore and ArrayRef nodes.
+		 * (There could be other stuff in the tree, but it will be within
+		 * other child fields of those node types.)
+		 */
 		CaseTestExpr *ctest = makeNode(CaseTestExpr);
 
 		ctest->typeId = targetTypeId;
@@ -1497,7 +1503,7 @@ expandRecordVariable(ParseState *pstate, Var *var, int levelsup)
 		expandRTE(rte, var->varno, 0, var->location, false,
 				  &names, &vars);
 
-		tupleDesc = CreateTemplateTupleDesc(list_length(vars), false);
+		tupleDesc = CreateTemplateTupleDesc(list_length(vars));
 		i = 1;
 		forboth(lname, names, lvar, vars)
 		{

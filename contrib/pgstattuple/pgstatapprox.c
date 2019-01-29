@@ -3,7 +3,7 @@
  * pgstatapprox.c
  *		  Bloat estimation functions
  *
- * Copyright (c) 2014-2018, PostgreSQL Global Development Group
+ * Copyright (c) 2014-2019, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *		  contrib/pgstattuple/pgstatapprox.c
@@ -12,8 +12,10 @@
  */
 #include "postgres.h"
 
-#include "access/visibilitymap.h"
+#include "access/heapam.h"
+#include "access/relation.h"
 #include "access/transam.h"
+#include "access/visibilitymap.h"
 #include "access/xact.h"
 #include "access/multixact.h"
 #include "access/htup_details.h"
@@ -25,7 +27,6 @@
 #include "storage/procarray.h"
 #include "storage/lmgr.h"
 #include "utils/builtins.h"
-#include "utils/tqual.h"
 #include "commands/vacuum.h"
 
 PG_FUNCTION_INFO_V1(pgstattuple_approx);

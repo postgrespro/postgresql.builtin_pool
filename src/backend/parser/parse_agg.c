@@ -3,7 +3,7 @@
  * parse_agg.c
  *	  handle aggregates and window functions in parser
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -507,6 +507,13 @@ check_agglevels_and_constraints(ParseState *pstate, Node *expr)
 				err = _("grouping operations are not allowed in trigger WHEN conditions");
 
 			break;
+		case EXPR_KIND_PARTITION_BOUND:
+			if (isAgg)
+				err = _("aggregate functions are not allowed in partition bound");
+			else
+				err = _("grouping operations are not allowed in partition bound");
+
+			break;
 		case EXPR_KIND_PARTITION_EXPRESSION:
 			if (isAgg)
 				err = _("aggregate functions are not allowed in partition key expressions");
@@ -520,6 +527,14 @@ check_agglevels_and_constraints(ParseState *pstate, Node *expr)
 				err = _("aggregate functions are not allowed in CALL arguments");
 			else
 				err = _("grouping operations are not allowed in CALL arguments");
+
+			break;
+
+		case EXPR_KIND_COPY_WHERE:
+			if (isAgg)
+				err = _("aggregate functions are not allowed in COPY FROM WHERE conditions");
+			else
+				err = _("grouping operations are not allowed in COPY FROM WHERE conditions");
 
 			break;
 
@@ -896,11 +911,17 @@ transformWindowFuncCall(ParseState *pstate, WindowFunc *wfunc,
 		case EXPR_KIND_TRIGGER_WHEN:
 			err = _("window functions are not allowed in trigger WHEN conditions");
 			break;
+		case EXPR_KIND_PARTITION_BOUND:
+			err = _("window functions are not allowed in partition bound");
+			break;
 		case EXPR_KIND_PARTITION_EXPRESSION:
 			err = _("window functions are not allowed in partition key expressions");
 			break;
 		case EXPR_KIND_CALL_ARGUMENT:
 			err = _("window functions are not allowed in CALL arguments");
+			break;
+		case EXPR_KIND_COPY_WHERE:
+			err = _("window functions are not allowed in COPY FROM WHERE conditions");
 			break;
 
 			/*

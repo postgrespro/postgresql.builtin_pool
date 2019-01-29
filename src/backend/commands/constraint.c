@@ -3,7 +3,7 @@
  * constraint.c
  *	  PostgreSQL CONSTRAINT support code.
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -13,12 +13,14 @@
  */
 #include "postgres.h"
 
+#include "access/genam.h"
+#include "access/heapam.h"
 #include "catalog/index.h"
 #include "commands/trigger.h"
 #include "executor/executor.h"
 #include "utils/builtins.h"
 #include "utils/rel.h"
-#include "utils/tqual.h"
+#include "utils/snapmgr.h"
 
 
 /*
@@ -122,9 +124,10 @@ unique_key_recheck(PG_FUNCTION_ARGS)
 	/*
 	 * The heap tuple must be put into a slot for FormIndexDatum.
 	 */
-	slot = MakeSingleTupleTableSlot(RelationGetDescr(trigdata->tg_relation));
+	slot = MakeSingleTupleTableSlot(RelationGetDescr(trigdata->tg_relation),
+									&TTSOpsHeapTuple);
 
-	ExecStoreTuple(new_row, slot, InvalidBuffer, false);
+	ExecStoreHeapTuple(new_row, slot, false);
 
 	/*
 	 * Typically the index won't have expressions, but if it does we need an

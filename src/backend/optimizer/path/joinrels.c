@@ -3,7 +3,7 @@
  * joinrels.c
  *	  Routines to determine which relations should be joined
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -15,11 +15,11 @@
 #include "postgres.h"
 
 #include "miscadmin.h"
+#include "optimizer/appendinfo.h"
 #include "optimizer/clauses.h"
 #include "optimizer/joininfo.h"
 #include "optimizer/pathnode.h"
 #include "optimizer/paths.h"
-#include "optimizer/prep.h"
 #include "partitioning/partbounds.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
@@ -44,6 +44,11 @@ static void try_partitionwise_join(PlannerInfo *root, RelOptInfo *rel1,
 					   RelOptInfo *rel2, RelOptInfo *joinrel,
 					   SpecialJoinInfo *parent_sjinfo,
 					   List *parent_restrictlist);
+static void update_child_rel_info(PlannerInfo *root,
+					  RelOptInfo *rel, RelOptInfo *childrel);
+static SpecialJoinInfo *build_child_join_sjinfo(PlannerInfo *root,
+						SpecialJoinInfo *parent_sjinfo,
+						Relids left_relids, Relids right_relids);
 static int match_expr_to_partition_keys(Expr *expr, RelOptInfo *rel,
 							 bool strict_op);
 
@@ -1312,6 +1317,8 @@ try_partitionwise_join(PlannerInfo *root, RelOptInfo *rel1, RelOptInfo *rel2,
 					   RelOptInfo *joinrel, SpecialJoinInfo *parent_sjinfo,
 					   List *parent_restrictlist)
 {
+	bool		rel1_is_simple = IS_SIMPLE_REL(rel1);
+	bool		rel2_is_simple = IS_SIMPLE_REL(rel2);
 	int			nparts;
 	int			cnt_parts;
 
@@ -1322,6 +1329,9 @@ try_partitionwise_join(PlannerInfo *root, RelOptInfo *rel1, RelOptInfo *rel2,
 	if (!IS_PARTITIONED_REL(joinrel))
 		return;
 
+	/* The join relation should have consider_partitionwise_join set. */
+	Assert(joinrel->consider_partitionwise_join);
+
 	/*
 	 * Since this join relation is partitioned, all the base relations
 	 * participating in this join must be partitioned and so are all the
@@ -1329,6 +1339,10 @@ try_partitionwise_join(PlannerInfo *root, RelOptInfo *rel1, RelOptInfo *rel2,
 	 */
 	Assert(IS_PARTITIONED_REL(rel1) && IS_PARTITIONED_REL(rel2));
 	Assert(REL_HAS_ALL_PART_PROPS(rel1) && REL_HAS_ALL_PART_PROPS(rel2));
+
+	/* The joining relations should have consider_partitionwise_join set. */
+	Assert(rel1->consider_partitionwise_join &&
+		   rel2->consider_partitionwise_join);
 
 	/*
 	 * The partition scheme of the join relation should match that of the
@@ -1369,6 +1383,27 @@ try_partitionwise_join(PlannerInfo *root, RelOptInfo *rel1, RelOptInfo *rel2,
 		AppendRelInfo **appinfos;
 		int			nappinfos;
 
+		/*
+		 * If a child table has consider_partitionwise_join=false, it means
+		 * that it's a dummy relation for which we skipped setting up tlist
+		 * expressions and adding EC members in set_append_rel_size(), so do
+		 * that now for use later.
+		 */
+		if (rel1_is_simple && !child_rel1->consider_partitionwise_join)
+		{
+			Assert(child_rel1->reloptkind == RELOPT_OTHER_MEMBER_REL);
+			Assert(IS_DUMMY_REL(child_rel1));
+			update_child_rel_info(root, rel1, child_rel1);
+			child_rel1->consider_partitionwise_join = true;
+		}
+		if (rel2_is_simple && !child_rel2->consider_partitionwise_join)
+		{
+			Assert(child_rel2->reloptkind == RELOPT_OTHER_MEMBER_REL);
+			Assert(IS_DUMMY_REL(child_rel2));
+			update_child_rel_info(root, rel2, child_rel2);
+			child_rel2->consider_partitionwise_join = true;
+		}
+
 		/* We should never try to join two overlapping sets of rels. */
 		Assert(!bms_overlap(child_rel1->relids, child_rel2->relids));
 		child_joinrelids = bms_union(child_rel1->relids, child_rel2->relids);
@@ -1408,6 +1443,70 @@ try_partitionwise_join(PlannerInfo *root, RelOptInfo *rel1, RelOptInfo *rel2,
 									child_joinrel, child_sjinfo,
 									child_restrictlist);
 	}
+}
+
+/*
+ * Set up tlist expressions for the childrel, and add EC members referencing
+ * the childrel.
+ */
+static void
+update_child_rel_info(PlannerInfo *root,
+					  RelOptInfo *rel, RelOptInfo *childrel)
+{
+	AppendRelInfo *appinfo = root->append_rel_array[childrel->relid];
+
+	/* Make child tlist expressions */
+	childrel->reltarget->exprs = (List *)
+		adjust_appendrel_attrs(root,
+							   (Node *) rel->reltarget->exprs,
+							   1, &appinfo);
+
+	/* Make child entries in the EquivalenceClass as well */
+	if (rel->has_eclass_joins || has_useful_pathkeys(root, rel))
+		add_child_rel_equivalences(root, appinfo, rel, childrel);
+	childrel->has_eclass_joins = rel->has_eclass_joins;
+}
+
+/*
+ * Construct the SpecialJoinInfo for a child-join by translating
+ * SpecialJoinInfo for the join between parents. left_relids and right_relids
+ * are the relids of left and right side of the join respectively.
+ */
+static SpecialJoinInfo *
+build_child_join_sjinfo(PlannerInfo *root, SpecialJoinInfo *parent_sjinfo,
+						Relids left_relids, Relids right_relids)
+{
+	SpecialJoinInfo *sjinfo = makeNode(SpecialJoinInfo);
+	AppendRelInfo **left_appinfos;
+	int			left_nappinfos;
+	AppendRelInfo **right_appinfos;
+	int			right_nappinfos;
+
+	memcpy(sjinfo, parent_sjinfo, sizeof(SpecialJoinInfo));
+	left_appinfos = find_appinfos_by_relids(root, left_relids,
+											&left_nappinfos);
+	right_appinfos = find_appinfos_by_relids(root, right_relids,
+											 &right_nappinfos);
+
+	sjinfo->min_lefthand = adjust_child_relids(sjinfo->min_lefthand,
+											   left_nappinfos, left_appinfos);
+	sjinfo->min_righthand = adjust_child_relids(sjinfo->min_righthand,
+												right_nappinfos,
+												right_appinfos);
+	sjinfo->syn_lefthand = adjust_child_relids(sjinfo->syn_lefthand,
+											   left_nappinfos, left_appinfos);
+	sjinfo->syn_righthand = adjust_child_relids(sjinfo->syn_righthand,
+												right_nappinfos,
+												right_appinfos);
+	sjinfo->semi_rhs_exprs = (List *) adjust_appendrel_attrs(root,
+															 (Node *) sjinfo->semi_rhs_exprs,
+															 right_nappinfos,
+															 right_appinfos);
+
+	pfree(left_appinfos);
+	pfree(right_appinfos);
+
+	return sjinfo;
 }
 
 /*

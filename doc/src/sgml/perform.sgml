@@ -1098,8 +1098,8 @@ WHERE tablename = 'road';
    </para>
 
    <para>
-    Statistics objects are created using
-    <xref linkend="sql-createstatistics"/>, which see for more details.
+    Statistics objects are created using the
+    <xref linkend="sql-createstatistics"/> command.
     Creation of such an object merely creates a catalog entry expressing
     interest in the statistics.  Actual data collection is performed
     by <command>ANALYZE</command> (either a manual command, or background
@@ -1535,8 +1535,8 @@ SELECT * FROM x, y, a, b, c WHERE something AND somethingelse;
     needs to be written, because in case of an error, the files
     containing the newly loaded data will be removed anyway.
     However, this consideration only applies when
-    <xref linkend="guc-wal-level"/> is <literal>minimal</literal> as all commands
-    must write WAL otherwise.
+    <xref linkend="guc-wal-level"/> is <literal>minimal</literal> for
+    non-partitioned tables as all commands must write WAL otherwise.
    </para>
 
   </sect2>

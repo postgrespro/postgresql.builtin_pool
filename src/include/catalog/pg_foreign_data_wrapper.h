@@ -4,7 +4,7 @@
  *	  definition of the "foreign-data wrapper" system catalog (pg_foreign_data_wrapper)
  *
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/catalog/pg_foreign_data_wrapper.h
@@ -28,6 +28,7 @@
  */
 CATALOG(pg_foreign_data_wrapper,2328,ForeignDataWrapperRelationId)
 {
+	Oid			oid;			/* oid */
 	NameData	fdwname;		/* foreign-data wrapper name */
 	Oid			fdwowner;		/* FDW owner */
 	Oid			fdwhandler;		/* handler function, or 0 if none */

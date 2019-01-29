@@ -3,7 +3,7 @@
  * nodeMergeAppend.c
  *	  routines to handle MergeAppend nodes.
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -74,12 +74,6 @@ ExecInitMergeAppend(MergeAppend *node, EState *estate, int eflags)
 
 	/* check for unsupported flags */
 	Assert(!(eflags & (EXEC_FLAG_BACKWARD | EXEC_FLAG_MARK)));
-
-	/*
-	 * Lock the non-leaf tables in the partition tree controlled by this node.
-	 * It's a no-op for non-partitioned parent tables.
-	 */
-	ExecLockNonLeafAppendTables(node->partitioned_rels, estate);
 
 	/*
 	 * create new MergeAppendState for our node
@@ -171,9 +165,13 @@ ExecInitMergeAppend(MergeAppend *node, EState *estate, int eflags)
 	 * Miscellaneous initialization
 	 *
 	 * MergeAppend nodes do have Result slots, which hold pointers to tuples,
-	 * so we have to initialize them.
+	 * so we have to initialize them.  FIXME
 	 */
-	ExecInitResultTupleSlotTL(estate, &mergestate->ps);
+	ExecInitResultTupleSlotTL(&mergestate->ps, &TTSOpsVirtual);
+
+	/* node returns slots from each of its subnodes, therefore not fixed */
+	mergestate->ps.resultopsset = true;
+	mergestate->ps.resultopsfixed = false;
 
 	/*
 	 * call ExecInitNode on each of the valid plans to be executed and save
@@ -338,7 +336,10 @@ heap_compare_slots(Datum a, Datum b, void *arg)
 									  datum2, isNull2,
 									  sortKey);
 		if (compare != 0)
-			return -compare;
+		{
+			INVERT_COMPARE_RESULT(compare);
+			return compare;
+		}
 	}
 	return 0;
 }
@@ -369,12 +370,6 @@ ExecEndMergeAppend(MergeAppendState *node)
 	 */
 	for (i = 0; i < nplans; i++)
 		ExecEndNode(mergeplans[i]);
-
-	/*
-	 * release any resources associated with run-time pruning
-	 */
-	if (node->ms_prune_state)
-		ExecDestroyPartitionPruneState(node->ms_prune_state);
 }
 
 void

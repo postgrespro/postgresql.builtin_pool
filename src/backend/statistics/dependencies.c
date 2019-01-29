@@ -3,7 +3,7 @@
  * dependencies.c
  *	  POSTGRES functional dependencies
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -252,6 +252,9 @@ dependency_degree(int numrows, HeapTuple *rows, int k, AttrNumber *dependency,
 	 * (b) split the data into groups by first (k-1) columns
 	 *
 	 * (c) for each group count different values in the last column
+	 *
+	 * We use the column data types' default sort operators and collations;
+	 * perhaps at some point it'd be worth using column-specific collations?
 	 */
 
 	/* prepare the sort function for the first dimension, and SortItem array */
@@ -266,7 +269,7 @@ dependency_degree(int numrows, HeapTuple *rows, int k, AttrNumber *dependency,
 				 colstat->attrtypid);
 
 		/* prepare the sort function for this dimension */
-		multi_sort_add_dimension(mss, i, type->lt_opr);
+		multi_sort_add_dimension(mss, i, type->lt_opr, type->typcollation);
 
 		/* accumulate all the data for both columns into an array and sort it */
 		for (j = 0; j < numrows; j++)
@@ -395,7 +398,7 @@ statext_dependencies_build(int numrows, HeapTuple *rows, Bitmapset *attrs,
 			degree = dependency_degree(numrows, rows, k, dependency, stats, attrs);
 
 			/*
-			 * if the dependency seems entirely invalid, don't store it it
+			 * if the dependency seems entirely invalid, don't store it
 			 */
 			if (degree == 0.0)
 				continue;

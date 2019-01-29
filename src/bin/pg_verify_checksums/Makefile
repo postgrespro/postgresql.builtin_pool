@@ -2,7 +2,7 @@
 #
 # Makefile for src/bin/pg_verify_checksums
 #
-# Copyright (c) 1998-2018, PostgreSQL Global Development Group
+# Copyright (c) 1998-2019, PostgreSQL Global Development Group
 #
 # src/bin/pg_verify_checksums/Makefile
 #
@@ -34,3 +34,9 @@ uninstall:
 clean distclean maintainer-clean:
 	rm -f pg_verify_checksums$(X) $(OBJS)
 	rm -rf tmp_check
+
+check:
+	$(prove_check)
+
+installcheck:
+	$(prove_installcheck)

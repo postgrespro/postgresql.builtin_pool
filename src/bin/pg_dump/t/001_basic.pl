@@ -72,12 +72,6 @@ command_fails_like(
 );
 
 command_fails_like(
-	[ 'pg_dump', '--inserts', '-o' ],
-	qr/\Qpg_dump: options --inserts\/--column-inserts and -o\/--oids cannot be used together\E/,
-	'pg_dump: options --inserts/--column-inserts and -o/--oids cannot be used together'
-);
-
-command_fails_like(
 	[ 'pg_dump', '--if-exists' ],
 	qr/\Qpg_dump: option --if-exists requires option -c\/--clean\E/,
 	'pg_dump: option --if-exists requires option -c/--clean');
@@ -150,3 +144,9 @@ command_fails_like(
 	[ 'pg_dumpall', '--if-exists' ],
 	qr/\Qpg_dumpall: option --if-exists requires option -c\/--clean\E/,
 	'pg_dumpall: option --if-exists requires option -c/--clean');
+
+command_fails_like(
+	[ 'pg_restore', '-C', '-1' ],
+	qr/\Qpg_restore: options -C\/--create and -1\/--single-transaction cannot be used together\E/,
+	'pg_restore: options -C\/--create and -1\/--single-transaction cannot be used together'
+);

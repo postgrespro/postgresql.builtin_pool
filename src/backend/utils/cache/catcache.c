@@ -3,7 +3,7 @@
  * catcache.c
  *	  System catalog cache for tuples matching a key.
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -16,12 +16,13 @@
 
 #include "access/genam.h"
 #include "access/hash.h"
-#include "access/heapam.h"
 #include "access/relscan.h"
 #include "access/sysattr.h"
+#include "access/table.h"
 #include "access/tuptoaster.h"
 #include "access/valid.h"
 #include "access/xact.h"
+#include "catalog/pg_collation.h"
 #include "catalog/pg_operator.h"
 #include "catalog/pg_type.h"
 #include "miscadmin.h"
@@ -38,7 +39,6 @@
 #include "utils/rel.h"
 #include "utils/resowner_private.h"
 #include "utils/syscache.h"
-#include "utils/tqual.h"
 
 
  /* #define CACHEDEBUG */	/* turns DEBUG elogs on */
@@ -338,39 +338,31 @@ CatalogCacheComputeTupleHashValue(CatCache *cache, int nkeys, HeapTuple tuple)
 	switch (nkeys)
 	{
 		case 4:
-			v4 = (cc_keyno[3] == ObjectIdAttributeNumber)
-				? ObjectIdGetDatum(HeapTupleGetOid(tuple))
-				: fastgetattr(tuple,
-							  cc_keyno[3],
-							  cc_tupdesc,
-							  &isNull);
+			v4 = fastgetattr(tuple,
+							 cc_keyno[3],
+							 cc_tupdesc,
+							 &isNull);
 			Assert(!isNull);
 			/* FALLTHROUGH */
 		case 3:
-			v3 = (cc_keyno[2] == ObjectIdAttributeNumber)
-				? ObjectIdGetDatum(HeapTupleGetOid(tuple))
-				: fastgetattr(tuple,
-							  cc_keyno[2],
-							  cc_tupdesc,
-							  &isNull);
+			v3 = fastgetattr(tuple,
+							 cc_keyno[2],
+							 cc_tupdesc,
+							 &isNull);
 			Assert(!isNull);
 			/* FALLTHROUGH */
 		case 2:
-			v2 = (cc_keyno[1] == ObjectIdAttributeNumber)
-				? ObjectIdGetDatum(HeapTupleGetOid(tuple))
-				: fastgetattr(tuple,
-							  cc_keyno[1],
-							  cc_tupdesc,
-							  &isNull);
+			v2 = fastgetattr(tuple,
+							 cc_keyno[1],
+							 cc_tupdesc,
+							 &isNull);
 			Assert(!isNull);
 			/* FALLTHROUGH */
 		case 1:
-			v1 = (cc_keyno[0] == ObjectIdAttributeNumber)
-				? ObjectIdGetDatum(HeapTupleGetOid(tuple))
-				: fastgetattr(tuple,
-							  cc_keyno[0],
-							  cc_tupdesc,
-							  &isNull);
+			v1 = fastgetattr(tuple,
+							 cc_keyno[0],
+							 cc_tupdesc,
+							 &isNull);
 			Assert(!isNull);
 			break;
 		default:
@@ -945,7 +937,7 @@ CatalogCacheInitializeCache(CatCache *cache)
 
 	CatalogCacheInitializeCache_DEBUG1;
 
-	relation = heap_open(cache->cc_reloid, AccessShareLock);
+	relation = table_open(cache->cc_reloid, AccessShareLock);
 
 	/*
 	 * switch to the cache context so our allocations do not vanish at the end
@@ -972,7 +964,7 @@ CatalogCacheInitializeCache(CatCache *cache)
 	 */
 	MemoryContextSwitchTo(oldcxt);
 
-	heap_close(relation, AccessShareLock);
+	table_close(relation, AccessShareLock);
 
 	CACHE3_elog(DEBUG2, "CatalogCacheInitializeCache: %s, %d keys",
 				cache->cc_relname, cache->cc_nkeys);
@@ -998,8 +990,8 @@ CatalogCacheInitializeCache(CatCache *cache)
 		}
 		else
 		{
-			if (cache->cc_keyno[i] != ObjectIdAttributeNumber)
-				elog(FATAL, "only sys attr supported in caches is OID");
+			if (cache->cc_keyno[i] < 0)
+				elog(FATAL, "sys attributes are not supported in caches");
 			keytype = OIDOID;
 		}
 
@@ -1022,8 +1014,8 @@ CatalogCacheInitializeCache(CatCache *cache)
 		/* Fill in sk_strategy as well --- always standard equality */
 		cache->cc_skey[i].sk_strategy = BTEqualStrategyNumber;
 		cache->cc_skey[i].sk_subtype = InvalidOid;
-		/* Currently, there are no catcaches on collation-aware data types */
-		cache->cc_skey[i].sk_collation = InvalidOid;
+		/* If a catcache key requires a collation, it must be C collation */
+		cache->cc_skey[i].sk_collation = C_COLLATION_OID;
 
 		CACHE4_elog(DEBUG2, "CatalogCacheInitializeCache %s %d %p",
 					cache->cc_relname,
@@ -1364,7 +1356,7 @@ SearchCatCacheMiss(CatCache *cache,
 	 *
 	 * NOTE: it is possible for recursive cache lookups to occur while reading
 	 * the relation --- for example, due to shared-cache-inval messages being
-	 * processed during heap_open().  This is OK.  It's even possible for one
+	 * processed during table_open().  This is OK.  It's even possible for one
 	 * of those lookups to find and enter the very same tuple we are trying to
 	 * fetch here.  If that happens, we will enter a second copy of the tuple
 	 * into the cache.  The first copy will never be referenced again, and
@@ -1372,7 +1364,7 @@ SearchCatCacheMiss(CatCache *cache,
 	 * This case is rare enough that it's not worth expending extra cycles to
 	 * detect.
 	 */
-	relation = heap_open(cache->cc_reloid, AccessShareLock);
+	relation = table_open(cache->cc_reloid, AccessShareLock);
 
 	scandesc = systable_beginscan(relation,
 								  cache->cc_indexoid,
@@ -1397,7 +1389,7 @@ SearchCatCacheMiss(CatCache *cache,
 
 	systable_endscan(scandesc);
 
-	heap_close(relation, AccessShareLock);
+	table_close(relation, AccessShareLock);
 
 	/*
 	 * If tuple was not found, we need to build a negative cache entry
@@ -1645,7 +1637,7 @@ SearchCatCacheList(CatCache *cache,
 		cur_skey[2].sk_argument = v3;
 		cur_skey[3].sk_argument = v4;
 
-		relation = heap_open(cache->cc_reloid, AccessShareLock);
+		relation = table_open(cache->cc_reloid, AccessShareLock);
 
 		scandesc = systable_beginscan(relation,
 									  cache->cc_indexoid,
@@ -1712,7 +1704,7 @@ SearchCatCacheList(CatCache *cache,
 
 		systable_endscan(scandesc);
 
-		heap_close(relation, AccessShareLock);
+		table_close(relation, AccessShareLock);
 
 		/* Now we can build the CatCList entry. */
 		oldcxt = MemoryContextSwitchTo(CacheMemoryContext);
@@ -1935,9 +1927,7 @@ CatCacheFreeKeys(TupleDesc tupdesc, int nkeys, int *attnos, Datum *keys)
 		int			attnum = attnos[i];
 		Form_pg_attribute att;
 
-		/* only valid system attribute is the oid, which is by value */
-		if (attnum == ObjectIdAttributeNumber)
-			continue;
+		/* system attribute are not supported in caches */
 		Assert(attnum > 0);
 
 		att = TupleDescAttr(tupdesc, attnum - 1);
@@ -1966,33 +1956,25 @@ CatCacheCopyKeys(TupleDesc tupdesc, int nkeys, int *attnos,
 	for (i = 0; i < nkeys; i++)
 	{
 		int			attnum = attnos[i];
+		Form_pg_attribute att = TupleDescAttr(tupdesc, attnum - 1);
+		Datum		src = srckeys[i];
+		NameData	srcname;
 
-		if (attnum == ObjectIdAttributeNumber)
+		/*
+		 * Must be careful in case the caller passed a C string where a NAME
+		 * is wanted: convert the given argument to a correctly padded NAME.
+		 * Otherwise the memcpy() done by datumCopy() could fall off the end
+		 * of memory.
+		 */
+		if (att->atttypid == NAMEOID)
 		{
-			dstkeys[i] = srckeys[i];
+			namestrcpy(&srcname, DatumGetCString(src));
+			src = NameGetDatum(&srcname);
 		}
-		else
-		{
-			Form_pg_attribute att = TupleDescAttr(tupdesc, attnum - 1);
-			Datum		src = srckeys[i];
-			NameData	srcname;
 
-			/*
-			 * Must be careful in case the caller passed a C string where a
-			 * NAME is wanted: convert the given argument to a correctly
-			 * padded NAME.  Otherwise the memcpy() done by datumCopy() could
-			 * fall off the end of memory.
-			 */
-			if (att->atttypid == NAMEOID)
-			{
-				namestrcpy(&srcname, DatumGetCString(src));
-				src = NameGetDatum(&srcname);
-			}
-
-			dstkeys[i] = datumCopy(src,
-								   att->attbyval,
-								   att->attlen);
-		}
+		dstkeys[i] = datumCopy(src,
+							   att->attbyval,
+							   att->attlen);
 	}
 
 }

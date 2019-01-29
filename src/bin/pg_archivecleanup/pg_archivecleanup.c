@@ -1,14 +1,10 @@
 /*
- * src/bin/pg_archivecleanup/pg_archivecleanup.c
- *
  * pg_archivecleanup.c
  *
- * Production-ready example of an archive_cleanup_command
- * used to clean an archive when using standby_mode = on in 9.0
- * or for standalone use for any version of PostgreSQL 8.0+.
+ * To be used as archive_cleanup_command to clean an archive when using
+ * standby mode.
  *
- * Original author:		Simon Riggs  simon@2ndquadrant.com
- * Current maintainer:	Simon Riggs
+ * src/bin/pg_archivecleanup/pg_archivecleanup.c
  */
 #include "postgres_fe.h"
 
@@ -47,7 +43,7 @@ char		exclusiveCleanupFileName[MAXFNAMELEN];	/* the oldest file we want
  *	accessible directory. If you want to make other assumptions,
  *	such as using a vendor-specific archive and access API, these
  *	routines are the ones you'll need to change. You're
- *	encouraged to submit any changes to pgsql-hackers@postgresql.org
+ *	encouraged to submit any changes to pgsql-hackers@lists.postgresql.org
  *	or personally to the current maintainer. Those changes may be
  *	folded in to later versions of this program.
  */
@@ -269,7 +265,7 @@ usage(void)
 	printf(_("  -x EXT         clean up files if they have this extension\n"));
 	printf(_("  -?, --help     show this help, then exit\n"));
 	printf(_("\n"
-			 "For use as archive_cleanup_command in recovery.conf when standby_mode = on:\n"
+			 "For use as archive_cleanup_command in postgresql.conf:\n"
 			 "  archive_cleanup_command = 'pg_archivecleanup [OPTION]... ARCHIVELOCATION %%r'\n"
 			 "e.g.\n"
 			 "  archive_cleanup_command = 'pg_archivecleanup /mnt/server/archiverdir %%r'\n"));
@@ -277,7 +273,7 @@ usage(void)
 			 "Or for use as a standalone archive cleaner:\n"
 			 "e.g.\n"
 			 "  pg_archivecleanup /mnt/server/archiverdir 000000010000000000000010.00000020.backup\n"));
-	printf(_("\nReport bugs to <pgsql-bugs@postgresql.org>.\n"));
+	printf(_("\nReport bugs to <pgsql-bugs@lists.postgresql.org>.\n"));
 }
 
 /*------------ MAIN ----------------------------------------*/

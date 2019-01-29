@@ -12,7 +12,7 @@
  *		reduce_outer_joins
  *
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -586,10 +586,13 @@ inline_set_returning_functions(PlannerInfo *root)
 			funcquery = inline_set_returning_function(root, rte);
 			if (funcquery)
 			{
-				/* Successful expansion, replace the rtable entry */
+				/* Successful expansion, convert the RTE to a subquery */
 				rte->rtekind = RTE_SUBQUERY;
 				rte->subquery = funcquery;
+				rte->security_barrier = false;
+				/* Clear fields that should not be set in a subquery RTE */
 				rte->functions = NIL;
+				rte->funcordinality = false;
 			}
 		}
 	}
@@ -2041,6 +2044,18 @@ replace_vars_in_jointree(Node *jtnode,
 		}
 		replace_vars_in_jointree(j->larg, context, lowest_nulling_outer_join);
 		replace_vars_in_jointree(j->rarg, context, lowest_nulling_outer_join);
+
+		/*
+		 * Use PHVs within the join quals of a full join, even when it's the
+		 * lowest nulling outer join.  Otherwise, we cannot identify which
+		 * side of the join a pulled-up var-free expression came from, which
+		 * can lead to failure to make a plan at all because none of the quals
+		 * appear to be mergeable or hashable conditions.  For this purpose we
+		 * don't care about the state of wrap_non_vars, so leave it alone.
+		 */
+		if (j->jointype == JOIN_FULL)
+			context->need_phvs = true;
+
 		j->quals = pullup_replace_vars(j->quals, context);
 
 		/*

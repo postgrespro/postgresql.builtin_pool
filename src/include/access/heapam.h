@@ -4,7 +4,7 @@
  *	  POSTGRES heap access method definitions.
  *
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/access/heapam.h
@@ -14,8 +14,10 @@
 #ifndef HEAPAM_H
 #define HEAPAM_H
 
+#include "access/relation.h"	/* for backward compatibility */
 #include "access/sdir.h"
 #include "access/skey.h"
+#include "access/table.h"		/* for backward compatibility */
 #include "nodes/lockoptions.h"
 #include "nodes/primnodes.h"
 #include "storage/bufpage.h"
@@ -29,23 +31,9 @@
 #define HEAP_INSERT_SKIP_FSM	0x0002
 #define HEAP_INSERT_FROZEN		0x0004
 #define HEAP_INSERT_SPECULATIVE 0x0008
+#define HEAP_INSERT_NO_LOGICAL	0x0010
 
 typedef struct BulkInsertStateData *BulkInsertState;
-
-/*
- * Possible lock modes for a tuple.
- */
-typedef enum LockTupleMode
-{
-	/* SELECT FOR KEY SHARE */
-	LockTupleKeyShare,
-	/* SELECT FOR SHARE */
-	LockTupleShare,
-	/* SELECT FOR NO KEY UPDATE, and UPDATEs that don't modify key columns */
-	LockTupleNoKeyExclusive,
-	/* SELECT FOR UPDATE, UPDATEs that modify key columns, and DELETE */
-	LockTupleExclusive
-} LockTupleMode;
 
 #define MaxLockTupleMode	LockTupleExclusive
 
@@ -72,6 +60,15 @@ typedef struct HeapUpdateFailureData
 	CommandId	cmax;
 } HeapUpdateFailureData;
 
+/* Result codes for HeapTupleSatisfiesVacuum */
+typedef enum
+{
+	HEAPTUPLE_DEAD,				/* tuple is dead and deletable */
+	HEAPTUPLE_LIVE,				/* tuple is live (committed, no deleter) */
+	HEAPTUPLE_RECENTLY_DEAD,	/* tuple is dead, but not deletable yet */
+	HEAPTUPLE_INSERT_IN_PROGRESS,	/* inserting xact is still in progress */
+	HEAPTUPLE_DELETE_IN_PROGRESS	/* deleting xact is still in progress */
+} HTSV_Result;
 
 /* ----------------
  *		function prototypes for heap access method
@@ -81,20 +78,6 @@ typedef struct HeapUpdateFailureData
  * ----------------
  */
 
-/* in heap/heapam.c */
-extern Relation relation_open(Oid relationId, LOCKMODE lockmode);
-extern Relation try_relation_open(Oid relationId, LOCKMODE lockmode);
-extern Relation relation_openrv(const RangeVar *relation, LOCKMODE lockmode);
-extern Relation relation_openrv_extended(const RangeVar *relation,
-						 LOCKMODE lockmode, bool missing_ok);
-extern void relation_close(Relation relation, LOCKMODE lockmode);
-
-extern Relation heap_open(Oid relationId, LOCKMODE lockmode);
-extern Relation heap_openrv(const RangeVar *relation, LOCKMODE lockmode);
-extern Relation heap_openrv_extended(const RangeVar *relation,
-					 LOCKMODE lockmode, bool missing_ok);
-
-#define heap_close(r,l)  relation_close(r,l)
 
 /* struct definitions appear in relscan.h */
 typedef struct HeapScanDescData *HeapScanDesc;
@@ -150,7 +133,7 @@ extern BulkInsertState GetBulkInsertState(void);
 extern void FreeBulkInsertState(BulkInsertState);
 extern void ReleaseBulkInsertStatePin(BulkInsertState bistate);
 
-extern Oid heap_insert(Relation relation, HeapTuple tup, CommandId cid,
+extern void heap_insert(Relation relation, HeapTuple tup, CommandId cid,
 			int options, BulkInsertState bistate);
 extern void heap_multi_insert(Relation relation, HeapTuple *tuples, int ntuples,
 				  CommandId cid, int options, BulkInsertState bistate);
@@ -175,7 +158,7 @@ extern bool heap_tuple_needs_freeze(HeapTupleHeader tuple, TransactionId cutoff_
 						MultiXactId cutoff_multi, Buffer buf);
 extern bool heap_tuple_needs_eventual_freeze(HeapTupleHeader tuple);
 
-extern Oid	simple_heap_insert(Relation relation, HeapTuple tup);
+extern void simple_heap_insert(Relation relation, HeapTuple tup);
 extern void simple_heap_delete(Relation relation, ItemPointer tid);
 extern void simple_heap_update(Relation relation, ItemPointer otid,
 				   HeapTuple tup);
@@ -199,5 +182,34 @@ extern void ss_report_location(Relation rel, BlockNumber location);
 extern BlockNumber ss_get_location(Relation rel, BlockNumber relnblocks);
 extern void SyncScanShmemInit(void);
 extern Size SyncScanShmemSize(void);
+
+/* in heap/vacuumlazy.c */
+struct VacuumParams;
+extern void heap_vacuum_rel(Relation onerel, int options,
+				struct VacuumParams *params, BufferAccessStrategy bstrategy);
+
+/* in heap/heapam_visibility.c */
+extern bool HeapTupleSatisfiesVisibility(HeapTuple stup, Snapshot snapshot,
+										 Buffer buffer);
+extern HTSU_Result HeapTupleSatisfiesUpdate(HeapTuple stup, CommandId curcid,
+						 Buffer buffer);
+extern HTSV_Result HeapTupleSatisfiesVacuum(HeapTuple stup, TransactionId OldestXmin,
+						 Buffer buffer);
+extern void HeapTupleSetHintBits(HeapTupleHeader tuple, Buffer buffer,
+					 uint16 infomask, TransactionId xid);
+extern bool HeapTupleHeaderIsOnlyLocked(HeapTupleHeader tuple);
+extern bool XidInMVCCSnapshot(TransactionId xid, Snapshot snapshot);
+extern bool HeapTupleIsSurelyDead(HeapTuple htup, TransactionId OldestXmin);
+
+/*
+ * To avoid leaking too much knowledge about reorderbuffer implementation
+ * details this is implemented in reorderbuffer.c not heapam_visibility.c
+ */
+struct HTAB;
+extern bool ResolveCminCmaxDuringDecoding(struct HTAB *tuplecid_data,
+							  Snapshot snapshot,
+							  HeapTuple htup,
+							  Buffer buffer,
+							  CommandId *cmin, CommandId *cmax);
 
 #endif							/* HEAPAM_H */

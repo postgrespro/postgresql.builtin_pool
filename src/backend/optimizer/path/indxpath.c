@@ -4,7 +4,7 @@
  *	  Routines to determine which indexes are usable for scanning a
  *	  given relation, and create Paths accordingly.
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -25,6 +25,7 @@
 #include "catalog/pg_opfamily.h"
 #include "catalog/pg_type.h"
 #include "nodes/makefuncs.h"
+#include "nodes/nodeFuncs.h"
 #include "optimizer/clauses.h"
 #include "optimizer/cost.h"
 #include "optimizer/pathnode.h"
@@ -67,6 +68,7 @@ typedef struct
 	List	   *quals;			/* the WHERE clauses it uses */
 	List	   *preds;			/* predicates of its partial index(es) */
 	Bitmapset  *clauseids;		/* quals+preds represented as a bitmapset */
+	bool		unclassifiable; /* has too many quals+preds to process? */
 } PathClauseUsage;
 
 /* Callback argument for ec_member_matches_indexcol */
@@ -1447,9 +1449,18 @@ choose_bitmap_and(PlannerInfo *root, RelOptInfo *rel, List *paths)
 		Path	   *ipath = (Path *) lfirst(l);
 
 		pathinfo = classify_index_clause_usage(ipath, &clauselist);
+
+		/* If it's unclassifiable, treat it as distinct from all others */
+		if (pathinfo->unclassifiable)
+		{
+			pathinfoarray[npaths++] = pathinfo;
+			continue;
+		}
+
 		for (i = 0; i < npaths; i++)
 		{
-			if (bms_equal(pathinfo->clauseids, pathinfoarray[i]->clauseids))
+			if (!pathinfoarray[i]->unclassifiable &&
+				bms_equal(pathinfo->clauseids, pathinfoarray[i]->clauseids))
 				break;
 		}
 		if (i < npaths)
@@ -1484,6 +1495,10 @@ choose_bitmap_and(PlannerInfo *root, RelOptInfo *rel, List *paths)
 	 * For each surviving index, consider it as an "AND group leader", and see
 	 * whether adding on any of the later indexes results in an AND path with
 	 * cheaper total cost than before.  Then take the cheapest AND group.
+	 *
+	 * Note: paths that are either clauseless or unclassifiable will have
+	 * empty clauseids, so that they will not be rejected by the clauseids
+	 * filter here, nor will they cause later paths to be rejected by it.
 	 */
 	for (i = 0; i < npaths; i++)
 	{
@@ -1711,6 +1726,21 @@ classify_index_clause_usage(Path *path, List **clauselist)
 	result->preds = NIL;
 	find_indexpath_quals(path, &result->quals, &result->preds);
 
+	/*
+	 * Some machine-generated queries have outlandish numbers of qual clauses.
+	 * To avoid getting into O(N^2) behavior even in this preliminary
+	 * classification step, we want to limit the number of entries we can
+	 * accumulate in *clauselist.  Treat any path with more than 100 quals +
+	 * preds as unclassifiable, which will cause calling code to consider it
+	 * distinct from all other paths.
+	 */
+	if (list_length(result->quals) + list_length(result->preds) > 100)
+	{
+		result->clauseids = NULL;
+		result->unclassifiable = true;
+		return result;
+	}
+
 	/* Build up a bitmapset representing the quals and preds */
 	clauseids = NULL;
 	foreach(lc, result->quals)
@@ -1728,6 +1758,7 @@ classify_index_clause_usage(Path *path, List **clauselist)
 								   find_list_position(node, clauselist));
 	}
 	result->clauseids = clauseids;
+	result->unclassifiable = false;
 
 	return result;
 }
@@ -3488,6 +3519,10 @@ match_special_index_operator(Expr *clause, Oid opfamily, Oid idxcollation,
 		case OID_TEXT_ICLIKE_OP:
 		case OID_TEXT_REGEXEQ_OP:
 		case OID_TEXT_ICREGEXEQ_OP:
+		case OID_NAME_LIKE_OP:
+		case OID_NAME_ICLIKE_OP:
+		case OID_NAME_REGEXEQ_OP:
+		case OID_NAME_ICREGEXEQ_OP:
 			isIndexable =
 				(opfamily == TEXT_PATTERN_BTREE_FAM_OID) ||
 				(opfamily == TEXT_SPGIST_FAM_OID) ||
@@ -3505,14 +3540,6 @@ match_special_index_operator(Expr *clause, Oid opfamily, Oid idxcollation,
 				(opfamily == BPCHAR_BTREE_FAM_OID &&
 				 (pstatus == Pattern_Prefix_Exact ||
 				  lc_collate_is_c(idxcollation)));
-			break;
-
-		case OID_NAME_LIKE_OP:
-		case OID_NAME_ICLIKE_OP:
-		case OID_NAME_REGEXEQ_OP:
-		case OID_NAME_ICREGEXEQ_OP:
-			/* name uses locale-insensitive sorting */
-			isIndexable = (opfamily == NAME_BTREE_FAM_OID);
 			break;
 
 		case OID_BYTEA_LIKE_OP:
@@ -4067,7 +4094,8 @@ prefix_quals(Node *leftop, Oid opfamily, Oid collation,
 			 Const *prefix_const, Pattern_Prefix_Status pstatus)
 {
 	List	   *result;
-	Oid			datatype;
+	Oid			ldatatype = exprType(leftop);
+	Oid			rdatatype;
 	Oid			oproid;
 	Expr	   *expr;
 	FmgrInfo	ltproc;
@@ -4080,20 +4108,16 @@ prefix_quals(Node *leftop, Oid opfamily, Oid collation,
 		case TEXT_BTREE_FAM_OID:
 		case TEXT_PATTERN_BTREE_FAM_OID:
 		case TEXT_SPGIST_FAM_OID:
-			datatype = TEXTOID;
+			rdatatype = TEXTOID;
 			break;
 
 		case BPCHAR_BTREE_FAM_OID:
 		case BPCHAR_PATTERN_BTREE_FAM_OID:
-			datatype = BPCHAROID;
-			break;
-
-		case NAME_BTREE_FAM_OID:
-			datatype = NAMEOID;
+			rdatatype = BPCHAROID;
 			break;
 
 		case BYTEA_BTREE_FAM_OID:
-			datatype = BYTEAOID;
+			rdatatype = BYTEAOID;
 			break;
 
 		default:
@@ -4106,7 +4130,7 @@ prefix_quals(Node *leftop, Oid opfamily, Oid collation,
 	 * If necessary, coerce the prefix constant to the right type. The given
 	 * prefix constant is either text or bytea type.
 	 */
-	if (prefix_const->consttype != datatype)
+	if (prefix_const->consttype != rdatatype)
 	{
 		char	   *prefix;
 
@@ -4124,7 +4148,7 @@ prefix_quals(Node *leftop, Oid opfamily, Oid collation,
 					 prefix_const->consttype);
 				return NIL;
 		}
-		prefix_const = string_to_const(prefix, datatype);
+		prefix_const = string_to_const(prefix, rdatatype);
 		pfree(prefix);
 	}
 
@@ -4133,7 +4157,7 @@ prefix_quals(Node *leftop, Oid opfamily, Oid collation,
 	 */
 	if (pstatus == Pattern_Prefix_Exact)
 	{
-		oproid = get_opfamily_member(opfamily, datatype, datatype,
+		oproid = get_opfamily_member(opfamily, ldatatype, rdatatype,
 									 BTEqualStrategyNumber);
 		if (oproid == InvalidOid)
 			elog(ERROR, "no = operator for opfamily %u", opfamily);
@@ -4149,7 +4173,7 @@ prefix_quals(Node *leftop, Oid opfamily, Oid collation,
 	 *
 	 * We can always say "x >= prefix".
 	 */
-	oproid = get_opfamily_member(opfamily, datatype, datatype,
+	oproid = get_opfamily_member(opfamily, ldatatype, rdatatype,
 								 BTGreaterEqualStrategyNumber);
 	if (oproid == InvalidOid)
 		elog(ERROR, "no >= operator for opfamily %u", opfamily);
@@ -4166,7 +4190,7 @@ prefix_quals(Node *leftop, Oid opfamily, Oid collation,
 	 * using a C-locale index collation.
 	 *-------
 	 */
-	oproid = get_opfamily_member(opfamily, datatype, datatype,
+	oproid = get_opfamily_member(opfamily, ldatatype, rdatatype,
 								 BTLessStrategyNumber);
 	if (oproid == InvalidOid)
 		elog(ERROR, "no < operator for opfamily %u", opfamily);
@@ -4314,7 +4338,7 @@ string_to_const(const char *str, Oid datatype)
 			break;
 
 		case NAMEOID:
-			collation = InvalidOid;
+			collation = C_COLLATION_OID;
 			constlen = NAMEDATALEN;
 			break;
 

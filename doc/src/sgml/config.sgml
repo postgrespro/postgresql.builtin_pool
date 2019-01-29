@@ -66,7 +66,7 @@
       <para>
        <emphasis>Numeric with Unit:</emphasis>
        Some numeric parameters have an implicit unit, because they describe
-       quantities of memory or time. The unit might be kilobytes, blocks
+       quantities of memory or time. The unit might be bytes, kilobytes, blocks
        (typically eight kilobytes), milliseconds, seconds, or minutes.
        An unadorned numeric value for one of these settings will use the
        setting's default unit, which can be learned from
@@ -81,7 +81,8 @@
        <itemizedlist>
         <listitem>
          <para>
-          Valid memory units are <literal>kB</literal> (kilobytes),
+          Valid memory units are <literal>B</literal> (bytes),
+          <literal>kB</literal> (kilobytes),
           <literal>MB</literal> (megabytes), <literal>GB</literal>
           (gigabytes), and <literal>TB</literal> (terabytes).
           The multiplier for memory units is 1024, not 1000.
@@ -1248,7 +1249,7 @@ include_dir 'conf.d'
         than the client's.
         This parameter can only be set in the <filename>postgresql.conf</filename>
         file or on the server command line.
-        The default is <literal>true</literal>.
+        The default is <literal>on</literal>.
        </para>
 
        <para>
@@ -1286,6 +1287,50 @@ include_dir 'conf.d'
         The full list of available curves can be shown with the command
         <command>openssl ecparam -list_curves</command>.  Not all of them
         are usable in <acronym>TLS</acronym> though.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-ssl-min-protocol-version" xreflabel="ssl_min_protocol_version">
+      <term><varname>ssl_min_protocol_version</varname> (<type>enum</type>)
+      <indexterm>
+       <primary><varname>ssl_min_protocol_version</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        Sets the minimum SSL/TLS protocol version to use.  Valid values are
+        currently: <literal>TLSv1</literal>, <literal>TLSv1.1</literal>,
+        <literal>TLSv1.2</literal>, <literal>TLSv1.3</literal>.  Older
+        versions of the <productname>OpenSSL</productname> library do not
+        support all values; an error will be raised if an unsupported setting
+        is chosen.  Protocol versions before TLS 1.0, namely SSL version 2 and
+        3, are always disabled.
+       </para>
+
+       <para>
+        The default is <literal>TLSv1</literal>, mainly to support older
+        versions of the <productname>OpenSSL</productname> library.  You might
+        want to set this to a higher value if all software components can
+        support the newer protocol versions.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-ssl-max-protocol-version" xreflabel="ssl_max_protocol_version">
+      <term><varname>ssl_max_protocol_version</varname> (<type>enum</type>)
+      <indexterm>
+       <primary><varname>ssl_max_protocol_version</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        Sets the maximum SSL/TLS protocol version to use.  Valid values are as
+        for <xref linkend="guc-ssl-min-protocol-version"/>, with addition of
+        an empty string, which allows any protocol version.  The default is to
+        allow any version.  Setting the maximum protocol version is mainly
+        useful for testing or if some component has issues working with a
+        newer protocol.
        </para>
       </listitem>
      </varlistentry>
@@ -1359,12 +1404,12 @@ include_dir 'conf.d'
         This parameter determines whether the passphrase command set by
         <varname>ssl_passphrase_command</varname> will also be called during a
         configuration reload if a key file needs a passphrase.  If this
-        parameter is false (the default), then
+        parameter is off (the default), then
         <varname>ssl_passphrase_command</varname> will be ignored during a
         reload and the SSL configuration will not be reloaded if a passphrase
         is needed.  That setting is appropriate for a command that requires a
         TTY for prompting, which might not be available when the server is
-        running.  Setting this parameter to true might be appropriate if the
+        running.  Setting this parameter to on might be appropriate if the
         passphrase is obtained from a file, for example.
        </para>
        <para>
@@ -1630,12 +1675,11 @@ include_dir 'conf.d'
         enforced by the kernel (as set by <literal>ulimit -s</literal> or local
         equivalent), less a safety margin of a megabyte or so.  The safety
         margin is needed because the stack depth is not checked in every
-        routine in the server, but only in key potentially-recursive routines
-        such as expression evaluation.  The default setting is two
-        megabytes (<literal>2MB</literal>), which is conservatively small and
-        unlikely to risk crashes.  However, it might be too small to allow
-        execution of complex functions.  Only superusers can change this
-        setting.
+        routine in the server, but only in key potentially-recursive routines.
+        The default setting is two megabytes (<literal>2MB</literal>), which
+        is conservatively small and unlikely to risk crashes.  However,
+        it might be too small to allow execution of complex functions.
+        Only superusers can change this setting.
        </para>
 
        <para>
@@ -2999,6 +3043,383 @@ include_dir 'conf.d'
      </variablelist>
     </sect2>
 
+  <sect2 id="runtime-config-wal-archive-recovery">
+
+    <title>Archive Recovery</title>
+
+    <indexterm>
+     <primary>configuration</primary>
+     <secondary>of recovery</secondary>
+     <tertiary>of a standby server</tertiary>
+    </indexterm>
+
+    <para>
+     This section describes the settings that apply only for the duration of
+     the recovery.  They must be reset for any subsequent recovery you wish to
+     perform.  They can only be set at server start and cannot be changed once
+     recovery has begun.
+    </para>
+
+    <para>
+     <quote>Recovery</quote> covers using the server as a standby or for
+     executing a targeted recovery.  Typically, standby mode would be used to
+     provide high availability and/or read scalability, whereas a targeted
+     recovery is used to recover from data loss.
+    </para>
+
+    <para>
+     To start the server in standby mode create file called
+     <filename>standby.signal</filename><indexterm><primary>standby.signal</primary></indexterm>
+     in the data directory.  The server will enter recovery and will not stop
+     recovery when the end of archived WAL is reached, but will keep trying to
+     continue recovery by connecting to the sending server as specified by the
+     <varname>primary_conninfo</varname> setting and/or by fetching new WAL
+     segments using <varname>restore_command</varname>.  In this mode, you may
+     use parameters in both <xref
+     linkend="runtime-config-wal-archive-recovery"/> and <xref
+     linkend="runtime-config-replication-standby"/> sections.  Parameters from
+     <xref linkend="runtime-config-wal-recovery-target"/> will not be used.
+    </para>
+
+    <para>
+     To start the server in targeted recovery create a file called
+     <filename>recovery.signal</filename><indexterm><primary>recovery.signal</primary></indexterm>
+     in the data directory.  If both <filename>standby.signal</filename> and
+     <filename>recovery.signal</filename> files are created, standby mode
+     takes precedence.  Targeted recovery mode will end when end of archived
+     WAL is reached, or when <varname>recovery_target</varname> is reached.
+     In this mode you may use parameters from both <xref
+     linkend="runtime-config-wal-archive-recovery"/> and <xref
+     linkend="runtime-config-wal-recovery-target"/> sections.  Parameters from <xref
+     linkend="runtime-config-replication-standby"/> will not be used.
+    </para>
+
+    <variablelist>
+     <varlistentry id="guc-restore-command" xreflabel="restore_command">
+      <term><varname>restore_command</varname> (<type>string</type>)
+      <indexterm>
+        <primary><varname>restore_command</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        The local shell command to execute to retrieve an archived segment of
+        the WAL file series. This parameter is required for archive recovery,
+        but optional for streaming replication.
+        Any <literal>%f</literal> in the string is
+        replaced by the name of the file to retrieve from the archive,
+        and any <literal>%p</literal> is replaced by the copy destination path name
+        on the server.
+        (The path name is relative to the current working directory,
+        i.e., the cluster's data directory.)
+        Any <literal>%r</literal> is replaced by the name of the file containing the
+        last valid restart point. That is the earliest file that must be kept
+        to allow a restore to be restartable, so this information can be used
+        to truncate the archive to just the minimum required to support
+        restarting from the current restore. <literal>%r</literal> is typically only
+        used by warm-standby configurations
+        (see <xref linkend="warm-standby"/>).
+        Write <literal>%%</literal> to embed an actual <literal>%</literal> character.
+       </para>
+
+       <para>
+        It is important for the command to return a zero exit status
+        only if it succeeds.  The command <emphasis>will</emphasis> be asked for file
+        names that are not present in the archive; it must return nonzero
+        when so asked.  Examples:
+<programlisting>
+restore_command = 'cp /mnt/server/archivedir/%f "%p"'
+restore_command = 'copy "C:\\server\\archivedir\\%f" "%p"'  # Windows
+</programlisting>
+        An exception is that if the command was terminated by a signal (other
+        than <systemitem>SIGTERM</systemitem>, which is used as part of a
+        database server shutdown) or an error by the shell (such as command
+        not found), then recovery will abort and the server will not start up.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-archive-cleanup-command" xreflabel="archive_cleanup_command">
+      <term><varname>archive_cleanup_command</varname> (<type>string</type>)
+      <indexterm>
+        <primary><varname>archive_cleanup_command</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        This optional parameter specifies a shell command that will be executed
+        at every restartpoint.  The purpose of
+        <varname>archive_cleanup_command</varname> is to provide a mechanism for
+        cleaning up old archived WAL files that are no longer needed by the
+        standby server.
+        Any <literal>%r</literal> is replaced by the name of the file containing the
+        last valid restart point.
+        That is the earliest file that must be <emphasis>kept</emphasis> to allow a
+        restore to be restartable, and so all files earlier than <literal>%r</literal>
+        may be safely removed.
+        This information can be used to truncate the archive to just the
+        minimum required to support restart from the current restore.
+        The <xref linkend="pgarchivecleanup"/> module
+        is often used in <varname>archive_cleanup_command</varname> for
+        single-standby configurations, for example:
+<programlisting>archive_cleanup_command = 'pg_archivecleanup /mnt/server/archivedir %r'</programlisting>
+        Note however that if multiple standby servers are restoring from the
+        same archive directory, you will need to ensure that you do not delete
+        WAL files until they are no longer needed by any of the servers.
+        <varname>archive_cleanup_command</varname> would typically be used in a
+        warm-standby configuration (see <xref linkend="warm-standby"/>).
+        Write <literal>%%</literal> to embed an actual <literal>%</literal> character in the
+        command.
+       </para>
+       <para>
+        If the command returns a nonzero exit status then a warning log
+        message will be written.  An exception is that if the command was
+        terminated by a signal or an error by the shell (such as command not
+        found), a fatal error will be raised.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-recovery-end-command" xreflabel="recovery_end_command">
+      <term><varname>recovery_end_command</varname> (<type>string</type>)
+      <indexterm>
+        <primary><varname>recovery_end_command</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        This parameter specifies a shell command that will be executed once only
+        at the end of recovery. This parameter is optional. The purpose of the
+        <varname>recovery_end_command</varname> is to provide a mechanism for cleanup
+        following replication or recovery.
+        Any <literal>%r</literal> is replaced by the name of the file containing the
+        last valid restart point, like in <xref linkend="guc-archive-cleanup-command"/>.
+       </para>
+       <para>
+        If the command returns a nonzero exit status then a warning log
+        message will be written and the database will proceed to start up
+        anyway.  An exception is that if the command was terminated by a
+        signal or an error by the shell (such as command not found), the
+        database will not proceed with startup.
+       </para>
+      </listitem>
+     </varlistentry>
+
+    </variablelist>
+
+  </sect2>
+
+  <sect2 id="runtime-config-wal-recovery-target">
+
+    <title>Recovery Target</title>
+
+     <para>
+      By default, recovery will recover to the end of the WAL log. The
+      following parameters can be used to specify an earlier stopping point.
+      At most one of <varname>recovery_target</varname>,
+      <varname>recovery_target_lsn</varname>, <varname>recovery_target_name</varname>,
+      <varname>recovery_target_time</varname>, or <varname>recovery_target_xid</varname>
+      can be used; if more than one of these is specified in the configuration
+      file, an error will be raised.
+      These parameters can only be set at server start.
+     </para>
+
+     <variablelist>
+     <varlistentry id="guc-recovery-target" xreflabel="recovery_target">
+      <term><varname>recovery_target</varname><literal> = 'immediate'</literal>
+      <indexterm>
+        <primary><varname>recovery_target</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        This parameter specifies that recovery should end as soon as a
+        consistent state is reached, i.e. as early as possible. When restoring
+        from an online backup, this means the point where taking the backup
+        ended.
+       </para>
+       <para>
+        Technically, this is a string parameter, but <literal>'immediate'</literal>
+        is currently the only allowed value.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-recovery-target-name" xreflabel="recovery_target_name">
+      <term><varname>recovery_target_name</varname> (<type>string</type>)
+      <indexterm>
+        <primary><varname>recovery_target_name</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        This parameter specifies the named restore point (created with
+        <function>pg_create_restore_point()</function>) to which recovery will proceed.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-recovery-target-time" xreflabel="recovery_target_time">
+      <term><varname>recovery_target_time</varname> (<type>timestamp</type>)
+      <indexterm>
+        <primary><varname>recovery_target_time</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        This parameter specifies the time stamp up to which recovery
+        will proceed.
+        The precise stopping point is also influenced by
+        <xref linkend="guc-recovery-target-inclusive"/>.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-recovery-target-xid" xreflabel="recovery_target_xid">
+      <term><varname>recovery_target_xid</varname> (<type>string</type>)
+      <indexterm>
+        <primary><varname>recovery_target_xid</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        This parameter specifies the transaction ID up to which recovery
+        will proceed. Keep in mind
+        that while transaction IDs are assigned sequentially at transaction
+        start, transactions can complete in a different numeric order.
+        The transactions that will be recovered are those that committed
+        before (and optionally including) the specified one.
+        The precise stopping point is also influenced by
+        <xref linkend="guc-recovery-target-inclusive"/>.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-recovery-target-lsn" xreflabel="recovery_target_lsn">
+      <term><varname>recovery_target_lsn</varname> (<type>pg_lsn</type>)
+      <indexterm>
+        <primary><varname>recovery_target_lsn</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        This parameter specifies the LSN of the write-ahead log location up
+        to which recovery will proceed. The precise stopping point is also
+        influenced by <xref linkend="guc-recovery-target-inclusive"/>. This
+        parameter is parsed using the system data type
+        <link linkend="datatype-pg-lsn"><type>pg_lsn</type></link>.
+       </para>
+      </listitem>
+     </varlistentry>
+     </variablelist>
+
+     <para>
+       The following options further specify the recovery target, and affect
+       what happens when the target is reached:
+     </para>
+
+     <variablelist>
+     <varlistentry id="guc-recovery-target-inclusive"
+                   xreflabel="recovery_target_inclusive">
+      <term><varname>recovery_target_inclusive</varname> (<type>boolean</type>)
+      <indexterm>
+        <primary><varname>recovery_target_inclusive</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        Specifies whether to stop just after the specified recovery target
+        (<literal>on</literal>), or just before the recovery target
+        (<literal>off</literal>).
+        Applies when <xref linkend="guc-recovery-target-lsn"/>,
+        <xref linkend="guc-recovery-target-time"/>, or
+        <xref linkend="guc-recovery-target-xid"/> is specified.
+        This setting controls whether transactions
+        having exactly the target WAL location (LSN), commit time, or transaction ID, respectively, will
+        be included in the recovery.  Default is <literal>on</literal>.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-recovery-target-timeline"
+                   xreflabel="recovery_target_timeline">
+      <term><varname>recovery_target_timeline</varname> (<type>string</type>)
+      <indexterm>
+        <primary><varname>recovery_target_timeline</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        Specifies recovering into a particular timeline.  The value can be a
+        numeric timeline ID or a special value.  The value
+        <literal>current</literal> recovers along the same timeline that was
+        current when the base backup was taken.  The
+        value <literal>latest</literal> recovers
+        to the latest timeline found in the archive, which is useful in
+        a standby server.  <literal>latest</literal> is the default.
+       </para>
+
+       <para>
+        You usually only need to set this parameter
+        in complex re-recovery situations, where you need to return to
+        a state that itself was reached after a point-in-time recovery.
+        See <xref linkend="backup-timelines"/> for discussion.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-recovery-target-action"
+                   xreflabel="recovery_target_action">
+      <term><varname>recovery_target_action</varname> (<type>enum</type>)
+      <indexterm>
+        <primary><varname>recovery_target_action</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        Specifies what action the server should take once the recovery target is
+        reached. The default is <literal>pause</literal>, which means recovery will
+        be paused. <literal>promote</literal> means the recovery process will finish
+        and the server will start to accept connections.
+        Finally <literal>shutdown</literal> will stop the server after reaching the
+        recovery target.
+       </para>
+       <para>
+        The intended use of the <literal>pause</literal> setting is to allow queries
+        to be executed against the database to check if this recovery target
+        is the most desirable point for recovery.
+        The paused state can be resumed by
+        using <function>pg_wal_replay_resume()</function> (see
+        <xref linkend="functions-recovery-control-table"/>), which then
+        causes recovery to end. If this recovery target is not the
+        desired stopping point, then shut down the server, change the
+        recovery target settings to a later target and restart to
+        continue recovery.
+       </para>
+       <para>
+        The <literal>shutdown</literal> setting is useful to have the instance ready
+        at the exact replay point desired.  The instance will still be able to
+        replay more WAL records (and in fact will have to replay WAL records
+        since the last checkpoint next time it is started).
+       </para>
+       <para>
+        Note that because <filename>recovery.signal</filename> will not be
+        removed when <varname>recovery_target_action</varname> is set to <literal>shutdown</literal>,
+        any subsequent start will end with immediate shutdown unless the
+        configuration is changed or the <filename>recovery.signal</filename>
+        file is removed manually.
+       </para>
+       <para>
+        This setting has no effect if no recovery target is set.
+        If <xref linkend="guc-hot-standby"/> is not enabled, a setting of
+        <literal>pause</literal> will act the same as <literal>shutdown</literal>.
+       </para>
+      </listitem>
+     </varlistentry>
+
+    </variablelist>
+   </sect2>
+
    </sect1>
 
    <sect1 id="runtime-config-replication">
@@ -3127,10 +3548,14 @@ include_dir 'conf.d'
         Terminate replication connections that are inactive longer
         than the specified number of milliseconds. This is useful for
         the sending server to detect a standby crash or network outage.
-        A value of zero disables the timeout mechanism.  This parameter
-        can only be set in
-        the <filename>postgresql.conf</filename> file or on the server command line.
-        The default value is 60 seconds.
+        A value of zero disables the timeout mechanism. The default value
+        is 60 seconds. With a cluster distributed across multiple geographic
+        locations, using different values per location brings more flexibility
+        in the cluster management. A smaller value is useful for faster
+        failure detection with a standby having a low-latency network
+        connection, and a larger value helps in judging better the health
+        of a standby if located on a remote location, with a high-latency
+        network connection.
        </para>
       </listitem>
      </varlistentry>
@@ -3198,11 +3623,11 @@ include_dir 'conf.d'
         <varname>application_name</varname> setting of the standby, as set in the
         standby's connection information.  In case of a physical replication
         standby, this should be set in the <varname>primary_conninfo</varname>
-        setting in <filename>recovery.conf</filename>; the default
-        is <literal>walreceiver</literal>.  For logical replication, this can
-        be set in the connection information of the subscription, and it
-        defaults to the subscription name.  For other replication stream
-        consumers, consult their documentation.
+        setting; the default is <literal>walreceiver</literal>.
+        For logical replication, this can be set in the connection
+        information of the subscription, and it defaults to the
+        subscription name.  For other replication stream consumers,
+        consult their documentation.
        </para>
        <para>
         This parameter specifies a list of standby servers using
@@ -3344,6 +3769,79 @@ ANY <replaceable class="parameter">num_sync</replaceable> ( <replaceable class="
      </para>
 
     <variablelist>
+
+       <varlistentry id="guc-primary-conninfo" xreflabel="primary_conninfo">
+        <term><varname>primary_conninfo</varname> (<type>string</type>)
+        <indexterm>
+          <primary><varname>primary_conninfo</varname> configuration parameter</primary>
+        </indexterm>
+        </term>
+        <listitem>
+         <para>
+          Specifies a connection string to be used for the standby server
+          to connect with a sending server. This string is in the format
+          described in <xref linkend="libpq-connstring"/>. If any option is
+          unspecified in this string, then the corresponding environment
+          variable (see <xref linkend="libpq-envars"/>) is checked. If the
+          environment variable is not set either, then
+          defaults are used.
+         </para>
+         <para>
+          The connection string should specify the host name (or address)
+          of the sending server, as well as the port number if it is not
+          the same as the standby server's default.
+          Also specify a user name corresponding to a suitably-privileged role
+          on the sending server (see
+          <xref linkend="streaming-replication-authentication"/>).
+          A password needs to be provided too, if the sender demands password
+          authentication.  It can be provided in the
+          <varname>primary_conninfo</varname> string, or in a separate
+          <filename>~/.pgpass</filename> file on the standby server (use
+          <literal>replication</literal> as the database name).
+          Do not specify a database name in the
+          <varname>primary_conninfo</varname> string.
+         </para>
+         <para>
+          This parameter can only be set at server start.
+          This setting has no effect if the server is not in standby mode.
+         </para>
+        </listitem>
+       </varlistentry>
+       <varlistentry id="guc-primary-slot-name" xreflabel="primary_slot_name">
+        <term><varname>primary_slot_name</varname> (<type>string</type>)
+        <indexterm>
+          <primary><varname>primary_slot_name</varname> configuration parameter</primary>
+        </indexterm>
+        </term>
+        <listitem>
+         <para>
+          Optionally specifies an existing replication slot to be used when
+          connecting to the sending server via streaming replication to control
+          resource removal on the upstream node
+          (see <xref linkend="streaming-replication-slots"/>).
+          This parameter can only be set at server start.
+          This setting has no effect if <varname>primary_conninfo</varname> is not
+          set.
+         </para>
+        </listitem>
+       </varlistentry>
+
+       <varlistentry id="guc-promote-trigger-file" xreflabel="promote_trigger_file">
+        <term><varname>promote_trigger_file</varname> (<type>string</type>)
+        <indexterm>
+          <primary><varname>promote_trigger_file</varname> configuration parameter</primary>
+        </indexterm>
+        </term>
+        <listitem>
+         <para>
+          Specifies a trigger file whose presence ends recovery in the
+          standby.  Even if this value is not set, you can still promote
+          the standby using <command>pg_ctl promote</command> or calling
+          <function>pg_promote</function>.
+          This parameter can only be set at server start.
+         </para>
+        </listitem>
+       </varlistentry>
 
      <varlistentry id="guc-hot-standby" xreflabel="hot_standby">
       <term><varname>hot_standby</varname> (<type>boolean</type>)
@@ -3534,6 +4032,67 @@ ANY <replaceable class="parameter">num_sync</replaceable> ( <replaceable class="
         to access WAL archives, something useful for example in cloud
         environments where the amount of times an infrastructure is accessed
         is taken into account.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-recovery-min-apply-delay" xreflabel="recovery_min_apply_delay">
+      <term><varname>recovery_min_apply_delay</varname> (<type>integer</type>)
+      <indexterm>
+        <primary><varname>recovery_min_apply_delay</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        By default, a standby server restores WAL records from the
+        sending server as soon as possible. It may be useful to have a time-delayed
+        copy of the data, offering opportunities to correct data loss errors.
+        This parameter allows you to delay recovery by a fixed period of time,
+        measured in milliseconds if no unit is specified.  For example, if
+        you set this parameter to <literal>5min</literal>, the standby will
+        replay each transaction commit only when the system time on the standby
+        is at least five minutes past the commit time reported by the master.
+       </para>
+       <para>
+        It is possible that the replication delay between servers exceeds the
+        value of this parameter, in which case no delay is added.
+        Note that the delay is calculated between the WAL time stamp as written
+        on master and the current time on the standby. Delays in transfer
+        because of network lag or cascading replication configurations
+        may reduce the actual wait time significantly. If the system
+        clocks on master and standby are not synchronized, this may lead to
+        recovery applying records earlier than expected; but that is not a
+        major issue because useful settings of this parameter are much larger
+        than typical time deviations between servers.
+       </para>
+       <para>
+        The delay occurs only on WAL records for transaction commits.
+        Other records are replayed as quickly as possible, which
+        is not a problem because MVCC visibility rules ensure their effects
+        are not visible until the corresponding commit record is applied.
+       </para>
+       <para>
+        The delay occurs once the database in recovery has reached a consistent
+        state, until the standby is promoted or triggered. After that the standby
+        will end recovery without further waiting.
+       </para>
+       <para>
+        This parameter is intended for use with streaming replication deployments;
+        however, if the parameter is specified it will be honored in all cases.
+
+        <varname>hot_standby_feedback</varname> will be delayed by use of this feature
+        which could lead to bloat on the master; use both together with care.
+
+        <warning>
+         <para>
+          Synchronous replication is affected by this setting when <varname>synchronous_commit</varname>
+          is set to <literal>remote_apply</literal>; every <literal>COMMIT</literal>
+          will need to wait to be applied.
+         </para>
+        </warning>
+       </para>
+       <para>
+        This parameter can only be set at server start.
        </para>
       </listitem>
      </varlistentry>
@@ -4142,7 +4701,8 @@ ANY <replaceable class="parameter">num_sync</replaceable> ( <replaceable class="
         used. When setting this parameter you should consider both
         <productname>PostgreSQL</productname>'s shared buffers and the
         portion of the kernel's disk cache that will be used for
-        <productname>PostgreSQL</productname> data files.  Also, take
+        <productname>PostgreSQL</productname> data files, though some
+        data might exist in both places. Also, take
         into account the expected number of concurrent queries on different
         tables, since they will have to share the available
         space.  This parameter has no effect on the size of shared
@@ -4155,7 +4715,6 @@ ANY <replaceable class="parameter">num_sync</replaceable> ( <replaceable class="
       </listitem>
      </varlistentry>
 
-
      <varlistentry id="guc-jit-above-cost" xreflabel="jit_above_cost">
       <term><varname>jit_above_cost</varname> (<type>floating point</type>)
       <indexterm>
@@ -4164,29 +4723,12 @@ ANY <replaceable class="parameter">num_sync</replaceable> ( <replaceable class="
       </term>
       <listitem>
        <para>
-        Sets the planner's cutoff above which JIT compilation is used as part
-        of query execution (see <xref linkend="jit"/>). Performing
-        <acronym>JIT</acronym> costs time but can accelerate query execution.
-
+        Sets the query cost above which JIT compilation is activated, if
+        enabled (see <xref linkend="jit"/>).
+        Performing <acronym>JIT</acronym> costs planning time but can
+        accelerate query execution.
+        Setting this to <literal>-1</literal> disables JIT compilation.
         The default is <literal>100000</literal>.
-       </para>
-      </listitem>
-     </varlistentry>
-
-     <varlistentry id="guc-jit-optimize-above-cost" xreflabel="jit_optimize_above_cost">
-      <term><varname>jit_optimize_above_cost</varname> (<type>floating point</type>)
-      <indexterm>
-       <primary><varname>jit_optimize_above_cost</varname> configuration parameter</primary>
-      </indexterm>
-      </term>
-      <listitem>
-       <para>
-        Sets the planner's cutoff above which JIT compiled programs (see <xref
-        linkend="guc-jit-above-cost"/>) are optimized. Optimization initially
-        takes time, but can improve execution speed.  It is not meaningful to
-        set this to a lower value than <xref linkend="guc-jit-above-cost"/>.
-
-        The default is <literal>500000</literal>.
        </para>
       </listitem>
      </varlistentry>
@@ -4199,13 +4741,31 @@ ANY <replaceable class="parameter">num_sync</replaceable> ( <replaceable class="
       </term>
       <listitem>
        <para>
-        Sets the planner's cutoff above which JIT compiled programs (see <xref
-        linkend="guc-jit-above-cost"/>) attempt to inline functions and
-        operators. Inlining initially takes time, but can improve execution
-        speed.  It is unlikely to be beneficial to set
-        <varname>jit_inline_above_cost</varname> below
-        <varname>jit_optimize_above_cost</varname>.
+        Sets the query cost above which JIT compilation attempts to inline
+        functions and operators.  Inlining adds planning time, but can
+        improve execution speed.  It is not meaningful to set this to less
+        than <varname>jit_above_cost</varname>.
+        Setting this to <literal>-1</literal> disables inlining.
+        The default is <literal>500000</literal>.
+       </para>
+      </listitem>
+     </varlistentry>
 
+     <varlistentry id="guc-jit-optimize-above-cost" xreflabel="jit_optimize_above_cost">
+      <term><varname>jit_optimize_above_cost</varname> (<type>floating point</type>)
+      <indexterm>
+       <primary><varname>jit_optimize_above_cost</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        Sets the query cost above which JIT compilation applies expensive
+        optimizations.  Such optimization adds planning time, but can improve
+        execution speed.  It is not meaningful to set this to less
+        than <varname>jit_above_cost</varname>, and it is unlikely to be
+        beneficial to set it to more
+        than <varname>jit_inline_above_cost</varname>.
+        Setting this to <literal>-1</literal> disables expensive optimizations.
         The default is <literal>500000</literal>.
        </para>
       </listitem>
@@ -4500,10 +5060,9 @@ SELECT * FROM parent WHERE key = 2400;
       </term>
       <listitem>
        <para>
-        Determines whether <acronym>JIT</acronym> may be used by
+        Determines whether <acronym>JIT</acronym> compilation may be used by
         <productname>PostgreSQL</productname>, if available (see <xref
         linkend="jit"/>).
-
         The default is <literal>on</literal>.
        </para>
       </listitem>
@@ -5106,28 +5665,6 @@ local0.*    /var/log/postgresql
 
      <variablelist>
 
-     <varlistentry id="guc-client-min-messages" xreflabel="client_min_messages">
-      <term><varname>client_min_messages</varname> (<type>enum</type>)
-      <indexterm>
-       <primary><varname>client_min_messages</varname> configuration parameter</primary>
-      </indexterm>
-      </term>
-      <listitem>
-       <para>
-        Controls which message levels are sent to the client.
-        Valid values are <literal>DEBUG5</literal>,
-        <literal>DEBUG4</literal>, <literal>DEBUG3</literal>, <literal>DEBUG2</literal>,
-        <literal>DEBUG1</literal>, <literal>LOG</literal>, <literal>NOTICE</literal>,
-        <literal>WARNING</literal>, <literal>ERROR</literal>, <literal>FATAL</literal>,
-        and <literal>PANIC</literal>.  Each level
-        includes all the levels that follow it.  The later the level,
-        the fewer messages are sent.  The default is
-        <literal>NOTICE</literal>.  Note that <literal>LOG</literal> has a different
-        rank here than in <varname>log_min_messages</varname>.
-       </para>
-      </listitem>
-     </varlistentry>
-
      <varlistentry id="guc-log-min-messages" xreflabel="log_min_messages">
       <term><varname>log_min_messages</varname> (<type>enum</type>)
       <indexterm>
@@ -5136,7 +5673,8 @@ local0.*    /var/log/postgresql
       </term>
       <listitem>
        <para>
-        Controls which message levels are written to the server log.
+        Controls which <link linkend="runtime-config-severity-levels">message
+        levels</link> are written to the server log.
         Valid values are <literal>DEBUG5</literal>, <literal>DEBUG4</literal>,
         <literal>DEBUG3</literal>, <literal>DEBUG2</literal>, <literal>DEBUG1</literal>,
         <literal>INFO</literal>, <literal>NOTICE</literal>, <literal>WARNING</literal>,
@@ -5145,7 +5683,7 @@ local0.*    /var/log/postgresql
         follow it.  The later the level, the fewer messages are sent
         to the log.  The default is <literal>WARNING</literal>.  Note that
         <literal>LOG</literal> has a different rank here than in
-        <varname>client_min_messages</varname>.
+        <xref linkend="guc-client-min-messages"/>.
         Only superusers can change this setting.
        </para>
       </listitem>
@@ -5162,7 +5700,9 @@ local0.*    /var/log/postgresql
         Controls which SQL statements that cause an error
         condition are recorded in the server log.  The current
         SQL statement is included in the log entry for any message of
-        the specified severity or higher.
+        the specified
+        <link linkend="runtime-config-severity-levels">severity</link>
+        or higher.
         Valid values are <literal>DEBUG5</literal>,
         <literal>DEBUG4</literal>, <literal>DEBUG3</literal>,
         <literal>DEBUG2</literal>, <literal>DEBUG1</literal>,
@@ -5189,11 +5729,11 @@ local0.*    /var/log/postgresql
         <para>
          Causes the duration of each completed statement to be logged
          if the statement ran for at least the specified number of
-         milliseconds.  Setting this to zero prints all statement durations.
-         Minus-one (the default) disables logging statement durations.
-         For example, if you set it to <literal>250ms</literal>
-         then all SQL statements that run 250ms or longer will be
-         logged.  Enabling this parameter can be helpful in tracking down
+         milliseconds, modulated by <varname>log_statement_sample_rate</varname>.
+         Setting this to zero prints all statement durations. Minus-one (the default)
+         disables logging statement durations. For example, if you set it to
+         <literal>250ms</literal> then all SQL statements that run 250ms or longer
+         will be logged. Enabling this parameter can be helpful in tracking down
          unoptimized queries in your applications.
          Only superusers can change this setting.
         </para>
@@ -5217,6 +5757,26 @@ local0.*    /var/log/postgresql
          duration message using the process ID or session ID.
         </para>
        </note>
+       </listitem>
+      </varlistentry>
+
+     <varlistentry id="guc-log-statement-sample-rate" xreflabel="log_statement_sample_rate">
+      <term><varname>log_statement_sample_rate</varname> (<type>real</type>)
+      <indexterm>
+       <primary><varname>log_statement_sample_rate</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+       <listitem>
+        <para>
+         Determines the fraction of the statements that exceed
+         <xref linkend="guc-log-min-duration-statement"/> which to log.
+         The default is <literal>1</literal>, meaning log to all such
+         statements.
+         Setting this to zero disables logging, same as setting
+         <varname>log_min_duration_statement</varname>
+         to minus-one. <varname>log_statement_sample_rate</varname>
+         is helpful when the traffic is too high to log all queries.
+        </para>
        </listitem>
       </varlistentry>
 
@@ -6466,6 +7026,32 @@ COPY postgres_log FROM '/full/path/to/logfile.csv' WITH csv;
      <title>Statement Behavior</title>
      <variablelist>
 
+     <varlistentry id="guc-client-min-messages" xreflabel="client_min_messages">
+      <term><varname>client_min_messages</varname> (<type>enum</type>)
+      <indexterm>
+       <primary><varname>client_min_messages</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        Controls which
+        <link linkend="runtime-config-severity-levels">message levels</link>
+        are sent to the client.
+        Valid values are <literal>DEBUG5</literal>,
+        <literal>DEBUG4</literal>, <literal>DEBUG3</literal>, <literal>DEBUG2</literal>,
+        <literal>DEBUG1</literal>, <literal>LOG</literal>, <literal>NOTICE</literal>,
+        <literal>WARNING</literal>, and <literal>ERROR</literal>.
+        Each level includes all the levels that follow it.  The later the level,
+        the fewer messages are sent.  The default is
+        <literal>NOTICE</literal>.  Note that <literal>LOG</literal> has a different
+        rank here than in <xref linkend="guc-log-min-messages"/>.
+       </para>
+       <para>
+        <literal>INFO</literal> level messages are always sent to the client.
+       </para>
+      </listitem>
+     </varlistentry>
+
      <varlistentry id="guc-search-path" xreflabel="search_path">
       <term><varname>search_path</varname> (<type>string</type>)
       <indexterm>
@@ -6494,7 +7080,7 @@ COPY postgres_log FROM '/full/path/to/logfile.csv' WITH csv;
        <para>
         If one of the list items is the special name
         <literal>$user</literal>, then the schema having the name returned by
-        <function>SESSION_USER</function> is substituted, if there is such a schema
+        <function>CURRENT_USER</function> is substituted, if there is such a schema
         and the user has <literal>USAGE</literal> permission for it.
         (If not, <literal>$user</literal> is ignored.)
        </para>
@@ -7582,16 +8168,17 @@ SET XML OPTION { DOCUMENT | CONTENT };
       </term>
       <listitem>
        <para>
-        Determines which JIT provider (see <xref linkend="jit-extensibility"/>) is
-        used. The built-in default is <literal>llvmjit</literal>.
+        This variable is the name of the JIT provider library to be used
+        (see <xref linkend="jit-pluggable"/>).
+        The default is <literal>llvmjit</literal>.
+        This parameter can only be set at server start.
        </para>
+
        <para>
-        If set to a non-existent library <acronym>JIT</acronym> will not be
+        If set to a non-existent library, <acronym>JIT</acronym> will not be
         available, but no error will be raised. This allows JIT support to be
         installed separately from the main
         <productname>PostgreSQL</productname> package.
-
-        This parameter can only be set at server start.
        </para>
       </listitem>
      </varlistentry>
@@ -7893,35 +8480,6 @@ dynamic_library_path = 'C:\tools\postgresql;H:\my_project\lib;$libdir'
       </listitem>
      </varlistentry>
 
-     <varlistentry id="guc-default-with-oids" xreflabel="default_with_oids">
-      <term><varname>default_with_oids</varname> (<type>boolean</type>)
-      <indexterm>
-       <primary><varname>default_with_oids</varname> configuration parameter</primary>
-      </indexterm>
-      </term>
-      <listitem>
-       <para>
-        This controls whether <command>CREATE TABLE</command> and
-        <command>CREATE TABLE AS</command> include an OID column in
-        newly-created tables, if neither <literal>WITH OIDS</literal>
-        nor <literal>WITHOUT OIDS</literal> is specified. It also
-        determines whether OIDs will be included in tables created by
-        <command>SELECT INTO</command>. The parameter is <literal>off</literal>
-        by default; in <productname>PostgreSQL</productname> 8.0 and earlier, it
-        was <literal>on</literal> by default.
-       </para>
-
-       <para>
-        The use of OIDs in user tables is considered deprecated, so
-        most installations should leave this variable disabled.
-        Applications that require OIDs for a particular table should
-        specify <literal>WITH OIDS</literal> when creating the
-        table. This variable can be enabled for compatibility with old
-        applications that do not follow this behavior.
-       </para>
-      </listitem>
-     </varlistentry>
-
      <varlistentry id="guc-escape-string-warning" xreflabel="escape_string_warning">
       <term><varname>escape_string_warning</varname> (<type>boolean</type>)
       <indexterm><primary>strings</primary><secondary>escape warning</secondary></indexterm>
@@ -8130,8 +8688,8 @@ dynamic_library_path = 'C:\tools\postgresql;H:\my_project\lib;$libdir'
       </term>
       <listitem>
        <para>
-        If true, any error will terminate the current session.  By default,
-        this is set to false, so that only FATAL errors will terminate the
+        If on, any error will terminate the current session.  By default,
+        this is set to off, so that only FATAL errors will terminate the
         session.
        </para>
       </listitem>
@@ -8145,13 +8703,45 @@ dynamic_library_path = 'C:\tools\postgresql;H:\my_project\lib;$libdir'
       </term>
       <listitem>
        <para>
-        When set to true, which is the default, <productname>PostgreSQL</productname>
+        When set to on, which is the default, <productname>PostgreSQL</productname>
         will automatically reinitialize after a backend crash.  Leaving this
-        value set to true is normally the best way to maximize the availability
+        value set to on is normally the best way to maximize the availability
         of the database.  However, in some circumstances, such as when
         <productname>PostgreSQL</productname> is being invoked by clusterware, it may be
         useful to disable the restart so that the clusterware can gain
         control and take any actions it deems appropriate.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-data-sync-retry" xreflabel="data_sync_retry">
+      <term><varname>data_sync_retry</varname> (<type>boolean</type>)
+      <indexterm>
+       <primary><varname>data_sync_retry</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        When set to off, which is the default, <productname>PostgreSQL</productname>
+        will raise a PANIC-level error on failure to flush modified data files
+        to the filesystem.  This causes the database server to crash.
+       </para>
+       <para>
+        On some operating systems, the status of data in the kernel's page
+        cache is unknown after a write-back failure.  In some cases it might
+        have been entirely forgotten, making it unsafe to retry; the second
+        attempt may be reported as successful, when in fact the data has been
+        lost.  In these circumstances, the only way to avoid data loss is to
+        recover from the WAL after any failure is reported, preferably
+        after investigating the root cause of the failure and replacing any
+        faulty hardware.
+       </para>
+       <para>
+        If set to on, <productname>PostgreSQL</productname> will instead
+        report an error but continue to run so that the data flushing
+        operation can be retried in a later checkpoint.  Only set it to on
+        after investigating the operating system's treatment of buffered data
+        in case of write-back failure.
        </para>
       </listitem>
      </varlistentry>
@@ -8440,11 +9030,8 @@ dynamic_library_path = 'C:\tools\postgresql;H:\my_project\lib;$libdir'
       </term>
       <listitem>
        <para>
-        Reports the number of blocks (pages) in a WAL segment file.
-        The total size of a WAL segment file in bytes is equal to
-        <varname>wal_segment_size</varname> multiplied by <varname>wal_block_size</varname>;
-        by default this is 16MB.  See <xref linkend="wal-configuration"/> for
-        more information.
+        Reports the size of write ahead log segments.  The default value is
+        16MB. See <xref linkend="wal-configuration"/> for more information.
        </para>
       </listitem>
      </varlistentry>
@@ -8886,9 +9473,8 @@ LOG:  CleanUpLock: deleting: lock(0xb7acd844) id(24688,24696,0,0,0,1)
        <para>
         If LLVM has the required functionality, register generated functions
         with <productname>GDB</productname>.  This makes debugging easier.
-
-        The default setting is <literal>off</literal>, and can only be set at
-        server start.
+        The default setting is <literal>off</literal>.
+        This parameter can only be set at server start.
        </para>
       </listitem>
      </varlistentry>
@@ -8904,9 +9490,8 @@ LOG:  CleanUpLock: deleting: lock(0xb7acd844) id(24688,24696,0,0,0,1)
         Writes the generated <productname>LLVM</productname> IR out to the
         file system, inside <xref linkend="guc-data-directory"/>. This is only
         useful for working on the internals of the JIT implementation.
-
-        The default setting is <literal>off</literal>, and it can only be
-        changed by a superuser.
+        The default setting is <literal>off</literal>.
+        This parameter can only be changed by a superuser.
        </para>
       </listitem>
      </varlistentry>
@@ -8919,8 +9504,8 @@ LOG:  CleanUpLock: deleting: lock(0xb7acd844) id(24688,24696,0,0,0,1)
       </term>
       <listitem>
        <para>
-        Determines whether expressions are JIT compiled, subject to costing
-        decisions (see <xref linkend="jit-decision"/>).  The default is
+        Determines whether expressions are JIT compiled, when JIT compilation
+        is activated (see <xref linkend="jit-decision"/>).  The default is
         <literal>on</literal>.
        </para>
       </listitem>
@@ -8934,13 +9519,12 @@ LOG:  CleanUpLock: deleting: lock(0xb7acd844) id(24688,24696,0,0,0,1)
       </term>
       <listitem>
        <para>
-        If LLVM has the required functionality, emit required data to allow
+        If LLVM has the required functionality, emit the data needed to allow
         <productname>perf</productname> to profile functions generated by JIT.
         This writes out files to <filename>$HOME/.debug/jit/</filename>; the
         user is responsible for performing cleanup when desired.
-
-        The default setting is <literal>off</literal>, and can only be set at
-        server start.
+        The default setting is <literal>off</literal>.
+        This parameter can only be set at server start.
        </para>
       </listitem>
      </varlistentry>
@@ -8953,9 +9537,9 @@ LOG:  CleanUpLock: deleting: lock(0xb7acd844) id(24688,24696,0,0,0,1)
       </term>
       <listitem>
        <para>
-        Determines whether tuple deforming is JIT compiled, subject to costing
-        decisions (see <xref linkend="jit-decision"/>). The default is
-        <literal>on</literal>.
+        Determines whether tuple deforming is JIT compiled, when JIT
+        compilation is activated (see <xref linkend="jit-decision"/>).
+        The default is <literal>on</literal>.
        </para>
       </listitem>
      </varlistentry>

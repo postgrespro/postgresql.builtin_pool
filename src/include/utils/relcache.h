@@ -4,7 +4,7 @@
  *	  Relation descriptor cache definitions.
  *
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/utils/relcache.h
@@ -45,7 +45,6 @@ extern void RelationClose(Relation relation);
 extern List *RelationGetFKeyList(Relation relation);
 extern List *RelationGetIndexList(Relation relation);
 extern List *RelationGetStatExtList(Relation relation);
-extern Oid	RelationGetOidIndex(Relation relation);
 extern Oid	RelationGetPrimaryKeyIndex(Relation relation);
 extern Oid	RelationGetReplicaIndex(Relation relation);
 extern List *RelationGetIndexExpressions(Relation relation);
@@ -53,8 +52,7 @@ extern List *RelationGetIndexPredicate(Relation relation);
 
 typedef enum IndexAttrBitmapKind
 {
-	INDEX_ATTR_BITMAP_HOT,
-	INDEX_ATTR_BITMAP_PROJ,
+	INDEX_ATTR_BITMAP_ALL,
 	INDEX_ATTR_BITMAP_KEY,
 	INDEX_ATTR_BITMAP_PRIMARY_KEY,
 	INDEX_ATTR_BITMAP_IDENTITY_KEY
@@ -69,7 +67,7 @@ extern void RelationGetExclusionInfo(Relation indexRelation,
 						 uint16 **strategies);
 
 extern void RelationSetIndexList(Relation relation,
-					 List *indexIds, Oid oidIndex);
+					 List *indexIds);
 
 extern void RelationInitIndexAccessInfo(Relation relation);
 

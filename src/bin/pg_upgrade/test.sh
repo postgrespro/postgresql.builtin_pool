@@ -6,7 +6,7 @@
 # runs the regression tests (to put in some data), runs pg_dumpall,
 # runs pg_upgrade, runs pg_dumpall again, compares the dumps.
 #
-# Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+# Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
 # Portions Copyright (c) 1994, Regents of the University of California
 
 set -e
@@ -169,7 +169,7 @@ createdb "$dbname1" || createdb_status=$?
 createdb "$dbname2" || createdb_status=$?
 createdb "$dbname3" || createdb_status=$?
 
-if "$MAKE" -C "$oldsrc" installcheck; then
+if "$MAKE" -C "$oldsrc" installcheck-parallel; then
 	oldpgversion=`psql -X -A -t -d regression -c "SHOW server_version_num"`
 
 	# before dumping, get rid of objects not existing in later versions

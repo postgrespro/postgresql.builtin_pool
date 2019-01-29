@@ -9,7 +9,7 @@
  * Shridhar Daithankar <shridhar_daithankar@persistent.co.in>
  *
  * contrib/dblink/dblink.c
- * Copyright (c) 2001-2018, PostgreSQL Global Development Group
+ * Copyright (c) 2001-2019, PostgreSQL Global Development Group
  * ALL RIGHTS RESERVED;
  *
  * Permission to use, copy, modify, and distribute this software and its
@@ -37,7 +37,9 @@
 #include "libpq-fe.h"
 
 #include "access/htup_details.h"
+#include "access/relation.h"
 #include "access/reloptions.h"
+#include "access/table.h"
 #include "catalog/indexing.h"
 #include "catalog/namespace.h"
 #include "catalog/pg_foreign_data_wrapper.h"
@@ -58,7 +60,6 @@
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
-#include "utils/tqual.h"
 #include "utils/varlena.h"
 
 PG_MODULE_MAGIC;
@@ -849,7 +850,7 @@ materializeResult(FunctionCallInfo fcinfo, PGconn *conn, PGresult *res)
 			 * need a tuple descriptor representing one TEXT column to return
 			 * the command status string as our result tuple
 			 */
-			tupdesc = CreateTemplateTupleDesc(1, false);
+			tupdesc = CreateTemplateTupleDesc(1);
 			TupleDescInitEntry(tupdesc, (AttrNumber) 1, "status",
 							   TEXTOID, -1, 0);
 			ntuples = 1;
@@ -1032,7 +1033,7 @@ materializeQueryResult(FunctionCallInfo fcinfo,
 			 * need a tuple descriptor representing one TEXT column to return
 			 * the command status string as our result tuple
 			 */
-			tupdesc = CreateTemplateTupleDesc(1, false);
+			tupdesc = CreateTemplateTupleDesc(1);
 			TupleDescInitEntry(tupdesc, (AttrNumber) 1, "status",
 							   TEXTOID, -1, 0);
 			attinmeta = TupleDescGetAttInMetadata(tupdesc);
@@ -1526,7 +1527,7 @@ dblink_get_pkey(PG_FUNCTION_ARGS)
 		/*
 		 * need a tuple descriptor representing one INT and one TEXT column
 		 */
-		tupdesc = CreateTemplateTupleDesc(2, false);
+		tupdesc = CreateTemplateTupleDesc(2);
 		TupleDescInitEntry(tupdesc, (AttrNumber) 1, "position",
 						   INT4OID, -1, 0);
 		TupleDescInitEntry(tupdesc, (AttrNumber) 2, "colname",
@@ -1904,7 +1905,7 @@ dblink_get_notify(PG_FUNCTION_ARGS)
 	per_query_ctx = rsinfo->econtext->ecxt_per_query_memory;
 	oldcontext = MemoryContextSwitchTo(per_query_ctx);
 
-	tupdesc = CreateTemplateTupleDesc(DBLINK_NOTIFY_COLS, false);
+	tupdesc = CreateTemplateTupleDesc(DBLINK_NOTIFY_COLS);
 	TupleDescInitEntry(tupdesc, (AttrNumber) 1, "notify_name",
 					   TEXTOID, -1, 0);
 	TupleDescInitEntry(tupdesc, (AttrNumber) 2, "be_pid",
@@ -2048,7 +2049,7 @@ get_pkey_attnames(Relation rel, int16 *indnkeyatts)
 	tupdesc = rel->rd_att;
 
 	/* Prepare to scan pg_index for entries having indrelid = this rel. */
-	indexRelation = heap_open(IndexRelationId, AccessShareLock);
+	indexRelation = table_open(IndexRelationId, AccessShareLock);
 	ScanKeyInit(&skey,
 				Anum_pg_index_indrelid,
 				BTEqualStrategyNumber, F_OIDEQ,
@@ -2077,7 +2078,7 @@ get_pkey_attnames(Relation rel, int16 *indnkeyatts)
 	}
 
 	systable_endscan(scan);
-	heap_close(indexRelation, AccessShareLock);
+	table_close(indexRelation, AccessShareLock);
 
 	return result;
 }
@@ -2501,7 +2502,7 @@ get_rel_from_relname(text *relname_text, LOCKMODE lockmode, AclMode aclmode)
 	AclResult	aclresult;
 
 	relvar = makeRangeVarFromNameList(textToQualifiedNameList(relname_text));
-	rel = heap_openrv(relvar, lockmode);
+	rel = table_openrv(relvar, lockmode);
 
 	aclresult = pg_class_aclcheck(RelationGetRelid(rel), GetUserId(),
 								  aclmode);

@@ -4,7 +4,7 @@
  *	  postgres transaction system definitions
  *
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/access/xact.h
@@ -87,17 +87,16 @@ extern int	synchronous_commit;
 extern int	MyXactFlags;
 
 /*
- * XACT_FLAGS_ACCESSEDTEMPREL - set when a temporary relation is accessed. We
- * don't allow PREPARE TRANSACTION in that case.
+ * XACT_FLAGS_ACCESSEDTEMPNAMESPACE - set when a temporary object is accessed.
+ * We don't allow PREPARE TRANSACTION in that case.
  */
-#define XACT_FLAGS_ACCESSEDTEMPREL				(1U << 0)
+#define XACT_FLAGS_ACCESSEDTEMPNAMESPACE		(1U << 0)
 
 /*
  * XACT_FLAGS_ACQUIREDACCESSEXCLUSIVELOCK - records whether the top level xact
  * logged any Access Exclusive Locks.
  */
 #define XACT_FLAGS_ACQUIREDACCESSEXCLUSIVELOCK	(1U << 1)
-
 
 /*
  *	start- and end-of-transaction callbacks for dynamically loaded modules
@@ -359,6 +358,7 @@ extern SubTransactionId GetCurrentSubTransactionId(void);
 extern void MarkCurrentTransactionIdLoggedIfAny(void);
 extern bool SubTransactionIsActive(SubTransactionId subxid);
 extern CommandId GetCurrentCommandId(bool used);
+extern void SetParallelStartTimestamps(TimestampTz xact_ts, TimestampTz stmt_ts);
 extern TimestampTz GetCurrentTransactionStartTimestamp(void);
 extern TimestampTz GetCurrentStatementStartTimestamp(void);
 extern TimestampTz GetCurrentTransactionStopTimestamp(void);

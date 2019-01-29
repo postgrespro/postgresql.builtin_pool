@@ -1,7 +1,7 @@
 /*
  * psql - the PostgreSQL interactive terminal
  *
- * Copyright (c) 2000-2018, PostgreSQL Global Development Group
+ * Copyright (c) 2000-2019, PostgreSQL Global Development Group
  *
  * src/bin/psql/help.c
  */
@@ -68,7 +68,7 @@ usage(unsigned short int pager)
 	 * Keep this line count in sync with the number of lines printed below!
 	 * Use "psql --help=options | wc" to count correctly.
 	 */
-	output = PageOutput(61, pager ? &(pset.popt.topt) : NULL);
+	output = PageOutput(62, pager ? &(pset.popt.topt) : NULL);
 
 	fprintf(output, _("psql is the PostgreSQL interactive terminal.\n\n"));
 	fprintf(output, _("Usage:\n"));
@@ -108,6 +108,7 @@ usage(unsigned short int pager)
 
 	fprintf(output, _("\nOutput format options:\n"));
 	fprintf(output, _("  -A, --no-align           unaligned table output mode\n"));
+	fprintf(output, _("      --csv                CSV (Comma-Separated Values) table output mode\n"));
 	fprintf(output, _("  -F, --field-separator=STRING\n"
 					  "                           field separator for unaligned output (default: \"%s\")\n"),
 			DEFAULT_FIELD_SEP);
@@ -143,7 +144,7 @@ usage(unsigned short int pager)
 	fprintf(output, _("\nFor more information, type \"\\?\" (for internal commands) or \"\\help\" (for SQL\n"
 					  "commands) from within psql, or consult the psql section in the PostgreSQL\n"
 					  "documentation.\n\n"));
-	fprintf(output, _("Report bugs to <pgsql-bugs@postgresql.org>.\n"));
+	fprintf(output, _("Report bugs to <pgsql-bugs@lists.postgresql.org>.\n"));
 
 	ClosePager(output);
 }
@@ -167,7 +168,7 @@ slashUsage(unsigned short int pager)
 	 * Use "psql --help=commands | wc" to count correctly.  It's okay to count
 	 * the USE_READLINE line even in builds without that.
 	 */
-	output = PageOutput(125, pager ? &(pset.popt.topt) : NULL);
+	output = PageOutput(126, pager ? &(pset.popt.topt) : NULL);
 
 	fprintf(output, _("General\n"));
 	fprintf(output, _("  \\copyright             show PostgreSQL usage and distribution terms\n"));
@@ -272,11 +273,12 @@ slashUsage(unsigned short int pager)
 	fprintf(output, _("  \\H                     toggle HTML output mode (currently %s)\n"),
 			ON(pset.popt.topt.format == PRINT_HTML));
 	fprintf(output, _("  \\pset [NAME [VALUE]]   set table output option\n"
-					  "                         (NAME := {border|columns|expanded|fieldsep|fieldsep_zero|\n"
-					  "                         footer|format|linestyle|null|numericlocale|pager|\n"
-					  "                         pager_min_lines|recordsep|recordsep_zero|tableattr|title|\n"
-					  "                         tuples_only|unicode_border_linestyle|\n"
-					  "                         unicode_column_linestyle|unicode_header_linestyle})\n"));
+					  "                         (border|columns|csv_fieldsep|expanded|fieldsep|\n"
+					  "                         fieldsep_zero|footer|format|linestyle|null|\n"
+					  "                         numericlocale|pager|pager_min_lines|recordsep|\n"
+					  "                         recordsep_zero|tableattr|title|tuples_only|\n"
+					  "                         unicode_border_linestyle|unicode_column_linestyle|\n"
+					  "                         unicode_header_linestyle)\n"));
 	fprintf(output, _("  \\t [on|off]            show only rows (currently %s)\n"),
 			ON(pset.popt.topt.tuples_only));
 	fprintf(output, _("  \\T [STRING]            set HTML <table> tag attributes, or unset if none\n"));
@@ -369,7 +371,7 @@ helpVariables(unsigned short int pager)
 	fprintf(output, _("  HISTFILE\n"
 					  "    file name used to store the command history\n"));
 	fprintf(output, _("  HISTSIZE\n"
-					  "    max number of commands to store in the command history\n"));
+					  "    maximum number of commands to store in the command history\n"));
 	fprintf(output, _("  HOST\n"
 					  "    the currently connected database server host\n"));
 	fprintf(output, _("  IGNOREEOF\n"
@@ -653,7 +655,7 @@ print_copyright(void)
 	puts(
 		 "PostgreSQL Database Management System\n"
 		 "(formerly known as Postgres, then as Postgres95)\n\n"
-		 "Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group\n\n"
+		 "Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group\n\n"
 		 "Portions Copyright (c) 1994, The Regents of the University of California\n\n"
 		 "Permission to use, copy, modify, and distribute this software and its\n"
 		 "documentation for any purpose, without fee, and without a written agreement\n"

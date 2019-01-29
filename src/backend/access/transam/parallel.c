@@ -3,7 +3,7 @@
  * parallel.c
  *	  Infrastructure for launching parallel workers
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -19,6 +19,7 @@
 #include "access/session.h"
 #include "access/xact.h"
 #include "access/xlog.h"
+#include "catalog/pg_enum.h"
 #include "catalog/index.h"
 #include "catalog/namespace.h"
 #include "commands/async.h"
@@ -37,6 +38,7 @@
 #include "utils/guc.h"
 #include "utils/inval.h"
 #include "utils/memutils.h"
+#include "utils/relmapper.h"
 #include "utils/snapmgr.h"
 #include "utils/typcache.h"
 
@@ -69,6 +71,8 @@
 #define PARALLEL_KEY_ENTRYPOINT				UINT64CONST(0xFFFFFFFFFFFF0009)
 #define PARALLEL_KEY_SESSION_DSM			UINT64CONST(0xFFFFFFFFFFFF000A)
 #define PARALLEL_KEY_REINDEX_STATE			UINT64CONST(0xFFFFFFFFFFFF000B)
+#define PARALLEL_KEY_RELMAPPER_STATE		UINT64CONST(0xFFFFFFFFFFFF000C)
+#define PARALLEL_KEY_ENUMBLACKLIST			UINT64CONST(0xFFFFFFFFFFFF000D)
 
 /* Fixed-size parallel state. */
 typedef struct FixedParallelState
@@ -85,6 +89,8 @@ typedef struct FixedParallelState
 	PGPROC	   *parallel_master_pgproc;
 	pid_t		parallel_master_pid;
 	BackendId	parallel_master_backend_id;
+	TimestampTz xact_ts;
+	TimestampTz stmt_ts;
 
 	/* Mutex protects remaining fields. */
 	slock_t		mutex;
@@ -205,6 +211,8 @@ InitializeParallelDSM(ParallelContext *pcxt)
 	Size		asnaplen = 0;
 	Size		tstatelen = 0;
 	Size		reindexlen = 0;
+	Size		relmapperlen = 0;
+	Size		enumblacklistlen = 0;
 	Size		segsize = 0;
 	int			i;
 	FixedParallelState *fps;
@@ -256,8 +264,12 @@ InitializeParallelDSM(ParallelContext *pcxt)
 		shm_toc_estimate_chunk(&pcxt->estimator, sizeof(dsm_handle));
 		reindexlen = EstimateReindexStateSpace();
 		shm_toc_estimate_chunk(&pcxt->estimator, reindexlen);
+		relmapperlen = EstimateRelationMapSpace();
+		shm_toc_estimate_chunk(&pcxt->estimator, relmapperlen);
+		enumblacklistlen = EstimateEnumBlacklistSpace();
+		shm_toc_estimate_chunk(&pcxt->estimator, enumblacklistlen);
 		/* If you add more chunks here, you probably need to add keys. */
-		shm_toc_estimate_keys(&pcxt->estimator, 8);
+		shm_toc_estimate_keys(&pcxt->estimator, 10);
 
 		/* Estimate space need for error queues. */
 		StaticAssertStmt(BUFFERALIGN(PARALLEL_ERROR_QUEUE_SIZE) ==
@@ -313,6 +325,8 @@ InitializeParallelDSM(ParallelContext *pcxt)
 	fps->parallel_master_pgproc = MyProc;
 	fps->parallel_master_pid = MyProcPid;
 	fps->parallel_master_backend_id = MyBackendId;
+	fps->xact_ts = GetCurrentTransactionStartTimestamp();
+	fps->stmt_ts = GetCurrentStatementStartTimestamp();
 	SpinLockInit(&fps->mutex);
 	fps->last_xlog_end = 0;
 	shm_toc_insert(pcxt->toc, PARALLEL_KEY_FIXED, fps);
@@ -327,9 +341,11 @@ InitializeParallelDSM(ParallelContext *pcxt)
 		char	   *asnapspace;
 		char	   *tstatespace;
 		char	   *reindexspace;
+		char	   *relmapperspace;
 		char	   *error_queue_space;
 		char	   *session_dsm_handle_space;
 		char	   *entrypointstate;
+		char	   *enumblacklistspace;
 		Size		lnamelen;
 
 		/* Serialize shared libraries we have loaded. */
@@ -372,6 +388,18 @@ InitializeParallelDSM(ParallelContext *pcxt)
 		reindexspace = shm_toc_allocate(pcxt->toc, reindexlen);
 		SerializeReindexState(reindexlen, reindexspace);
 		shm_toc_insert(pcxt->toc, PARALLEL_KEY_REINDEX_STATE, reindexspace);
+
+		/* Serialize relmapper state. */
+		relmapperspace = shm_toc_allocate(pcxt->toc, relmapperlen);
+		SerializeRelationMap(relmapperlen, relmapperspace);
+		shm_toc_insert(pcxt->toc, PARALLEL_KEY_RELMAPPER_STATE,
+					   relmapperspace);
+
+		/* Serialize enum blacklist state. */
+		enumblacklistspace = shm_toc_allocate(pcxt->toc, enumblacklistlen);
+		SerializeEnumBlacklist(enumblacklistspace, enumblacklistlen);
+		shm_toc_insert(pcxt->toc, PARALLEL_KEY_ENUMBLACKLIST,
+					   enumblacklistspace);
 
 		/* Allocate space for worker information. */
 		pcxt->worker = palloc0(sizeof(ParallelWorkerInfo) * pcxt->nworkers);
@@ -664,12 +692,8 @@ WaitForParallelWorkersToAttach(ParallelContext *pcxt)
 				 * just end up waiting for the same worker again.
 				 */
 				rc = WaitLatch(MyLatch,
-							   WL_LATCH_SET | WL_POSTMASTER_DEATH,
+							   WL_LATCH_SET | WL_EXIT_ON_PM_DEATH,
 							   -1, WAIT_EVENT_BGWORKER_STARTUP);
-
-				/* emergency bailout if postmaster has died */
-				if (rc & WL_POSTMASTER_DEATH)
-					proc_exit(1);
 
 				if (rc & WL_LATCH_SET)
 					ResetLatch(MyLatch);
@@ -787,8 +811,8 @@ WaitForParallelWorkersToFinish(ParallelContext *pcxt)
 			}
 		}
 
-		WaitLatch(MyLatch, WL_LATCH_SET, -1,
-				  WAIT_EVENT_PARALLEL_FINISH);
+		(void) WaitLatch(MyLatch, WL_LATCH_SET | WL_EXIT_ON_PM_DEATH, -1,
+						 WAIT_EVENT_PARALLEL_FINISH);
 		ResetLatch(MyLatch);
 	}
 
@@ -1205,6 +1229,8 @@ ParallelWorkerMain(Datum main_arg)
 	char	   *asnapspace;
 	char	   *tstatespace;
 	char	   *reindexspace;
+	char	   *relmapperspace;
+	char	   *enumblacklistspace;
 	StringInfoData msgbuf;
 	char	   *session_dsm_handle_space;
 
@@ -1299,12 +1325,11 @@ ParallelWorkerMain(Datum main_arg)
 		return;
 
 	/*
-	 * Load libraries that were loaded by original backend.  We want to do
-	 * this before restoring GUCs, because the libraries might define custom
-	 * variables.
+	 * Restore transaction and statement start-time timestamps.  This must
+	 * happen before anything that would start a transaction, else asserts in
+	 * xact.c will fire.
 	 */
-	libraryspace = shm_toc_lookup(toc, PARALLEL_KEY_LIBRARY, false);
-	RestoreLibraryState(libraryspace);
+	SetParallelStartTimestamps(fps->xact_ts, fps->stmt_ts);
 
 	/*
 	 * Identify the entry point to be called.  In theory this could result in
@@ -1328,9 +1353,17 @@ ParallelWorkerMain(Datum main_arg)
 	 */
 	SetClientEncoding(GetDatabaseEncoding());
 
+	/*
+	 * Load libraries that were loaded by original backend.  We want to do
+	 * this before restoring GUCs, because the libraries might define custom
+	 * variables.
+	 */
+	libraryspace = shm_toc_lookup(toc, PARALLEL_KEY_LIBRARY, false);
+	StartTransactionCommand();
+	RestoreLibraryState(libraryspace);
+
 	/* Restore GUC values from launching backend. */
 	gucspace = shm_toc_lookup(toc, PARALLEL_KEY_GUC, false);
-	StartTransactionCommand();
 	RestoreGUCState(gucspace);
 	CommitTransactionCommand();
 
@@ -1379,6 +1412,15 @@ ParallelWorkerMain(Datum main_arg)
 	/* Restore reindex state. */
 	reindexspace = shm_toc_lookup(toc, PARALLEL_KEY_REINDEX_STATE, false);
 	RestoreReindexState(reindexspace);
+
+	/* Restore relmapper state. */
+	relmapperspace = shm_toc_lookup(toc, PARALLEL_KEY_RELMAPPER_STATE, false);
+	RestoreRelationMap(relmapperspace);
+
+	/* Restore enum blacklist. */
+	enumblacklistspace = shm_toc_lookup(toc, PARALLEL_KEY_ENUMBLACKLIST,
+										false);
+	RestoreEnumBlacklist(enumblacklistspace);
 
 	/*
 	 * We've initialized all of our state now; nothing should change

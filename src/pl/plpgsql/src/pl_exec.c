@@ -3,7 +3,7 @@
  * pl_exec.c		- Executor for the PL/pgSQL
  *			  procedural language
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -30,6 +30,7 @@
 #include "funcapi.h"
 #include "miscadmin.h"
 #include "nodes/nodeFuncs.h"
+#include "optimizer/clauses.h"
 #include "optimizer/planner.h"
 #include "parser/parse_coerce.h"
 #include "parser/scansup.h"
@@ -151,6 +152,7 @@ typedef struct					/* cast_hash table entry */
 {
 	plpgsql_CastHashKey key;	/* hash key --- MUST BE FIRST */
 	Expr	   *cast_expr;		/* cast expression, or NULL if no-op cast */
+	CachedExpression *cast_cexpr;	/* cached expression backing the above */
 	/* ExprState is valid only when cast_lxid matches current LXID */
 	ExprState  *cast_exprstate; /* expression's eval tree */
 	bool		cast_in_use;	/* true while we're executing eval tree */
@@ -489,8 +491,8 @@ plpgsql_exec_function(PLpgSQL_function *func, FunctionCallInfo fcinfo,
 					PLpgSQL_var *var = (PLpgSQL_var *) estate.datums[n];
 
 					assign_simple_var(&estate, var,
-									  fcinfo->arg[i],
-									  fcinfo->argnull[i],
+									  fcinfo->args[i].value,
+									  fcinfo->args[i].isnull,
 									  false);
 
 					/*
@@ -541,12 +543,12 @@ plpgsql_exec_function(PLpgSQL_function *func, FunctionCallInfo fcinfo,
 				{
 					PLpgSQL_rec *rec = (PLpgSQL_rec *) estate.datums[n];
 
-					if (!fcinfo->argnull[i])
+					if (!fcinfo->args[i].isnull)
 					{
 						/* Assign row value from composite datum */
 						exec_move_row_from_datum(&estate,
 												 (PLpgSQL_variable *) rec,
-												 fcinfo->arg[i]);
+												 fcinfo->args[i].value);
 					}
 					else
 					{
@@ -583,7 +585,7 @@ plpgsql_exec_function(PLpgSQL_function *func, FunctionCallInfo fcinfo,
 	 */
 	estate.err_text = NULL;
 	estate.err_stmt = (PLpgSQL_stmt *) (func->action);
-	rc = exec_stmt_block(&estate, func->action);
+	rc = exec_stmt(&estate, (PLpgSQL_stmt *) func->action);
 	if (rc != PLPGSQL_RC_RETURN)
 	{
 		estate.err_stmt = NULL;
@@ -798,7 +800,7 @@ coerce_function_result_tuple(PLpgSQL_execstate *estate, TupleDesc tupdesc)
 		{
 			rettup = expanded_record_get_tuple(erh);
 			Assert(rettup);
-			rettup = do_convert_tuple(rettup, tupmap);
+			rettup = execute_attr_map_tuple(rettup, tupmap);
 
 			/*
 			 * Copy tuple to upper executor memory, as a tuple Datum.  Make
@@ -834,7 +836,7 @@ coerce_function_result_tuple(PLpgSQL_execstate *estate, TupleDesc tupdesc)
 
 		/* it might need conversion */
 		if (tupmap)
-			rettup = do_convert_tuple(rettup, tupmap);
+			rettup = execute_attr_map_tuple(rettup, tupmap);
 
 		/*
 		 * Copy tuple to upper executor memory, as a tuple Datum.  Make sure
@@ -889,11 +891,12 @@ plpgsql_exec_trigger(PLpgSQL_function *func,
 	/*
 	 * Put the OLD and NEW tuples into record variables
 	 *
-	 * We make the tupdescs available in both records even though only one may
-	 * have a value.  This allows parsing of record references to succeed in
-	 * functions that are used for multiple trigger types.  For example, we
-	 * might have a test like "if (TG_OP = 'INSERT' and NEW.foo = 'xyz')",
-	 * which should parse regardless of the current trigger type.
+	 * We set up expanded records for both variables even though only one may
+	 * have a value.  This allows record references to succeed in functions
+	 * that are used for multiple trigger types.  For example, we might have a
+	 * test like "if (TG_OP = 'INSERT' and NEW.foo = 'xyz')", which should
+	 * work regardless of the current trigger type.  If a value is actually
+	 * fetched from an unsupplied tuple, it will read as NULL.
 	 */
 	tupdesc = RelationGetDescr(trigdata->tg_relation);
 
@@ -953,7 +956,7 @@ plpgsql_exec_trigger(PLpgSQL_function *func,
 	 */
 	estate.err_text = NULL;
 	estate.err_stmt = (PLpgSQL_stmt *) (func->action);
-	rc = exec_stmt_block(&estate, func->action);
+	rc = exec_stmt(&estate, (PLpgSQL_stmt *) func->action);
 	if (rc != PLPGSQL_RC_RETURN)
 	{
 		estate.err_stmt = NULL;
@@ -1011,7 +1014,7 @@ plpgsql_exec_trigger(PLpgSQL_function *func,
 													gettext_noop("returned row structure does not match the structure of the triggering table"));
 				/* it might need conversion */
 				if (tupmap)
-					rettup = do_convert_tuple(rettup, tupmap);
+					rettup = execute_attr_map_tuple(rettup, tupmap);
 				/* no need to free map, we're about to return anyway */
 			}
 
@@ -1039,7 +1042,7 @@ plpgsql_exec_trigger(PLpgSQL_function *func,
 												gettext_noop("returned row structure does not match the structure of the triggering table"));
 			/* it might need conversion */
 			if (tupmap)
-				rettup = do_convert_tuple(rettup, tupmap);
+				rettup = execute_attr_map_tuple(rettup, tupmap);
 
 			ReleaseTupleDesc(retdesc);
 			/* no need to free map, we're about to return anyway */
@@ -1114,7 +1117,7 @@ plpgsql_exec_event_trigger(PLpgSQL_function *func, EventTriggerData *trigdata)
 	 */
 	estate.err_text = NULL;
 	estate.err_stmt = (PLpgSQL_stmt *) (func->action);
-	rc = exec_stmt_block(&estate, func->action);
+	rc = exec_stmt(&estate, (PLpgSQL_stmt *) func->action);
 	if (rc != PLPGSQL_RC_RETURN)
 	{
 		estate.err_stmt = NULL;
@@ -2071,47 +2074,166 @@ static int
 exec_stmt_call(PLpgSQL_execstate *estate, PLpgSQL_stmt_call *stmt)
 {
 	PLpgSQL_expr *expr = stmt->expr;
-	SPIPlanPtr	plan;
-	ParamListInfo paramLI;
-	LocalTransactionId before_lxid;
+	volatile LocalTransactionId before_lxid;
 	LocalTransactionId after_lxid;
-	bool		pushed_active_snap = false;
-	int			rc;
+	volatile bool pushed_active_snap = false;
+	volatile int rc;
 
-	if (expr->plan == NULL)
-	{
-		/*
-		 * Don't save the plan if not in atomic context.  Otherwise,
-		 * transaction ends would cause errors about plancache leaks.  XXX
-		 * This would be fixable with some plancache/resowner surgery
-		 * elsewhere, but for now we'll just work around this here.
-		 */
-		exec_prepare_plan(estate, expr, 0, estate->atomic);
-
-		/*
-		 * The procedure call could end transactions, which would upset the
-		 * snapshot management in SPI_execute*, so don't let it do it.
-		 * Instead, we set the snapshots ourselves below.
-		 */
-		expr->plan->no_snapshots = true;
-	}
-
-	paramLI = setup_param_list(estate, expr);
-
-	before_lxid = MyProc->lxid;
-
-	/*
-	 * Set snapshot only for non-read-only procedures, similar to SPI
-	 * behavior.
-	 */
-	if (!estate->readonly_func)
-	{
-		PushActiveSnapshot(GetTransactionSnapshot());
-		pushed_active_snap = true;
-	}
-
+	/* PG_TRY to ensure we clear the plan link, if needed, on failure */
 	PG_TRY();
 	{
+		SPIPlanPtr	plan = expr->plan;
+		ParamListInfo paramLI;
+
+		if (plan == NULL)
+		{
+
+			/*
+			 * Don't save the plan if not in atomic context.  Otherwise,
+			 * transaction ends would cause errors about plancache leaks.
+			 *
+			 * XXX This would be fixable with some plancache/resowner surgery
+			 * elsewhere, but for now we'll just work around this here.
+			 */
+			exec_prepare_plan(estate, expr, 0, estate->atomic);
+
+			/*
+			 * The procedure call could end transactions, which would upset
+			 * the snapshot management in SPI_execute*, so don't let it do it.
+			 * Instead, we set the snapshots ourselves below.
+			 */
+			plan = expr->plan;
+			plan->no_snapshots = true;
+
+			/*
+			 * Force target to be recalculated whenever the plan changes, in
+			 * case the procedure's argument list has changed.
+			 */
+			stmt->target = NULL;
+		}
+
+		/*
+		 * We construct a DTYPE_ROW datum representing the plpgsql variables
+		 * associated with the procedure's output arguments.  Then we can use
+		 * exec_move_row() to do the assignments.
+		 */
+		if (stmt->is_call && stmt->target == NULL)
+		{
+			Node	   *node;
+			FuncExpr   *funcexpr;
+			HeapTuple	func_tuple;
+			List	   *funcargs;
+			Oid		   *argtypes;
+			char	  **argnames;
+			char	   *argmodes;
+			MemoryContext oldcontext;
+			PLpgSQL_row *row;
+			int			nfields;
+			int			i;
+			ListCell   *lc;
+
+			/*
+			 * Get the parsed CallStmt, and look up the called procedure
+			 */
+			node = linitial_node(Query,
+								 ((CachedPlanSource *) linitial(plan->plancache_list))->query_list)->utilityStmt;
+			if (node == NULL || !IsA(node, CallStmt))
+				elog(ERROR, "query for CALL statement is not a CallStmt");
+
+			funcexpr = ((CallStmt *) node)->funcexpr;
+
+			func_tuple = SearchSysCache1(PROCOID,
+										 ObjectIdGetDatum(funcexpr->funcid));
+			if (!HeapTupleIsValid(func_tuple))
+				elog(ERROR, "cache lookup failed for function %u",
+					 funcexpr->funcid);
+
+			/*
+			 * Extract function arguments, and expand any named-arg notation
+			 */
+			funcargs = expand_function_arguments(funcexpr->args,
+												 funcexpr->funcresulttype,
+												 func_tuple);
+
+			/*
+			 * Get the argument names and modes, too
+			 */
+			get_func_arg_info(func_tuple, &argtypes, &argnames, &argmodes);
+
+			ReleaseSysCache(func_tuple);
+
+			/*
+			 * Begin constructing row Datum
+			 */
+			oldcontext = MemoryContextSwitchTo(estate->func->fn_cxt);
+
+			row = (PLpgSQL_row *) palloc0(sizeof(PLpgSQL_row));
+			row->dtype = PLPGSQL_DTYPE_ROW;
+			row->refname = "(unnamed row)";
+			row->lineno = -1;
+			row->varnos = (int *) palloc(sizeof(int) * list_length(funcargs));
+
+			MemoryContextSwitchTo(oldcontext);
+
+			/*
+			 * Examine procedure's argument list.  Each output arg position
+			 * should be an unadorned plpgsql variable (Datum), which we can
+			 * insert into the row Datum.
+			 */
+			nfields = 0;
+			i = 0;
+			foreach(lc, funcargs)
+			{
+				Node	   *n = lfirst(lc);
+
+				if (argmodes &&
+					(argmodes[i] == PROARGMODE_INOUT ||
+					 argmodes[i] == PROARGMODE_OUT))
+				{
+					if (IsA(n, Param))
+					{
+						Param	   *param = (Param *) n;
+
+						/* paramid is offset by 1 (see make_datum_param()) */
+						row->varnos[nfields++] = param->paramid - 1;
+					}
+					else
+					{
+						/* report error using parameter name, if available */
+						if (argnames && argnames[i] && argnames[i][0])
+							ereport(ERROR,
+									(errcode(ERRCODE_SYNTAX_ERROR),
+									 errmsg("procedure parameter \"%s\" is an output parameter but corresponding argument is not writable",
+											argnames[i])));
+						else
+							ereport(ERROR,
+									(errcode(ERRCODE_SYNTAX_ERROR),
+									 errmsg("procedure parameter %d is an output parameter but corresponding argument is not writable",
+											i + 1)));
+					}
+				}
+				i++;
+			}
+
+			row->nfields = nfields;
+
+			stmt->target = (PLpgSQL_variable *) row;
+		}
+
+		paramLI = setup_param_list(estate, expr);
+
+		before_lxid = MyProc->lxid;
+
+		/*
+		 * Set snapshot only for non-read-only procedures, similar to SPI
+		 * behavior.
+		 */
+		if (!estate->readonly_func)
+		{
+			PushActiveSnapshot(GetTransactionSnapshot());
+			pushed_active_snap = true;
+		}
+
 		rc = SPI_execute_plan_with_paramlist(expr->plan, paramLI,
 											 estate->readonly_func, 0);
 	}
@@ -2127,16 +2249,14 @@ exec_stmt_call(PLpgSQL_execstate *estate, PLpgSQL_stmt_call *stmt)
 	}
 	PG_END_TRY();
 
-	plan = expr->plan;
-
 	if (expr->plan && !expr->plan->saved)
 		expr->plan = NULL;
-
-	after_lxid = MyProc->lxid;
 
 	if (rc < 0)
 		elog(ERROR, "SPI_execute_plan_with_paramlist failed executing query \"%s\": %s",
 			 expr->query, SPI_result_code_string(rc));
+
+	after_lxid = MyProc->lxid;
 
 	if (before_lxid == after_lxid)
 	{
@@ -2158,104 +2278,16 @@ exec_stmt_call(PLpgSQL_execstate *estate, PLpgSQL_stmt_call *stmt)
 		plpgsql_create_econtext(estate);
 	}
 
+	/*
+	 * Check result rowcount; if there's one row, assign procedure's output
+	 * values back to the appropriate variables.
+	 */
 	if (SPI_processed == 1)
 	{
 		SPITupleTable *tuptab = SPI_tuptable;
 
-		/*
-		 * Construct a dummy target row based on the output arguments of the
-		 * procedure call.
-		 */
 		if (!stmt->target)
-		{
-			Node	   *node;
-			ListCell   *lc;
-			FuncExpr   *funcexpr;
-			int			i;
-			HeapTuple	tuple;
-			Oid		   *argtypes;
-			char	  **argnames;
-			char	   *argmodes;
-			MemoryContext oldcontext;
-			PLpgSQL_row *row;
-			int			nfields;
-
-			/*
-			 * Get the original CallStmt
-			 */
-			node = linitial_node(Query, ((CachedPlanSource *) linitial(plan->plancache_list))->query_list)->utilityStmt;
-			if (!IsA(node, CallStmt))
-				elog(ERROR, "returned row from not a CallStmt");
-
-			funcexpr = castNode(CallStmt, node)->funcexpr;
-
-			/*
-			 * Get the argument modes
-			 */
-			tuple = SearchSysCache1(PROCOID, ObjectIdGetDatum(funcexpr->funcid));
-			if (!HeapTupleIsValid(tuple))
-				elog(ERROR, "cache lookup failed for function %u", funcexpr->funcid);
-			get_func_arg_info(tuple, &argtypes, &argnames, &argmodes);
-			ReleaseSysCache(tuple);
-
-			/*
-			 * Construct row
-			 */
-			oldcontext = MemoryContextSwitchTo(estate->func->fn_cxt);
-
-			row = palloc0(sizeof(*row));
-			row->dtype = PLPGSQL_DTYPE_ROW;
-			row->lineno = -1;
-			row->varnos = palloc(sizeof(int) * FUNC_MAX_ARGS);
-
-			nfields = 0;
-			i = 0;
-			foreach(lc, funcexpr->args)
-			{
-				Node	   *n = lfirst(lc);
-
-				if (argmodes && argmodes[i] == PROARGMODE_INOUT)
-				{
-					if (IsA(n, Param))
-					{
-						Param	   *param = castNode(Param, n);
-
-						/* paramid is offset by 1 (see make_datum_param()) */
-						row->varnos[nfields++] = param->paramid - 1;
-					}
-					else if (IsA(n, NamedArgExpr))
-					{
-						NamedArgExpr *nexpr = castNode(NamedArgExpr, n);
-						Param	   *param;
-
-						if (!IsA(nexpr->arg, Param))
-							ereport(ERROR,
-									(errcode(ERRCODE_SYNTAX_ERROR),
-									 errmsg("argument %d is an output argument but is not writable", i + 1)));
-
-						param = castNode(Param, nexpr->arg);
-
-						/*
-						 * Named arguments must be after positional arguments,
-						 * so we can increase nfields.
-						 */
-						row->varnos[nexpr->argnumber] = param->paramid - 1;
-						nfields++;
-					}
-					else
-						ereport(ERROR,
-								(errcode(ERRCODE_SYNTAX_ERROR),
-								 errmsg("argument %d is an output argument but is not writable", i + 1)));
-				}
-				i++;
-			}
-
-			row->nfields = nfields;
-
-			MemoryContextSwitchTo(oldcontext);
-
-			stmt->target = (PLpgSQL_variable *) row;
-		}
+			elog(ERROR, "DO statement returned a row");
 
 		exec_move_row(estate, stmt->target, tuptab->vals[0], tuptab->tupdesc);
 	}
@@ -2300,12 +2332,6 @@ exec_stmt_getdiag(PLpgSQL_execstate *estate, PLpgSQL_stmt_getdiag *stmt)
 				exec_assign_value(estate, var,
 								  UInt64GetDatum(estate->eval_processed),
 								  false, INT8OID, -1);
-				break;
-
-			case PLPGSQL_GETDIAG_RESULT_OID:
-				exec_assign_value(estate, var,
-								  ObjectIdGetDatum(estate->eval_lastoid),
-								  false, OIDOID, -1);
 				break;
 
 			case PLPGSQL_GETDIAG_ERROR_CONTEXT:
@@ -3292,7 +3318,7 @@ exec_stmt_return_next(PLpgSQL_execstate *estate,
 														gettext_noop("wrong record type supplied in RETURN NEXT"));
 					tuple = expanded_record_get_tuple(rec->erh);
 					if (tupmap)
-						tuple = do_convert_tuple(tuple, tupmap);
+						tuple = execute_attr_map_tuple(tuple, tupmap);
 					tuplestore_puttuple(estate->tuple_store, tuple);
 					MemoryContextSwitchTo(oldcontext);
 				}
@@ -3355,7 +3381,7 @@ exec_stmt_return_next(PLpgSQL_execstate *estate,
 				tupmap = convert_tuples_by_position(retvaldesc, tupdesc,
 													gettext_noop("returned record type does not match expected record type"));
 				if (tupmap)
-					tuple = do_convert_tuple(tuple, tupmap);
+					tuple = execute_attr_map_tuple(tuple, tupmap);
 				tuplestore_puttuple(estate->tuple_store, tuple);
 				ReleaseTupleDesc(retvaldesc);
 				MemoryContextSwitchTo(oldcontext);
@@ -3471,7 +3497,7 @@ exec_stmt_return_query(PLpgSQL_execstate *estate,
 			HeapTuple	tuple = SPI_tuptable->vals[i];
 
 			if (tupmap)
-				tuple = do_convert_tuple(tuple, tupmap);
+				tuple = execute_attr_map_tuple(tuple, tupmap);
 			tuplestore_puttuple(estate->tuple_store, tuple);
 			if (tupmap)
 				heap_freetuple(tuple);
@@ -3906,7 +3932,6 @@ plpgsql_estate_setup(PLpgSQL_execstate *estate,
 
 	estate->eval_tuptable = NULL;
 	estate->eval_processed = 0;
-	estate->eval_lastoid = InvalidOid;
 	estate->eval_econtext = NULL;
 
 	estate->err_stmt = NULL;
@@ -4150,7 +4175,6 @@ exec_stmt_execsql(PLpgSQL_execstate *estate,
 
 	/* All variants should save result info for GET DIAGNOSTICS */
 	estate->eval_processed = SPI_processed;
-	estate->eval_lastoid = SPI_lastoid;
 
 	/* Process INTO if present */
 	if (stmt->into)
@@ -4210,7 +4234,7 @@ exec_stmt_execsql(PLpgSQL_execstate *estate,
 						(errcode(ERRCODE_TOO_MANY_ROWS),
 						 errmsg("query returned more than one row"),
 						 errdetail ? errdetail_internal("parameters: %s", errdetail) : 0,
-						 errhint("Make sure the query returns a single row, or use LIMIT 1")));
+						 errhint("Make sure the query returns a single row, or use LIMIT 1.")));
 			}
 			/* Put the first result row into the target */
 			exec_move_row(estate, target, tuptab->vals[0], tuptab->tupdesc);
@@ -4341,7 +4365,6 @@ exec_stmt_dynexecute(PLpgSQL_execstate *estate,
 
 	/* Save result info for GET DIAGNOSTICS */
 	estate->eval_processed = SPI_processed;
-	estate->eval_lastoid = SPI_lastoid;
 
 	/* Process INTO if present */
 	if (stmt->into)
@@ -5811,7 +5834,6 @@ exec_run_select(PLpgSQL_execstate *estate,
 	Assert(estate->eval_tuptable == NULL);
 	estate->eval_tuptable = SPI_tuptable;
 	estate->eval_processed = SPI_processed;
-	estate->eval_lastoid = SPI_lastoid;
 
 	return rc;
 }
@@ -7590,18 +7612,34 @@ get_cast_hashentry(PLpgSQL_execstate *estate,
 	cast_key.dsttypmod = dsttypmod;
 	cast_entry = (plpgsql_CastHashEntry *) hash_search(estate->cast_hash,
 													   (void *) &cast_key,
-													   HASH_FIND, NULL);
+													   HASH_ENTER, &found);
+	if (!found)					/* initialize if new entry */
+		cast_entry->cast_cexpr = NULL;
 
-	if (cast_entry == NULL)
+	if (cast_entry->cast_cexpr == NULL ||
+		!cast_entry->cast_cexpr->is_valid)
 	{
-		/* We've not looked up this coercion before */
+		/*
+		 * We've not looked up this coercion before, or we have but the cached
+		 * expression has been invalidated.
+		 */
 		Node	   *cast_expr;
+		CachedExpression *cast_cexpr;
 		CaseTestExpr *placeholder;
+
+		/*
+		 * Drop old cached expression if there is one.
+		 */
+		if (cast_entry->cast_cexpr)
+		{
+			FreeCachedExpression(cast_entry->cast_cexpr);
+			cast_entry->cast_cexpr = NULL;
+		}
 
 		/*
 		 * Since we could easily fail (no such coercion), construct a
 		 * temporary coercion expression tree in the short-lived
-		 * eval_mcontext, then if successful copy it to cast_hash_context.
+		 * eval_mcontext, then if successful save it as a CachedExpression.
 		 */
 		oldcontext = MemoryContextSwitchTo(get_eval_mcontext(estate));
 
@@ -7662,33 +7700,23 @@ get_cast_hashentry(PLpgSQL_execstate *estate,
 
 		/* Note: we don't bother labeling the expression tree with collation */
 
+		/* Plan the expression and build a CachedExpression */
+		cast_cexpr = GetCachedExpression(cast_expr);
+		cast_expr = cast_cexpr->expr;
+
 		/* Detect whether we have a no-op (RelabelType) coercion */
 		if (IsA(cast_expr, RelabelType) &&
 			((RelabelType *) cast_expr)->arg == (Expr *) placeholder)
 			cast_expr = NULL;
 
-		if (cast_expr)
-		{
-			/* ExecInitExpr assumes we've planned the expression */
-			cast_expr = (Node *) expression_planner((Expr *) cast_expr);
-
-			/* Now copy the tree into cast_hash_context */
-			MemoryContextSwitchTo(estate->cast_hash_context);
-
-			cast_expr = copyObject(cast_expr);
-		}
-
-		MemoryContextSwitchTo(oldcontext);
-
-		/* Now we can fill in a hashtable entry. */
-		cast_entry = (plpgsql_CastHashEntry *) hash_search(estate->cast_hash,
-														   (void *) &cast_key,
-														   HASH_ENTER, &found);
-		Assert(!found);			/* wasn't there a moment ago */
+		/* Now we can fill in the hashtable entry. */
+		cast_entry->cast_cexpr = cast_cexpr;
 		cast_entry->cast_expr = (Expr *) cast_expr;
 		cast_entry->cast_exprstate = NULL;
 		cast_entry->cast_in_use = false;
 		cast_entry->cast_lxid = InvalidLocalTransactionId;
+
+		MemoryContextSwitchTo(oldcontext);
 	}
 
 	/* Done if we have determined that this is a no-op cast. */

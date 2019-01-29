@@ -3,7 +3,7 @@
  * extended_stats_internal.h
  *	  POSTGRES extended statistics internal declarations
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -59,7 +59,7 @@ extern MVDependencies *statext_dependencies_deserialize(bytea *data);
 
 extern MultiSortSupport multi_sort_init(int ndims);
 extern void multi_sort_add_dimension(MultiSortSupport mss, int sortdim,
-						 Oid oper);
+						 Oid oper, Oid collation);
 extern int	multi_sort_compare(const void *a, const void *b, void *arg);
 extern int multi_sort_compare_dim(int dim, const SortItem *a,
 					   const SortItem *b, MultiSortSupport mss);

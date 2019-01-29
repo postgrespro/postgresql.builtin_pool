@@ -3,7 +3,7 @@
  * aclchk.c
  *	  Routines to check access control permissions.
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -74,7 +74,6 @@
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
 #include "utils/syscache.h"
-#include "utils/tqual.h"
 
 
 /*
@@ -843,16 +842,18 @@ objectsInSchemaToOids(ObjectType objtype, List *nspnames)
 									BTEqualStrategyNumber, F_CHAREQ,
 									CharGetDatum(PROKIND_PROCEDURE));
 
-					rel = heap_open(ProcedureRelationId, AccessShareLock);
+					rel = table_open(ProcedureRelationId, AccessShareLock);
 					scan = heap_beginscan_catalog(rel, keycount, key);
 
 					while ((tuple = heap_getnext(scan, ForwardScanDirection)) != NULL)
 					{
-						objects = lappend_oid(objects, HeapTupleGetOid(tuple));
+						Oid		oid = ((Form_pg_proc) GETSTRUCT(tuple))->oid;
+
+						objects = lappend_oid(objects, oid);
 					}
 
 					heap_endscan(scan);
-					heap_close(rel, AccessShareLock);
+					table_close(rel, AccessShareLock);
 				}
 				break;
 			default:
@@ -888,16 +889,18 @@ getRelationsInNamespace(Oid namespaceId, char relkind)
 				BTEqualStrategyNumber, F_CHAREQ,
 				CharGetDatum(relkind));
 
-	rel = heap_open(RelationRelationId, AccessShareLock);
+	rel = table_open(RelationRelationId, AccessShareLock);
 	scan = heap_beginscan_catalog(rel, 2, key);
 
 	while ((tuple = heap_getnext(scan, ForwardScanDirection)) != NULL)
 	{
-		relations = lappend_oid(relations, HeapTupleGetOid(tuple));
+		Oid		oid  = ((Form_pg_class) GETSTRUCT(tuple))->oid;
+
+		relations = lappend_oid(relations, oid);
 	}
 
 	heap_endscan(scan);
-	heap_close(rel, AccessShareLock);
+	table_close(rel, AccessShareLock);
 
 	return relations;
 }
@@ -1162,7 +1165,7 @@ SetDefaultACL(InternalDefaultACL *iacls)
 	Oid		   *oldmembers;
 	Oid		   *newmembers;
 
-	rel = heap_open(DefaultAclRelationId, RowExclusiveLock);
+	rel = table_open(DefaultAclRelationId, RowExclusiveLock);
 
 	/*
 	 * The default for a global entry is the hard-wired default ACL for the
@@ -1299,7 +1302,7 @@ SetDefaultACL(InternalDefaultACL *iacls)
 			 * there shouldn't be anything depending on this entry.
 			 */
 			myself.classId = DefaultAclRelationId;
-			myself.objectId = HeapTupleGetOid(tuple);
+			myself.objectId = ((Form_pg_default_acl) GETSTRUCT(tuple))->oid;
 			myself.objectSubId = 0;
 
 			performDeletion(&myself, DROP_RESTRICT, 0);
@@ -1307,6 +1310,8 @@ SetDefaultACL(InternalDefaultACL *iacls)
 	}
 	else
 	{
+		Oid		defAclOid;
+
 		/* Prepare to insert or update pg_default_acl entry */
 		MemSet(values, 0, sizeof(values));
 		MemSet(nulls, false, sizeof(nulls));
@@ -1315,6 +1320,9 @@ SetDefaultACL(InternalDefaultACL *iacls)
 		if (isNew)
 		{
 			/* insert new entry */
+			defAclOid = GetNewOidWithIndex(rel, DefaultAclOidIndexId,
+										   Anum_pg_default_acl_oid);
+			values[Anum_pg_default_acl_oid - 1] = ObjectIdGetDatum(defAclOid);
 			values[Anum_pg_default_acl_defaclrole - 1] = ObjectIdGetDatum(iacls->roleid);
 			values[Anum_pg_default_acl_defaclnamespace - 1] = ObjectIdGetDatum(iacls->nspid);
 			values[Anum_pg_default_acl_defaclobjtype - 1] = CharGetDatum(objtype);
@@ -1325,6 +1333,8 @@ SetDefaultACL(InternalDefaultACL *iacls)
 		}
 		else
 		{
+			defAclOid = ((Form_pg_default_acl) GETSTRUCT(tuple))->oid;
+
 			/* update existing entry */
 			values[Anum_pg_default_acl_defaclacl - 1] = PointerGetDatum(new_acl);
 			replaces[Anum_pg_default_acl_defaclacl - 1] = true;
@@ -1338,8 +1348,7 @@ SetDefaultACL(InternalDefaultACL *iacls)
 		if (isNew)
 		{
 			/* dependency on role */
-			recordDependencyOnOwner(DefaultAclRelationId,
-									HeapTupleGetOid(newtuple),
+			recordDependencyOnOwner(DefaultAclRelationId, defAclOid,
 									iacls->roleid);
 
 			/* dependency on namespace */
@@ -1349,7 +1358,7 @@ SetDefaultACL(InternalDefaultACL *iacls)
 							referenced;
 
 				myself.classId = DefaultAclRelationId;
-				myself.objectId = HeapTupleGetOid(newtuple);
+				myself.objectId = defAclOid;
 				myself.objectSubId = 0;
 
 				referenced.classId = NamespaceRelationId;
@@ -1366,23 +1375,21 @@ SetDefaultACL(InternalDefaultACL *iacls)
 		nnewmembers = aclmembers(new_acl, &newmembers);
 
 		updateAclDependencies(DefaultAclRelationId,
-							  HeapTupleGetOid(newtuple), 0,
+							  defAclOid, 0,
 							  iacls->roleid,
 							  noldmembers, oldmembers,
 							  nnewmembers, newmembers);
 
 		if (isNew)
-			InvokeObjectPostCreateHook(DefaultAclRelationId,
-									   HeapTupleGetOid(newtuple), 0);
+			InvokeObjectPostCreateHook(DefaultAclRelationId, defAclOid, 0);
 		else
-			InvokeObjectPostAlterHook(DefaultAclRelationId,
-									  HeapTupleGetOid(newtuple), 0);
+			InvokeObjectPostAlterHook(DefaultAclRelationId,  defAclOid, 0);
 	}
 
 	if (HeapTupleIsValid(tuple))
 		ReleaseSysCache(tuple);
 
-	heap_close(rel, RowExclusiveLock);
+	table_close(rel, RowExclusiveLock);
 }
 
 
@@ -1404,10 +1411,10 @@ RemoveRoleFromObjectACL(Oid roleid, Oid classid, Oid objid)
 		HeapTuple	tuple;
 
 		/* first fetch info needed by SetDefaultACL */
-		rel = heap_open(DefaultAclRelationId, AccessShareLock);
+		rel = table_open(DefaultAclRelationId, AccessShareLock);
 
 		ScanKeyInit(&skey[0],
-					ObjectIdAttributeNumber,
+					Anum_pg_default_acl_oid,
 					BTEqualStrategyNumber, F_OIDEQ,
 					ObjectIdGetDatum(objid));
 
@@ -1449,7 +1456,7 @@ RemoveRoleFromObjectACL(Oid roleid, Oid classid, Oid objid)
 		}
 
 		systable_endscan(scan);
-		heap_close(rel, AccessShareLock);
+		table_close(rel, AccessShareLock);
 
 		iacls.is_grant = false;
 		iacls.all_privs = true;
@@ -1527,10 +1534,10 @@ RemoveDefaultACLById(Oid defaclOid)
 	SysScanDesc scan;
 	HeapTuple	tuple;
 
-	rel = heap_open(DefaultAclRelationId, RowExclusiveLock);
+	rel = table_open(DefaultAclRelationId, RowExclusiveLock);
 
 	ScanKeyInit(&skey[0],
-				ObjectIdAttributeNumber,
+				Anum_pg_default_acl_oid,
 				BTEqualStrategyNumber, F_OIDEQ,
 				ObjectIdGetDatum(defaclOid));
 
@@ -1545,7 +1552,7 @@ RemoveDefaultACLById(Oid defaclOid)
 	CatalogTupleDelete(rel, &tuple->t_self);
 
 	systable_endscan(scan);
-	heap_close(rel, RowExclusiveLock);
+	table_close(rel, RowExclusiveLock);
 }
 
 
@@ -1606,10 +1613,6 @@ expand_all_col_privileges(Oid table_oid, Form_pg_class classForm,
 		bool		isdropped;
 
 		if (curr_att == InvalidAttrNumber)
-			continue;
-
-		/* Skip OID column if it doesn't exist */
-		if (curr_att == ObjectIdAttributeNumber && !classForm->relhasoids)
 			continue;
 
 		/* Views don't have any system columns at all */
@@ -1794,8 +1797,8 @@ ExecGrant_Relation(InternalGrant *istmt)
 	Relation	attRelation;
 	ListCell   *cell;
 
-	relation = heap_open(RelationRelationId, RowExclusiveLock);
-	attRelation = heap_open(AttributeRelationId, RowExclusiveLock);
+	relation = table_open(RelationRelationId, RowExclusiveLock);
+	attRelation = table_open(AttributeRelationId, RowExclusiveLock);
 
 	foreach(cell, istmt->objects)
 	{
@@ -2115,8 +2118,8 @@ ExecGrant_Relation(InternalGrant *istmt)
 		CommandCounterIncrement();
 	}
 
-	heap_close(attRelation, RowExclusiveLock);
-	heap_close(relation, RowExclusiveLock);
+	table_close(attRelation, RowExclusiveLock);
+	table_close(relation, RowExclusiveLock);
 }
 
 static void
@@ -2128,7 +2131,7 @@ ExecGrant_Database(InternalGrant *istmt)
 	if (istmt->all_privs && istmt->privileges == ACL_NO_RIGHTS)
 		istmt->privileges = ACL_ALL_RIGHTS_DATABASE;
 
-	relation = heap_open(DatabaseRelationId, RowExclusiveLock);
+	relation = table_open(DatabaseRelationId, RowExclusiveLock);
 
 	foreach(cell, istmt->objects)
 	{
@@ -2223,7 +2226,7 @@ ExecGrant_Database(InternalGrant *istmt)
 		CatalogTupleUpdate(relation, &newtuple->t_self, newtuple);
 
 		/* Update the shared dependency ACL info */
-		updateAclDependencies(DatabaseRelationId, HeapTupleGetOid(tuple), 0,
+		updateAclDependencies(DatabaseRelationId, pg_database_tuple->oid, 0,
 							  ownerId,
 							  noldmembers, oldmembers,
 							  nnewmembers, newmembers);
@@ -2236,7 +2239,7 @@ ExecGrant_Database(InternalGrant *istmt)
 		CommandCounterIncrement();
 	}
 
-	heap_close(relation, RowExclusiveLock);
+	table_close(relation, RowExclusiveLock);
 }
 
 static void
@@ -2248,7 +2251,7 @@ ExecGrant_Fdw(InternalGrant *istmt)
 	if (istmt->all_privs && istmt->privileges == ACL_NO_RIGHTS)
 		istmt->privileges = ACL_ALL_RIGHTS_FDW;
 
-	relation = heap_open(ForeignDataWrapperRelationId, RowExclusiveLock);
+	relation = table_open(ForeignDataWrapperRelationId, RowExclusiveLock);
 
 	foreach(cell, istmt->objects)
 	{
@@ -2350,7 +2353,7 @@ ExecGrant_Fdw(InternalGrant *istmt)
 
 		/* Update the shared dependency ACL info */
 		updateAclDependencies(ForeignDataWrapperRelationId,
-							  HeapTupleGetOid(tuple), 0,
+							  pg_fdw_tuple->oid, 0,
 							  ownerId,
 							  noldmembers, oldmembers,
 							  nnewmembers, newmembers);
@@ -2363,7 +2366,7 @@ ExecGrant_Fdw(InternalGrant *istmt)
 		CommandCounterIncrement();
 	}
 
-	heap_close(relation, RowExclusiveLock);
+	table_close(relation, RowExclusiveLock);
 }
 
 static void
@@ -2375,7 +2378,7 @@ ExecGrant_ForeignServer(InternalGrant *istmt)
 	if (istmt->all_privs && istmt->privileges == ACL_NO_RIGHTS)
 		istmt->privileges = ACL_ALL_RIGHTS_FOREIGN_SERVER;
 
-	relation = heap_open(ForeignServerRelationId, RowExclusiveLock);
+	relation = table_open(ForeignServerRelationId, RowExclusiveLock);
 
 	foreach(cell, istmt->objects)
 	{
@@ -2475,7 +2478,7 @@ ExecGrant_ForeignServer(InternalGrant *istmt)
 
 		/* Update the shared dependency ACL info */
 		updateAclDependencies(ForeignServerRelationId,
-							  HeapTupleGetOid(tuple), 0,
+							  pg_server_tuple->oid, 0,
 							  ownerId,
 							  noldmembers, oldmembers,
 							  nnewmembers, newmembers);
@@ -2488,7 +2491,7 @@ ExecGrant_ForeignServer(InternalGrant *istmt)
 		CommandCounterIncrement();
 	}
 
-	heap_close(relation, RowExclusiveLock);
+	table_close(relation, RowExclusiveLock);
 }
 
 static void
@@ -2500,7 +2503,7 @@ ExecGrant_Function(InternalGrant *istmt)
 	if (istmt->all_privs && istmt->privileges == ACL_NO_RIGHTS)
 		istmt->privileges = ACL_ALL_RIGHTS_FUNCTION;
 
-	relation = heap_open(ProcedureRelationId, RowExclusiveLock);
+	relation = table_open(ProcedureRelationId, RowExclusiveLock);
 
 	foreach(cell, istmt->objects)
 	{
@@ -2611,7 +2614,7 @@ ExecGrant_Function(InternalGrant *istmt)
 		CommandCounterIncrement();
 	}
 
-	heap_close(relation, RowExclusiveLock);
+	table_close(relation, RowExclusiveLock);
 }
 
 static void
@@ -2623,7 +2626,7 @@ ExecGrant_Language(InternalGrant *istmt)
 	if (istmt->all_privs && istmt->privileges == ACL_NO_RIGHTS)
 		istmt->privileges = ACL_ALL_RIGHTS_LANGUAGE;
 
-	relation = heap_open(LanguageRelationId, RowExclusiveLock);
+	relation = table_open(LanguageRelationId, RowExclusiveLock);
 
 	foreach(cell, istmt->objects)
 	{
@@ -2729,7 +2732,7 @@ ExecGrant_Language(InternalGrant *istmt)
 		recordExtensionInitPriv(langId, LanguageRelationId, 0, new_acl);
 
 		/* Update the shared dependency ACL info */
-		updateAclDependencies(LanguageRelationId, HeapTupleGetOid(tuple), 0,
+		updateAclDependencies(LanguageRelationId, pg_language_tuple->oid, 0,
 							  ownerId,
 							  noldmembers, oldmembers,
 							  nnewmembers, newmembers);
@@ -2742,7 +2745,7 @@ ExecGrant_Language(InternalGrant *istmt)
 		CommandCounterIncrement();
 	}
 
-	heap_close(relation, RowExclusiveLock);
+	table_close(relation, RowExclusiveLock);
 }
 
 static void
@@ -2754,8 +2757,8 @@ ExecGrant_Largeobject(InternalGrant *istmt)
 	if (istmt->all_privs && istmt->privileges == ACL_NO_RIGHTS)
 		istmt->privileges = ACL_ALL_RIGHTS_LARGEOBJECT;
 
-	relation = heap_open(LargeObjectMetadataRelationId,
-						 RowExclusiveLock);
+	relation = table_open(LargeObjectMetadataRelationId,
+						  RowExclusiveLock);
 
 	foreach(cell, istmt->objects)
 	{
@@ -2784,7 +2787,7 @@ ExecGrant_Largeobject(InternalGrant *istmt)
 
 		/* There's no syscache for pg_largeobject_metadata */
 		ScanKeyInit(&entry[0],
-					ObjectIdAttributeNumber,
+					Anum_pg_largeobject_metadata_oid,
 					BTEqualStrategyNumber, F_OIDEQ,
 					ObjectIdGetDatum(loid));
 
@@ -2869,7 +2872,7 @@ ExecGrant_Largeobject(InternalGrant *istmt)
 
 		/* Update the shared dependency ACL info */
 		updateAclDependencies(LargeObjectRelationId,
-							  HeapTupleGetOid(tuple), 0,
+							  form_lo_meta->oid, 0,
 							  ownerId,
 							  noldmembers, oldmembers,
 							  nnewmembers, newmembers);
@@ -2882,7 +2885,7 @@ ExecGrant_Largeobject(InternalGrant *istmt)
 		CommandCounterIncrement();
 	}
 
-	heap_close(relation, RowExclusiveLock);
+	table_close(relation, RowExclusiveLock);
 }
 
 static void
@@ -2894,7 +2897,7 @@ ExecGrant_Namespace(InternalGrant *istmt)
 	if (istmt->all_privs && istmt->privileges == ACL_NO_RIGHTS)
 		istmt->privileges = ACL_ALL_RIGHTS_SCHEMA;
 
-	relation = heap_open(NamespaceRelationId, RowExclusiveLock);
+	relation = table_open(NamespaceRelationId, RowExclusiveLock);
 
 	foreach(cell, istmt->objects)
 	{
@@ -2993,7 +2996,7 @@ ExecGrant_Namespace(InternalGrant *istmt)
 		recordExtensionInitPriv(nspid, NamespaceRelationId, 0, new_acl);
 
 		/* Update the shared dependency ACL info */
-		updateAclDependencies(NamespaceRelationId, HeapTupleGetOid(tuple), 0,
+		updateAclDependencies(NamespaceRelationId, pg_namespace_tuple->oid, 0,
 							  ownerId,
 							  noldmembers, oldmembers,
 							  nnewmembers, newmembers);
@@ -3006,7 +3009,7 @@ ExecGrant_Namespace(InternalGrant *istmt)
 		CommandCounterIncrement();
 	}
 
-	heap_close(relation, RowExclusiveLock);
+	table_close(relation, RowExclusiveLock);
 }
 
 static void
@@ -3018,7 +3021,7 @@ ExecGrant_Tablespace(InternalGrant *istmt)
 	if (istmt->all_privs && istmt->privileges == ACL_NO_RIGHTS)
 		istmt->privileges = ACL_ALL_RIGHTS_TABLESPACE;
 
-	relation = heap_open(TableSpaceRelationId, RowExclusiveLock);
+	relation = table_open(TableSpaceRelationId, RowExclusiveLock);
 
 	foreach(cell, istmt->objects)
 	{
@@ -3126,7 +3129,7 @@ ExecGrant_Tablespace(InternalGrant *istmt)
 		CommandCounterIncrement();
 	}
 
-	heap_close(relation, RowExclusiveLock);
+	table_close(relation, RowExclusiveLock);
 }
 
 static void
@@ -3138,7 +3141,7 @@ ExecGrant_Type(InternalGrant *istmt)
 	if (istmt->all_privs && istmt->privileges == ACL_NO_RIGHTS)
 		istmt->privileges = ACL_ALL_RIGHTS_TYPE;
 
-	relation = heap_open(TypeRelationId, RowExclusiveLock);
+	relation = table_open(TypeRelationId, RowExclusiveLock);
 
 	foreach(cell, istmt->objects)
 	{
@@ -3263,7 +3266,7 @@ ExecGrant_Type(InternalGrant *istmt)
 		CommandCounterIncrement();
 	}
 
-	heap_close(relation, RowExclusiveLock);
+	table_close(relation, RowExclusiveLock);
 }
 
 
@@ -4112,11 +4115,11 @@ pg_largeobject_aclmask_snapshot(Oid lobj_oid, Oid roleid,
 	/*
 	 * Get the largeobject's ACL from pg_language_metadata
 	 */
-	pg_lo_meta = heap_open(LargeObjectMetadataRelationId,
-						   AccessShareLock);
+	pg_lo_meta = table_open(LargeObjectMetadataRelationId,
+							AccessShareLock);
 
 	ScanKeyInit(&entry[0],
-				ObjectIdAttributeNumber,
+				Anum_pg_largeobject_metadata_oid,
 				BTEqualStrategyNumber, F_OIDEQ,
 				ObjectIdGetDatum(lobj_oid));
 
@@ -4155,7 +4158,7 @@ pg_largeobject_aclmask_snapshot(Oid lobj_oid, Oid roleid,
 
 	systable_endscan(scan);
 
-	heap_close(pg_lo_meta, AccessShareLock);
+	table_close(pg_lo_meta, AccessShareLock);
 
 	return result;
 }
@@ -4894,11 +4897,11 @@ pg_largeobject_ownercheck(Oid lobj_oid, Oid roleid)
 		return true;
 
 	/* There's no syscache for pg_largeobject_metadata */
-	pg_lo_meta = heap_open(LargeObjectMetadataRelationId,
-						   AccessShareLock);
+	pg_lo_meta = table_open(LargeObjectMetadataRelationId,
+							AccessShareLock);
 
 	ScanKeyInit(&entry[0],
-				ObjectIdAttributeNumber,
+				Anum_pg_largeobject_metadata_oid,
 				BTEqualStrategyNumber, F_OIDEQ,
 				ObjectIdGetDatum(lobj_oid));
 
@@ -4915,7 +4918,7 @@ pg_largeobject_ownercheck(Oid lobj_oid, Oid roleid)
 	ownerId = ((Form_pg_largeobject_metadata) GETSTRUCT(tuple))->lomowner;
 
 	systable_endscan(scan);
-	heap_close(pg_lo_meta, AccessShareLock);
+	table_close(pg_lo_meta, AccessShareLock);
 
 	return has_privs_of_role(roleid, ownerId);
 }
@@ -5257,10 +5260,10 @@ pg_extension_ownercheck(Oid ext_oid, Oid roleid)
 		return true;
 
 	/* There's no syscache for pg_extension, so do it the hard way */
-	pg_extension = heap_open(ExtensionRelationId, AccessShareLock);
+	pg_extension = table_open(ExtensionRelationId, AccessShareLock);
 
 	ScanKeyInit(&entry[0],
-				ObjectIdAttributeNumber,
+				Anum_pg_extension_oid,
 				BTEqualStrategyNumber, F_OIDEQ,
 				ObjectIdGetDatum(ext_oid));
 
@@ -5277,7 +5280,7 @@ pg_extension_ownercheck(Oid ext_oid, Oid roleid)
 	ownerId = ((Form_pg_extension) GETSTRUCT(tuple))->extowner;
 
 	systable_endscan(scan);
-	heap_close(pg_extension, AccessShareLock);
+	table_close(pg_extension, AccessShareLock);
 
 	return has_privs_of_role(roleid, ownerId);
 }
@@ -5445,7 +5448,10 @@ get_default_acl_internal(Oid roleId, Oid nsp_oid, char objtype)
 /*
  * Get default permissions for newly created object within given schema
  *
- * Returns NULL if built-in system defaults should be used
+ * Returns NULL if built-in system defaults should be used.
+ *
+ * If the result is not NULL, caller must call recordDependencyOnNewAcl
+ * once the OID of the new object is known.
  */
 Acl *
 get_user_default_acl(ObjectType objtype, Oid ownerId, Oid nsp_oid)
@@ -5518,6 +5524,30 @@ get_user_default_acl(ObjectType objtype, Oid ownerId, Oid nsp_oid)
 		result = NULL;
 
 	return result;
+}
+
+/*
+ * Record dependencies on roles mentioned in a new object's ACL.
+ */
+void
+recordDependencyOnNewAcl(Oid classId, Oid objectId, int32 objsubId,
+						 Oid ownerId, Acl *acl)
+{
+	int			nmembers;
+	Oid		   *members;
+
+	/* Nothing to do if ACL is defaulted */
+	if (acl == NULL)
+		return;
+
+	/* Extract roles mentioned in ACL */
+	nmembers = aclmembers(acl, &members);
+
+	/* Update the shared dependency ACL info */
+	updateAclDependencies(classId, objectId, objsubId,
+						  ownerId,
+						  0, NULL,
+						  nmembers, members);
 }
 
 /*
@@ -5695,11 +5725,11 @@ recordExtObjInitPriv(Oid objoid, Oid classoid)
 		SysScanDesc scan;
 		Relation	relation;
 
-		relation = heap_open(LargeObjectMetadataRelationId, RowExclusiveLock);
+		relation = table_open(LargeObjectMetadataRelationId, RowExclusiveLock);
 
 		/* There's no syscache for pg_largeobject_metadata */
 		ScanKeyInit(&entry[0],
-					ObjectIdAttributeNumber,
+					Anum_pg_largeobject_metadata_oid,
 					BTEqualStrategyNumber, F_OIDEQ,
 					ObjectIdGetDatum(objoid));
 
@@ -5937,7 +5967,7 @@ recordExtensionInitPrivWorker(Oid objoid, Oid classoid, int objsubid, Acl *new_a
 	HeapTuple	tuple;
 	HeapTuple	oldtuple;
 
-	relation = heap_open(InitPrivsRelationId, RowExclusiveLock);
+	relation = table_open(InitPrivsRelationId, RowExclusiveLock);
 
 	ScanKeyInit(&key[0],
 				Anum_pg_init_privs_objoid,
@@ -6023,5 +6053,5 @@ recordExtensionInitPrivWorker(Oid objoid, Oid classoid, int objsubid, Acl *new_a
 	/* prevent error when processing objects multiple times */
 	CommandCounterIncrement();
 
-	heap_close(relation, RowExclusiveLock);
+	table_close(relation, RowExclusiveLock);
 }
