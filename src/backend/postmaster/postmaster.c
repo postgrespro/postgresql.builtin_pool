@@ -2047,15 +2047,7 @@ retry1:
 			else if (strcmp(nameptr, "user") == 0)
 				port->user_name = pstrdup(valptr);
 			else if (strcmp(nameptr, "compression") == 0)
-			{
-				if (!parse_bool(valptr, &port->use_compression))
-					ereport(FATAL,
-							(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-							 errmsg("invalid boolean value for parameter \"%s\": \"%s\"",
-									"compression",
-									valptr),
-							 errhint("Valid values are: \"false\", \"off\", 0, \"true\", \"on\", 1.")));
-			}
+				port->compression_algorithms = pstrdup(valptr);
 			else if (strcmp(nameptr, "options") == 0)
 				port->cmdline_options = pstrdup(valptr);
 			else if (strcmp(nameptr, "replication") == 0)

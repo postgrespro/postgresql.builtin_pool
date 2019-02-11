@@ -164,6 +164,8 @@ typedef struct Port
 	int			keepalives_interval;
 	int			keepalives_count;
 
+	char*       compression_algorithms; /* Compression algorithms supported by client */
+
 #if defined(ENABLE_GSS) || defined(ENABLE_SSPI)
 
 	/*
@@ -182,8 +184,6 @@ typedef struct Port
 	char	   *peer_cn;
 	bool		peer_cert_valid;
 
-	bool        use_compression;
-	
 	/*
 	 * OpenSSL structures. (Keep these last so that the locations of other
 	 * fields are the same whether or not you build with OpenSSL.)

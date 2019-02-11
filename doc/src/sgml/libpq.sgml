@@ -1139,8 +1139,11 @@ postgresql://%2Fvar%2Flib%2Fpostgresql/dbname
       <term><literal>compression</literal></term>
       <listitem>
       <para>
-        Request compression of libpq traffic. If server is supporting compression, then all libpq messages send both from client to server and
-        visa versa will be compressed. Right now compression algorithm is hardcoded: is it is either zlib (default), either zstd (if Postgres was
+        Request compression of libpq traffic. Client sends to the server list of compression algorithms, supported by client library.
+        If server supports one of this algorithms, then it acknowledges use of this algorithm and then all libpq messages send both from client to server and
+        visa versa will be compressed. If server is not supporting any of the suggested algorithms, then it replies with 'n' (no compression)
+        message and it is up to the client whether to continue work without compression or report error.
+        Supported compression algorithms are chosen at configure time. Right now two libraries are supported: zlib (default) and zstd (if Postgres was
         configured with --with-zstd option). In both cases streaming mode is used.
       </para>
       </listitem>

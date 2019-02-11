@@ -97,7 +97,7 @@
     Compression is especial useful for importing/exporting data to/from database using COPY command
     and for replication (both physical and logical). Also compression can reduce server response time
     in case of queries returning large amount of data (for example returning JSON, BLOBs, text,...)
-    Right now compression algorithm is hardcoded: is it is either zlib (default), either zstd (if Postgres was
+    Right now two libraries are supported: zlib (default) and zstd (if Postgres was
     configured with --with-zstd option). In both cases streaming mode is used.
   </para>
 
@@ -272,13 +272,15 @@
      </varlistentry>
 
      <varlistentry>
-      <term>CompressionOk</term>
+      <term>CompressionAck</term>
       <listitem>
        <para>
          Server acknowledge using compression for client-server communication protocol.
          Compression can be requested by client by including "compression" option in connection string.
-         Right now compression algorithm is hardcoded, but in future client and server may negotiate to
-         choose proper compression algorithm.
+         Client sends to the server list of compression algorithms, supported by client library.
+         If server supports one of this algorithms, then it acknowledges use of this algorithm and then all libpq messages send both from client to server and
+         visa versa will be compressed. If server is not supporting any of the suggested algorithms, then it replies with 'n' (no compression)
+         message and it is up to the client whether to continue work without compression or report error.
        </para>
       </listitem>
      </varlistentry>
@@ -3421,7 +3423,7 @@ AuthenticationSASLFinal (B)
 
 <varlistentry>
 <term>
-CompressionOk (B)
+CompressionAck (B)
 </term>
 <listitem>
 <para>
@@ -3433,7 +3435,11 @@ CompressionOk (B)
 </term>
 <listitem>
 <para>
-  Acknowledge use of compression for protocol data. After receiving this message bother server and client are switched to compression mode
+  Acknowledge use of compression for protocol data. Client sends to the server list of compression algorithms, supported by client library.
+  If server supports one of this algorithms, then it responds with CompressionAck with identifier (letter) of first such algorithm.
+  If server is not supporting any of the suggested algorithms, then it replies with 'n' (no compression) algorithm.
+  It is up to the client whether to continue work without compression or report error.
+  After receiving this message with algorithm identifer aother than 'n', both server and client are switched to compression mode
   and exchange compressed messages.
 </para>
 </listitem>
@@ -3454,7 +3460,7 @@ CompressionOk (B)
 </term>
 <listitem>
 <para>
-        Used compression algorithm. Right now the following streaming compression algorithms are supported: 'f' - Facebook zstd, 'z' - zlib.
+        Used compression algorithm. Right now the following streaming compression algorithms are supported: 'f' - Facebook zstd, 'z' - zlib, 'n' - no compresion.
 </para>
 </listitem>
 </varlistentry>
@@ -5888,9 +5894,8 @@ StartupMessage (F)
 </term>
 <listitem>
 <para>
-                        Request compression of libpq traffic. Value can be
-                        <literal>0</literal>, <literal>1</literal>, <literal>true</literal>,
-                        <literal>false</literal>,  <literal>on</literal>, <literal>off.</literal>.
+                        Request compression of libpq traffic. Value is list of compression algorithms supported by client:
+                        <literal>'f'</literal> - Facebook zstd, <literal>'z'</literal> - zlib, <literal>'n'</literal> - no compresion.
                         By default compression is disabled.
 </para>
 </listitem>

@@ -199,21 +199,38 @@ WaitEventSet *FeBeWaitSet;
 int
 pq_configure(Port* port)
 {
-	if (port->use_compression)
-	{
-		char compression[6] = {'z',0,0,0,5,0}; /* message length = 5 */
-		int rc;
-		compression[5] = zpq_algorithm();
-		/* Switch on compression at client side */
-		socket_set_nonblocking(false);
-		while ((rc = secure_write(MyProcPort, compression, sizeof(compression))) < 0
-			   && errno == EINTR);
-		if ((size_t)rc != sizeof(compression))
-			return -1;
+	char server_compression_algorithms[ZPQ_MAX_ALGORITHMS];
+	char* client_compression_algorithms = port->compression_algorithms;
+	char compression_algorithm = ZPQ_NO_COMPRESSION;
+	char compression[6] = {'z',0,0,0,5,0}; /* message length = 5 */
+	int rc;
 
-		/* initialize compression */
-		PqStream = zpq_create((zpq_tx_func)secure_write, (zpq_rx_func)secure_read, MyProcPort);
+	zpq_get_supported_algorithms(server_compression_algorithms);
+
+	if (client_compression_algorithms)
+	{
+		while (*client_compression_algorithms != '\0')
+		{
+			if (strchr(server_compression_algorithms, *client_compression_algorithms))
+			{
+				compression_algorithm = *client_compression_algorithms;
+				break;
+			}
+			client_compression_algorithms += 1;
+		}
 	}
+
+	compression[5] = compression_algorithm;
+	/* Switch on compression at client side */
+	socket_set_nonblocking(false);
+	while ((rc = secure_write(MyProcPort, compression, sizeof(compression))) < 0
+		   && errno == EINTR);
+	if ((size_t)rc != sizeof(compression))
+		return -1;
+
+	/* initialize compression */
+	if (zpq_set_algorithm(compression_algorithm))
+		PqStream = zpq_create((zpq_tx_func)secure_write, (zpq_rx_func)secure_read, MyProcPort);
 	return 0;
 }
 
@@ -256,7 +273,6 @@ pq_init(void)
 					  NULL, NULL);
 	AddWaitEventToSet(FeBeWaitSet, WL_LATCH_SET, -1, MyLatch, NULL);
 	AddWaitEventToSet(FeBeWaitSet, WL_POSTMASTER_DEATH, -1, NULL, NULL);
-
 }
 
 /* --------------------------------

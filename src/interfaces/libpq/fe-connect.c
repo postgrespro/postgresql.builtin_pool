@@ -322,7 +322,7 @@ static const internalPQconninfoOption PQconninfoOptions[] = {
 	offsetof(struct pg_conn, replication)},
 
 	{"compression", "COMPRESSION", NULL, NULL,
-		"Libpq-compression", "Z", 1,
+	    "Libpq-compression", "", 1,
 	offsetof(struct pg_conn, compression)},
 
 	{"target_session_attrs", "PGTARGETSESSIONATTRS",
@@ -2895,12 +2895,11 @@ keep_going:						/* We will come back to here until there is
 							goto error_return;
 						}
 						pqGetc(&algorithm, conn);
-						if (zpq_algorithm() != algorithm)
+						if (!zpq_set_algorithm(algorithm))
 						{
 							appendPQExpBuffer(&conn->errorMessage,
 											  libpq_gettext(
-												  "server and client were configured with different libpq compression algorithms: %c vs. %c\n"),
-										  algorithm, zpq_algorithm());
+												  "server is not supported requested compression algorithm\n"));
 							goto error_return;
 						}
 						/* mark byte consumed */
