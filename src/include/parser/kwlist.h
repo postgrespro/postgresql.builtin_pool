@@ -21,8 +21,7 @@
 /*
  * List of keyword (name, token-value, category) entries.
  *
- * !!WARNING!!: This list must be sorted by ASCII name, because binary
- *		 search is used to locate entries.
+ * Note: gen_keywordlist.pl requires the entries to appear in ASCII order.
  */
 
 /* name, value, category */
@@ -388,6 +387,7 @@ PG_KEYWORD("strict", STRICT_P, UNRESERVED_KEYWORD)
 PG_KEYWORD("strip", STRIP_P, UNRESERVED_KEYWORD)
 PG_KEYWORD("subscription", SUBSCRIPTION, UNRESERVED_KEYWORD)
 PG_KEYWORD("substring", SUBSTRING, COL_NAME_KEYWORD)
+PG_KEYWORD("support", SUPPORT, UNRESERVED_KEYWORD)
 PG_KEYWORD("symmetric", SYMMETRIC, RESERVED_KEYWORD)
 PG_KEYWORD("sysid", SYSID, UNRESERVED_KEYWORD)
 PG_KEYWORD("system", SYSTEM_P, UNRESERVED_KEYWORD)

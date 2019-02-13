@@ -17,8 +17,8 @@
 #include "catalog/pg_type.h"
 #include "executor/spi.h"
 #include "funcapi.h"
-#include "optimizer/clauses.h"
-#include "optimizer/predtest.h"
+#include "nodes/makefuncs.h"
+#include "optimizer/optimizer.h"
 #include "utils/builtins.h"
 
 PG_MODULE_MAGIC;

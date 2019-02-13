@@ -18,9 +18,11 @@
 #include <limits.h>
 #include <math.h>
 
+#include "access/genam.h"
 #include "access/htup_details.h"
 #include "access/parallel.h"
 #include "access/sysattr.h"
+#include "access/table.h"
 #include "access/xact.h"
 #include "catalog/pg_constraint.h"
 #include "catalog/pg_proc.h"
@@ -37,8 +39,12 @@
 #ifdef OPTIMIZER_DEBUG
 #include "nodes/print.h"
 #endif
+#include "optimizer/appendinfo.h"
 #include "optimizer/clauses.h"
 #include "optimizer/cost.h"
+#include "optimizer/inherit.h"
+#include "optimizer/optimizer.h"
+#include "optimizer/paramassign.h"
 #include "optimizer/pathnode.h"
 #include "optimizer/paths.h"
 #include "optimizer/plancat.h"
@@ -47,7 +53,6 @@
 #include "optimizer/prep.h"
 #include "optimizer/subselect.h"
 #include "optimizer/tlist.h"
-#include "optimizer/var.h"
 #include "parser/analyze.h"
 #include "parser/parsetree.h"
 #include "parser/parse_agg.h"
@@ -606,6 +611,7 @@ subquery_planner(PlannerGlobal *glob, Query *parse,
 	List	   *newWithCheckOptions;
 	List	   *newHaving;
 	bool		hasOuterJoins;
+	bool		hasResultRTEs;
 	RelOptInfo *final_rel;
 	ListCell   *l;
 
@@ -633,7 +639,7 @@ subquery_planner(PlannerGlobal *glob, Query *parse,
 	root->inhTargetKind = INHKIND_NONE;
 	root->hasRecursion = hasRecursion;
 	if (hasRecursion)
-		root->wt_param_id = SS_assign_special_param(root);
+		root->wt_param_id = assign_special_exec_param(root);
 	else
 		root->wt_param_id = -1;
 	root->non_recursive_path = NULL;
@@ -645,6 +651,12 @@ subquery_planner(PlannerGlobal *glob, Query *parse,
 	 */
 	if (parse->cteList)
 		SS_process_ctes(root);
+
+	/*
+	 * If the FROM clause is empty, replace it with a dummy RTE_RESULT RTE, so
+	 * that we don't need so many special cases to deal with that situation.
+	 */
+	replace_empty_jointree(parse);
 
 	/*
 	 * Look for ANY and EXISTS SubLinks in WHERE and JOIN/ON clauses, and try
@@ -679,14 +691,16 @@ subquery_planner(PlannerGlobal *glob, Query *parse,
 
 	/*
 	 * Detect whether any rangetable entries are RTE_JOIN kind; if not, we can
-	 * avoid the expense of doing flatten_join_alias_vars().  Also check for
-	 * outer joins --- if none, we can skip reduce_outer_joins().  And check
-	 * for LATERAL RTEs, too.  This must be done after we have done
-	 * pull_up_subqueries(), of course.
+	 * avoid the expense of doing flatten_join_alias_vars().  Likewise check
+	 * whether any are RTE_RESULT kind; if not, we can skip
+	 * remove_useless_result_rtes().  Also check for outer joins --- if none,
+	 * we can skip reduce_outer_joins().  And check for LATERAL RTEs, too.
+	 * This must be done after we have done pull_up_subqueries(), of course.
 	 */
 	root->hasJoinRTEs = false;
 	root->hasLateralRTEs = false;
 	hasOuterJoins = false;
+	hasResultRTEs = false;
 	foreach(l, parse->rtable)
 	{
 		RangeTblEntry *rte = lfirst_node(RangeTblEntry, l);
@@ -696,6 +710,10 @@ subquery_planner(PlannerGlobal *glob, Query *parse,
 			root->hasJoinRTEs = true;
 			if (IS_OUTER_JOIN(rte->jointype))
 				hasOuterJoins = true;
+		}
+		else if (rte->rtekind == RTE_RESULT)
+		{
+			hasResultRTEs = true;
 		}
 		if (rte->lateral)
 			root->hasLateralRTEs = true;
@@ -712,10 +730,10 @@ subquery_planner(PlannerGlobal *glob, Query *parse,
 	/*
 	 * Expand any rangetable entries that are inheritance sets into "append
 	 * relations".  This can add entries to the rangetable, but they must be
-	 * plain base relations not joins, so it's OK (and marginally more
-	 * efficient) to do it after checking for join RTEs.  We must do it after
-	 * pulling up subqueries, else we'd fail to handle inherited tables in
-	 * subqueries.
+	 * plain RTE_RELATION entries, so it's OK (and marginally more efficient)
+	 * to do it after checking for joins and other special RTEs.  We must do
+	 * this after pulling up subqueries, else we'd fail to handle inherited
+	 * tables in subqueries.
 	 */
 	expand_inherited_tables(root);
 
@@ -831,7 +849,8 @@ subquery_planner(PlannerGlobal *glob, Query *parse,
 			 */
 			if (rte->lateral && root->hasJoinRTEs)
 				rte->subquery = (Query *)
-					flatten_join_alias_vars(root, (Node *) rte->subquery);
+					flatten_join_alias_vars(root->parse,
+											(Node *) rte->subquery);
 		}
 		else if (rte->rtekind == RTE_FUNCTION)
 		{
@@ -963,6 +982,14 @@ subquery_planner(PlannerGlobal *glob, Query *parse,
 		reduce_outer_joins(root);
 
 	/*
+	 * If we have any RTE_RESULT relations, see if they can be deleted from
+	 * the jointree.  This step is most effectively done after we've done
+	 * expression preprocessing and outer join reduction.
+	 */
+	if (hasResultRTEs)
+		remove_useless_result_rtes(root);
+
+	/*
 	 * Do the main planning.  If we have an inherited target relation, that
 	 * needs special processing, else go straight to grouping_planner.
 	 */
@@ -1028,7 +1055,7 @@ preprocess_expression(PlannerInfo *root, Node *expr, int kind)
 		  kind == EXPRKIND_VALUES ||
 		  kind == EXPRKIND_TABLESAMPLE ||
 		  kind == EXPRKIND_TABLEFUNC))
-		expr = flatten_join_alias_vars(root, expr);
+		expr = flatten_join_alias_vars(root->parse, expr);
 
 	/*
 	 * Simplify constant expressions.
@@ -1614,7 +1641,7 @@ inheritance_planner(PlannerInfo *root)
 									 returningLists,
 									 rowMarks,
 									 NULL,
-									 SS_assign_special_param(root)));
+									 assign_special_exec_param(root)));
 }
 
 /*--------------------
@@ -2129,7 +2156,7 @@ grouping_planner(PlannerInfo *root, bool inheritance_update,
 		{
 			path = (Path *) create_lockrows_path(root, final_rel, path,
 												 root->rowMarks,
-												 SS_assign_special_param(root));
+												 assign_special_exec_param(root));
 		}
 
 		/*
@@ -2202,7 +2229,7 @@ grouping_planner(PlannerInfo *root, bool inheritance_update,
 										returningLists,
 										rowMarks,
 										parse->onConflict,
-										SS_assign_special_param(root));
+										assign_special_exec_param(root));
 		}
 
 		/* And shove it into final_rel */
@@ -3889,9 +3916,9 @@ create_degenerate_grouping_paths(PlannerInfo *root, RelOptInfo *input_rel,
 		while (--nrows >= 0)
 		{
 			path = (Path *)
-				create_result_path(root, grouped_rel,
-								   grouped_rel->reltarget,
-								   (List *) parse->havingQual);
+				create_group_result_path(root, grouped_rel,
+										 grouped_rel->reltarget,
+										 (List *) parse->havingQual);
 			paths = lappend(paths, path);
 		}
 		path = (Path *)
@@ -3909,9 +3936,9 @@ create_degenerate_grouping_paths(PlannerInfo *root, RelOptInfo *input_rel,
 	{
 		/* No grouping sets, or just one, so one output row */
 		path = (Path *)
-			create_result_path(root, grouped_rel,
-							   grouped_rel->reltarget,
-							   (List *) parse->havingQual);
+			create_group_result_path(root, grouped_rel,
+									 grouped_rel->reltarget,
+									 (List *) parse->havingQual);
 	}
 
 	add_path(grouped_rel, path);
@@ -6109,7 +6136,7 @@ plan_cluster_use_sort(Oid tableOid, Oid indexOid)
 
 	/* Estimate the cost of index scan */
 	indexScanPath = create_index_path(root, indexInfo,
-									  NIL, NIL, NIL, NIL, NIL,
+									  NIL, NIL, NIL, NIL,
 									  ForwardScanDirection, false,
 									  NULL, 1.0, false);
 
@@ -6187,7 +6214,7 @@ plan_create_index_workers(Oid tableOid, Oid indexOid)
 	/* Build RelOptInfo */
 	rel = build_simple_rel(root, 1, NULL);
 
-	heap = heap_open(tableOid, NoLock);
+	heap = table_open(tableOid, NoLock);
 	index = index_open(indexOid, NoLock);
 
 	/*
@@ -6248,7 +6275,7 @@ plan_create_index_workers(Oid tableOid, Oid indexOid)
 
 done:
 	index_close(index, NoLock);
-	heap_close(heap, NoLock);
+	table_close(heap, NoLock);
 
 	return parallel_workers;
 }

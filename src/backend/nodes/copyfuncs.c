@@ -24,8 +24,8 @@
 
 #include "miscadmin.h"
 #include "nodes/extensible.h"
+#include "nodes/pathnodes.h"
 #include "nodes/plannodes.h"
-#include "nodes/relation.h"
 #include "utils/datum.h"
 #include "utils/rel.h"
 
@@ -1486,14 +1486,14 @@ _copyWindowFunc(const WindowFunc *from)
 }
 
 /*
- * _copyArrayRef
+ * _copySubscriptingRef
  */
-static ArrayRef *
-_copyArrayRef(const ArrayRef *from)
+static SubscriptingRef *
+_copySubscriptingRef(const SubscriptingRef *from)
 {
-	ArrayRef   *newnode = makeNode(ArrayRef);
+	SubscriptingRef *newnode = makeNode(SubscriptingRef);
 
-	COPY_SCALAR_FIELD(refarraytype);
+	COPY_SCALAR_FIELD(refcontainertype);
 	COPY_SCALAR_FIELD(refelemtype);
 	COPY_SCALAR_FIELD(reftypmod);
 	COPY_SCALAR_FIELD(refcollid);
@@ -2196,7 +2196,7 @@ _copyOnConflictExpr(const OnConflictExpr *from)
 }
 
 /* ****************************************************************
- *						relation.h copy functions
+ *						pathnodes.h copy functions
  *
  * We don't support copying RelOptInfo, IndexOptInfo, or Path nodes.
  * There are some subsidiary structs that are useful to copy, though.
@@ -3309,6 +3309,7 @@ _copyCopyStmt(const CopyStmt *from)
 	COPY_SCALAR_FIELD(is_program);
 	COPY_STRING_FIELD(filename);
 	COPY_NODE_FIELD(options);
+	COPY_NODE_FIELD(whereClause);
 
 	return newnode;
 }
@@ -4962,8 +4963,8 @@ copyObjectImpl(const void *from)
 		case T_WindowFunc:
 			retval = _copyWindowFunc(from);
 			break;
-		case T_ArrayRef:
-			retval = _copyArrayRef(from);
+		case T_SubscriptingRef:
+			retval = _copySubscriptingRef(from);
 			break;
 		case T_FuncExpr:
 			retval = _copyFuncExpr(from);

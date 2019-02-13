@@ -1,18 +1,18 @@
 /*-------------------------------------------------------------------------
  *
- * relation.h
- *	  Definitions for planner's internal data structures.
+ * pathnodes.h
+ *	  Definitions for planner's internal data structures, especially Paths.
  *
  *
  * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
- * src/include/nodes/relation.h
+ * src/include/nodes/pathnodes.h
  *
  *-------------------------------------------------------------------------
  */
-#ifndef RELATION_H
-#define RELATION_H
+#ifndef PATHNODES_H
+#define PATHNODES_H
 
 #include "access/sdir.h"
 #include "fmgr.h"
@@ -61,7 +61,7 @@ typedef struct AggClauseCosts
 	bool		hasNonPartial;	/* does any agg not support partial mode? */
 	bool		hasNonSerial;	/* is any partial agg non-serializable? */
 	QualCost	transCost;		/* total per-input-row execution costs */
-	Cost		finalCost;		/* total per-aggregated-row costs */
+	QualCost	finalCost;		/* total per-aggregated-row costs */
 	Size		transitionSpace;	/* space for pass-by-ref transition data */
 } AggClauseCosts;
 
@@ -159,11 +159,17 @@ typedef struct PlannerGlobal
  * It holds links to all of the planner's working state, in addition to the
  * original Query.  Note that at present the planner extensively modifies
  * the passed-in Query data structure; someday that should stop.
+ *
+ * For reasons explained in optimizer/optimizer.h, we define the typedef
+ * either here or in that header, whichever is read first.
  *----------
  */
-struct AppendRelInfo;
+#ifndef HAVE_PLANNERINFO_TYPEDEF
+typedef struct PlannerInfo PlannerInfo;
+#define HAVE_PLANNERINFO_TYPEDEF 1
+#endif
 
-typedef struct PlannerInfo
+struct PlannerInfo
 {
 	NodeTag		type;
 
@@ -173,7 +179,7 @@ typedef struct PlannerInfo
 
 	Index		query_level;	/* 1 at the outermost Query */
 
-	struct PlannerInfo *parent_root;	/* NULL at outermost Query */
+	PlannerInfo *parent_root;	/* NULL at outermost Query */
 
 	/*
 	 * plan_params contains the expressions that this query level needs to
@@ -324,7 +330,6 @@ typedef struct PlannerInfo
 									 * partitioned table */
 	bool		hasJoinRTEs;	/* true if any RTEs are RTE_JOIN kind */
 	bool		hasLateralRTEs; /* true if any RTEs are marked LATERAL */
-	bool		hasDeletedRTEs; /* true if any RTE was deleted from jointree */
 	bool		hasHavingQual;	/* true if havingQual was non-null */
 	bool		hasPseudoConstantQuals; /* true if any RestrictInfo has
 										 * pseudoconstant = true */
@@ -343,7 +348,7 @@ typedef struct PlannerInfo
 
 	/* Does this query modify any partition key columns? */
 	bool		partColsUpdated;
-} PlannerInfo;
+};
 
 
 /*
@@ -759,7 +764,12 @@ typedef struct RelOptInfo
  *		(by plancat.c), indrestrictinfo and predOK are set later, in
  *		check_index_predicates().
  */
-typedef struct IndexOptInfo
+#ifndef HAVE_INDEXOPTINFO_TYPEDEF
+typedef struct IndexOptInfo IndexOptInfo;
+#define HAVE_INDEXOPTINFO_TYPEDEF 1
+#endif
+
+struct IndexOptInfo
 {
 	NodeTag		type;
 
@@ -813,7 +823,7 @@ typedef struct IndexOptInfo
 	bool		amcanparallel;	/* does AM support parallel scan? */
 	/* Rather than include amapi.h here, we declare amcostestimate like this */
 	void		(*amcostestimate) ();	/* AM's cost estimator */
-} IndexOptInfo;
+};
 
 /*
  * ForeignKeyOptInfo
@@ -1118,30 +1128,16 @@ typedef struct Path
  *
  * 'indexinfo' is the index to be scanned.
  *
- * 'indexclauses' is a list of index qualification clauses, with implicit
- * AND semantics across the list.  Each clause is a RestrictInfo node from
- * the query's WHERE or JOIN conditions.  An empty list implies a full
- * index scan.
- *
- * 'indexquals' has the same structure as 'indexclauses', but it contains
- * the actual index qual conditions that can be used with the index.
- * In simple cases this is identical to 'indexclauses', but when special
- * indexable operators appear in 'indexclauses', they are replaced by the
- * derived indexscannable conditions in 'indexquals'.
- *
- * 'indexqualcols' is an integer list of index column numbers (zero-based)
- * of the same length as 'indexquals', showing which index column each qual
- * is meant to be used with.  'indexquals' is required to be ordered by
- * index column, so 'indexqualcols' must form a nondecreasing sequence.
- * (The order of multiple quals for the same index column is unspecified.)
+ * 'indexclauses' is a list of IndexClause nodes, each representing one
+ * index-checkable restriction, with implicit AND semantics across the list.
+ * An empty list implies a full index scan.
  *
  * 'indexorderbys', if not NIL, is a list of ORDER BY expressions that have
  * been found to be usable as ordering operators for an amcanorderbyop index.
  * The list must match the path's pathkeys, ie, one expression per pathkey
  * in the same order.  These are not RestrictInfos, just bare expressions,
- * since they generally won't yield booleans.  Also, unlike the case for
- * quals, it's guaranteed that each expression has the index key on the left
- * side of the operator.
+ * since they generally won't yield booleans.  It's guaranteed that each
+ * expression has the index key on the left side of the operator.
  *
  * 'indexorderbycols' is an integer list of index column numbers (zero-based)
  * of the same length as 'indexorderbys', showing which index column each
@@ -1167,14 +1163,62 @@ typedef struct IndexPath
 	Path		path;
 	IndexOptInfo *indexinfo;
 	List	   *indexclauses;
-	List	   *indexquals;
-	List	   *indexqualcols;
 	List	   *indexorderbys;
 	List	   *indexorderbycols;
 	ScanDirection indexscandir;
 	Cost		indextotalcost;
 	Selectivity indexselectivity;
 } IndexPath;
+
+/*
+ * Each IndexClause references a RestrictInfo node from the query's WHERE
+ * or JOIN conditions, and shows how that restriction can be applied to
+ * the particular index.  We support both indexclauses that are directly
+ * usable by the index machinery, which are typically of the form
+ * "indexcol OP pseudoconstant", and those from which an indexable qual
+ * can be derived.  The simplest such transformation is that a clause
+ * of the form "pseudoconstant OP indexcol" can be commuted to produce an
+ * indexable qual (the index machinery expects the indexcol to be on the
+ * left always).  Another example is that we might be able to extract an
+ * indexable range condition from a LIKE condition, as in "x LIKE 'foo%bar'"
+ * giving rise to "x >= 'foo' AND x < 'fop'".  Derivation of such lossy
+ * conditions is done by a planner support function attached to the
+ * indexclause's top-level function or operator.
+ *
+ * If indexquals is NIL, it means that rinfo->clause is directly usable as
+ * an indexqual.  Otherwise indexquals contains one or more directly-usable
+ * indexqual conditions extracted from the given clause.  The 'lossy' flag
+ * indicates whether the indexquals are semantically equivalent to the
+ * original clause, or form a weaker condition.
+ *
+ * Currently, entries in indexquals are RestrictInfos, but they could perhaps
+ * be bare clauses instead; the only advantage of making them RestrictInfos
+ * is the possibility of caching cost and selectivity information across
+ * multiple uses, and it's not clear that that's really worth the price of
+ * constructing RestrictInfos for them.  Note however that the extended-stats
+ * machinery won't do anything with non-RestrictInfo clauses, so that would
+ * have to be fixed.
+ *
+ * Normally, indexcol is the index of the single index column the clause
+ * works on, and indexcols is NIL.  But if the clause is a RowCompareExpr,
+ * indexcol is the index of the leading column, and indexcols is a list of
+ * all the affected columns.  (Note that indexcols matches up with the
+ * columns of the actual indexable RowCompareExpr, which might be in
+ * indexquals rather than rinfo.)
+ *
+ * An IndexPath's IndexClause list is required to be ordered by index
+ * column, i.e. the indexcol values must form a nondecreasing sequence.
+ * (The order of multiple clauses for the same index column is unspecified.)
+ */
+typedef struct IndexClause
+{
+	NodeTag		type;
+	struct RestrictInfo *rinfo; /* original restriction or join clause */
+	List	   *indexquals;		/* indexqual(s) derived from it, or NIL */
+	bool		lossy;			/* are indexquals a lossy version of clause? */
+	AttrNumber	indexcol;		/* index column the clause uses (zero-based) */
+	List	   *indexcols;		/* multiple index columns, if RowCompare */
+} IndexClause;
 
 /*
  * BitmapHeapPath represents one or more indexscans that generate TID bitmaps
@@ -1345,17 +1389,17 @@ typedef struct MergeAppendPath
 } MergeAppendPath;
 
 /*
- * ResultPath represents use of a Result plan node to compute a variable-free
- * targetlist with no underlying tables (a "SELECT expressions" query).
- * The query could have a WHERE clause, too, represented by "quals".
+ * GroupResultPath represents use of a Result plan node to compute the
+ * output of a degenerate GROUP BY case, wherein we know we should produce
+ * exactly one row, which might then be filtered by a HAVING qual.
  *
  * Note that quals is a list of bare clauses, not RestrictInfos.
  */
-typedef struct ResultPath
+typedef struct GroupResultPath
 {
 	Path		path;
 	List	   *quals;
-} ResultPath;
+} GroupResultPath;
 
 /*
  * MaterialPath represents use of a Material plan node, i.e., caching of
@@ -2066,8 +2110,12 @@ typedef struct PlaceHolderVar
  * plain innerjoin semantics.  Note that lhs_strict, delay_upper_joins, and
  * of course the semi_xxx fields are not set meaningfully within such structs.
  */
+#ifndef HAVE_SPECIALJOININFO_TYPEDEF
+typedef struct SpecialJoinInfo SpecialJoinInfo;
+#define HAVE_SPECIALJOININFO_TYPEDEF 1
+#endif
 
-typedef struct SpecialJoinInfo
+struct SpecialJoinInfo
 {
 	NodeTag		type;
 	Relids		min_lefthand;	/* base relids in minimum LHS for join */
@@ -2082,7 +2130,7 @@ typedef struct SpecialJoinInfo
 	bool		semi_can_hash;	/* true if semi_operators are all hash */
 	List	   *semi_operators; /* OIDs of equality join operators */
 	List	   *semi_rhs_exprs; /* righthand-side expressions of these ops */
-} SpecialJoinInfo;
+};
 
 /*
  * Append-relation info.
@@ -2424,4 +2472,4 @@ typedef struct JoinCostWorkspace
 	double		inner_rows_total;
 } JoinCostWorkspace;
 
-#endif							/* RELATION_H */
+#endif							/* PATHNODES_H */

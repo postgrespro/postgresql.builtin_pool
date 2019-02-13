@@ -37,6 +37,7 @@
  */
 #include "postgres.h"
 
+#include "access/heapam.h"
 #include "access/htup_details.h"
 #include "access/sysattr.h"
 #include "access/transam.h"
@@ -51,7 +52,6 @@
 #include "jit/jit.h"
 #include "mb/pg_wchar.h"
 #include "miscadmin.h"
-#include "optimizer/clauses.h"
 #include "parser/parsetree.h"
 #include "rewrite/rewriteManip.h"
 #include "storage/bufmgr.h"
@@ -64,7 +64,6 @@
 #include "utils/rls.h"
 #include "utils/ruleutils.h"
 #include "utils/snapmgr.h"
-#include "utils/tqual.h"
 
 
 /* Hooks for plugins to get control in ExecutorStart/Run/Finish/End */
@@ -1422,7 +1421,7 @@ ExecGetTriggerResultRel(EState *estate, Oid relid)
 	 * event got queued, so we need take no new lock here.  Also, we need not
 	 * recheck the relkind, so no need for CheckValidResultRel.
 	 */
-	rel = heap_open(relid, NoLock);
+	rel = table_open(relid, NoLock);
 
 	/*
 	 * Make the new entry in the right context.
@@ -1471,7 +1470,7 @@ ExecCleanUpTriggerState(EState *estate)
 		 */
 		Assert(resultRelInfo->ri_NumIndices == 0);
 
-		heap_close(resultRelInfo->ri_RelationDesc, NoLock);
+		table_close(resultRelInfo->ri_RelationDesc, NoLock);
 	}
 }
 
@@ -1577,7 +1576,7 @@ ExecEndPlan(PlanState *planstate, EState *estate)
 	for (i = 0; i < num_relations; i++)
 	{
 		if (estate->es_relations[i])
-			heap_close(estate->es_relations[i], NoLock);
+			table_close(estate->es_relations[i], NoLock);
 	}
 
 	/* likewise close any trigger target relations */
@@ -2435,13 +2434,10 @@ ExecBuildAuxRowMark(ExecRowMark *erm, List *targetlist)
  *
  * Returns a slot containing the new candidate update/delete tuple, or
  * NULL if we determine we shouldn't process the row.
- *
- * Note: properly, lockmode should be declared as enum LockTupleMode,
- * but we use "int" to avoid having to include heapam.h in executor.h.
  */
 TupleTableSlot *
 EvalPlanQual(EState *estate, EPQState *epqstate,
-			 Relation relation, Index rti, int lockmode,
+			 Relation relation, Index rti, LockTupleMode lockmode,
 			 ItemPointer tid, TransactionId priorXmax)
 {
 	TupleTableSlot *slot;
@@ -2522,12 +2518,9 @@ EvalPlanQual(EState *estate, EPQState *epqstate,
  *
  * If successful, we have locked the newest tuple version, so caller does not
  * need to worry about it changing anymore.
- *
- * Note: properly, lockmode should be declared as enum LockTupleMode,
- * but we use "int" to avoid having to include heapam.h in executor.h.
  */
 HeapTuple
-EvalPlanQualFetch(EState *estate, Relation relation, int lockmode,
+EvalPlanQualFetch(EState *estate, Relation relation, LockTupleMode lockmode,
 				  LockWaitPolicy wait_policy,
 				  ItemPointer tid, TransactionId priorXmax)
 {

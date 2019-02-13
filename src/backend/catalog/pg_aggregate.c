@@ -14,8 +14,8 @@
  */
 #include "postgres.h"
 
-#include "access/heapam.h"
 #include "access/htup_details.h"
+#include "access/table.h"
 #include "catalog/dependency.h"
 #include "catalog/indexing.h"
 #include "catalog/pg_aggregate.h"
@@ -632,6 +632,7 @@ AggregateCreate(const char *aggName,
 							 parameterDefaults, /* parameterDefaults */
 							 PointerGetDatum(NULL), /* trftypes */
 							 PointerGetDatum(NULL), /* proconfig */
+							 InvalidOid,	/* no prosupport */
 							 1, /* procost */
 							 0);	/* prorows */
 	procOid = myself.objectId;
@@ -639,7 +640,7 @@ AggregateCreate(const char *aggName,
 	/*
 	 * Okay to create the pg_aggregate entry.
 	 */
-	aggdesc = heap_open(AggregateRelationId, RowExclusiveLock);
+	aggdesc = table_open(AggregateRelationId, RowExclusiveLock);
 	tupDesc = aggdesc->rd_att;
 
 	/* initialize nulls and values */
@@ -680,7 +681,7 @@ AggregateCreate(const char *aggName,
 	tup = heap_form_tuple(tupDesc, values, nulls);
 	CatalogTupleInsert(aggdesc, tup);
 
-	heap_close(aggdesc, RowExclusiveLock);
+	table_close(aggdesc, RowExclusiveLock);
 
 	/*
 	 * Create dependencies for the aggregate (above and beyond those already

@@ -2364,11 +2364,17 @@ check_srf_call_placement(ParseState *pstate, Node *last_srf, int location)
 		case EXPR_KIND_TRIGGER_WHEN:
 			err = _("set-returning functions are not allowed in trigger WHEN conditions");
 			break;
+		case EXPR_KIND_PARTITION_BOUND:
+			err = _("set-returning functions are not allowed in partition bound");
+			break;
 		case EXPR_KIND_PARTITION_EXPRESSION:
 			err = _("set-returning functions are not allowed in partition key expressions");
 			break;
 		case EXPR_KIND_CALL_ARGUMENT:
 			err = _("set-returning functions are not allowed in CALL arguments");
+			break;
+		case EXPR_KIND_COPY_WHERE:
+			err = _("set-returning functions are not allowed in COPY FROM WHERE conditions");
 			break;
 
 			/*

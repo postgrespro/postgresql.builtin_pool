@@ -22,13 +22,13 @@
 #include "catalog/pg_type.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
+#include "optimizer/appendinfo.h"
 #include "optimizer/clauses.h"
+#include "optimizer/optimizer.h"
 #include "optimizer/pathnode.h"
 #include "optimizer/paths.h"
 #include "optimizer/planmain.h"
-#include "optimizer/prep.h"
 #include "optimizer/restrictinfo.h"
-#include "optimizer/var.h"
 #include "utils/lsyscache.h"
 
 
@@ -2507,6 +2507,43 @@ is_redundant_derived_clause(RestrictInfo *rinfo, List *clauselist)
 
 		if (otherrinfo->parent_ec == parent_ec)
 			return true;
+	}
+
+	return false;
+}
+
+/*
+ * is_redundant_with_indexclauses
+ *		Test whether rinfo is redundant with any clause in the IndexClause
+ *		list.  Here, for convenience, we test both simple identity and
+ *		whether it is derived from the same EC as any member of the list.
+ */
+bool
+is_redundant_with_indexclauses(RestrictInfo *rinfo, List *indexclauses)
+{
+	EquivalenceClass *parent_ec = rinfo->parent_ec;
+	ListCell   *lc;
+
+	foreach(lc, indexclauses)
+	{
+		IndexClause *iclause = lfirst_node(IndexClause, lc);
+		RestrictInfo *otherrinfo = iclause->rinfo;
+
+		/* If indexclause is lossy, it won't enforce the condition exactly */
+		if (iclause->lossy)
+			continue;
+
+		/* Match if it's same clause (pointer equality should be enough) */
+		if (rinfo == otherrinfo)
+			return true;
+		/* Match if derived from same EC */
+		if (parent_ec && otherrinfo->parent_ec == parent_ec)
+			return true;
+
+		/*
+		 * No need to look at the derived clauses in iclause->indexquals; they
+		 * couldn't match if the parent clause didn't.
+		 */
 	}
 
 	return false;

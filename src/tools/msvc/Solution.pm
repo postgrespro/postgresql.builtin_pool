@@ -276,7 +276,7 @@ sub GenerateFiles
 		|| IsNewer('fmgr-stamp', '../../../src/include/access/transam.h'))
 	{
 		system(
-			"perl -I ../catalog Gen_fmgrtab.pl -I../../../src/include/ $pg_proc_dat"
+			"perl -I ../catalog Gen_fmgrtab.pl --include-path ../../../src/include/ $pg_proc_dat"
 		);
 		open(my $f, '>', 'fmgr-stamp')
 		  || confess "Could not touch fmgr-stamp";
@@ -414,7 +414,7 @@ sub GenerateFiles
 			'src/include/parser/kwlist.h'))
 	{
 		print "Generating kwlist_d.h...\n";
-		system('perl src/tools/gen_keywordlist.pl --extern -o src/common src/include/parser/kwlist.h');
+		system('perl -I src/tools src/tools/gen_keywordlist.pl --extern -o src/common src/include/parser/kwlist.h');
 	}
 
 	if (IsNewer(
@@ -426,8 +426,8 @@ sub GenerateFiles
 	{
 		print "Generating pl_reserved_kwlist_d.h and pl_unreserved_kwlist_d.h...\n";
 		chdir('src/pl/plpgsql/src');
-		system('perl ../../../tools/gen_keywordlist.pl --varname ReservedPLKeywords pl_reserved_kwlist.h');
-		system('perl ../../../tools/gen_keywordlist.pl --varname UnreservedPLKeywords pl_unreserved_kwlist.h');
+		system('perl -I ../../../tools ../../../tools/gen_keywordlist.pl --varname ReservedPLKeywords pl_reserved_kwlist.h');
+		system('perl -I ../../../tools ../../../tools/gen_keywordlist.pl --varname UnreservedPLKeywords pl_unreserved_kwlist.h');
 		chdir('../../../..');
 	}
 
@@ -440,8 +440,8 @@ sub GenerateFiles
 	{
 		print "Generating c_kwlist_d.h and ecpg_kwlist_d.h...\n";
 		chdir('src/interfaces/ecpg/preproc');
-		system('perl ../../../tools/gen_keywordlist.pl --varname ScanCKeywords c_kwlist.h');
-		system('perl ../../../tools/gen_keywordlist.pl --varname ScanECPGKeywords ecpg_kwlist.h');
+		system('perl -I ../../../tools ../../../tools/gen_keywordlist.pl --varname ScanCKeywords --no-case-fold c_kwlist.h');
+		system('perl -I ../../../tools ../../../tools/gen_keywordlist.pl --varname ScanECPGKeywords ecpg_kwlist.h');
 		chdir('../../../..');
 	}
 
@@ -527,7 +527,7 @@ EOF
 	{
 		chdir('src/backend/catalog');
 		my $bki_srcs = join(' ../../../src/include/catalog/', @bki_srcs);
-		system("perl genbki.pl  -I../../../src/include/ --set-version=$self->{majorver} $bki_srcs");
+		system("perl genbki.pl --include-path ../../../src/include/ --set-version=$self->{majorver} $bki_srcs");
 		open(my $f, '>', 'bki-stamp')
 		  || confess "Could not touch bki-stamp";
 		close($f);

@@ -21,6 +21,7 @@
 
 #include "postgres.h"
 
+#include "access/heapam.h"
 #include "access/htup_details.h"
 #include "access/xact.h"
 #include "executor/executor.h"
@@ -29,7 +30,6 @@
 #include "miscadmin.h"
 #include "storage/bufmgr.h"
 #include "utils/rel.h"
-#include "utils/tqual.h"
 
 
 /* ----------------------------------------------------------------

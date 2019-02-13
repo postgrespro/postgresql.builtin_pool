@@ -19,6 +19,8 @@
 
 #include "postgres.h"
 
+#include "access/genam.h"
+#include "access/heapam.h"
 #include "access/relscan.h"
 #include "access/transam.h"
 #include "catalog/index.h"
@@ -33,7 +35,6 @@
 #include "utils/ruleutils.h"
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
-#include "utils/tqual.h"
 
 
 /* ----------------------------------------------------------------

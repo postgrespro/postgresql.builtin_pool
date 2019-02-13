@@ -448,20 +448,20 @@ my %tests = (
 	},
 
 	'ALTER COLLATION test0 OWNER TO' => {
-		regexp    => qr/^ALTER COLLATION public.test0 OWNER TO .*;/m,
+		regexp    => qr/^\QALTER COLLATION public.test0 OWNER TO \E.+;/m,
 		collation => 1,
 		like      => { %full_runs, section_pre_data => 1, },
 		unlike    => { %dump_test_schema_runs, no_owner => 1, },
 	},
 
 	'ALTER FOREIGN DATA WRAPPER dummy OWNER TO' => {
-		regexp => qr/^ALTER FOREIGN DATA WRAPPER dummy OWNER TO .*;/m,
+		regexp => qr/^ALTER FOREIGN DATA WRAPPER dummy OWNER TO .+;/m,
 		like   => { %full_runs, section_pre_data => 1, },
 		unlike => { no_owner => 1, },
 	},
 
 	'ALTER SERVER s1 OWNER TO' => {
-		regexp => qr/^ALTER SERVER s1 OWNER TO .*;/m,
+		regexp => qr/^ALTER SERVER s1 OWNER TO .+;/m,
 		like   => { %full_runs, section_pre_data => 1, },
 		unlike => { no_owner => 1, },
 	},
@@ -470,7 +470,7 @@ my %tests = (
 		regexp => qr/^
 			\QALTER FUNCTION dump_test.pltestlang_call_handler() \E
 			\QOWNER TO \E
-			.*;/xm,
+			.+;/xm,
 		like =>
 		  { %full_runs, %dump_test_schema_runs, section_pre_data => 1, },
 		unlike => {
@@ -483,7 +483,7 @@ my %tests = (
 		regexp => qr/^
 			\QALTER OPERATOR FAMILY dump_test.op_family USING btree \E
 			\QOWNER TO \E
-			.*;/xm,
+			.+;/xm,
 		like =>
 		  { %full_runs, %dump_test_schema_runs, section_pre_data => 1, },
 		unlike => {
@@ -522,7 +522,7 @@ my %tests = (
 		regexp => qr/^
 			\QALTER OPERATOR CLASS dump_test.op_class USING btree \E
 			\QOWNER TO \E
-			.*;/xm,
+			.+;/xm,
 		like =>
 		  { %full_runs, %dump_test_schema_runs, section_pre_data => 1, },
 		unlike => {
@@ -532,13 +532,13 @@ my %tests = (
 	},
 
 	'ALTER PUBLICATION pub1 OWNER TO' => {
-		regexp => qr/^ALTER PUBLICATION pub1 OWNER TO .*;/m,
+		regexp => qr/^ALTER PUBLICATION pub1 OWNER TO .+;/m,
 		like   => { %full_runs, section_post_data => 1, },
 		unlike => { no_owner => 1, },
 	},
 
 	'ALTER LARGE OBJECT ... OWNER TO' => {
-		regexp => qr/^ALTER LARGE OBJECT \d+ OWNER TO .*;/m,
+		regexp => qr/^ALTER LARGE OBJECT \d+ OWNER TO .+;/m,
 		like   => {
 			%full_runs,
 			column_inserts         => 1,
@@ -554,13 +554,13 @@ my %tests = (
 	},
 
 	'ALTER PROCEDURAL LANGUAGE pltestlang OWNER TO' => {
-		regexp => qr/^ALTER PROCEDURAL LANGUAGE pltestlang OWNER TO .*;/m,
+		regexp => qr/^ALTER PROCEDURAL LANGUAGE pltestlang OWNER TO .+;/m,
 		like   => { %full_runs, section_pre_data => 1, },
 		unlike => { no_owner => 1, },
 	},
 
 	'ALTER SCHEMA dump_test OWNER TO' => {
-		regexp => qr/^ALTER SCHEMA dump_test OWNER TO .*;/m,
+		regexp => qr/^ALTER SCHEMA dump_test OWNER TO .+;/m,
 		like =>
 		  { %full_runs, %dump_test_schema_runs, section_pre_data => 1, },
 		unlike => {
@@ -570,7 +570,7 @@ my %tests = (
 	},
 
 	'ALTER SCHEMA dump_test_second_schema OWNER TO' => {
-		regexp => qr/^ALTER SCHEMA dump_test_second_schema OWNER TO .*;/m,
+		regexp => qr/^ALTER SCHEMA dump_test_second_schema OWNER TO .+;/m,
 		like   => {
 			%full_runs,
 			role             => 1,
@@ -757,7 +757,7 @@ my %tests = (
 	},
 
 	'ALTER TABLE test_table OWNER TO' => {
-		regexp => qr/^ALTER TABLE dump_test.test_table OWNER TO .*;/m,
+		regexp => qr/^\QALTER TABLE dump_test.test_table OWNER TO \E.+;/m,
 		like   => {
 			%full_runs,
 			%dump_test_schema_runs,
@@ -776,7 +776,7 @@ my %tests = (
 		create_sql   => 'ALTER TABLE dump_test.test_table
 					   ENABLE ROW LEVEL SECURITY;',
 		regexp =>
-		  qr/^ALTER TABLE dump_test.test_table ENABLE ROW LEVEL SECURITY;/m,
+		  qr/^\QALTER TABLE dump_test.test_table ENABLE ROW LEVEL SECURITY;\E/m,
 		like => {
 			%full_runs,
 			%dump_test_schema_runs,
@@ -790,7 +790,7 @@ my %tests = (
 	},
 
 	'ALTER TABLE test_second_table OWNER TO' => {
-		regexp => qr/^ALTER TABLE dump_test.test_second_table OWNER TO .*;/m,
+		regexp => qr/^\QALTER TABLE dump_test.test_second_table OWNER TO \E.+;/m,
 		like =>
 		  { %full_runs, %dump_test_schema_runs, section_pre_data => 1, },
 		unlike => {
@@ -800,7 +800,7 @@ my %tests = (
 	},
 
 	'ALTER TABLE measurement OWNER TO' => {
-		regexp => qr/^ALTER TABLE dump_test.measurement OWNER TO .*;/m,
+		regexp => qr/^\QALTER TABLE dump_test.measurement OWNER TO \E.+;/m,
 		like =>
 		  { %full_runs, %dump_test_schema_runs, section_pre_data => 1, },
 		unlike => {
@@ -811,7 +811,7 @@ my %tests = (
 
 	'ALTER TABLE measurement_y2006m2 OWNER TO' => {
 		regexp =>
-		  qr/^ALTER TABLE dump_test_second_schema.measurement_y2006m2 OWNER TO .*;/m,
+		  qr/^\QALTER TABLE dump_test_second_schema.measurement_y2006m2 OWNER TO \E.+;/m,
 		like => {
 			%full_runs,
 			role             => 1,
@@ -822,7 +822,7 @@ my %tests = (
 
 	'ALTER FOREIGN TABLE foreign_table OWNER TO' => {
 		regexp =>
-		  qr/^ALTER FOREIGN TABLE dump_test.foreign_table OWNER TO .*;/m,
+		  qr/^\QALTER FOREIGN TABLE dump_test.foreign_table OWNER TO \E.+;/m,
 		like =>
 		  { %full_runs, %dump_test_schema_runs, section_pre_data => 1, },
 		unlike => {
@@ -833,7 +833,7 @@ my %tests = (
 
 	'ALTER TEXT SEARCH CONFIGURATION alt_ts_conf1 OWNER TO' => {
 		regexp =>
-		  qr/^ALTER TEXT SEARCH CONFIGURATION dump_test.alt_ts_conf1 OWNER TO .*;/m,
+		  qr/^\QALTER TEXT SEARCH CONFIGURATION dump_test.alt_ts_conf1 OWNER TO \E.+;/m,
 		like =>
 		  { %full_runs, %dump_test_schema_runs, section_pre_data => 1, },
 		unlike => {
@@ -844,7 +844,7 @@ my %tests = (
 
 	'ALTER TEXT SEARCH DICTIONARY alt_ts_dict1 OWNER TO' => {
 		regexp =>
-		  qr/^ALTER TEXT SEARCH DICTIONARY dump_test.alt_ts_dict1 OWNER TO .*;/m,
+		  qr/^\QALTER TEXT SEARCH DICTIONARY dump_test.alt_ts_dict1 OWNER TO \E.+;/m,
 		like =>
 		  { %full_runs, %dump_test_schema_runs, section_pre_data => 1, },
 		unlike => {
@@ -895,14 +895,14 @@ my %tests = (
 	},
 
 	'COMMENT ON DATABASE postgres' => {
-		regexp => qr/^COMMENT ON DATABASE postgres IS .*;/m,
+		regexp => qr/^COMMENT ON DATABASE postgres IS .+;/m,
 
 		# Should appear in the same tests as "CREATE DATABASE postgres"
 		like => { createdb => 1, },
 	},
 
 	'COMMENT ON EXTENSION plpgsql' => {
-		regexp => qr/^COMMENT ON EXTENSION plpgsql IS .*;/m,
+		regexp => qr/^COMMENT ON EXTENSION plpgsql IS .+;/m,
 
 		# this shouldn't ever get emitted anymore
 		like => {},
@@ -913,7 +913,7 @@ my %tests = (
 		create_sql   => 'COMMENT ON TABLE dump_test.test_table
 					   IS \'comment on table\';',
 		regexp =>
-		  qr/^COMMENT ON TABLE dump_test.test_table IS 'comment on table';/m,
+		  qr/^\QCOMMENT ON TABLE dump_test.test_table IS 'comment on table';\E/m,
 		like => {
 			%full_runs,
 			%dump_test_schema_runs,
@@ -986,7 +986,7 @@ my %tests = (
 		create_sql   => 'COMMENT ON CONVERSION dump_test.test_conversion
 					   IS \'comment on test conversion\';',
 		regexp =>
-		  qr/^COMMENT ON CONVERSION dump_test.test_conversion IS 'comment on test conversion';/m,
+		  qr/^\QCOMMENT ON CONVERSION dump_test.test_conversion IS 'comment on test conversion';\E/m,
 		like =>
 		  { %full_runs, %dump_test_schema_runs, section_pre_data => 1, },
 		unlike => { exclude_dump_test_schema => 1, },
@@ -997,7 +997,7 @@ my %tests = (
 		create_sql   => 'COMMENT ON COLLATION test0
 					   IS \'comment on test0 collation\';',
 		regexp =>
-		  qr/^COMMENT ON COLLATION public.test0 IS 'comment on test0 collation';/m,
+		  qr/^\QCOMMENT ON COLLATION public.test0 IS 'comment on test0 collation';\E/m,
 		collation => 1,
 		like      => { %full_runs, section_pre_data => 1, },
 	},
@@ -1051,7 +1051,7 @@ my %tests = (
 		  'COMMENT ON TEXT SEARCH CONFIGURATION dump_test.alt_ts_conf1
 					   IS \'comment on text search configuration\';',
 		regexp =>
-		  qr/^COMMENT ON TEXT SEARCH CONFIGURATION dump_test.alt_ts_conf1 IS 'comment on text search configuration';/m,
+		  qr/^\QCOMMENT ON TEXT SEARCH CONFIGURATION dump_test.alt_ts_conf1 IS 'comment on text search configuration';\E/m,
 		like =>
 		  { %full_runs, %dump_test_schema_runs, section_pre_data => 1, },
 		unlike => { exclude_dump_test_schema => 1, },
@@ -1063,7 +1063,7 @@ my %tests = (
 		  'COMMENT ON TEXT SEARCH DICTIONARY dump_test.alt_ts_dict1
 					   IS \'comment on text search dictionary\';',
 		regexp =>
-		  qr/^COMMENT ON TEXT SEARCH DICTIONARY dump_test.alt_ts_dict1 IS 'comment on text search dictionary';/m,
+		  qr/^\QCOMMENT ON TEXT SEARCH DICTIONARY dump_test.alt_ts_dict1 IS 'comment on text search dictionary';\E/m,
 		like =>
 		  { %full_runs, %dump_test_schema_runs, section_pre_data => 1, },
 		unlike => { exclude_dump_test_schema => 1, },
@@ -1074,7 +1074,7 @@ my %tests = (
 		create_sql   => 'COMMENT ON TEXT SEARCH PARSER dump_test.alt_ts_prs1
 					   IS \'comment on text search parser\';',
 		regexp =>
-		  qr/^COMMENT ON TEXT SEARCH PARSER dump_test.alt_ts_prs1 IS 'comment on text search parser';/m,
+		  qr/^\QCOMMENT ON TEXT SEARCH PARSER dump_test.alt_ts_prs1 IS 'comment on text search parser';\E/m,
 		like =>
 		  { %full_runs, %dump_test_schema_runs, section_pre_data => 1, },
 		unlike => { exclude_dump_test_schema => 1, },
@@ -1085,7 +1085,7 @@ my %tests = (
 		create_sql => 'COMMENT ON TEXT SEARCH TEMPLATE dump_test.alt_ts_temp1
 					   IS \'comment on text search template\';',
 		regexp =>
-		  qr/^COMMENT ON TEXT SEARCH TEMPLATE dump_test.alt_ts_temp1 IS 'comment on text search template';/m,
+		  qr/^\QCOMMENT ON TEXT SEARCH TEMPLATE dump_test.alt_ts_temp1 IS 'comment on text search template';\E/m,
 		like =>
 		  { %full_runs, %dump_test_schema_runs, section_pre_data => 1, },
 		unlike => { exclude_dump_test_schema => 1, },
@@ -1096,7 +1096,7 @@ my %tests = (
 		create_sql   => 'COMMENT ON TYPE dump_test.planets
 					   IS \'comment on enum type\';',
 		regexp =>
-		  qr/^COMMENT ON TYPE dump_test.planets IS 'comment on enum type';/m,
+		  qr/^\QCOMMENT ON TYPE dump_test.planets IS 'comment on enum type';\E/m,
 		like =>
 		  { %full_runs, %dump_test_schema_runs, section_pre_data => 1, },
 		unlike => { exclude_dump_test_schema => 1, },
@@ -1107,7 +1107,7 @@ my %tests = (
 		create_sql   => 'COMMENT ON TYPE dump_test.textrange
 					   IS \'comment on range type\';',
 		regexp =>
-		  qr/^COMMENT ON TYPE dump_test.textrange IS 'comment on range type';/m,
+		  qr/^\QCOMMENT ON TYPE dump_test.textrange IS 'comment on range type';\E/m,
 		like =>
 		  { %full_runs, %dump_test_schema_runs, section_pre_data => 1, },
 		unlike => { exclude_dump_test_schema => 1, },
@@ -1118,7 +1118,7 @@ my %tests = (
 		create_sql   => 'COMMENT ON TYPE dump_test.int42
 					   IS \'comment on regular type\';',
 		regexp =>
-		  qr/^COMMENT ON TYPE dump_test.int42 IS 'comment on regular type';/m,
+		  qr/^\QCOMMENT ON TYPE dump_test.int42 IS 'comment on regular type';\E/m,
 		like =>
 		  { %full_runs, %dump_test_schema_runs, section_pre_data => 1, },
 		unlike => { exclude_dump_test_schema => 1, },
@@ -1129,7 +1129,7 @@ my %tests = (
 		create_sql   => 'COMMENT ON TYPE dump_test.undefined
 					   IS \'comment on undefined type\';',
 		regexp =>
-		  qr/^COMMENT ON TYPE dump_test.undefined IS 'comment on undefined type';/m,
+		  qr/^\QCOMMENT ON TYPE dump_test.undefined IS 'comment on undefined type';\E/m,
 		like =>
 		  { %full_runs, %dump_test_schema_runs, section_pre_data => 1, },
 		unlike => { exclude_dump_test_schema => 1, },
@@ -1282,14 +1282,14 @@ my %tests = (
 
 	'INSERT INTO test_table' => {
 		regexp => qr/^
-			(?:INSERT\ INTO\ dump_test.test_table\ \(col1,\ col2,\ col3,\ col4\)\ VALUES\ \(\d,\ NULL,\ NULL,\ NULL\);\n){9}
+			(?:INSERT\ INTO\ dump_test\.test_table\ \(col1,\ col2,\ col3,\ col4\)\ VALUES\ \(\d,\ NULL,\ NULL,\ NULL\);\n){9}
 			/xm,
 		like => { column_inserts => 1, },
 	},
 
 	'INSERT INTO test_second_table' => {
 		regexp => qr/^
-			(?:INSERT\ INTO\ dump_test.test_second_table\ \(col1,\ col2\)
+			(?:INSERT\ INTO\ dump_test\.test_second_table\ \(col1,\ col2\)
 			   \ VALUES\ \(\d,\ '\d'\);\n){9}/xm,
 		like => { column_inserts => 1, },
 	},
@@ -1353,7 +1353,7 @@ my %tests = (
 	'CREATE DATABASE postgres' => {
 		regexp => qr/^
 			\QCREATE DATABASE postgres WITH TEMPLATE = template0 \E
-			.*;/xm,
+			.+;/xm,
 		like => { createdb => 1, },
 	},
 
@@ -1362,7 +1362,7 @@ my %tests = (
 		create_sql   => 'CREATE DATABASE dump_test;',
 		regexp       => qr/^
 			\QCREATE DATABASE dump_test WITH TEMPLATE = template0 \E
-			.*;/xm,
+			.+;/xm,
 		like => { pg_dumpall_dbprivs => 1, },
 	},
 
@@ -1540,11 +1540,11 @@ my %tests = (
 		create_order => 33,
 		create_sql   => 'CREATE EVENT TRIGGER test_event_trigger
 					   ON ddl_command_start
-					   EXECUTE PROCEDURE dump_test.event_trigger_func();',
+					   EXECUTE FUNCTION dump_test.event_trigger_func();',
 		regexp => qr/^
 			\QCREATE EVENT TRIGGER test_event_trigger \E
 			\QON ddl_command_start\E
-			\n\s+\QEXECUTE PROCEDURE dump_test.event_trigger_func();\E
+			\n\s+\QEXECUTE FUNCTION dump_test.event_trigger_func();\E
 			/xm,
 		like => { %full_runs, section_post_data => 1, },
 	},
@@ -1554,11 +1554,11 @@ my %tests = (
 		create_sql   => 'CREATE TRIGGER test_trigger
 					   BEFORE INSERT ON dump_test.test_table
 					   FOR EACH ROW WHEN (NEW.col1 > 10)
-					   EXECUTE PROCEDURE dump_test.trigger_func();',
+					   EXECUTE FUNCTION dump_test.trigger_func();',
 		regexp => qr/^
 			\QCREATE TRIGGER test_trigger BEFORE INSERT ON dump_test.test_table \E
 			\QFOR EACH ROW WHEN ((new.col1 > 10)) \E
-			\QEXECUTE PROCEDURE dump_test.trigger_func();\E
+			\QEXECUTE FUNCTION dump_test.trigger_func();\E
 			/xm,
 		like => {
 			%full_runs,
@@ -1620,7 +1620,7 @@ my %tests = (
 	'CREATE TYPE dump_test.int42' => {
 		create_order => 39,
 		create_sql   => 'CREATE TYPE dump_test.int42;',
-		regexp       => qr/^CREATE TYPE dump_test.int42;/m,
+		regexp       => qr/^\QCREATE TYPE dump_test.int42;\E/m,
 		like =>
 		  { %full_runs, %dump_test_schema_runs, section_pre_data => 1, },
 		unlike => { exclude_dump_test_schema => 1, },
@@ -1774,6 +1774,20 @@ my %tests = (
 		unlike => { exclude_dump_test_schema => 1, },
 	},
 
+	'CREATE FUNCTION ... SUPPORT' => {
+		create_order => 41,
+		create_sql =>
+		  'CREATE FUNCTION dump_test.func_with_support() RETURNS int LANGUAGE sql AS $$ SELECT 1 $$ SUPPORT varchar_support;',
+		regexp => qr/^
+			\QCREATE FUNCTION dump_test.func_with_support() RETURNS integer\E
+			\n\s+\QLANGUAGE sql SUPPORT varchar_support\E
+			\n\s+AS\ \$\$\Q SELECT 1 \E\$\$;
+			/xm,
+		like =>
+		  { %full_runs, %dump_test_schema_runs, section_pre_data => 1, },
+		unlike => { exclude_dump_test_schema => 1, },
+	},
+
 	'CREATE PROCEDURE dump_test.ptest1' => {
 		create_order => 41,
 		create_sql   => 'CREATE PROCEDURE dump_test.ptest1(a int)
@@ -1832,7 +1846,7 @@ my %tests = (
 	'CREATE TYPE dump_test.undefined' => {
 		create_order => 39,
 		create_sql   => 'CREATE TYPE dump_test.undefined;',
-		regexp       => qr/^CREATE TYPE dump_test.undefined;/m,
+		regexp       => qr/^\QCREATE TYPE dump_test.undefined;\E/m,
 		like =>
 		  { %full_runs, %dump_test_schema_runs, section_pre_data => 1, },
 		unlike => { exclude_dump_test_schema => 1, },
@@ -1883,9 +1897,9 @@ my %tests = (
 	'CREATE TRANSFORM FOR int' => {
 		create_order => 34,
 		create_sql =>
-		  'CREATE TRANSFORM FOR int LANGUAGE SQL (FROM SQL WITH FUNCTION varchar_transform(internal), TO SQL WITH FUNCTION int4recv(internal));',
+		  'CREATE TRANSFORM FOR int LANGUAGE SQL (FROM SQL WITH FUNCTION prsd_lextype(internal), TO SQL WITH FUNCTION int4recv(internal));',
 		regexp =>
-		  qr/CREATE TRANSFORM FOR integer LANGUAGE sql \(FROM SQL WITH FUNCTION pg_catalog\.varchar_transform\(internal\), TO SQL WITH FUNCTION pg_catalog\.int4recv\(internal\)\);/m,
+		  qr/CREATE TRANSFORM FOR integer LANGUAGE sql \(FROM SQL WITH FUNCTION pg_catalog\.prsd_lextype\(internal\), TO SQL WITH FUNCTION pg_catalog\.int4recv\(internal\)\);/m,
 		like => { %full_runs, section_pre_data => 1, },
 	},
 
@@ -2651,7 +2665,7 @@ my %tests = (
 
 	'DROP ROLE pg_' => {
 		regexp => qr/^
-			\QDROP ROLE pg_\E.*;
+			\QDROP ROLE pg_\E.+;
 			/xm,
 
 		# this shouldn't ever get emitted anywhere
@@ -2770,7 +2784,7 @@ my %tests = (
 		create_sql   => 'GRANT SELECT ON TABLE dump_test.test_table
 						   TO regress_dump_test_role;',
 		regexp =>
-		  qr/^GRANT SELECT ON TABLE dump_test.test_table TO regress_dump_test_role;/m,
+		  qr/^\QGRANT SELECT ON TABLE dump_test.test_table TO regress_dump_test_role;\E/m,
 		like => {
 			%full_runs,
 			%dump_test_schema_runs,
@@ -2790,7 +2804,7 @@ my %tests = (
 						   TABLE dump_test.measurement
 						   TO regress_dump_test_role;',
 		regexp =>
-		  qr/^GRANT SELECT ON TABLE dump_test.measurement TO regress_dump_test_role;/m,
+		  qr/^\QGRANT SELECT ON TABLE dump_test.measurement TO regress_dump_test_role;\E/m,
 		like =>
 		  { %full_runs, %dump_test_schema_runs, section_pre_data => 1, },
 		unlike => {
@@ -2805,7 +2819,7 @@ my %tests = (
 						   TABLE dump_test_second_schema.measurement_y2006m2
 						   TO regress_dump_test_role;',
 		regexp =>
-		  qr/^GRANT SELECT ON TABLE dump_test_second_schema.measurement_y2006m2 TO regress_dump_test_role;/m,
+		  qr/^\QGRANT SELECT ON TABLE dump_test_second_schema.measurement_y2006m2 TO regress_dump_test_role;\E/m,
 		like => {
 			%full_runs,
 			role             => 1,
@@ -2880,7 +2894,7 @@ my %tests = (
 						   procost,
 						   prorows,
 						   provariadic,
-						   protransform,
+						   prosupport,
 						   prokind,
 						   prosecdef,
 						   proleakproof,
@@ -2912,7 +2926,7 @@ my %tests = (
 		\QGRANT SELECT(procost) ON TABLE pg_catalog.pg_proc TO PUBLIC;\E\n.*
 		\QGRANT SELECT(prorows) ON TABLE pg_catalog.pg_proc TO PUBLIC;\E\n.*
 		\QGRANT SELECT(provariadic) ON TABLE pg_catalog.pg_proc TO PUBLIC;\E\n.*
-		\QGRANT SELECT(protransform) ON TABLE pg_catalog.pg_proc TO PUBLIC;\E\n.*
+		\QGRANT SELECT(prosupport) ON TABLE pg_catalog.pg_proc TO PUBLIC;\E\n.*
 		\QGRANT SELECT(prokind) ON TABLE pg_catalog.pg_proc TO PUBLIC;\E\n.*
 		\QGRANT SELECT(prosecdef) ON TABLE pg_catalog.pg_proc TO PUBLIC;\E\n.*
 		\QGRANT SELECT(proleakproof) ON TABLE pg_catalog.pg_proc TO PUBLIC;\E\n.*
@@ -2948,7 +2962,7 @@ my %tests = (
 	},
 
 	'REFRESH MATERIALIZED VIEW matview' => {
-		regexp => qr/^REFRESH MATERIALIZED VIEW dump_test.matview;/m,
+		regexp => qr/^\QREFRESH MATERIALIZED VIEW dump_test.matview;\E/m,
 		like =>
 		  { %full_runs, %dump_test_schema_runs, section_post_data => 1, },
 		unlike => {
@@ -3015,7 +3029,7 @@ my %tests = (
 		create_order => 45,
 		create_sql   => 'REVOKE SELECT ON TABLE pg_proc FROM public;',
 		regexp =>
-		  qr/^REVOKE SELECT ON TABLE pg_catalog.pg_proc FROM PUBLIC;/m,
+		  qr/^\QREVOKE SELECT ON TABLE pg_catalog.pg_proc FROM PUBLIC;\E/m,
 		like => { %full_runs, section_pre_data => 1, },
 		unlike => { no_privs => 1, },
 	},

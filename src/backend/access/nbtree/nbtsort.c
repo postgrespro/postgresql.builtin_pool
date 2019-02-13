@@ -57,6 +57,7 @@
 
 #include "postgres.h"
 
+#include "access/heapam.h"
 #include "access/nbtree.h"
 #include "access/parallel.h"
 #include "access/relscan.h"
@@ -157,7 +158,7 @@ typedef struct BTShared
 	/*
 	 * This variable-sized field must come last.
 	 *
-	 * See _bt_parallel_estimate_shared().
+	 * See _bt_parallel_estimate_shared() and heap_parallelscan_estimate().
 	 */
 	ParallelHeapScanDescData heapdesc;
 } BTShared;
@@ -1404,15 +1405,8 @@ _bt_end_parallel(BTLeader *btleader)
 static Size
 _bt_parallel_estimate_shared(Snapshot snapshot)
 {
-	if (!IsMVCCSnapshot(snapshot))
-	{
-		Assert(snapshot == SnapshotAny);
-		return sizeof(BTShared);
-	}
-
-	return add_size(offsetof(BTShared, heapdesc) +
-					offsetof(ParallelHeapScanDescData, phs_snapshot_data),
-					EstimateSnapshotSpace(snapshot));
+	return add_size(offsetof(BTShared, heapdesc),
+					heap_parallelscan_estimate(snapshot));
 }
 
 /*
@@ -1556,7 +1550,7 @@ _bt_parallel_build_main(dsm_segment *seg, shm_toc *toc)
 	}
 
 	/* Open relations within worker */
-	heapRel = heap_open(btshared->heaprelid, heapLockmode);
+	heapRel = table_open(btshared->heaprelid, heapLockmode);
 	indexRel = index_open(btshared->indexrelid, indexLockmode);
 
 	/* Initialize worker's own spool */
@@ -1601,7 +1595,7 @@ _bt_parallel_build_main(dsm_segment *seg, shm_toc *toc)
 #endif							/* BTREE_BUILD_STATS */
 
 	index_close(indexRel, indexLockmode);
-	heap_close(heapRel, heapLockmode);
+	table_close(heapRel, heapLockmode);
 }
 
 /*

@@ -22,7 +22,7 @@
  */
 #include "postgres.h"
 
-#include "access/heapam.h"
+#include "access/table.h"
 #include "utils/queryenvironment.h"
 #include "utils/rel.h"
 
@@ -135,9 +135,9 @@ ENRMetadataGetTupDesc(EphemeralNamedRelationMetadata enrmd)
 	{
 		Relation	relation;
 
-		relation = heap_open(enrmd->reliddesc, NoLock);
+		relation = table_open(enrmd->reliddesc, NoLock);
 		tupdesc = relation->rd_att;
-		heap_close(relation, NoLock);
+		table_close(relation, NoLock);
 	}
 
 	return tupdesc;

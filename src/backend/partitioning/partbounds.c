@@ -13,6 +13,7 @@
 */
 #include "postgres.h"
 
+#include "access/heapam.h"
 #include "catalog/partition.h"
 #include "catalog/pg_inherits.h"
 #include "catalog/pg_type.h"
@@ -21,7 +22,6 @@
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
-#include "optimizer/clauses.h"
 #include "parser/parse_coerce.h"
 #include "partitioning/partprune.h"
 #include "partitioning/partbounds.h"
@@ -1212,7 +1212,7 @@ check_default_partition_contents(Relation parent, Relation default_rel,
 		/* Lock already taken above. */
 		if (part_relid != RelationGetRelid(default_rel))
 		{
-			part_rel = heap_open(part_relid, NoLock);
+			part_rel = table_open(part_relid, NoLock);
 
 			/*
 			 * If the partition constraints on default partition child imply
@@ -1226,7 +1226,7 @@ check_default_partition_contents(Relation parent, Relation default_rel,
 						(errmsg("updated partition constraint for default partition \"%s\" is implied by existing constraints",
 								RelationGetRelationName(part_rel))));
 
-				heap_close(part_rel, NoLock);
+				table_close(part_rel, NoLock);
 				continue;
 			}
 		}
@@ -1247,7 +1247,7 @@ check_default_partition_contents(Relation parent, Relation default_rel,
 								RelationGetRelationName(default_rel))));
 
 			if (RelationGetRelid(default_rel) != RelationGetRelid(part_rel))
-				heap_close(part_rel, NoLock);
+				table_close(part_rel, NoLock);
 
 			continue;
 		}
@@ -1295,7 +1295,7 @@ check_default_partition_contents(Relation parent, Relation default_rel,
 		FreeExecutorState(estate);
 
 		if (RelationGetRelid(default_rel) != RelationGetRelid(part_rel))
-			heap_close(part_rel, NoLock);	/* keep the lock until commit */
+			table_close(part_rel, NoLock);	/* keep the lock until commit */
 	}
 }
 

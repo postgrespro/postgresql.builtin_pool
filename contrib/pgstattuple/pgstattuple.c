@@ -26,6 +26,7 @@
 
 #include "access/gist_private.h"
 #include "access/hash.h"
+#include "access/heapam.h"
 #include "access/nbtree.h"
 #include "access/relscan.h"
 #include "catalog/namespace.h"
@@ -35,7 +36,6 @@
 #include "storage/bufmgr.h"
 #include "storage/lmgr.h"
 #include "utils/builtins.h"
-#include "utils/tqual.h"
 #include "utils/varlena.h"
 
 PG_MODULE_MAGIC;

@@ -40,7 +40,7 @@ usage(const char *progname)
 	printf(_("  -?, --help             show this help, then exit\n"));
 	printf(_("\nIf no data directory (DATADIR) is specified, "
 			 "the environment variable PGDATA\nis used.\n\n"));
-	printf(_("Report bugs to <pgsql-bugs@postgresql.org>.\n"));
+	printf(_("Report bugs to <pgsql-bugs@lists.postgresql.org>.\n"));
 }
 
 
@@ -304,6 +304,8 @@ main(int argc, char *argv[])
 		   ControlFile->MaxConnections);
 	printf(_("max_worker_processes setting:         %d\n"),
 		   ControlFile->max_worker_processes);
+	printf(_("max_wal_senders setting:              %d\n"),
+		   ControlFile->max_wal_senders);
 	printf(_("max_prepared_xacts setting:           %d\n"),
 		   ControlFile->max_prepared_xacts);
 	printf(_("max_locks_per_xact setting:           %d\n"),

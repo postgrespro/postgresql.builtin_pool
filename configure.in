@@ -17,7 +17,7 @@ dnl Read the Autoconf manual for details.
 dnl
 m4_pattern_forbid(^PGAC_)dnl to catch undefined macros
 
-AC_INIT([PostgreSQL], [12devel], [pgsql-bugs@postgresql.org])
+AC_INIT([PostgreSQL], [12devel], [pgsql-bugs@lists.postgresql.org])
 
 m4_if(m4_defn([m4_PACKAGE_VERSION]), [2.69], [], [m4_fatal([Autoconf version 2.69 is required.
 Untested combinations of 'autoconf' and PostgreSQL versions are not
@@ -79,7 +79,7 @@ PostgreSQL has apparently not been ported to your platform yet.
 To try a manual configuration, look into the src/template directory
 for a similar platform and use the '--with-template=' option.
 
-Please also contact <pgsql-bugs@postgresql.org> to see about
+Please also contact <pgsql-bugs@lists.postgresql.org> to see about
 rectifying this.  Include the above 'checking host system type...'
 line.
 *******************************************************************
@@ -917,6 +917,7 @@ PGAC_ARG_BOOL(with, libxml, no, [build with XML support],
 
 if test "$with_libxml" = yes ; then
   PGAC_PATH_PROGS(XML2_CONFIG, xml2-config)
+  AC_ARG_VAR(XML2_CONFIG, [path to xml2-config utility])dnl
   if test -n "$XML2_CONFIG"; then
     for pgac_option in `$XML2_CONFIG --cflags`; do
       case $pgac_option in
@@ -1078,11 +1079,11 @@ fi
 # other libraries can pull in the pthread functions as a side-effect.  We
 # want to use the -pthread or similar flags directly, and not rely on
 # the side-effects of linking with some other library.
-#
-# note: We have to use AS_IF here rather than plain if. The AC_CHECK_HEADER
-# invocation below is the first one in the script, and autoconf generates
-# additional code for that, which must not be inside the if-block. AS_IF
-# knows how to do that.
+
+dnl note: We have to use AS_IF here rather than plain if. The AC_CHECK_HEADER
+dnl invocation below is the first one in the script, and autoconf generates
+dnl additional code for that, which must not be inside the if-block. AS_IF
+dnl knows how to do that.
 AS_IF([test "$enable_thread_safety" = yes -a "$PORTNAME" != "win32"],
 [ # then
 AX_PTHREAD	# set thread flags
@@ -1563,7 +1564,7 @@ if test "$PORTNAME" != "win32"; then
    AH_VERBATIM([_DARWIN_USE_64_BIT_INODE],[])
 fi
 
-# Check for largefile support (must be after AC_SYS_LARGEFILE)
+dnl Check for largefile support (must be after AC_SYS_LARGEFILE)
 AC_CHECK_SIZEOF([off_t])
 
 # If we don't have largefile support, can't handle segsize >= 2GB.
@@ -1617,6 +1618,7 @@ AC_CHECK_FUNCS(m4_normalize([
 	strsignal
 	symlink
 	sync_file_range
+	uselocale
 	utime
 	utimes
 	wcstombs_l
@@ -1737,9 +1739,9 @@ else
   AC_LIBOBJ(getopt_long)
 fi
 
-# Solaris' getopt() doesn't do what we want for long options, so always use
-# our version on that platform.
-if test "$PORTNAME" = "solaris"; then
+# On OpenBSD and Solaris, getopt() doesn't do what we want for long options
+# (i.e., allow '-' as a flag character), so use our version on those platforms.
+if test "$PORTNAME" = "openbsd" -o "$PORTNAME" = "solaris"; then
   AC_LIBOBJ(getopt)
 fi
 
@@ -1752,6 +1754,7 @@ fi
 
 # Win32 (really MinGW) support
 if test "$PORTNAME" = "win32"; then
+  AC_CHECK_FUNCS(_configthreadlocale)
   AC_REPLACE_FUNCS(gettimeofday)
   AC_LIBOBJ(dirmod)
   AC_LIBOBJ(kill)

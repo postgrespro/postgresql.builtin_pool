@@ -20,7 +20,9 @@
  */
 #include "postgres.h"
 
+#include "access/relation.h"
 #include "access/sysattr.h"
+#include "access/table.h"
 #include "catalog/dependency.h"
 #include "catalog/pg_type.h"
 #include "commands/trigger.h"
@@ -178,7 +180,7 @@ AcquireRewriteLocks(Query *parsetree,
 				else
 					lockmode = rte->rellockmode;
 
-				rel = heap_open(rte->relid, lockmode);
+				rel = table_open(rte->relid, lockmode);
 
 				/*
 				 * While we have the relation open, update the RTE's relkind,
@@ -186,7 +188,7 @@ AcquireRewriteLocks(Query *parsetree,
 				 */
 				rte->relkind = rel->rd_rel->relkind;
 
-				heap_close(rel, NoLock);
+				table_close(rel, NoLock);
 				break;
 
 			case RTE_JOIN:
@@ -949,7 +951,7 @@ process_matched_tle(TargetEntry *src_tle,
 
 	/*----------
 	 * Multiple assignments to same attribute.  Allow only if all are
-	 * FieldStore or ArrayRef assignment operations.  This is a bit
+	 * FieldStore or SubscriptingRef assignment operations.  This is a bit
 	 * tricky because what we may actually be looking at is a nest of
 	 * such nodes; consider
 	 *		UPDATE tab SET col.fld1.subfld1 = x, col.fld2.subfld2 = y
@@ -957,7 +959,7 @@ process_matched_tle(TargetEntry *src_tle,
 	 *		FieldStore(col, fld1, FieldStore(placeholder, subfld1, x))
 	 *		FieldStore(col, fld2, FieldStore(placeholder, subfld2, y))
 	 * However, we can ignore the substructure and just consider the top
-	 * FieldStore or ArrayRef from each assignment, because it works to
+	 * FieldStore or SubscriptingRef from each assignment, because it works to
 	 * combine these as
 	 *		FieldStore(FieldStore(col, fld1,
 	 *							  FieldStore(placeholder, subfld1, x)),
@@ -967,7 +969,7 @@ process_matched_tle(TargetEntry *src_tle,
 	 *
 	 * For FieldStore, instead of nesting we can generate a single
 	 * FieldStore with multiple target fields.  We must nest when
-	 * ArrayRefs are involved though.
+	 * SubscriptingRefs are involved though.
 	 *
 	 * As a further complication, the destination column might be a domain,
 	 * resulting in each assignment containing a CoerceToDomain node over a
@@ -1046,13 +1048,13 @@ process_matched_tle(TargetEntry *src_tle,
 		}
 		newexpr = (Node *) fstore;
 	}
-	else if (IsA(src_expr, ArrayRef))
+	else if (IsA(src_expr, SubscriptingRef))
 	{
-		ArrayRef   *aref = makeNode(ArrayRef);
+		SubscriptingRef *sbsref = makeNode(SubscriptingRef);
 
-		memcpy(aref, src_expr, sizeof(ArrayRef));
-		aref->refexpr = (Expr *) prior_expr;
-		newexpr = (Node *) aref;
+		memcpy(sbsref, src_expr, sizeof(SubscriptingRef));
+		sbsref->refexpr = (Expr *) prior_expr;
+		newexpr = (Node *) sbsref;
 	}
 	else
 	{
@@ -1089,14 +1091,16 @@ get_assignment_input(Node *node)
 
 		return (Node *) fstore->arg;
 	}
-	else if (IsA(node, ArrayRef))
+	else if (IsA(node, SubscriptingRef))
 	{
-		ArrayRef   *aref = (ArrayRef *) node;
+		SubscriptingRef *sbsref = (SubscriptingRef *) node;
 
-		if (aref->refassgnexpr == NULL)
+		if (sbsref->refassgnexpr == NULL)
 			return NULL;
-		return (Node *) aref->refexpr;
+
+		return (Node *) sbsref->refexpr;
 	}
+
 	return NULL;
 }
 
@@ -1811,7 +1815,7 @@ fireRIRrules(Query *parsetree, List *activeRIRs)
 		 * We can use NoLock here since either the parser or
 		 * AcquireRewriteLocks should have locked the rel already.
 		 */
-		rel = heap_open(rte->relid, NoLock);
+		rel = table_open(rte->relid, NoLock);
 
 		/*
 		 * Collect the RIR rules that we must apply
@@ -1858,7 +1862,7 @@ fireRIRrules(Query *parsetree, List *activeRIRs)
 			}
 		}
 
-		heap_close(rel, NoLock);
+		table_close(rel, NoLock);
 	}
 
 	/* Recurse into subqueries in WITH */
@@ -1902,7 +1906,7 @@ fireRIRrules(Query *parsetree, List *activeRIRs)
 			 rte->relkind != RELKIND_PARTITIONED_TABLE))
 			continue;
 
-		rel = heap_open(rte->relid, NoLock);
+		rel = table_open(rte->relid, NoLock);
 
 		/*
 		 * Fetch any new security quals that must be applied to this RTE.
@@ -1977,7 +1981,7 @@ fireRIRrules(Query *parsetree, List *activeRIRs)
 		if (hasSubLinks)
 			parsetree->hasSubLinks = true;
 
-		heap_close(rel, NoLock);
+		table_close(rel, NoLock);
 	}
 
 	return parsetree;
@@ -2894,7 +2898,7 @@ rewriteTargetView(Query *parsetree, Relation view)
 	 * already have the right lock!)  Since it will become the query target
 	 * relation, RowExclusiveLock is always the right thing.
 	 */
-	base_rel = heap_open(base_rte->relid, RowExclusiveLock);
+	base_rel = table_open(base_rte->relid, RowExclusiveLock);
 
 	/*
 	 * While we have the relation open, update the RTE's relkind, just in case
@@ -3279,7 +3283,7 @@ rewriteTargetView(Query *parsetree, Relation view)
 		}
 	}
 
-	heap_close(base_rel, NoLock);
+	table_close(base_rel, NoLock);
 
 	return parsetree;
 }
@@ -3389,7 +3393,7 @@ RewriteQuery(Query *parsetree, List *rewrite_events)
 		 * We can use NoLock here since either the parser or
 		 * AcquireRewriteLocks should have locked the rel already.
 		 */
-		rt_entry_relation = heap_open(rt_entry->relid, NoLock);
+		rt_entry_relation = table_open(rt_entry->relid, NoLock);
 
 		/*
 		 * Rewrite the targetlist as needed for the command type.
@@ -3614,7 +3618,7 @@ RewriteQuery(Query *parsetree, List *rewrite_events)
 					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 					 errmsg("INSERT with ON CONFLICT clause cannot be used with table that has INSERT or UPDATE rules")));
 
-		heap_close(rt_entry_relation, NoLock);
+		table_close(rt_entry_relation, NoLock);
 	}
 
 	/*

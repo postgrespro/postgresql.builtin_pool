@@ -18,6 +18,7 @@
 #include "pageinspect.h"
 
 #include "access/htup_details.h"
+#include "access/relation.h"
 #include "catalog/namespace.h"
 #include "catalog/pg_type.h"
 #include "funcapi.h"

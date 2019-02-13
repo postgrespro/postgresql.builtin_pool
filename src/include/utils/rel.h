@@ -110,12 +110,10 @@ typedef struct RelationData
 	List	   *rd_statlist;	/* list of OIDs of extended stats */
 
 	/* data managed by RelationGetIndexAttrBitmap: */
-	Bitmapset  *rd_indexattr;	/* columns used in non-projection indexes */
-	Bitmapset  *rd_projindexattr;	/* columns used in projection indexes */
+	Bitmapset  *rd_indexattr;	/* identifies columns used in indexes */
 	Bitmapset  *rd_keyattr;		/* cols that can be ref'd by foreign keys */
 	Bitmapset  *rd_pkattr;		/* cols included in primary key */
 	Bitmapset  *rd_idattr;		/* included in replica identity index */
-	Bitmapset  *rd_projidx;		/* Oids of projection indexes */
 
 	PublicationActions *rd_pubactions;	/* publication actions */
 
@@ -149,7 +147,7 @@ typedef struct RelationData
 	Oid			rd_amhandler;	/* OID of index AM's handler function */
 	MemoryContext rd_indexcxt;	/* private memory cxt for this stuff */
 	/* use "struct" here to avoid needing to include amapi.h: */
-	struct IndexAmRoutine *rd_amroutine;	/* index AM's API struct */
+	struct IndexAmRoutine *rd_indam;	/* index AM's API struct */
 	Oid		   *rd_opfamily;	/* OIDs of op families for each index col */
 	Oid		   *rd_opcintype;	/* OIDs of opclass declared input data types */
 	RegProcedure *rd_support;	/* OIDs of support procedures */
@@ -217,14 +215,6 @@ typedef struct ForeignKeyCacheInfo
 	Oid			conpfeqop[INDEX_MAX_KEYS];	/* PK = FK operator OIDs */
 } ForeignKeyCacheInfo;
 
-/*
- * Options common for all indexes
- */
-typedef struct GenericIndexOpts
-{
-	int32		vl_len_;
-	bool		recheck_on_update;
-} GenericIndexOpts;
 
 /*
  * StdRdOptions

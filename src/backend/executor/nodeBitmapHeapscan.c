@@ -37,6 +37,7 @@
 
 #include <math.h>
 
+#include "access/heapam.h"
 #include "access/relscan.h"
 #include "access/transam.h"
 #include "access/visibilitymap.h"
@@ -50,7 +51,6 @@
 #include "utils/rel.h"
 #include "utils/spccache.h"
 #include "utils/snapmgr.h"
-#include "utils/tqual.h"
 
 
 static TupleTableSlot *BitmapHeapNext(BitmapHeapScanState *node);

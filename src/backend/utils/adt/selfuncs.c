@@ -105,6 +105,7 @@
 #include "access/gin.h"
 #include "access/htup_details.h"
 #include "access/sysattr.h"
+#include "access/table.h"
 #include "catalog/index.h"
 #include "catalog/pg_am.h"
 #include "catalog/pg_collation.h"
@@ -120,12 +121,11 @@
 #include "nodes/nodeFuncs.h"
 #include "optimizer/clauses.h"
 #include "optimizer/cost.h"
+#include "optimizer/optimizer.h"
 #include "optimizer/pathnode.h"
 #include "optimizer/paths.h"
 #include "optimizer/plancat.h"
-#include "optimizer/predtest.h"
 #include "optimizer/restrictinfo.h"
-#include "optimizer/var.h"
 #include "parser/parse_clause.h"
 #include "parser/parse_coerce.h"
 #include "parser/parsetree.h"
@@ -145,7 +145,6 @@
 #include "utils/spccache.h"
 #include "utils/syscache.h"
 #include "utils/timestamp.h"
-#include "utils/tqual.h"
 #include "utils/typcache.h"
 #include "utils/varlena.h"
 
@@ -227,6 +226,8 @@ static Selectivity regex_selectivity(const char *patt, int pattlen,
 static Datum string_to_datum(const char *str, Oid datatype);
 static Const *string_to_const(const char *str, Oid datatype);
 static Const *string_to_bytea_const(const char *str, size_t str_len);
+static IndexQualInfo *deconstruct_indexqual(RestrictInfo *rinfo,
+					  IndexOptInfo *index, int indexcol);
 static List *add_predicate_to_quals(IndexOptInfo *index, List *indexQuals);
 
 
@@ -1576,17 +1577,6 @@ boolvarsel(PlannerInfo *root, Node *arg, int varRelid)
 		selec = var_eq_const(&vardata, BooleanEqualOperator,
 							 BoolGetDatum(true), false, true, false);
 	}
-	else if (is_funcclause(arg))
-	{
-		/*
-		 * If we have no stats and it's a function call, estimate 0.3333333.
-		 * This seems a pretty unprincipled choice, but Postgres has been
-		 * using that estimate for function calls since 1992.  The hoariness
-		 * of this behavior suggests that we should not be in too much hurry
-		 * to use another value.
-		 */
-		selec = 0.3333333;
-	}
 	else
 	{
 		/* Otherwise, the default estimate is 0.5 */
@@ -1796,6 +1786,15 @@ nulltestsel(PlannerInfo *root, NullTestType nulltesttype, Node *arg,
 					 (int) nulltesttype);
 				return (Selectivity) 0; /* keep compiler quiet */
 		}
+	}
+	else if (vardata.var && IsA(vardata.var, Var) &&
+			 ((Var *) vardata.var)->varattno < 0)
+	{
+		/*
+		 * There are no stats for system columns, but we know they are never
+		 * NULL.
+		 */
+		selec = (nulltesttype == IS_NULL) ? 0.0 : 1.0;
 	}
 	else
 	{
@@ -3492,7 +3491,7 @@ estimate_num_groups(PlannerInfo *root, List *groupExprs, double input_rows,
 		 * pointless to worry too much about this without much better
 		 * estimates for SRF output rowcounts than we have today.)
 		 */
-		this_srf_multiplier = expression_returns_set_rows(groupexpr);
+		this_srf_multiplier = expression_returns_set_rows(root, groupexpr);
 		if (srf_multiplier < this_srf_multiplier)
 			srf_multiplier = this_srf_multiplier;
 
@@ -4870,6 +4869,10 @@ examine_variable(PlannerInfo *root, Node *node, int varRelid,
 		 * it to expressional index columns, in hopes of finding some
 		 * statistics.
 		 *
+		 * Note that we consider all index columns including INCLUDE columns,
+		 * since there could be stats for such columns.  But the test for
+		 * uniqueness needs to be warier.
+		 *
 		 * XXX it's conceivable that there are multiple matches with different
 		 * index opfamilies; if so, we need to pick one that matches the
 		 * operator we are estimating for.  FIXME later.
@@ -4905,6 +4908,7 @@ examine_variable(PlannerInfo *root, Node *node, int varRelid,
 						 */
 						if (index->unique &&
 							index->nkeycolumns == 1 &&
+							pos == 0 &&
 							(index->indpred == NIL || index->predOK))
 							vardata->isunique = true;
 
@@ -5546,7 +5550,7 @@ get_actual_variable_range(PlannerInfo *root, VariableStatData *vardata,
 			 * already have at least AccessShareLock on the table, but not
 			 * necessarily on the index.
 			 */
-			heapRel = heap_open(rte->relid, NoLock);
+			heapRel = table_open(rte->relid, NoLock);
 			indexRel = index_open(index->indexoid, AccessShareLock);
 
 			/* extract index key information from the index's pg_index info */
@@ -5667,7 +5671,7 @@ get_actual_variable_range(PlannerInfo *root, VariableStatData *vardata,
 			ExecDropSingleTupleTableSlot(slot);
 
 			index_close(indexRel, AccessShareLock);
-			heap_close(heapRel, NoLock);
+			table_close(heapRel, NoLock);
 
 			MemoryContextSwitchTo(oldcontext);
 			FreeExecutorState(estate);
@@ -6566,21 +6570,72 @@ string_to_bytea_const(const char *str, size_t str_len)
  *-------------------------------------------------------------------------
  */
 
+/* Extract the actual indexquals (as RestrictInfos) from an IndexClause list */
+static List *
+get_index_quals(List *indexclauses)
+{
+	List	   *result = NIL;
+	ListCell   *lc;
+
+	foreach(lc, indexclauses)
+	{
+		IndexClause *iclause = lfirst_node(IndexClause, lc);
+
+		if (iclause->indexquals == NIL)
+		{
+			/* rinfo->clause is directly usable as an indexqual */
+			result = lappend(result, iclause->rinfo);
+		}
+		else
+		{
+			/* report the derived indexquals */
+			result = list_concat(result, list_copy(iclause->indexquals));
+		}
+	}
+	return result;
+}
+
 List *
 deconstruct_indexquals(IndexPath *path)
 {
 	List	   *result = NIL;
 	IndexOptInfo *index = path->indexinfo;
-	ListCell   *lcc,
-			   *lci;
+	ListCell   *lc;
 
-	forboth(lcc, path->indexquals, lci, path->indexqualcols)
+	foreach(lc, path->indexclauses)
 	{
-		RestrictInfo *rinfo = lfirst_node(RestrictInfo, lcc);
-		int			indexcol = lfirst_int(lci);
+		IndexClause *iclause = lfirst_node(IndexClause, lc);
+		int			indexcol = iclause->indexcol;
+		IndexQualInfo *qinfo;
+
+		if (iclause->indexquals == NIL)
+		{
+			/* rinfo->clause is directly usable as an indexqual */
+			qinfo = deconstruct_indexqual(iclause->rinfo, index, indexcol);
+			result = lappend(result, qinfo);
+		}
+		else
+		{
+			/* Process the derived indexquals */
+			ListCell   *lc2;
+
+			foreach(lc2, iclause->indexquals)
+			{
+				RestrictInfo *rinfo = lfirst_node(RestrictInfo, lc2);
+
+				qinfo = deconstruct_indexqual(rinfo, index, indexcol);
+				result = lappend(result, qinfo);
+			}
+		}
+	}
+	return result;
+}
+
+static IndexQualInfo *
+deconstruct_indexqual(RestrictInfo *rinfo, IndexOptInfo *index, int indexcol)
+{
+	{
 		Expr	   *clause;
-		Node	   *leftop,
-				   *rightop;
 		IndexQualInfo *qinfo;
 
 		clause = rinfo->clause;
@@ -6592,57 +6647,25 @@ deconstruct_indexquals(IndexPath *path)
 		if (IsA(clause, OpExpr))
 		{
 			qinfo->clause_op = ((OpExpr *) clause)->opno;
-			leftop = get_leftop(clause);
-			rightop = get_rightop(clause);
-			if (match_index_to_operand(leftop, indexcol, index))
-			{
-				qinfo->varonleft = true;
-				qinfo->other_operand = rightop;
-			}
-			else
-			{
-				Assert(match_index_to_operand(rightop, indexcol, index));
-				qinfo->varonleft = false;
-				qinfo->other_operand = leftop;
-			}
+			qinfo->other_operand = get_rightop(clause);
 		}
 		else if (IsA(clause, RowCompareExpr))
 		{
 			RowCompareExpr *rc = (RowCompareExpr *) clause;
 
 			qinfo->clause_op = linitial_oid(rc->opnos);
-			/* Examine only first columns to determine left/right sides */
-			if (match_index_to_operand((Node *) linitial(rc->largs),
-									   indexcol, index))
-			{
-				qinfo->varonleft = true;
-				qinfo->other_operand = (Node *) rc->rargs;
-			}
-			else
-			{
-				Assert(match_index_to_operand((Node *) linitial(rc->rargs),
-											  indexcol, index));
-				qinfo->varonleft = false;
-				qinfo->other_operand = (Node *) rc->largs;
-			}
+			qinfo->other_operand = (Node *) rc->rargs;
 		}
 		else if (IsA(clause, ScalarArrayOpExpr))
 		{
 			ScalarArrayOpExpr *saop = (ScalarArrayOpExpr *) clause;
 
 			qinfo->clause_op = saop->opno;
-			/* index column is always on the left in this case */
-			Assert(match_index_to_operand((Node *) linitial(saop->args),
-										  indexcol, index));
-			qinfo->varonleft = true;
 			qinfo->other_operand = (Node *) lsecond(saop->args);
 		}
 		else if (IsA(clause, NullTest))
 		{
 			qinfo->clause_op = InvalidOid;
-			Assert(match_index_to_operand((Node *) ((NullTest *) clause)->arg,
-										  indexcol, index));
-			qinfo->varonleft = true;
 			qinfo->other_operand = NULL;
 		}
 		else
@@ -6651,9 +6674,8 @@ deconstruct_indexquals(IndexPath *path)
 				 (int) nodeTag(clause));
 		}
 
-		result = lappend(result, qinfo);
+		return qinfo;
 	}
-	return result;
 }
 
 /*
@@ -6723,7 +6745,7 @@ genericcostestimate(PlannerInfo *root,
 					GenericCosts *costs)
 {
 	IndexOptInfo *index = path->indexinfo;
-	List	   *indexQuals = path->indexquals;
+	List	   *indexQuals = get_index_quals(path->indexclauses);
 	List	   *indexOrderBys = path->indexorderbys;
 	Cost		indexStartupCost;
 	Cost		indexTotalCost;
@@ -7044,14 +7066,8 @@ btcostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
 			}
 		}
 
-		/*
-		 * We would need to commute the clause_op if not varonleft, except
-		 * that we only care if it's equality or not, so that refinement is
-		 * unnecessary.
-		 */
-		clause_op = qinfo->clause_op;
-
 		/* check for equality operator */
+		clause_op = qinfo->clause_op;
 		if (OidIsValid(clause_op))
 		{
 			op_strategy = get_op_opfamily_strategy(clause_op,
@@ -7231,7 +7247,7 @@ btcostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
 			if (index->reverse_sort[0])
 				varCorrelation = -varCorrelation;
 
-			if (index->ncolumns > 1)
+			if (index->nkeycolumns > 1)
 				costs.indexCorrelation = varCorrelation * 0.75;
 			else
 				costs.indexCorrelation = varCorrelation;
@@ -7552,12 +7568,6 @@ gincost_opexpr(PlannerInfo *root,
 	Oid			clause_op = qinfo->clause_op;
 	Node	   *operand = qinfo->other_operand;
 
-	if (!qinfo->varonleft)
-	{
-		/* must commute the operator */
-		clause_op = get_commutator(clause_op);
-	}
-
 	/* aggressively reduce to a constant, and look through relabeling */
 	operand = estimate_expression_value(root, operand);
 
@@ -7720,7 +7730,7 @@ gincostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
 				double *indexPages)
 {
 	IndexOptInfo *index = path->indexinfo;
-	List	   *indexQuals = path->indexquals;
+	List	   *indexQuals = get_index_quals(path->indexclauses);
 	List	   *indexOrderBys = path->indexorderbys;
 	List	   *qinfos;
 	ListCell   *l;
@@ -7823,26 +7833,11 @@ gincostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
 		numEntries = 1;
 
 	/*
-	 * Include predicate in selectivityQuals (should match
-	 * genericcostestimate)
+	 * If the index is partial, AND the index predicate with the index-bound
+	 * quals to produce a more accurate idea of the number of rows covered by
+	 * the bound conditions.
 	 */
-	if (index->indpred != NIL)
-	{
-		List	   *predExtraQuals = NIL;
-
-		foreach(l, index->indpred)
-		{
-			Node	   *predQual = (Node *) lfirst(l);
-			List	   *oneQual = list_make1(predQual);
-
-			if (!predicate_implied_by(oneQual, indexQuals, false))
-				predExtraQuals = list_concat(predExtraQuals, oneQual);
-		}
-		/* list_concat avoids modifying the passed-in indexQuals list */
-		selectivityQuals = list_concat(predExtraQuals, indexQuals);
-	}
-	else
-		selectivityQuals = indexQuals;
+	selectivityQuals = add_predicate_to_quals(index, indexQuals);
 
 	/* Estimate the fraction of main-table tuples that will be visited */
 	*indexSelectivity = clauselist_selectivity(root, selectivityQuals,
@@ -8045,7 +8040,7 @@ brincostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
 				 double *indexPages)
 {
 	IndexOptInfo *index = path->indexinfo;
-	List	   *indexQuals = path->indexquals;
+	List	   *indexQuals = get_index_quals(path->indexclauses);
 	double		numPages = index->pages;
 	RelOptInfo *baserel = index->rel;
 	RangeTblEntry *rte = planner_rt_fetch(baserel->relid, root);

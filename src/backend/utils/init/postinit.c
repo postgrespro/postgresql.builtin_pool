@@ -19,6 +19,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 
+#include "access/genam.h"
 #include "access/heapam.h"
 #include "access/htup_details.h"
 #include "access/session.h"
@@ -60,7 +61,6 @@
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
 #include "utils/timeout.h"
-#include "utils/tqual.h"
 
 
 static HeapTuple GetDatabaseTuple(const char *dbname);
@@ -112,7 +112,7 @@ GetDatabaseTuple(const char *dbname)
 	 * built the critical shared relcache entries (i.e., we're starting up
 	 * without a shared relcache cache file).
 	 */
-	relation = heap_open(DatabaseRelationId, AccessShareLock);
+	relation = table_open(DatabaseRelationId, AccessShareLock);
 	scan = systable_beginscan(relation, DatabaseNameIndexId,
 							  criticalSharedRelcachesBuilt,
 							  NULL,
@@ -126,7 +126,7 @@ GetDatabaseTuple(const char *dbname)
 
 	/* all done */
 	systable_endscan(scan);
-	heap_close(relation, AccessShareLock);
+	table_close(relation, AccessShareLock);
 
 	return tuple;
 }
@@ -155,7 +155,7 @@ GetDatabaseTupleByOid(Oid dboid)
 	 * built the critical shared relcache entries (i.e., we're starting up
 	 * without a shared relcache cache file).
 	 */
-	relation = heap_open(DatabaseRelationId, AccessShareLock);
+	relation = table_open(DatabaseRelationId, AccessShareLock);
 	scan = systable_beginscan(relation, DatabaseOidIndexId,
 							  criticalSharedRelcachesBuilt,
 							  NULL,
@@ -169,7 +169,7 @@ GetDatabaseTupleByOid(Oid dboid)
 
 	/* all done */
 	systable_endscan(scan);
-	heap_close(relation, AccessShareLock);
+	table_close(relation, AccessShareLock);
 
 	return tuple;
 }
@@ -527,7 +527,7 @@ InitializeMaxBackends(void)
 
 	/* the extra unit accounts for the autovacuum launcher */
 	MaxBackends = MaxConnections + autovacuum_max_workers + 1 +
-		max_worker_processes;
+		max_worker_processes + max_wal_senders;
 
 	/* internal error because the values were all checked previously */
 	if (MaxBackends > MAX_BACKENDS)
@@ -811,12 +811,11 @@ InitPostgres(const char *in_dbname, Oid dboid, const char *username,
 	}
 
 	/*
-	 * The last few connection slots are reserved for superusers.  Although
-	 * replication connections currently require superuser privileges, we
-	 * don't allow them to consume the reserved slots, which are intended for
-	 * interactive use.
+	 * The last few connection slots are reserved for superusers.  Replication
+	 * connections are drawn from slots reserved with max_wal_senders and not
+	 * limited by max_connections or superuser_reserved_connections.
 	 */
-	if ((!am_superuser || am_walsender) &&
+	if (!am_superuser && !am_walsender &&
 		ReservedBackends > 0 &&
 		!HaveNFreeProcs(ReservedBackends))
 		ereport(FATAL,
@@ -1157,7 +1156,7 @@ process_settings(Oid databaseid, Oid roleid)
 	if (!IsUnderPostmaster)
 		return;
 
-	relsetting = heap_open(DbRoleSettingRelationId, AccessShareLock);
+	relsetting = table_open(DbRoleSettingRelationId, AccessShareLock);
 
 	/* read all the settings under the same snapshot for efficiency */
 	snapshot = RegisterSnapshot(GetCatalogSnapshot(DbRoleSettingRelationId));
@@ -1169,7 +1168,7 @@ process_settings(Oid databaseid, Oid roleid)
 	ApplySetting(snapshot, InvalidOid, InvalidOid, relsetting, PGC_S_GLOBAL);
 
 	UnregisterSnapshot(snapshot);
-	heap_close(relsetting, AccessShareLock);
+	table_close(relsetting, AccessShareLock);
 }
 
 /*
@@ -1249,13 +1248,13 @@ ThereIsAtLeastOneRole(void)
 	HeapScanDesc scan;
 	bool		result;
 
-	pg_authid_rel = heap_open(AuthIdRelationId, AccessShareLock);
+	pg_authid_rel = table_open(AuthIdRelationId, AccessShareLock);
 
 	scan = heap_beginscan_catalog(pg_authid_rel, 0, NULL);
 	result = (heap_getnext(scan, ForwardScanDirection) != NULL);
 
 	heap_endscan(scan);
-	heap_close(pg_authid_rel, AccessShareLock);
+	table_close(pg_authid_rel, AccessShareLock);
 
 	return result;
 }

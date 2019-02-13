@@ -30,7 +30,6 @@
 #include "utils/fmgroids.h"
 #include "utils/rel.h"
 #include "utils/syscache.h"
-#include "utils/tqual.h"
 
 /*
  * ConversionCreate
@@ -83,7 +82,7 @@ ConversionCreate(const char *conname, Oid connamespace,
 	}
 
 	/* open pg_conversion */
-	rel = heap_open(ConversionRelationId, RowExclusiveLock);
+	rel = table_open(ConversionRelationId, RowExclusiveLock);
 	tupDesc = rel->rd_att;
 
 	/* initialize nulls and values */
@@ -137,7 +136,7 @@ ConversionCreate(const char *conname, Oid connamespace,
 	InvokeObjectPostCreateHook(ConversionRelationId, oid, 0);
 
 	heap_freetuple(tup);
-	heap_close(rel, RowExclusiveLock);
+	table_close(rel, RowExclusiveLock);
 
 	return myself;
 }
@@ -162,7 +161,7 @@ RemoveConversionById(Oid conversionOid)
 				ObjectIdGetDatum(conversionOid));
 
 	/* open pg_conversion */
-	rel = heap_open(ConversionRelationId, RowExclusiveLock);
+	rel = table_open(ConversionRelationId, RowExclusiveLock);
 
 	scan = heap_beginscan_catalog(rel, 1, &scanKeyData);
 
@@ -172,7 +171,7 @@ RemoveConversionById(Oid conversionOid)
 	else
 		elog(ERROR, "could not find tuple for conversion %u", conversionOid);
 	heap_endscan(scan);
-	heap_close(rel, RowExclusiveLock);
+	table_close(rel, RowExclusiveLock);
 }
 
 /*

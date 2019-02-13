@@ -37,7 +37,6 @@
 #include "lib/pairingheap.h"
 #include "miscadmin.h"
 #include "nodes/nodeFuncs.h"
-#include "optimizer/clauses.h"
 #include "utils/array.h"
 #include "utils/datum.h"
 #include "utils/lsyscache.h"
@@ -1527,7 +1526,7 @@ ExecIndexBuildScanKeys(PlanState *planstate, Relation index,
 
 			Assert(rightop != NULL);
 
-			if (index->rd_amroutine->amsearcharray)
+			if (index->rd_indam->amsearcharray)
 			{
 				/* Index AM will handle this like a simple operator */
 				flags |= SK_SEARCHARRAY;

@@ -37,6 +37,7 @@
 
 #include "postgres.h"
 
+#include "access/heapam.h"
 #include "access/htup_details.h"
 #include "access/xact.h"
 #include "catalog/catalog.h"
@@ -52,7 +53,6 @@
 #include "utils/builtins.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
-#include "utils/tqual.h"
 
 
 static bool ExecOnConflictUpdate(ModifyTableState *mtstate,
@@ -2269,7 +2269,7 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 		{
 			WithCheckOption *wco = (WithCheckOption *) lfirst(ll);
 			ExprState  *wcoExpr = ExecInitQual((List *) wco->qual,
-											   mtstate->mt_plans[i]);
+											   &mtstate->ps);
 
 			wcoExprs = lappend(wcoExprs, wcoExpr);
 		}

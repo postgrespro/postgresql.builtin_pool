@@ -9,8 +9,16 @@
 #ifndef LLVMJIT_EMIT_H
 #define LLVMJIT_EMIT_H
 
+/*
+ * To avoid breaking cpluspluscheck, allow including the file even when LLVM
+ * is not available.
+ */
+#ifdef USE_LLVM
 
 #include <llvm-c/Core.h>
+
+#include "fmgr.h"
+#include "jit/llvmjit.h"
 
 
 /*
@@ -208,4 +216,60 @@ l_mcxt_switch(LLVMModuleRef mod, LLVMBuilderRef b, LLVMValueRef nc)
 
 	return ret;
 }
+
+/*
+ * Return pointer to the the argno'th argument nullness.
+ */
+static inline LLVMValueRef
+l_funcnullp(LLVMBuilderRef b, LLVMValueRef v_fcinfo, size_t argno)
+{
+	LLVMValueRef v_args;
+	LLVMValueRef v_argn;
+
+	v_args = LLVMBuildStructGEP(b,
+								v_fcinfo,
+								FIELDNO_FUNCTIONCALLINFODATA_ARGS,
+								"");
+	v_argn = LLVMBuildStructGEP(b, v_args, argno, "");
+
+	return LLVMBuildStructGEP(b, v_argn, FIELDNO_NULLABLE_DATUM_ISNULL, "");
+}
+
+/*
+ * Return pointer to the the argno'th argument datum.
+ */
+static inline LLVMValueRef
+l_funcvaluep(LLVMBuilderRef b, LLVMValueRef v_fcinfo, size_t argno)
+{
+	LLVMValueRef v_args;
+	LLVMValueRef v_argn;
+
+	v_args = LLVMBuildStructGEP(b,
+								v_fcinfo,
+								FIELDNO_FUNCTIONCALLINFODATA_ARGS,
+								"");
+	v_argn = LLVMBuildStructGEP(b, v_args, argno, "");
+
+	return LLVMBuildStructGEP(b, v_argn, FIELDNO_NULLABLE_DATUM_DATUM, "");
+}
+
+/*
+ * Return argno'th argument nullness.
+ */
+static inline LLVMValueRef
+l_funcnull(LLVMBuilderRef b, LLVMValueRef v_fcinfo, size_t argno)
+{
+	return LLVMBuildLoad(b, l_funcnullp(b, v_fcinfo, argno), "");
+}
+
+/*
+ * Return argno'th argument datum.
+ */
+static inline LLVMValueRef
+l_funcvalue(LLVMBuilderRef b, LLVMValueRef v_fcinfo, size_t argno)
+{
+	return LLVMBuildLoad(b, l_funcvaluep(b, v_fcinfo, argno), "");
+}
+
+#endif							/* USE_LLVM */
 #endif

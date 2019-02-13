@@ -74,8 +74,8 @@
 #include "miscadmin.h"
 
 #include "access/genam.h"
-#include "access/heapam.h"
 #include "access/htup_details.h"
+#include "access/table.h"
 #include "access/xact.h"
 
 #include "catalog/indexing.h"
@@ -95,7 +95,7 @@
 #include "utils/pg_lsn.h"
 #include "utils/rel.h"
 #include "utils/syscache.h"
-#include "utils/tqual.h"
+#include "utils/snapmgr.h"
 
 /*
  * Replay progress of a single remote node.
@@ -270,7 +270,7 @@ replorigin_create(char *roname)
 	 */
 	InitDirtySnapshot(SnapshotDirty);
 
-	rel = heap_open(ReplicationOriginRelationId, ExclusiveLock);
+	rel = table_open(ReplicationOriginRelationId, ExclusiveLock);
 
 	for (roident = InvalidOid + 1; roident < PG_UINT16_MAX; roident++)
 	{
@@ -313,7 +313,7 @@ replorigin_create(char *roname)
 	}
 
 	/* now release lock again,	*/
-	heap_close(rel, ExclusiveLock);
+	table_close(rel, ExclusiveLock);
 
 	if (tuple == NULL)
 		ereport(ERROR,
@@ -343,7 +343,7 @@ replorigin_drop(RepOriginId roident, bool nowait)
 	 * To interlock against concurrent drops, we hold ExclusiveLock on
 	 * pg_replication_origin throughout this function.
 	 */
-	rel = heap_open(ReplicationOriginRelationId, ExclusiveLock);
+	rel = table_open(ReplicationOriginRelationId, ExclusiveLock);
 
 	/*
 	 * First, clean up the slot state info, if there is any matching slot.
@@ -419,7 +419,7 @@ restart:
 	CommandCounterIncrement();
 
 	/* now release lock again */
-	heap_close(rel, ExclusiveLock);
+	table_close(rel, ExclusiveLock);
 }
 
 

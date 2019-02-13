@@ -29,7 +29,7 @@
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
-#include "optimizer/var.h"
+#include "optimizer/optimizer.h"
 #include "parser/analyze.h"
 #include "parser/parse_agg.h"
 #include "parser/parse_clause.h"
@@ -451,10 +451,12 @@ transformDeleteStmt(ParseState *pstate, DeleteStmt *stmt)
 	qry->hasWindowFuncs = pstate->p_hasWindowFuncs;
 	qry->hasTargetSRFs = pstate->p_hasTargetSRFs;
 	qry->hasAggs = pstate->p_hasAggs;
-	if (pstate->p_hasAggs)
-		parseCheckAggregates(pstate, qry);
 
 	assign_query_collations(pstate, qry);
+
+	/* this must be done after collations, for reliable comparison of exprs */
+	if (pstate->p_hasAggs)
+		parseCheckAggregates(pstate, qry);
 
 	return qry;
 }
@@ -974,13 +976,14 @@ transformInsertRow(ParseState *pstate, List *exprlist,
 
 					expr = (Expr *) linitial(fstore->newvals);
 				}
-				else if (IsA(expr, ArrayRef))
+				else if (IsA(expr, SubscriptingRef))
 				{
-					ArrayRef   *aref = (ArrayRef *) expr;
+					SubscriptingRef *sbsref = (SubscriptingRef *) expr;
 
-					if (aref->refassgnexpr == NULL)
+					if (sbsref->refassgnexpr == NULL)
 						break;
-					expr = aref->refassgnexpr;
+
+					expr = sbsref->refassgnexpr;
 				}
 				else
 					break;
@@ -1319,8 +1322,6 @@ transformSelectStmt(ParseState *pstate, SelectStmt *stmt)
 	qry->hasWindowFuncs = pstate->p_hasWindowFuncs;
 	qry->hasTargetSRFs = pstate->p_hasTargetSRFs;
 	qry->hasAggs = pstate->p_hasAggs;
-	if (pstate->p_hasAggs || qry->groupClause || qry->groupingSets || qry->havingQual)
-		parseCheckAggregates(pstate, qry);
 
 	foreach(l, stmt->lockingClause)
 	{
@@ -1329,6 +1330,10 @@ transformSelectStmt(ParseState *pstate, SelectStmt *stmt)
 	}
 
 	assign_query_collations(pstate, qry);
+
+	/* this must be done after collations, for reliable comparison of exprs */
+	if (pstate->p_hasAggs || qry->groupClause || qry->groupingSets || qry->havingQual)
+		parseCheckAggregates(pstate, qry);
 
 	return qry;
 }
@@ -1791,8 +1796,6 @@ transformSetOperationStmt(ParseState *pstate, SelectStmt *stmt)
 	qry->hasWindowFuncs = pstate->p_hasWindowFuncs;
 	qry->hasTargetSRFs = pstate->p_hasTargetSRFs;
 	qry->hasAggs = pstate->p_hasAggs;
-	if (pstate->p_hasAggs || qry->groupClause || qry->groupingSets || qry->havingQual)
-		parseCheckAggregates(pstate, qry);
 
 	foreach(l, lockingClause)
 	{
@@ -1801,6 +1804,10 @@ transformSetOperationStmt(ParseState *pstate, SelectStmt *stmt)
 	}
 
 	assign_query_collations(pstate, qry);
+
+	/* this must be done after collations, for reliable comparison of exprs */
+	if (pstate->p_hasAggs || qry->groupClause || qry->groupingSets || qry->havingQual)
+		parseCheckAggregates(pstate, qry);
 
 	return qry;
 }
@@ -2629,6 +2636,8 @@ transformCallStmt(ParseState *pstate, CallStmt *stmt)
 							 true,
 							 stmt->funccall->location);
 
+	assign_expr_collations(pstate, node);
+
 	stmt->funcexpr = castNode(FuncExpr, node);
 
 	result = makeNode(Query);
@@ -2878,6 +2887,9 @@ transformLockingClause(ParseState *pstate, Query *qry, LockingClause *lc,
 											LCS_asString(lc->strength)),
 									 parser_errposition(pstate, thisrel->location)));
 							break;
+
+							/* Shouldn't be possible to see RTE_RESULT here */
+
 						default:
 							elog(ERROR, "unrecognized RTE type: %d",
 								 (int) rte->rtekind);

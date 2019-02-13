@@ -1,7 +1,7 @@
 /*-------------------------------------------------------------------------
  *
- * tqual.c
- *	  POSTGRES "time qualification" code, ie, tuple visibility rules.
+ * heapam_visibility.c
+ *	  Tuple visibility rules for tuples stored in heap.
  *
  * NOTE: all the HeapTupleSatisfies routines will update the tuple's
  * "hint" status bits if we see that the inserting or deleting transaction
@@ -56,13 +56,14 @@
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
- *	  src/backend/utils/time/tqual.c
+ *	  src/backend/access/heap/heapam_visibility.c
  *
  *-------------------------------------------------------------------------
  */
 
 #include "postgres.h"
 
+#include "access/heapam.h"
 #include "access/htup_details.h"
 #include "access/multixact.h"
 #include "access/subtrans.h"
@@ -74,12 +75,6 @@
 #include "utils/builtins.h"
 #include "utils/combocid.h"
 #include "utils/snapmgr.h"
-#include "utils/tqual.h"
-
-
-/* Static variables representing various special snapshot semantics */
-SnapshotData SnapshotSelfData = {HeapTupleSatisfiesSelf};
-SnapshotData SnapshotAnyData = {HeapTupleSatisfiesAny};
 
 
 /*
@@ -152,10 +147,7 @@ HeapTupleSetHintBits(HeapTupleHeader tuple, Buffer buffer,
  * HeapTupleSatisfiesSelf
  *		True iff heap tuple is valid "for itself".
  *
- *	Here, we consider the effects of:
- *		all committed transactions (as of the current instant)
- *		previous commands of this transaction
- *		changes made by the current command
+ * See SNAPSHOT_MVCC's definition for the intended behaviour.
  *
  * Note:
  *		Assumes heap tuple is valid.
@@ -172,7 +164,7 @@ HeapTupleSetHintBits(HeapTupleHeader tuple, Buffer buffer,
  *			(Xmax != my-transaction &&			the row was deleted by another transaction
  *			 Xmax is not committed)))			that has not been committed
  */
-bool
+static bool
 HeapTupleSatisfiesSelf(HeapTuple htup, Snapshot snapshot, Buffer buffer)
 {
 	HeapTupleHeader tuple = htup->t_data;
@@ -342,7 +334,7 @@ HeapTupleSatisfiesSelf(HeapTuple htup, Snapshot snapshot, Buffer buffer)
  * HeapTupleSatisfiesAny
  *		Dummy "satisfies" routine: any tuple satisfies SnapshotAny.
  */
-bool
+static bool
 HeapTupleSatisfiesAny(HeapTuple htup, Snapshot snapshot, Buffer buffer)
 {
 	return true;
@@ -351,6 +343,8 @@ HeapTupleSatisfiesAny(HeapTuple htup, Snapshot snapshot, Buffer buffer)
 /*
  * HeapTupleSatisfiesToast
  *		True iff heap tuple is valid as a TOAST row.
+ *
+ * See SNAPSHOT_TOAST's definition for the intended behaviour.
  *
  * This is a simplified version that only checks for VACUUM moving conditions.
  * It's appropriate for TOAST usage because TOAST really doesn't want to do
@@ -362,7 +356,7 @@ HeapTupleSatisfiesAny(HeapTuple htup, Snapshot snapshot, Buffer buffer)
  * Among other things, this means you can't do UPDATEs of rows in a TOAST
  * table.
  */
-bool
+static bool
 HeapTupleSatisfiesToast(HeapTuple htup, Snapshot snapshot,
 						Buffer buffer)
 {
@@ -716,10 +710,7 @@ HeapTupleSatisfiesUpdate(HeapTuple htup, CommandId curcid,
  * HeapTupleSatisfiesDirty
  *		True iff heap tuple is valid including effects of open transactions.
  *
- *	Here, we consider the effects of:
- *		all committed and in-progress transactions (as of the current instant)
- *		previous commands of this transaction
- *		changes made by the current command
+ * See SNAPSHOT_DIRTY's definition for the intended behaviour.
  *
  * This is essentially like HeapTupleSatisfiesSelf as far as effects of
  * the current transaction and committed/aborted xacts are concerned.
@@ -735,7 +726,7 @@ HeapTupleSatisfiesUpdate(HeapTuple htup, CommandId curcid,
  * on the insertion without aborting the whole transaction, the associated
  * token is also returned in snapshot->speculativeToken.
  */
-bool
+static bool
 HeapTupleSatisfiesDirty(HeapTuple htup, Snapshot snapshot,
 						Buffer buffer)
 {
@@ -934,14 +925,7 @@ HeapTupleSatisfiesDirty(HeapTuple htup, Snapshot snapshot,
  * HeapTupleSatisfiesMVCC
  *		True iff heap tuple is valid for the given MVCC snapshot.
  *
- *	Here, we consider the effects of:
- *		all transactions committed as of the time of the given snapshot
- *		previous commands of this transaction
- *
- *	Does _not_ include:
- *		transactions shown as in-progress by the snapshot
- *		transactions started after the snapshot was taken
- *		changes made by the current command
+ * See SNAPSHOT_MVCC's definition for the intended behaviour.
  *
  * Notice that here, we will not update the tuple status hint bits if the
  * inserting/deleting transaction is still running according to our snapshot,
@@ -959,7 +943,7 @@ HeapTupleSatisfiesDirty(HeapTuple htup, Snapshot snapshot,
  * inserting/deleting transaction was still running --- which was more cycles
  * and more contention on the PGXACT array.
  */
-bool
+static bool
 HeapTupleSatisfiesMVCC(HeapTuple htup, Snapshot snapshot,
 					   Buffer buffer)
 {
@@ -1390,11 +1374,13 @@ HeapTupleSatisfiesVacuum(HeapTuple htup, TransactionId OldestXmin,
  *	True if tuple might be visible to some transaction; false if it's
  *	surely dead to everyone, ie, vacuumable.
  *
- *	This is an interface to HeapTupleSatisfiesVacuum that meets the
- *	SnapshotSatisfiesFunc API, so it can be used through a Snapshot.
+ *	See SNAPSHOT_TOAST's definition for the intended behaviour.
+ *
+ *	This is an interface to HeapTupleSatisfiesVacuum that's callable via
+ *	HeapTupleSatisfiesSnapshot, so it can be used through a Snapshot.
  *	snapshot->xmin must have been set up with the xmin horizon to use.
  */
-bool
+static bool
 HeapTupleSatisfiesNonVacuumable(HeapTuple htup, Snapshot snapshot,
 								Buffer buffer)
 {
@@ -1462,135 +1448,13 @@ HeapTupleIsSurelyDead(HeapTuple htup, TransactionId OldestXmin)
 }
 
 /*
- * XidInMVCCSnapshot
- *		Is the given XID still-in-progress according to the snapshot?
- *
- * Note: GetSnapshotData never stores either top xid or subxids of our own
- * backend into a snapshot, so these xids will not be reported as "running"
- * by this function.  This is OK for current uses, because we always check
- * TransactionIdIsCurrentTransactionId first, except when it's known the
- * XID could not be ours anyway.
- */
-bool
-XidInMVCCSnapshot(TransactionId xid, Snapshot snapshot)
-{
-	uint32		i;
-
-	/*
-	 * Make a quick range check to eliminate most XIDs without looking at the
-	 * xip arrays.  Note that this is OK even if we convert a subxact XID to
-	 * its parent below, because a subxact with XID < xmin has surely also got
-	 * a parent with XID < xmin, while one with XID >= xmax must belong to a
-	 * parent that was not yet committed at the time of this snapshot.
-	 */
-
-	/* Any xid < xmin is not in-progress */
-	if (TransactionIdPrecedes(xid, snapshot->xmin))
-		return false;
-	/* Any xid >= xmax is in-progress */
-	if (TransactionIdFollowsOrEquals(xid, snapshot->xmax))
-		return true;
-
-	/*
-	 * Snapshot information is stored slightly differently in snapshots taken
-	 * during recovery.
-	 */
-	if (!snapshot->takenDuringRecovery)
-	{
-		/*
-		 * If the snapshot contains full subxact data, the fastest way to
-		 * check things is just to compare the given XID against both subxact
-		 * XIDs and top-level XIDs.  If the snapshot overflowed, we have to
-		 * use pg_subtrans to convert a subxact XID to its parent XID, but
-		 * then we need only look at top-level XIDs not subxacts.
-		 */
-		if (!snapshot->suboverflowed)
-		{
-			/* we have full data, so search subxip */
-			int32		j;
-
-			for (j = 0; j < snapshot->subxcnt; j++)
-			{
-				if (TransactionIdEquals(xid, snapshot->subxip[j]))
-					return true;
-			}
-
-			/* not there, fall through to search xip[] */
-		}
-		else
-		{
-			/*
-			 * Snapshot overflowed, so convert xid to top-level.  This is safe
-			 * because we eliminated too-old XIDs above.
-			 */
-			xid = SubTransGetTopmostTransaction(xid);
-
-			/*
-			 * If xid was indeed a subxact, we might now have an xid < xmin,
-			 * so recheck to avoid an array scan.  No point in rechecking
-			 * xmax.
-			 */
-			if (TransactionIdPrecedes(xid, snapshot->xmin))
-				return false;
-		}
-
-		for (i = 0; i < snapshot->xcnt; i++)
-		{
-			if (TransactionIdEquals(xid, snapshot->xip[i]))
-				return true;
-		}
-	}
-	else
-	{
-		int32		j;
-
-		/*
-		 * In recovery we store all xids in the subxact array because it is by
-		 * far the bigger array, and we mostly don't know which xids are
-		 * top-level and which are subxacts. The xip array is empty.
-		 *
-		 * We start by searching subtrans, if we overflowed.
-		 */
-		if (snapshot->suboverflowed)
-		{
-			/*
-			 * Snapshot overflowed, so convert xid to top-level.  This is safe
-			 * because we eliminated too-old XIDs above.
-			 */
-			xid = SubTransGetTopmostTransaction(xid);
-
-			/*
-			 * If xid was indeed a subxact, we might now have an xid < xmin,
-			 * so recheck to avoid an array scan.  No point in rechecking
-			 * xmax.
-			 */
-			if (TransactionIdPrecedes(xid, snapshot->xmin))
-				return false;
-		}
-
-		/*
-		 * We now have either a top-level xid higher than xmin or an
-		 * indeterminate xid. We don't know whether it's top level or subxact
-		 * but it doesn't matter. If it's present, the xid is visible.
-		 */
-		for (j = 0; j < snapshot->subxcnt; j++)
-		{
-			if (TransactionIdEquals(xid, snapshot->subxip[j]))
-				return true;
-		}
-	}
-
-	return false;
-}
-
-/*
  * Is the tuple really only locked?  That is, is it not updated?
  *
  * It's easy to check just infomask bits if the locker is not a multi; but
  * otherwise we need to verify that the updating transaction has not aborted.
  *
- * This function is here because it follows the same time qualification rules
- * laid out at the top of this file.
+ * This function is here because it follows the same visibility rules laid out
+ * at the top of this file.
  */
 bool
 HeapTupleHeaderIsOnlyLocked(HeapTupleHeader tuple)
@@ -1659,7 +1523,7 @@ TransactionIdInArray(TransactionId xid, TransactionId *xip, Size num)
  * dangerous to do so as the semantics of doing so during timetravel are more
  * complicated than when dealing "only" with the present.
  */
-bool
+static bool
 HeapTupleSatisfiesHistoricMVCC(HeapTuple htup, Snapshot snapshot,
 							   Buffer buffer)
 {
@@ -1795,4 +1659,45 @@ HeapTupleSatisfiesHistoricMVCC(HeapTuple htup, Snapshot snapshot,
 	/* xmax is between [xmin, xmax), but known not to have committed yet */
 	else
 		return true;
+}
+
+/*
+ * HeapTupleSatisfiesVisibility
+ *		True iff heap tuple satisfies a time qual.
+ *
+ * Notes:
+ *	Assumes heap tuple is valid, and buffer at least share locked.
+ *
+ *	Hint bits in the HeapTuple's t_infomask may be updated as a side effect;
+ *	if so, the indicated buffer is marked dirty.
+ */
+bool
+HeapTupleSatisfiesVisibility(HeapTuple tup, Snapshot snapshot, Buffer buffer)
+{
+	switch (snapshot->snapshot_type)
+	{
+		case SNAPSHOT_MVCC:
+			return HeapTupleSatisfiesMVCC(tup, snapshot, buffer);
+			break;
+		case SNAPSHOT_SELF:
+			return HeapTupleSatisfiesSelf(tup, snapshot, buffer);
+			break;
+		case SNAPSHOT_ANY:
+			return HeapTupleSatisfiesAny(tup, snapshot, buffer);
+			break;
+		case SNAPSHOT_TOAST:
+			return HeapTupleSatisfiesToast(tup, snapshot, buffer);
+			break;
+		case SNAPSHOT_DIRTY:
+			return HeapTupleSatisfiesDirty(tup, snapshot, buffer);
+			break;
+		case SNAPSHOT_HISTORIC_MVCC:
+			return HeapTupleSatisfiesHistoricMVCC(tup, snapshot, buffer);
+			break;
+		case SNAPSHOT_NON_VACUUMABLE:
+			return HeapTupleSatisfiesNonVacuumable(tup, snapshot, buffer);
+			break;
+	}
+
+	return false;				/* keep compiler quiet */
 }

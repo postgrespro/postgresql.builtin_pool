@@ -21,8 +21,9 @@
 
 #include "access/printtup.h"
 #include "lib/stringinfo.h"
+#include "nodes/nodeFuncs.h"
+#include "nodes/pathnodes.h"
 #include "nodes/print.h"
-#include "optimizer/clauses.h"
 #include "parser/parsetree.h"
 #include "utils/lsyscache.h"
 
@@ -293,6 +294,10 @@ print_rt(const List *rtable)
 				break;
 			case RTE_NAMEDTUPLESTORE:
 				printf("%d\t%s\t[tuplestore]",
+					   i, rte->eref->aliasname);
+				break;
+			case RTE_RESULT:
+				printf("%d\t%s\t[result]",
 					   i, rte->eref->aliasname);
 				break;
 			default:

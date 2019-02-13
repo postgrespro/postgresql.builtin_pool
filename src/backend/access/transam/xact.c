@@ -48,6 +48,7 @@
 #include "replication/walsender.h"
 #include "storage/condition_variable.h"
 #include "storage/fd.h"
+#include "storage/freespace.h"
 #include "storage/lmgr.h"
 #include "storage/predicate.h"
 #include "storage/proc.h"
@@ -774,10 +775,10 @@ TransactionIdIsCurrentTransactionId(TransactionId xid)
 	 * We always say that BootstrapTransactionId is "not my transaction ID"
 	 * even when it is (ie, during bootstrap).  Along with the fact that
 	 * transam.c always treats BootstrapTransactionId as already committed,
-	 * this causes the tqual.c routines to see all tuples as committed, which
-	 * is what we need during bootstrap.  (Bootstrap mode only inserts tuples,
-	 * it never updates or deletes them, so all tuples can be presumed good
-	 * immediately.)
+	 * this causes the heapam_visibility.c routines to see all tuples as
+	 * committed, which is what we need during bootstrap.  (Bootstrap mode
+	 * only inserts tuples, it never updates or deletes them, so all tuples
+	 * can be presumed good immediately.)
 	 *
 	 * Likewise, InvalidTransactionId and FrozenTransactionId are certainly
 	 * not my transaction ID, so we can just return "false" immediately for
@@ -2266,6 +2267,11 @@ PrepareTransaction(void)
 	 * clean up the source backend's local buffers and ON COMMIT state if the
 	 * prepared xact includes a DROP of a temp table.
 	 *
+	 * Other objects types, like functions, operators or extensions, share the
+	 * same restriction as they should not be created, locked or dropped as
+	 * this can mess up with this session or even a follow-up session trying
+	 * to use the same temporary namespace.
+	 *
 	 * We must check this after executing any ON COMMIT actions, because they
 	 * might still access a temp relation.
 	 *
@@ -2273,10 +2279,10 @@ PrepareTransaction(void)
 	 * cases, such as a temp table created and dropped all within the
 	 * transaction.  That seems to require much more bookkeeping though.
 	 */
-	if ((MyXactFlags & XACT_FLAGS_ACCESSEDTEMPREL))
+	if ((MyXactFlags & XACT_FLAGS_ACCESSEDTEMPNAMESPACE))
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("cannot PREPARE a transaction that has operated on temporary tables")));
+				 errmsg("cannot PREPARE a transaction that has operated on temporary objects")));
 
 	/*
 	 * Likewise, don't allow PREPARE after pg_export_snapshot.  This could be
@@ -2487,6 +2493,12 @@ AbortTransaction(void)
 	/* Clear wait information and command progress indicator */
 	pgstat_report_wait_end();
 	pgstat_progress_end_command();
+
+	/*
+	 * In case we aborted during RelationGetBufferForTuple(), clear the local
+	 * map of heap pages.
+	 */
+	FSMClearLocalMap();
 
 	/* Clean up buffer I/O and buffer context locks, too */
 	AbortBufferIO();
@@ -4709,6 +4721,13 @@ AbortSubTransaction(void)
 
 	pgstat_report_wait_end();
 	pgstat_progress_end_command();
+
+	/*
+	 * In case we aborted during RelationGetBufferForTuple(), clear the local
+	 * map of heap pages.
+	 */
+	FSMClearLocalMap();
+
 	AbortBufferIO();
 	UnlockBuffers();
 

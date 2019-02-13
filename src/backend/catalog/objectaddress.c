@@ -15,8 +15,11 @@
 
 #include "postgres.h"
 
+#include "access/genam.h"
 #include "access/htup_details.h"
+#include "access/relation.h"
 #include "access/sysattr.h"
+#include "access/table.h"
 #include "catalog/catalog.h"
 #include "catalog/indexing.h"
 #include "catalog/objectaddress.h"
@@ -84,7 +87,6 @@
 #include "utils/memutils.h"
 #include "utils/regproc.h"
 #include "utils/syscache.h"
-#include "utils/tqual.h"
 
 /*
  * ObjectProperty
@@ -1335,9 +1337,9 @@ get_object_address_relobject(ObjectType objtype, List *object,
 
 	/* Extract relation name and open relation. */
 	relname = list_truncate(list_copy(object), nnames - 1);
-	relation = heap_openrv_extended(makeRangeVarFromNameList(relname),
-									AccessShareLock,
-									missing_ok);
+	relation = table_openrv_extended(makeRangeVarFromNameList(relname),
+									 AccessShareLock,
+									 missing_ok);
 
 	reloid = relation ? RelationGetRelid(relation) : InvalidOid;
 
@@ -1377,7 +1379,7 @@ get_object_address_relobject(ObjectType objtype, List *object,
 	if (!OidIsValid(address.objectId))
 	{
 		if (relation != NULL)
-			heap_close(relation, AccessShareLock);
+			table_close(relation, AccessShareLock);
 
 		relation = NULL;		/* department of accident prevention */
 		return address;
@@ -2764,7 +2766,7 @@ getObjectDescription(const ObjectAddress *object)
 				HeapTuple	tup;
 				Form_pg_cast castForm;
 
-				castDesc = heap_open(CastRelationId, AccessShareLock);
+				castDesc = table_open(CastRelationId, AccessShareLock);
 
 				ScanKeyInit(&skey[0],
 							Anum_pg_cast_oid,
@@ -2787,7 +2789,7 @@ getObjectDescription(const ObjectAddress *object)
 								 format_type_be(castForm->casttarget));
 
 				systable_endscan(rcscan);
-				heap_close(castDesc, AccessShareLock);
+				table_close(castDesc, AccessShareLock);
 				break;
 			}
 
@@ -2885,7 +2887,7 @@ getObjectDescription(const ObjectAddress *object)
 				Form_pg_attrdef attrdef;
 				ObjectAddress colobject;
 
-				attrdefDesc = heap_open(AttrDefaultRelationId, AccessShareLock);
+				attrdefDesc = table_open(AttrDefaultRelationId, AccessShareLock);
 
 				ScanKeyInit(&skey[0],
 							Anum_pg_attrdef_oid,
@@ -2912,7 +2914,7 @@ getObjectDescription(const ObjectAddress *object)
 								 getObjectDescription(&colobject));
 
 				systable_endscan(adscan);
-				heap_close(attrdefDesc, AccessShareLock);
+				table_close(attrdefDesc, AccessShareLock);
 				break;
 			}
 
@@ -2997,8 +2999,8 @@ getObjectDescription(const ObjectAddress *object)
 				Form_pg_amop amopForm;
 				StringInfoData opfam;
 
-				amopDesc = heap_open(AccessMethodOperatorRelationId,
-									 AccessShareLock);
+				amopDesc = table_open(AccessMethodOperatorRelationId,
+									  AccessShareLock);
 
 				ScanKeyInit(&skey[0],
 							Anum_pg_amop_oid,
@@ -3034,7 +3036,7 @@ getObjectDescription(const ObjectAddress *object)
 				pfree(opfam.data);
 
 				systable_endscan(amscan);
-				heap_close(amopDesc, AccessShareLock);
+				table_close(amopDesc, AccessShareLock);
 				break;
 			}
 
@@ -3047,7 +3049,7 @@ getObjectDescription(const ObjectAddress *object)
 				Form_pg_amproc amprocForm;
 				StringInfoData opfam;
 
-				amprocDesc = heap_open(AccessMethodProcedureRelationId,
+				amprocDesc = table_open(AccessMethodProcedureRelationId,
 									   AccessShareLock);
 
 				ScanKeyInit(&skey[0],
@@ -3084,7 +3086,7 @@ getObjectDescription(const ObjectAddress *object)
 				pfree(opfam.data);
 
 				systable_endscan(amscan);
-				heap_close(amprocDesc, AccessShareLock);
+				table_close(amprocDesc, AccessShareLock);
 				break;
 			}
 
@@ -3097,7 +3099,7 @@ getObjectDescription(const ObjectAddress *object)
 				Form_pg_rewrite rule;
 				StringInfoData rel;
 
-				ruleDesc = heap_open(RewriteRelationId, AccessShareLock);
+				ruleDesc = table_open(RewriteRelationId, AccessShareLock);
 
 				ScanKeyInit(&skey[0],
 							Anum_pg_rewrite_oid,
@@ -3122,7 +3124,7 @@ getObjectDescription(const ObjectAddress *object)
 								 NameStr(rule->rulename), rel.data);
 				pfree(rel.data);
 				systable_endscan(rcscan);
-				heap_close(ruleDesc, AccessShareLock);
+				table_close(ruleDesc, AccessShareLock);
 				break;
 			}
 
@@ -3135,7 +3137,7 @@ getObjectDescription(const ObjectAddress *object)
 				Form_pg_trigger trig;
 				StringInfoData rel;
 
-				trigDesc = heap_open(TriggerRelationId, AccessShareLock);
+				trigDesc = table_open(TriggerRelationId, AccessShareLock);
 
 				ScanKeyInit(&skey[0],
 							Anum_pg_trigger_oid,
@@ -3160,7 +3162,7 @@ getObjectDescription(const ObjectAddress *object)
 								 NameStr(trig->tgname), rel.data);
 				pfree(rel.data);
 				systable_endscan(tgscan);
-				heap_close(trigDesc, AccessShareLock);
+				table_close(trigDesc, AccessShareLock);
 				break;
 			}
 
@@ -3395,7 +3397,7 @@ getObjectDescription(const ObjectAddress *object)
 				char	   *rolename;
 				char	   *nspname;
 
-				defaclrel = heap_open(DefaultAclRelationId, AccessShareLock);
+				defaclrel = table_open(DefaultAclRelationId, AccessShareLock);
 
 				ScanKeyInit(&skey[0],
 							Anum_pg_default_acl_oid,
@@ -3482,7 +3484,7 @@ getObjectDescription(const ObjectAddress *object)
 				}
 
 				systable_endscan(rcscan);
-				heap_close(defaclrel, AccessShareLock);
+				table_close(defaclrel, AccessShareLock);
 				break;
 			}
 
@@ -3522,7 +3524,7 @@ getObjectDescription(const ObjectAddress *object)
 				Form_pg_policy form_policy;
 				StringInfoData rel;
 
-				policy_rel = heap_open(PolicyRelationId, AccessShareLock);
+				policy_rel = table_open(PolicyRelationId, AccessShareLock);
 
 				ScanKeyInit(&skey[0],
 							Anum_pg_policy_oid,
@@ -3547,7 +3549,7 @@ getObjectDescription(const ObjectAddress *object)
 								 NameStr(form_policy->polname), rel.data);
 				pfree(rel.data);
 				systable_endscan(sscan);
-				heap_close(policy_rel, AccessShareLock);
+				table_close(policy_rel, AccessShareLock);
 				break;
 			}
 
@@ -3814,7 +3816,7 @@ pg_identify_object(PG_FUNCTION_ARGS)
 	if (is_objectclass_supported(address.classId))
 	{
 		HeapTuple	objtup;
-		Relation	catalog = heap_open(address.classId, AccessShareLock);
+		Relation	catalog = table_open(address.classId, AccessShareLock);
 
 		objtup = get_catalog_object_by_oid(catalog,
 										   get_object_attnum_oid(address.classId),
@@ -3856,7 +3858,7 @@ pg_identify_object(PG_FUNCTION_ARGS)
 			}
 		}
 
-		heap_close(catalog, AccessShareLock);
+		table_close(catalog, AccessShareLock);
 	}
 
 	/* object type */
@@ -4194,7 +4196,7 @@ getConstraintTypeDescription(StringInfo buffer, Oid constroid)
 	HeapTuple	constrTup;
 	Form_pg_constraint constrForm;
 
-	constrRel = heap_open(ConstraintRelationId, AccessShareLock);
+	constrRel = table_open(ConstraintRelationId, AccessShareLock);
 	constrTup = get_catalog_object_by_oid(constrRel, Anum_pg_constraint_oid,
 										  constroid);
 	if (!HeapTupleIsValid(constrTup))
@@ -4209,7 +4211,7 @@ getConstraintTypeDescription(StringInfo buffer, Oid constroid)
 	else
 		elog(ERROR, "invalid constraint %u", constrForm->oid);
 
-	heap_close(constrRel, AccessShareLock);
+	table_close(constrRel, AccessShareLock);
 }
 
 /*
@@ -4318,7 +4320,7 @@ getObjectIdentityParts(const ObjectAddress *object,
 				HeapTuple	tup;
 				Form_pg_cast castForm;
 
-				castRel = heap_open(CastRelationId, AccessShareLock);
+				castRel = table_open(CastRelationId, AccessShareLock);
 
 				tup = get_catalog_object_by_oid(castRel, Anum_pg_cast_oid,
 												object->objectId);
@@ -4339,7 +4341,7 @@ getObjectIdentityParts(const ObjectAddress *object,
 					*objargs = list_make1(format_type_be_qualified(castForm->casttarget));
 				}
 
-				heap_close(castRel, AccessShareLock);
+				table_close(castRel, AccessShareLock);
 				break;
 			}
 
@@ -4440,7 +4442,7 @@ getObjectIdentityParts(const ObjectAddress *object,
 				Form_pg_attrdef attrdef;
 				ObjectAddress colobject;
 
-				attrdefDesc = heap_open(AttrDefaultRelationId, AccessShareLock);
+				attrdefDesc = table_open(AttrDefaultRelationId, AccessShareLock);
 
 				ScanKeyInit(&skey[0],
 							Anum_pg_attrdef_oid,
@@ -4467,7 +4469,7 @@ getObjectIdentityParts(const ObjectAddress *object,
 														objname, objargs));
 
 				systable_endscan(adscan);
-				heap_close(attrdefDesc, AccessShareLock);
+				table_close(attrdefDesc, AccessShareLock);
 				break;
 			}
 
@@ -4569,8 +4571,8 @@ getObjectIdentityParts(const ObjectAddress *object,
 				char	   *ltype;
 				char	   *rtype;
 
-				amopDesc = heap_open(AccessMethodOperatorRelationId,
-									 AccessShareLock);
+				amopDesc = table_open(AccessMethodOperatorRelationId,
+									  AccessShareLock);
 
 				ScanKeyInit(&skey[0],
 							Anum_pg_amop_oid,
@@ -4608,7 +4610,7 @@ getObjectIdentityParts(const ObjectAddress *object,
 				pfree(opfam.data);
 
 				systable_endscan(amscan);
-				heap_close(amopDesc, AccessShareLock);
+				table_close(amopDesc, AccessShareLock);
 				break;
 			}
 
@@ -4623,8 +4625,8 @@ getObjectIdentityParts(const ObjectAddress *object,
 				char	   *ltype;
 				char	   *rtype;
 
-				amprocDesc = heap_open(AccessMethodProcedureRelationId,
-									   AccessShareLock);
+				amprocDesc = table_open(AccessMethodProcedureRelationId,
+										AccessShareLock);
 
 				ScanKeyInit(&skey[0],
 							Anum_pg_amproc_oid,
@@ -4662,7 +4664,7 @@ getObjectIdentityParts(const ObjectAddress *object,
 				pfree(opfam.data);
 
 				systable_endscan(amscan);
-				heap_close(amprocDesc, AccessShareLock);
+				table_close(amprocDesc, AccessShareLock);
 				break;
 			}
 
@@ -4672,7 +4674,7 @@ getObjectIdentityParts(const ObjectAddress *object,
 				HeapTuple	tup;
 				Form_pg_rewrite rule;
 
-				ruleDesc = heap_open(RewriteRelationId, AccessShareLock);
+				ruleDesc = table_open(RewriteRelationId, AccessShareLock);
 
 				tup = get_catalog_object_by_oid(ruleDesc, Anum_pg_rewrite_oid,
 												object->objectId);
@@ -4689,7 +4691,7 @@ getObjectIdentityParts(const ObjectAddress *object,
 				if (objname)
 					*objname = lappend(*objname, pstrdup(NameStr(rule->rulename)));
 
-				heap_close(ruleDesc, AccessShareLock);
+				table_close(ruleDesc, AccessShareLock);
 				break;
 			}
 
@@ -4699,7 +4701,7 @@ getObjectIdentityParts(const ObjectAddress *object,
 				HeapTuple	tup;
 				Form_pg_trigger trig;
 
-				trigDesc = heap_open(TriggerRelationId, AccessShareLock);
+				trigDesc = table_open(TriggerRelationId, AccessShareLock);
 
 				tup = get_catalog_object_by_oid(trigDesc, Anum_pg_trigger_oid,
 												object->objectId);
@@ -4716,7 +4718,7 @@ getObjectIdentityParts(const ObjectAddress *object,
 				if (objname)
 					*objname = lappend(*objname, pstrdup(NameStr(trig->tgname)));
 
-				heap_close(trigDesc, AccessShareLock);
+				table_close(trigDesc, AccessShareLock);
 				break;
 			}
 
@@ -4961,7 +4963,7 @@ getObjectIdentityParts(const ObjectAddress *object,
 				char	   *schema;
 				char	   *username;
 
-				defaclrel = heap_open(DefaultAclRelationId, AccessShareLock);
+				defaclrel = table_open(DefaultAclRelationId, AccessShareLock);
 
 				ScanKeyInit(&skey[0],
 							Anum_pg_default_acl_oid,
@@ -5027,7 +5029,7 @@ getObjectIdentityParts(const ObjectAddress *object,
 				}
 
 				systable_endscan(rcscan);
-				heap_close(defaclrel, AccessShareLock);
+				table_close(defaclrel, AccessShareLock);
 				break;
 			}
 
@@ -5072,7 +5074,7 @@ getObjectIdentityParts(const ObjectAddress *object,
 				HeapTuple	tup;
 				Form_pg_policy policy;
 
-				polDesc = heap_open(PolicyRelationId, AccessShareLock);
+				polDesc = table_open(PolicyRelationId, AccessShareLock);
 
 				tup = get_catalog_object_by_oid(polDesc, Anum_pg_policy_oid,
 												object->objectId);
@@ -5089,7 +5091,7 @@ getObjectIdentityParts(const ObjectAddress *object,
 				if (objname)
 					*objname = lappend(*objname, pstrdup(NameStr(policy->polname)));
 
-				heap_close(polDesc, AccessShareLock);
+				table_close(polDesc, AccessShareLock);
 				break;
 			}
 
@@ -5150,7 +5152,7 @@ getObjectIdentityParts(const ObjectAddress *object,
 				char	   *transformLang;
 				char	   *transformType;
 
-				transformDesc = heap_open(TransformRelationId, AccessShareLock);
+				transformDesc = table_open(TransformRelationId, AccessShareLock);
 
 				tup = get_catalog_object_by_oid(transformDesc,
 												Anum_pg_transform_oid,
@@ -5174,7 +5176,7 @@ getObjectIdentityParts(const ObjectAddress *object,
 					*objargs = list_make1(pstrdup(transformLang));
 				}
 
-				heap_close(transformDesc, AccessShareLock);
+				table_close(transformDesc, AccessShareLock);
 			}
 			break;
 

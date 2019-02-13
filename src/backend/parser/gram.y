@@ -581,8 +581,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 %type <partelem>	part_elem
 %type <list>		part_params
 %type <partboundspec> PartitionBoundSpec
-%type <node>		partbound_datum PartitionRangeDatum
-%type <list>		hash_partbound partbound_datum_list range_datum_list
+%type <list>		hash_partbound
 %type <defelt>		hash_partbound_elem
 
 /*
@@ -677,7 +676,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 	SERIALIZABLE SERVER SESSION SESSION_USER SET SETS SETOF SHARE SHOW
 	SIMILAR SIMPLE SKIP SMALLINT SNAPSHOT SOME SQL_P STABLE STANDALONE_P
 	START STATEMENT STATISTICS STDIN STDOUT STORAGE STRICT_P STRIP_P
-	SUBSCRIPTION SUBSTRING SYMMETRIC SYSID SYSTEM_P
+	SUBSCRIPTION SUBSTRING SUPPORT SYMMETRIC SYSID SYSTEM_P
 
 	TABLE TABLES TABLESAMPLE TABLESPACE TEMP TEMPLATE TEMPORARY TEXT_P THEN
 	TIES TIME TIMESTAMP TO TRAILING TRANSACTION TRANSFORM
@@ -2677,7 +2676,7 @@ alter_identity_column_option:
 		;
 
 PartitionBoundSpec:
-			/* a HASH partition*/
+			/* a HASH partition */
 			FOR VALUES WITH '(' hash_partbound ')'
 				{
 					ListCell   *lc;
@@ -2731,7 +2730,7 @@ PartitionBoundSpec:
 				}
 
 			/* a LIST partition */
-			| FOR VALUES IN_P '(' partbound_datum_list ')'
+			| FOR VALUES IN_P '(' expr_list ')'
 				{
 					PartitionBoundSpec *n = makeNode(PartitionBoundSpec);
 
@@ -2744,7 +2743,7 @@ PartitionBoundSpec:
 				}
 
 			/* a RANGE partition */
-			| FOR VALUES FROM '(' range_datum_list ')' TO '(' range_datum_list ')'
+			| FOR VALUES FROM '(' expr_list ')' TO '(' expr_list ')'
 				{
 					PartitionBoundSpec *n = makeNode(PartitionBoundSpec);
 
@@ -2785,59 +2784,6 @@ hash_partbound:
 			{
 				$$ = lappend($1, $3);
 			}
-		;
-
-partbound_datum:
-			Sconst			{ $$ = makeStringConst($1, @1); }
-			| NumericOnly	{ $$ = makeAConst($1, @1); }
-			| TRUE_P		{ $$ = makeStringConst(pstrdup("true"), @1); }
-			| FALSE_P		{ $$ = makeStringConst(pstrdup("false"), @1); }
-			| NULL_P		{ $$ = makeNullAConst(@1); }
-		;
-
-partbound_datum_list:
-			partbound_datum						{ $$ = list_make1($1); }
-			| partbound_datum_list ',' partbound_datum
-												{ $$ = lappend($1, $3); }
-		;
-
-range_datum_list:
-			PartitionRangeDatum					{ $$ = list_make1($1); }
-			| range_datum_list ',' PartitionRangeDatum
-												{ $$ = lappend($1, $3); }
-		;
-
-PartitionRangeDatum:
-			MINVALUE
-				{
-					PartitionRangeDatum *n = makeNode(PartitionRangeDatum);
-
-					n->kind = PARTITION_RANGE_DATUM_MINVALUE;
-					n->value = NULL;
-					n->location = @1;
-
-					$$ = (Node *) n;
-				}
-			| MAXVALUE
-				{
-					PartitionRangeDatum *n = makeNode(PartitionRangeDatum);
-
-					n->kind = PARTITION_RANGE_DATUM_MAXVALUE;
-					n->value = NULL;
-					n->location = @1;
-
-					$$ = (Node *) n;
-				}
-			| partbound_datum
-				{
-					PartitionRangeDatum *n = makeNode(PartitionRangeDatum);
-
-					n->kind = PARTITION_RANGE_DATUM_VALUE;
-					n->value = $1;
-					n->location = @1;
-
-					$$ = (Node *) n;
-				}
 		;
 
 /*****************************************************************************
@@ -2962,7 +2908,8 @@ ClosePortalStmt:
  *****************************************************************************/
 
 CopyStmt:	COPY opt_binary qualified_name opt_column_list
-			copy_from opt_program copy_file_name copy_delimiter opt_with copy_options
+			copy_from opt_program copy_file_name copy_delimiter opt_with
+			copy_options where_clause
 				{
 					CopyStmt *n = makeNode(CopyStmt);
 					n->relation = $3;
@@ -2971,12 +2918,19 @@ CopyStmt:	COPY opt_binary qualified_name opt_column_list
 					n->is_from = $5;
 					n->is_program = $6;
 					n->filename = $7;
+					n->whereClause = $11;
 
 					if (n->is_program && n->filename == NULL)
 						ereport(ERROR,
 								(errcode(ERRCODE_SYNTAX_ERROR),
 								 errmsg("STDIN/STDOUT not allowed with PROGRAM"),
 								 parser_errposition(@8)));
+
+					if (!n->is_from && n->whereClause != NULL)
+						ereport(ERROR,
+								(errcode(ERRCODE_SYNTAX_ERROR),
+								 errmsg("WHERE clause not allowed with COPY TO"),
+								 parser_errposition(@11)));
 
 					n->options = NIL;
 					/* Concatenate user-supplied flags */
@@ -7879,6 +7833,10 @@ common_func_opt_item:
 			| ROWS NumericOnly
 				{
 					$$ = makeDefElem("rows", (Node *)$2, @1);
+				}
+			| SUPPORT any_name
+				{
+					$$ = makeDefElem("support", (Node *)$2, @1);
 				}
 			| FunctionSetResetClause
 				{
@@ -15210,6 +15168,7 @@ unreserved_keyword:
 			| STRICT_P
 			| STRIP_P
 			| SUBSCRIPTION
+			| SUPPORT
 			| SYSID
 			| SYSTEM_P
 			| TABLES

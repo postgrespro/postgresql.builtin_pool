@@ -30,8 +30,7 @@
 #include "funcapi.h"
 #include "miscadmin.h"
 #include "nodes/nodeFuncs.h"
-#include "optimizer/clauses.h"
-#include "optimizer/planner.h"
+#include "optimizer/optimizer.h"
 #include "parser/parse_coerce.h"
 #include "parser/scansup.h"
 #include "storage/proc.h"
@@ -491,8 +490,8 @@ plpgsql_exec_function(PLpgSQL_function *func, FunctionCallInfo fcinfo,
 					PLpgSQL_var *var = (PLpgSQL_var *) estate.datums[n];
 
 					assign_simple_var(&estate, var,
-									  fcinfo->arg[i],
-									  fcinfo->argnull[i],
+									  fcinfo->args[i].value,
+									  fcinfo->args[i].isnull,
 									  false);
 
 					/*
@@ -543,12 +542,12 @@ plpgsql_exec_function(PLpgSQL_function *func, FunctionCallInfo fcinfo,
 				{
 					PLpgSQL_rec *rec = (PLpgSQL_rec *) estate.datums[n];
 
-					if (!fcinfo->argnull[i])
+					if (!fcinfo->args[i].isnull)
 					{
 						/* Assign row value from composite datum */
 						exec_move_row_from_datum(&estate,
 												 (PLpgSQL_variable *) rec,
-												 fcinfo->arg[i]);
+												 fcinfo->args[i].value);
 					}
 					else
 					{
@@ -891,11 +890,12 @@ plpgsql_exec_trigger(PLpgSQL_function *func,
 	/*
 	 * Put the OLD and NEW tuples into record variables
 	 *
-	 * We make the tupdescs available in both records even though only one may
-	 * have a value.  This allows parsing of record references to succeed in
-	 * functions that are used for multiple trigger types.  For example, we
-	 * might have a test like "if (TG_OP = 'INSERT' and NEW.foo = 'xyz')",
-	 * which should parse regardless of the current trigger type.
+	 * We set up expanded records for both variables even though only one may
+	 * have a value.  This allows record references to succeed in functions
+	 * that are used for multiple trigger types.  For example, we might have a
+	 * test like "if (TG_OP = 'INSERT' and NEW.foo = 'xyz')", which should
+	 * work regardless of the current trigger type.  If a value is actually
+	 * fetched from an unsupplied tuple, it will read as NULL.
 	 */
 	tupdesc = RelationGetDescr(trigdata->tg_relation);
 
@@ -5207,8 +5207,8 @@ exec_assign_value(PLpgSQL_execstate *estate,
 
 				/*
 				 * Evaluate the subscripts, switch into left-to-right order.
-				 * Like the expression built by ExecInitArrayRef(), complain
-				 * if any subscript is null.
+				 * Like the expression built by ExecInitSubscriptingRef(),
+				 * complain if any subscript is null.
 				 */
 				for (i = 0; i < nsubscripts; i++)
 				{

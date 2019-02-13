@@ -102,7 +102,12 @@ free_statement(struct statement *stmt)
 	free_variable(stmt->outlist);
 	ecpg_free(stmt->command);
 	ecpg_free(stmt->name);
+#ifdef HAVE_USELOCALE
+	if (stmt->clocale)
+		freelocale(stmt->clocale);
+#else
 	ecpg_free(stmt->oldlocale);
+#endif
 	ecpg_free(stmt);
 }
 
@@ -1750,7 +1755,7 @@ ecpg_do_prologue(int lineno, const int compat, const int force_indicator,
 				 enum ECPG_statement_type statement_type, const char *query,
 				 va_list args, struct statement **stmt_out)
 {
-	struct statement *stmt;
+	struct statement *stmt = NULL;
 	struct connection *con;
 	enum ECPGttype type;
 	struct variable **list;
@@ -1771,8 +1776,29 @@ ecpg_do_prologue(int lineno, const int compat, const int force_indicator,
 
 	/*
 	 * Make sure we do NOT honor the locale for numeric input/output since the
-	 * database wants the standard decimal point
+	 * database wants the standard decimal point.  If available, use
+	 * uselocale() for this because it's thread-safe.  Windows doesn't have
+	 * that, but it usually does have _configthreadlocale().  In some versions
+	 * of MinGW, _configthreadlocale() exists but always returns -1 --- so
+	 * treat that situation as if the function doesn't exist.
 	 */
+#ifdef HAVE_USELOCALE
+	stmt->clocale = newlocale(LC_NUMERIC_MASK, "C", (locale_t) 0);
+	if (stmt->clocale == (locale_t) 0)
+	{
+		ecpg_do_epilogue(stmt);
+		return false;
+	}
+	stmt->oldlocale = uselocale(stmt->clocale);
+	if (stmt->oldlocale == (locale_t) 0)
+	{
+		ecpg_do_epilogue(stmt);
+		return false;
+	}
+#else
+#ifdef HAVE__CONFIGTHREADLOCALE
+	stmt->oldthreadlocale = _configthreadlocale(_ENABLE_PER_THREAD_LOCALE);
+#endif
 	stmt->oldlocale = ecpg_strdup(setlocale(LC_NUMERIC, NULL), lineno);
 	if (stmt->oldlocale == NULL)
 	{
@@ -1780,6 +1806,7 @@ ecpg_do_prologue(int lineno, const int compat, const int force_indicator,
 		return false;
 	}
 	setlocale(LC_NUMERIC, "C");
+#endif
 
 #ifdef ENABLE_THREAD_SAFETY
 	ecpg_pthreads_init();
@@ -1982,8 +2009,23 @@ ecpg_do_epilogue(struct statement *stmt)
 	if (stmt == NULL)
 		return;
 
+#ifdef HAVE_USELOCALE
+	if (stmt->oldlocale != (locale_t) 0)
+		uselocale(stmt->oldlocale);
+#else
 	if (stmt->oldlocale)
 		setlocale(LC_NUMERIC, stmt->oldlocale);
+#ifdef HAVE__CONFIGTHREADLOCALE
+
+	/*
+	 * This is a bit trickier than it looks: if we failed partway through
+	 * statement initialization, oldthreadlocale could still be 0.  But that's
+	 * okay because a call with 0 is defined to be a no-op.
+	 */
+	if (stmt->oldthreadlocale != -1)
+		(void) _configthreadlocale(stmt->oldthreadlocale);
+#endif
+#endif
 
 	free_statement(stmt);
 }

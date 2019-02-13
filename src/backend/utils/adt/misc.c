@@ -20,6 +20,7 @@
 #include <unistd.h>
 
 #include "access/sysattr.h"
+#include "access/table.h"
 #include "catalog/catalog.h"
 #include "catalog/pg_tablespace.h"
 #include "catalog/pg_type.h"
@@ -821,9 +822,9 @@ pg_get_replica_identity_index(PG_FUNCTION_ARGS)
 	Oid			idxoid;
 	Relation	rel;
 
-	rel = heap_open(reloid, AccessShareLock);
+	rel = table_open(reloid, AccessShareLock);
 	idxoid = RelationGetReplicaIndex(rel);
-	heap_close(rel, AccessShareLock);
+	table_close(rel, AccessShareLock);
 
 	if (OidIsValid(idxoid))
 		PG_RETURN_OID(idxoid);

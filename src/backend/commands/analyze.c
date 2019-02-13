@@ -16,8 +16,12 @@
 
 #include <math.h>
 
+#include "access/genam.h"
+#include "access/heapam.h"
 #include "access/multixact.h"
+#include "access/relation.h"
 #include "access/sysattr.h"
+#include "access/table.h"
 #include "access/transam.h"
 #include "access/tupconvert.h"
 #include "access/tuptoaster.h"
@@ -60,7 +64,6 @@
 #include "utils/sortsupport.h"
 #include "utils/syscache.h"
 #include "utils/timestamp.h"
-#include "utils/tqual.h"
 
 
 /* Per-index data for ANALYZE */
@@ -1349,14 +1352,14 @@ acquire_inherited_sample_rows(Relation onerel, int elevel,
 		BlockNumber relpages = 0;
 
 		/* We already got the needed lock */
-		childrel = heap_open(childOID, NoLock);
+		childrel = table_open(childOID, NoLock);
 
 		/* Ignore if temp table of another backend */
 		if (RELATION_IS_OTHER_TEMP(childrel))
 		{
 			/* ... but release the lock on it */
 			Assert(childrel != onerel);
-			heap_close(childrel, AccessShareLock);
+			table_close(childrel, AccessShareLock);
 			continue;
 		}
 
@@ -1388,7 +1391,7 @@ acquire_inherited_sample_rows(Relation onerel, int elevel,
 			{
 				/* ignore, but release the lock on it */
 				Assert(childrel != onerel);
-				heap_close(childrel, AccessShareLock);
+				table_close(childrel, AccessShareLock);
 				continue;
 			}
 		}
@@ -1400,9 +1403,9 @@ acquire_inherited_sample_rows(Relation onerel, int elevel,
 			 */
 			Assert(childrel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE);
 			if (childrel != onerel)
-				heap_close(childrel, AccessShareLock);
+				table_close(childrel, AccessShareLock);
 			else
-				heap_close(childrel, NoLock);
+				table_close(childrel, NoLock);
 			continue;
 		}
 
@@ -1498,7 +1501,7 @@ acquire_inherited_sample_rows(Relation onerel, int elevel,
 		 * Note: we cannot release the child-table locks, since we may have
 		 * pointers to their TOAST tables in the sampled rows.
 		 */
-		heap_close(childrel, NoLock);
+		table_close(childrel, NoLock);
 	}
 
 	return numrows;
@@ -1536,7 +1539,7 @@ update_attstats(Oid relid, bool inh, int natts, VacAttrStats **vacattrstats)
 	if (natts <= 0)
 		return;					/* nothing to do */
 
-	sd = heap_open(StatisticRelationId, RowExclusiveLock);
+	sd = table_open(StatisticRelationId, RowExclusiveLock);
 
 	for (attno = 0; attno < natts; attno++)
 	{
@@ -1657,7 +1660,7 @@ update_attstats(Oid relid, bool inh, int natts, VacAttrStats **vacattrstats)
 		heap_freetuple(stup);
 	}
 
-	heap_close(sd, RowExclusiveLock);
+	table_close(sd, RowExclusiveLock);
 }
 
 /*
