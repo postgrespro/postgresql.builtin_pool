@@ -275,12 +275,13 @@
       <term>CompressionAck</term>
       <listitem>
        <para>
-         Server acknowledge using compression for client-server communication protocol.
+         Server acknowledges using compression for client-server communication protocol.
          Compression can be requested by client by including "compression" option in connection string.
-         Client sends to the server list of compression algorithms, supported by client library.
-         If server supports one of this algorithms, then it acknowledges use of this algorithm and then all libpq messages send both from client to server and
+         Client sends to the server list of compression algorithms, supported by client library
+         (compression algorithm is identified by one letter: <literal>'f'</literal> - Facebook zstd, <literal>'z'</literal> - zlib,...).
+         If server supports one of this algorithms, then it acknowledges use of this algorithm and all subsequent libpq messages send both from client to server and
          visa versa will be compressed. If server is not supporting any of the suggested algorithms, then it replies with 'n' (no compression)
-         message and it is up to the client whether to continue work without compression or report error.
+         algorithm identifier and it is up to the client whether to continue work without compression or report error.
        </para>
       </listitem>
      </varlistentry>
@@ -3460,7 +3461,7 @@ CompressionAck (B)
 </term>
 <listitem>
 <para>
-        Used compression algorithm. Right now the following streaming compression algorithms are supported: 'f' - Facebook zstd, 'z' - zlib, 'n' - no compresion.
+        Used compression algorithm. Right now the following streaming compression algorithms are supported: 'f' - Facebook zstd, 'z' - zlib, 'n' - no compression.
 </para>
 </listitem>
 </varlistentry>
@@ -5895,8 +5896,9 @@ StartupMessage (F)
 <listitem>
 <para>
                         Request compression of libpq traffic. Value is list of compression algorithms supported by client:
-                        <literal>'f'</literal> - Facebook zstd, <literal>'z'</literal> - zlib, <literal>'n'</literal> - no compresion.
-                        By default compression is disabled.
+                        <literal>'f'</literal> - Facebook zstd, <literal>'z'</literal> - zlib, <literal>'n'</literal> - no compression.
+                        By default compression is disabled. Please notice that using compression together with SSL may add extra vulnerabilities:
+                        <ulink url="https://en.wikipedia.org/wiki/CRIME">CRIME</ulink>.
 </para>
 </listitem>
 </varlistentry>

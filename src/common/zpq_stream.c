@@ -3,16 +3,48 @@
 #include "c.h"
 #include "pg_config.h"
 
-static int zpq_algorithm_impl;
-
+/*
+ * Functions implementing streaming compression algorithm
+ */
 typedef struct
 {
+	/*
+	 * Returns letter identifying compression algorithm.
+	 */
 	char    (*name)(void);
+
+	/*
+	 * Create compression stream with using rx/tx function for fetching/sending compressed data
+	 */
 	ZpqStream* (*create)(zpq_tx_func tx_func, zpq_rx_func rx_func, void *arg);
+
+	/*
+	 * Read up to "size" raw (decompressed) bytes.
+	 * Returns number of decompressed bytes or error code. In the last case amount of decompressed bytes is stored in *processed.
+	 * Error code is either ZPQ_DECOMPRESS_ERROR either error code returned by the rx function.
+	 */
 	ssize_t (*read)(ZpqStream *zs, void *buf, size_t size, size_t *processed);
+
+	/*
+	 * Write up to "size" raw (decompressed) bytes.
+	 * Returns number of written raw bytes or error code returned by tx function.
+	 * In the last case amount of written raw bytes is stored in *processed.
+	 */
 	ssize_t (*write)(ZpqStream *zs, void const *buf, size_t size, size_t *processed);
+
+	/*
+	 * Free stream created by create function.
+	 */
 	void    (*free)(ZpqStream *zs);
+
+	/*
+	 * Get error message.
+	 */
 	char const* (*error)(ZpqStream *zs);
+
+	/*
+	 * Returns amount of data in internal compression buffer.
+	 */
 	size_t  (*buffered)(ZpqStream *zs);
 } ZpqAlgorithm;
 
@@ -31,8 +63,8 @@ typedef struct ZstdStream
 	ZSTD_DStream*  rx_stream;
 	ZSTD_outBuffer tx;
 	ZSTD_inBuffer  rx;
-	size_t         tx_not_flushed; /* Amount of datas in internal zstd buffer */
-	size_t         tx_buffered;    /* Data which is consumed by zpq_read but not yet sent */
+	size_t         tx_not_flushed; /* Amount of data in internal zstd buffer */
+	size_t         tx_buffered;    /* Data which is consumed by ztd_read but not yet sent */
 	zpq_tx_func    tx_func;
 	zpq_rx_func    rx_func;
 	void*          arg;
@@ -367,7 +399,10 @@ zlib_name(void)
 
 #endif
 
-static ZpqAlgorithm const zpq_algorithms[] = 
+/*
+ * Array with all supported compression algorithms.
+ */
+static ZpqAlgorithm const zpq_algorithms[] =
 {
 #if HAVE_LIBZSTD
 	{zstd_name, zstd_create, zstd_read, zstd_write, zstd_free, zstd_error, zstd_buffered},
@@ -377,6 +412,12 @@ static ZpqAlgorithm const zpq_algorithms[] =
 #endif
 	{NULL}
 };
+
+/*
+ * Index of used compression algorithm in zpq_algorithms array.
+ */
+static int zpq_algorithm_impl;
+
 
 ZpqStream*
 zpq_create(zpq_tx_func tx_func, zpq_rx_func rx_func, void *arg)
@@ -415,6 +456,11 @@ zpq_buffered(ZpqStream *zs)
 	return zpq_algorithms[zpq_algorithm_impl].buffered(zs);
 }
 
+/*
+ * Get list of the supported algorithms.
+ * Each algorithm is identified by one letter: 'f' - Facebook zstd, 'z' - zlib.
+ * Algorithm identifies are appended to the provided buffer and terminated by '\0'.
+ */
 void
 zpq_get_supported_algorithms(char algorithms[ZPQ_MAX_ALGORITHMS])
 {
@@ -428,7 +474,11 @@ zpq_get_supported_algorithms(char algorithms[ZPQ_MAX_ALGORITHMS])
 	algorithms[i] = '\0';
 }
 
-
+/*
+ * Choose current algorithm implementation.
+ * Returns true if algorithm identifier is located in the list of the supported algorithms,
+ * false otherwise
+ */
 bool
 zpq_set_algorithm(char name)
 {

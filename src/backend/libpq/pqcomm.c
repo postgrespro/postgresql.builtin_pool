@@ -199,16 +199,22 @@ WaitEventSet *FeBeWaitSet;
 int
 pq_configure(Port* port)
 {
-	char server_compression_algorithms[ZPQ_MAX_ALGORITHMS];
 	char* client_compression_algorithms = port->compression_algorithms;
-	char compression_algorithm = ZPQ_NO_COMPRESSION;
-	char compression[6] = {'z',0,0,0,5,0}; /* message length = 5 */
-	int rc;
-
-	zpq_get_supported_algorithms(server_compression_algorithms);
-
+	/*
+	 * If client request compression, it sends list of supported compression algorithms.
+	 * Each compression algorirthm is idetified by one letter ('f' - Facebook zsts, 'z' - xlib)
+	 */
 	if (client_compression_algorithms)
 	{
+		char server_compression_algorithms[ZPQ_MAX_ALGORITHMS];
+		char compression_algorithm = ZPQ_NO_COMPRESSION;
+		char compression[6] = {'z',0,0,0,5,0}; /* message length = 5 */
+		int rc;
+
+		/* Get list of compression algorithms, supported by server */
+		zpq_get_supported_algorithms(server_compression_algorithms);
+
+		/* Intersect lists */
 		while (*client_compression_algorithms != '\0')
 		{
 			if (strchr(server_compression_algorithms, *client_compression_algorithms))
@@ -218,19 +224,19 @@ pq_configure(Port* port)
 			}
 			client_compression_algorithms += 1;
 		}
+
+		compression[5] = compression_algorithm;
+		/* Send 'z' message to the client with selectde comression algorithm ('n' if match is ont found) */
+		socket_set_nonblocking(false);
+		while ((rc = secure_write(MyProcPort, compression, sizeof(compression))) < 0
+			   && errno == EINTR);
+		if ((size_t)rc != sizeof(compression))
+			return -1;
+
+		/* initialize compression */
+		if (zpq_set_algorithm(compression_algorithm))
+			PqStream = zpq_create((zpq_tx_func)secure_write, (zpq_rx_func)secure_read, MyProcPort);
 	}
-
-	compression[5] = compression_algorithm;
-	/* Switch on compression at client side */
-	socket_set_nonblocking(false);
-	while ((rc = secure_write(MyProcPort, compression, sizeof(compression))) < 0
-		   && errno == EINTR);
-	if ((size_t)rc != sizeof(compression))
-		return -1;
-
-	/* initialize compression */
-	if (zpq_set_algorithm(compression_algorithm))
-		PqStream = zpq_create((zpq_tx_func)secure_write, (zpq_rx_func)secure_read, MyProcPort);
 	return 0;
 }
 
@@ -983,6 +989,7 @@ socket_set_nonblocking(bool nonblocking)
 /* --------------------------------
  *		pq_recvbuf - load some bytes into the input buffer
  *
+ *      nowait parameter toggles non-blocking mode. 
  *		returns number of read bytes, EOF if trouble
  * --------------------------------
  */
@@ -1012,6 +1019,7 @@ pq_recvbuf(bool nowait)
 	for (;;)
 	{
 		size_t processed = 0;
+		/* If srteaming compression is enabled then use correpondent comression read function. */
 		r = PqStream
 			? zpq_read(PqStream, PqRecvBuffer + PqRecvLength,
 					   PQ_RECV_BUFFER_SIZE - PqRecvLength, &processed)

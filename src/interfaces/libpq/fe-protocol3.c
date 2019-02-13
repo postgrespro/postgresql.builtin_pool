@@ -2135,6 +2135,10 @@ pqBuildStartupPacket3(PGconn *conn, int *packetlen,
 	return startpacket;
 }
 
+/*
+ * Parse boolean value. This code is copied from backend/utils/atd/bool.c
+ * because it is not available at frontend.
+ */
 static bool
 parse_bool(const char *value, bool *result)
 {
@@ -2257,6 +2261,10 @@ build_startup_packet(const PGconn *conn, char *packet,
 	if (conn->compression && conn->compression[0])
 	{
 		bool enabled;
+		/*
+		 * If compressoin is enabled, then send to the server list of compression algorithms
+		 * supported by client
+		 */
 		if (parse_bool(conn->compression, &enabled))
 		{
 			char compression_algorithms[ZPQ_MAX_ALGORITHMS];
