@@ -296,7 +296,7 @@ zlib_read(ZpqStream *zstream, void *buf, size_t size, size_t *processed)
 		if (zs->rx.avail_in != 0) /* If there is some data in receiver buffer, then decompress it */
 		{
 			rc = inflate(&zs->rx, Z_SYNC_FLUSH);
-			if (rc != Z_OK)
+			if (rc != Z_OK && rc != Z_BUF_ERROR)
 			{
 				return ZPQ_DECOMPRESS_ERROR;
 			}
