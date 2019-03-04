@@ -102,7 +102,12 @@ free_statement(struct statement *stmt)
 	free_variable(stmt->outlist);
 	ecpg_free(stmt->command);
 	ecpg_free(stmt->name);
+#ifdef HAVE_USELOCALE
+	if (stmt->clocale)
+		freelocale(stmt->clocale);
+#else
 	ecpg_free(stmt->oldlocale);
+#endif
 	ecpg_free(stmt);
 }
 
@@ -799,6 +804,20 @@ ecpg_store_input(const int lineno, const bool force_indicator, const struct vari
 					*tobeinserted_p = mallocedval;
 				}
 				break;
+
+			case ECPGt_bytea:
+				{
+					struct ECPGgeneric_varchar *variable =
+					(struct ECPGgeneric_varchar *) (var->value);
+
+					if (!(mallocedval = (char *) ecpg_alloc(variable->len, lineno)))
+						return false;
+
+					memcpy(mallocedval, variable->arr, variable->len);
+					*tobeinserted_p = mallocedval;
+				}
+				break;
+
 			case ECPGt_varchar:
 				{
 					struct ECPGgeneric_varchar *variable =
@@ -1041,6 +1060,36 @@ ecpg_store_input(const int lineno, const bool force_indicator, const struct vari
 	return true;
 }
 
+static void
+print_param_value(char *value, int len, int is_binary, int lineno, int nth)
+{
+	char *value_s;
+	bool malloced = false;
+
+	if (value == NULL)
+		value_s = "null";
+	else if (! is_binary)
+		value_s = value;
+	else
+	{
+		value_s = ecpg_alloc(ecpg_hex_enc_len(len)+1, lineno);
+		if (value_s != NULL)
+		{
+			ecpg_hex_encode(value, len, value_s);
+			value_s[ecpg_hex_enc_len(len)] = '\0';
+			malloced = true;
+		}
+		else
+			value_s = "no memory for logging of parameter";
+	}
+
+	ecpg_log("ecpg_free_params on line %d: parameter %d = %s\n",
+				lineno, nth, value_s);
+
+	if (malloced)
+		ecpg_free(value_s);
+}
+
 void
 ecpg_free_params(struct statement *stmt, bool print)
 {
@@ -1049,11 +1098,16 @@ ecpg_free_params(struct statement *stmt, bool print)
 	for (n = 0; n < stmt->nparams; n++)
 	{
 		if (print)
-			ecpg_log("ecpg_free_params on line %d: parameter %d = %s\n", stmt->lineno, n + 1, stmt->paramvalues[n] ? stmt->paramvalues[n] : "null");
+			print_param_value(stmt->paramvalues[n], stmt->paramlengths[n],
+								stmt->paramformats[n], stmt->lineno, n + 1);
 		ecpg_free(stmt->paramvalues[n]);
 	}
 	ecpg_free(stmt->paramvalues);
+	ecpg_free(stmt->paramlengths);
+	ecpg_free(stmt->paramformats);
 	stmt->paramvalues = NULL;
+	stmt->paramlengths = NULL;
+	stmt->paramformats = NULL;
 	stmt->nparams = 0;
 }
 
@@ -1085,7 +1139,54 @@ insert_tobeinserted(int position, int ph_len, struct statement *stmt, char *tobe
 	ecpg_free(stmt->command);
 	stmt->command = newcopy;
 
-	ecpg_free((char *) tobeinserted);
+	ecpg_free(tobeinserted);
+	return true;
+}
+
+static bool
+store_input_from_desc(struct statement *stmt, struct descriptor_item *desc_item,
+						char **tobeinserted)
+{
+	struct variable var;
+
+	/*
+	 * In case of binary data, only allocate memory and memcpy because
+	 * binary data have been already stored into desc_item->data with
+	 * ecpg_store_input() at ECPGset_desc().
+	 */
+	if (desc_item->is_binary)
+	{
+		if (!(*tobeinserted = ecpg_alloc(desc_item->data_len, stmt->lineno)))
+			return false;
+		memcpy(*tobeinserted, desc_item->data, desc_item->data_len);
+		return true;
+	}
+
+	var.type = ECPGt_char;
+	var.varcharsize = strlen(desc_item->data);
+	var.value = desc_item->data;
+	var.pointer = &(desc_item->data);
+	var.arrsize = 1;
+	var.offset = 0;
+
+	if (!desc_item->indicator)
+	{
+		var.ind_type = ECPGt_NO_INDICATOR;
+		var.ind_value = var.ind_pointer = NULL;
+		var.ind_varcharsize = var.ind_arrsize = var.ind_offset = 0;
+	}
+	else
+	{
+		var.ind_type = ECPGt_int;
+		var.ind_value = &(desc_item->indicator);
+		var.ind_pointer = &(var.ind_value);
+		var.ind_varcharsize = var.ind_arrsize = 1;
+		var.ind_offset = 0;
+	}
+
+	if (!ecpg_store_input(stmt->lineno, stmt->force_indicator, &var, tobeinserted, false))
+		return false;
+
 	return true;
 }
 
@@ -1120,8 +1221,13 @@ ecpg_build_params(struct statement *stmt)
 	{
 		char	   *tobeinserted;
 		int			counter = 1;
+		bool		binary_format;
+		int			binary_length;
+
 
 		tobeinserted = NULL;
+		binary_length = 0;
+		binary_format = false;
 
 		/*
 		 * A descriptor is a special case since it contains many variables but
@@ -1133,7 +1239,6 @@ ecpg_build_params(struct statement *stmt)
 			 * We create an additional variable list here, so the same logic
 			 * applies.
 			 */
-			struct variable desc_inlist;
 			struct descriptor *desc;
 			struct descriptor_item *desc_item;
 
@@ -1144,33 +1249,18 @@ ecpg_build_params(struct statement *stmt)
 			desc_counter++;
 			for (desc_item = desc->items; desc_item; desc_item = desc_item->next)
 			{
-				if (desc_item->num == desc_counter)
-				{
-					desc_inlist.type = ECPGt_char;
-					desc_inlist.value = desc_item->data;
-					desc_inlist.pointer = &(desc_item->data);
-					desc_inlist.varcharsize = strlen(desc_item->data);
-					desc_inlist.arrsize = 1;
-					desc_inlist.offset = 0;
-					if (!desc_item->indicator)
-					{
-						desc_inlist.ind_type = ECPGt_NO_INDICATOR;
-						desc_inlist.ind_value = desc_inlist.ind_pointer = NULL;
-						desc_inlist.ind_varcharsize = desc_inlist.ind_arrsize = desc_inlist.ind_offset = 0;
-					}
-					else
-					{
-						desc_inlist.ind_type = ECPGt_int;
-						desc_inlist.ind_value = &(desc_item->indicator);
-						desc_inlist.ind_pointer = &(desc_inlist.ind_value);
-						desc_inlist.ind_varcharsize = desc_inlist.ind_arrsize = 1;
-						desc_inlist.ind_offset = 0;
-					}
-					if (!ecpg_store_input(stmt->lineno, stmt->force_indicator, &desc_inlist, &tobeinserted, false))
-						return false;
+				if (desc_item->num != desc_counter)
+					continue;
 
-					break;
+				if (!store_input_from_desc(stmt, desc_item, &tobeinserted))
+					return false;
+
+				if (desc_item->is_binary)
+				{
+					binary_length = desc_item->data_len;
+					binary_format = true;
 				}
+				break;
 			}
 			if (desc->count == desc_counter)
 				desc_counter = 0;
@@ -1293,6 +1383,12 @@ ecpg_build_params(struct statement *stmt)
 		{
 			if (!ecpg_store_input(stmt->lineno, stmt->force_indicator, var, &tobeinserted, false))
 				return false;
+
+			if (var->type == ECPGt_bytea)
+			{
+				binary_length = ((struct ECPGgeneric_varchar *) (var->value))->len;
+				binary_format = true;
+			}
 		}
 
 		/*
@@ -1309,6 +1405,7 @@ ecpg_build_params(struct statement *stmt)
 					   ECPG_SQLSTATE_USING_CLAUSE_DOES_NOT_MATCH_PARAMETERS,
 					   NULL);
 			ecpg_free_params(stmt, false);
+			ecpg_free(tobeinserted);
 			return false;
 		}
 
@@ -1345,17 +1442,28 @@ ecpg_build_params(struct statement *stmt)
 		}
 		else
 		{
-			char	  **paramvalues;
+			if (!(stmt->paramvalues = (char **) ecpg_realloc(stmt->paramvalues, sizeof(char *) * (stmt->nparams + 1), stmt->lineno)))
+			{
+				ecpg_free_params(stmt, false);
+				ecpg_free(tobeinserted);
+				return false;
+			}
+			stmt->paramvalues[stmt->nparams] = tobeinserted;
 
-			if (!(paramvalues = (char **) ecpg_realloc(stmt->paramvalues, sizeof(char *) * (stmt->nparams + 1), stmt->lineno)))
+			if (!(stmt->paramlengths = (int *) ecpg_realloc(stmt->paramlengths, sizeof(int) * (stmt->nparams + 1), stmt->lineno)))
 			{
 				ecpg_free_params(stmt, false);
 				return false;
 			}
+			stmt->paramlengths[stmt->nparams] = binary_length;
 
+			if (!(stmt->paramformats = (int *) ecpg_realloc(stmt->paramformats, sizeof(int) * (stmt->nparams + 1), stmt->lineno)))
+			{
+				ecpg_free_params(stmt, false);
+				return false;
+			}
+			stmt->paramformats[stmt->nparams] = (binary_format ? 1 : 0);
 			stmt->nparams++;
-			stmt->paramvalues = paramvalues;
-			stmt->paramvalues[stmt->nparams - 1] = tobeinserted;
 
 			/* let's see if this was an old style placeholder */
 			if (stmt->command[position] == '?')
@@ -1428,7 +1536,13 @@ ecpg_execute(struct statement *stmt)
 	ecpg_log("ecpg_execute on line %d: query: %s; with %d parameter(s) on connection %s\n", stmt->lineno, stmt->command, stmt->nparams, stmt->connection->name);
 	if (stmt->statement_type == ECPGst_execute)
 	{
-		stmt->results = PQexecPrepared(stmt->connection->connection, stmt->name, stmt->nparams, (const char *const *) stmt->paramvalues, NULL, NULL, 0);
+		stmt->results = PQexecPrepared(stmt->connection->connection,
+									   stmt->name,
+									   stmt->nparams,
+									   (const char *const *) stmt->paramvalues,
+									   (const int *) stmt->paramlengths,
+									   (const int *) stmt->paramformats,
+									   0);
 		ecpg_log("ecpg_execute on line %d: using PQexecPrepared for \"%s\"\n", stmt->lineno, stmt->command);
 	}
 	else
@@ -1440,7 +1554,12 @@ ecpg_execute(struct statement *stmt)
 		}
 		else
 		{
-			stmt->results = PQexecParams(stmt->connection->connection, stmt->command, stmt->nparams, NULL, (const char *const *) stmt->paramvalues, NULL, NULL, 0);
+			stmt->results = PQexecParams(stmt->connection->connection,
+										 stmt->command, stmt->nparams, NULL,
+										 (const char *const *) stmt->paramvalues,
+										 (const int *) stmt->paramlengths,
+										 (const int *) stmt->paramformats,
+										 0);
 			ecpg_log("ecpg_execute on line %d: using PQexecParams\n", stmt->lineno);
 		}
 	}
@@ -1750,7 +1869,7 @@ ecpg_do_prologue(int lineno, const int compat, const int force_indicator,
 				 enum ECPG_statement_type statement_type, const char *query,
 				 va_list args, struct statement **stmt_out)
 {
-	struct statement *stmt;
+	struct statement *stmt = NULL;
 	struct connection *con;
 	enum ECPGttype type;
 	struct variable **list;
@@ -1771,8 +1890,29 @@ ecpg_do_prologue(int lineno, const int compat, const int force_indicator,
 
 	/*
 	 * Make sure we do NOT honor the locale for numeric input/output since the
-	 * database wants the standard decimal point
+	 * database wants the standard decimal point.  If available, use
+	 * uselocale() for this because it's thread-safe.  Windows doesn't have
+	 * that, but it usually does have _configthreadlocale().  In some versions
+	 * of MinGW, _configthreadlocale() exists but always returns -1 --- so
+	 * treat that situation as if the function doesn't exist.
 	 */
+#ifdef HAVE_USELOCALE
+	stmt->clocale = newlocale(LC_NUMERIC_MASK, "C", (locale_t) 0);
+	if (stmt->clocale == (locale_t) 0)
+	{
+		ecpg_do_epilogue(stmt);
+		return false;
+	}
+	stmt->oldlocale = uselocale(stmt->clocale);
+	if (stmt->oldlocale == (locale_t) 0)
+	{
+		ecpg_do_epilogue(stmt);
+		return false;
+	}
+#else
+#ifdef HAVE__CONFIGTHREADLOCALE
+	stmt->oldthreadlocale = _configthreadlocale(_ENABLE_PER_THREAD_LOCALE);
+#endif
 	stmt->oldlocale = ecpg_strdup(setlocale(LC_NUMERIC, NULL), lineno);
 	if (stmt->oldlocale == NULL)
 	{
@@ -1780,6 +1920,7 @@ ecpg_do_prologue(int lineno, const int compat, const int force_indicator,
 		return false;
 	}
 	setlocale(LC_NUMERIC, "C");
+#endif
 
 #ifdef ENABLE_THREAD_SAFETY
 	ecpg_pthreads_init();
@@ -1982,8 +2123,23 @@ ecpg_do_epilogue(struct statement *stmt)
 	if (stmt == NULL)
 		return;
 
+#ifdef HAVE_USELOCALE
+	if (stmt->oldlocale != (locale_t) 0)
+		uselocale(stmt->oldlocale);
+#else
 	if (stmt->oldlocale)
 		setlocale(LC_NUMERIC, stmt->oldlocale);
+#ifdef HAVE__CONFIGTHREADLOCALE
+
+	/*
+	 * This is a bit trickier than it looks: if we failed partway through
+	 * statement initialization, oldthreadlocale could still be 0.  But that's
+	 * okay because a call with 0 is defined to be a no-op.
+	 */
+	if (stmt->oldthreadlocale != -1)
+		(void) _configthreadlocale(stmt->oldthreadlocale);
+#endif
+#endif
 
 	free_statement(stmt);
 }
@@ -2032,9 +2188,32 @@ ECPGdo(const int lineno, const int compat, const int force_indicator, const char
 {
 	va_list		args;
 	bool		ret;
+	const char  *real_connection_name = NULL;
+
+	real_connection_name = connection_name;
+
+	if (!query)
+	{
+		ecpg_raise(lineno, ECPG_EMPTY, ECPG_SQLSTATE_ECPG_INTERNAL_ERROR, NULL);
+		return false;
+	}
+
+	/* Handle the EXEC SQL EXECUTE... statement */
+	if (ECPGst_execute == st)
+	{
+		real_connection_name = ecpg_get_con_name_by_declared_name(query);
+		if (real_connection_name == NULL)
+		{
+			/*
+			 * If can't get the connection name by declared name then using connection name
+			 * coming from the parameter connection_name
+			 */
+			real_connection_name = connection_name;
+		 }
+	}
 
 	va_start(args, query);
-	ret = ecpg_do(lineno, compat, force_indicator, connection_name,
+	ret = ecpg_do(lineno, compat, force_indicator, real_connection_name,
 				  questionmarks, st, query, args);
 	va_end(args);
 

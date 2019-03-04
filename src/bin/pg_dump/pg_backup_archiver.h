@@ -95,7 +95,12 @@ typedef z_stream *z_streamp;
 #define K_VERS_1_13 MAKE_ARCHIVE_VERSION(1, 13, 0)	/* change search_path
 													 * behavior */
 
-/* Current archive version number (the format we can output) */
+/*
+ * Current archive version number (the format we can output)
+ *
+ * Note: If you update the current archive version, consider
+ * https://postgr.es/m/20190227123217.GA27552@alvherre.pgsql
+ */
 #define K_VERS_MAJOR 1
 #define K_VERS_MINOR 13
 #define K_VERS_REV 0
@@ -405,17 +410,27 @@ extern void on_exit_close_archive(Archive *AHX);
 
 extern void warn_or_exit_horribly(ArchiveHandle *AH, const char *modulename, const char *fmt,...) pg_attribute_printf(3, 4);
 
+/* Options for ArchiveEntry */
+typedef struct _archiveOpts
+{
+	const char *tag;
+	const char *namespace;
+	const char *tablespace;
+	const char *owner;
+	const char *description;
+	teSection	section;
+	const char *createStmt;
+	const char *dropStmt;
+	const char *copyStmt;
+	const DumpId *deps;
+	int			nDeps;
+	DataDumperPtr dumpFn;
+	void	   *dumpArg;
+} ArchiveOpts;
+#define ARCHIVE_OPTS(...) &(ArchiveOpts){__VA_ARGS__}
 /* Called to add a TOC entry */
-extern TocEntry *ArchiveEntry(Archive *AHX,
-			 CatalogId catalogId, DumpId dumpId,
-			 const char *tag,
-			 const char *namespace, const char *tablespace,
-			 const char *owner,
-			 const char *desc, teSection section,
-			 const char *defn,
-			 const char *dropStmt, const char *copyStmt,
-			 const DumpId *deps, int nDeps,
-			 DataDumperPtr dumpFn, void *dumpArg);
+extern TocEntry *ArchiveEntry(Archive *AHX, CatalogId catalogId,
+			 DumpId dumpId, ArchiveOpts *opts);
 
 extern void WriteTOC(ArchiveHandle *AH);
 extern void ReadTOC(ArchiveHandle *AH);

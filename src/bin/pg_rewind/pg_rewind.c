@@ -3,7 +3,7 @@
  * pg_rewind.c
  *	  Synchronizes a PostgreSQL data directory to a new timeline
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  *
  *-------------------------------------------------------------------------
  */
@@ -38,7 +38,7 @@ static void createBackupLabel(XLogRecPtr startpoint, TimeLineID starttli,
 static void digestControlFile(ControlFileData *ControlFile, char *source,
 				  size_t size);
 static void updateControlFile(ControlFileData *ControlFile);
-static void syncTargetDirectory(const char *argv0);
+static void syncTargetDirectory(void);
 static void sanityChecks(void);
 static void findCommonAncestorTimeline(XLogRecPtr *recptr, int *tliIndex);
 
@@ -78,7 +78,7 @@ usage(const char *progname)
 	printf(_("      --debug                    write a lot of debug messages\n"));
 	printf(_("  -V, --version                  output version information, then exit\n"));
 	printf(_("  -?, --help                     show this help, then exit\n"));
-	printf(_("\nReport bugs to <pgsql-bugs@postgresql.org>.\n"));
+	printf(_("\nReport bugs to <pgsql-bugs@lists.postgresql.org>.\n"));
 }
 
 
@@ -380,7 +380,7 @@ main(int argc, char **argv)
 	updateControlFile(&ControlFile_new);
 
 	pg_log(PG_PROGRESS, "syncing target data directory\n");
-	syncTargetDirectory(argv[0]);
+	syncTargetDirectory();
 
 	printf(_("Done!\n"));
 
@@ -488,7 +488,7 @@ getTimelineHistory(ControlFileData *controlFile, int *nentries)
 		else if (controlFile == &ControlFile_target)
 			histfile = slurpFile(datadir_target, path, NULL);
 		else
-			pg_fatal("invalid control file");
+			pg_fatal("invalid control file\n");
 
 		history = rewind_parseTimeLineHistory(histfile, tli, nentries);
 		pg_free(histfile);
@@ -715,7 +715,7 @@ updateControlFile(ControlFileData *ControlFile)
  * the overall amount of IO noticeably.
  */
 static void
-syncTargetDirectory(const char *argv0)
+syncTargetDirectory(void)
 {
 	if (!do_sync || dry_run)
 		return;

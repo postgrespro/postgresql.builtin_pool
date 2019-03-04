@@ -3,7 +3,7 @@
  * nodeSamplescan.c
  *	  Support routines for sample scans of relations (table sampling).
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -15,6 +15,7 @@
 #include "postgres.h"
 
 #include "access/hash.h"
+#include "access/heapam.h"
 #include "access/relscan.h"
 #include "access/tsmapi.h"
 #include "executor/executor.h"
@@ -24,7 +25,6 @@
 #include "storage/predicate.h"
 #include "utils/builtins.h"
 #include "utils/rel.h"
-#include "utils/tqual.h"
 
 static TupleTableSlot *SampleNext(SampleScanState *node);
 static void tablesample_init(SampleScanState *scanstate);

@@ -3,7 +3,7 @@
 # pg_operator.dat
 #    Initial contents of the pg_operator system catalog.
 #
-# Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+# Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
 # Portions Copyright (c) 1994, Regents of the University of California
 #
 # src/include/catalog/pg_operator.dat
@@ -204,9 +204,10 @@
   oprrest => 'eqsel', oprjoin => 'eqjoinsel' },
 
 { oid => '387', oid_symbol => 'TIDEqualOperator', descr => 'equal',
-  oprname => '=', oprcanmerge => 't', oprleft => 'tid', oprright => 'tid',
-  oprresult => 'bool', oprcom => '=(tid,tid)', oprnegate => '<>(tid,tid)',
-  oprcode => 'tideq', oprrest => 'eqsel', oprjoin => 'eqjoinsel' },
+  oprname => '=', oprcanmerge => 't', oprcanhash => 't', oprleft => 'tid',
+  oprright => 'tid', oprresult => 'bool', oprcom => '=(tid,tid)',
+  oprnegate => '<>(tid,tid)', oprcode => 'tideq', oprrest => 'eqsel',
+  oprjoin => 'eqjoinsel' },
 { oid => '402', descr => 'not equal',
   oprname => '<>', oprleft => 'tid', oprright => 'tid', oprresult => 'bool',
   oprcom => '<>(tid,tid)', oprnegate => '=(tid,tid)', oprcode => 'tidne',

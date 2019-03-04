@@ -1,7 +1,7 @@
 /*
  * psql - the PostgreSQL interactive terminal
  *
- * Copyright (c) 2000-2018, PostgreSQL Global Development Group
+ * Copyright (c) 2000-2019, PostgreSQL Global Development Group
  *
  * src/bin/psql/tab-complete.c
  */
@@ -583,6 +583,17 @@ static const SchemaQuery Query_for_list_of_statistics = {
 "        OR '\"' || relname || '\"'='%s') "\
 "   AND pg_catalog.pg_table_is_visible(c.oid)"
 
+#define Query_for_list_of_attribute_numbers \
+"SELECT attnum "\
+"  FROM pg_catalog.pg_attribute a, pg_catalog.pg_class c "\
+" WHERE c.oid = a.attrelid "\
+"   AND a.attnum > 0 "\
+"   AND NOT a.attisdropped "\
+"   AND substring(attnum::pg_catalog.text,1,%d)='%s' "\
+"   AND (pg_catalog.quote_ident(relname)='%s' "\
+"        OR '\"' || relname || '\"'='%s') "\
+"   AND pg_catalog.pg_table_is_visible(c.oid)"
+
 #define Query_for_list_of_attributes_with_schema \
 "SELECT pg_catalog.quote_ident(attname) "\
 "  FROM pg_catalog.pg_attribute a, pg_catalog.pg_class c, pg_catalog.pg_namespace n "\
@@ -683,15 +694,6 @@ static const SchemaQuery Query_for_list_of_statistics = {
 " UNION ALL SELECT 'PUBLIC'"\
 " UNION ALL SELECT 'CURRENT_USER'"\
 " UNION ALL SELECT 'SESSION_USER'"
-
-/* the silly-looking length condition is just to eat up the current word */
-#define Query_for_table_owning_index \
-"SELECT pg_catalog.quote_ident(c1.relname) "\
-"  FROM pg_catalog.pg_class c1, pg_catalog.pg_class c2, pg_catalog.pg_index i"\
-" WHERE c1.oid=i.indrelid and i.indexrelid=c2.oid"\
-"       and (%d = pg_catalog.length('%s'))"\
-"       and pg_catalog.quote_ident(c2.relname)='%s'"\
-"       and pg_catalog.pg_table_is_visible(c2.oid)"
 
 /* the silly-looking length condition is just to eat up the current word */
 #define Query_for_index_of_table \
@@ -1601,9 +1603,26 @@ psql_completion(const char *text, int start, int end)
 		COMPLETE_WITH("PARTITION");
 	else if (Matches("ALTER", "INDEX", MatchAny, "ATTACH", "PARTITION"))
 		COMPLETE_WITH_SCHEMA_QUERY(Query_for_list_of_indexes, NULL);
+	/* ALTER INDEX <name> ALTER */
+	else if (Matches("ALTER", "INDEX", MatchAny, "ALTER"))
+		COMPLETE_WITH("COLUMN");
+	/* ALTER INDEX <name> ALTER COLUMN */
+	else if (Matches("ALTER", "INDEX", MatchAny, "ALTER", "COLUMN"))
+	{
+		completion_info_charp = prev3_wd;
+		COMPLETE_WITH_QUERY(Query_for_list_of_attribute_numbers);
+	}
 	/* ALTER INDEX <name> ALTER COLUMN <colnum> */
 	else if (Matches("ALTER", "INDEX", MatchAny, "ALTER", "COLUMN", MatchAny))
 		COMPLETE_WITH("SET STATISTICS");
+	/* ALTER INDEX <name> ALTER COLUMN <colnum> SET */
+	else if (Matches("ALTER", "INDEX", MatchAny, "ALTER", "COLUMN", MatchAny, "SET"))
+		COMPLETE_WITH("STATISTICS");
+	/* ALTER INDEX <name> ALTER COLUMN <colnum> SET STATISTICS */
+	else if (Matches("ALTER", "INDEX", MatchAny, "ALTER", "COLUMN", MatchAny, "SET", "STATISTICS"))
+	{
+		/* Enforce no completion here, as an integer has to be specified */
+	}
 	/* ALTER INDEX <name> SET */
 	else if (Matches("ALTER", "INDEX", MatchAny, "SET"))
 		COMPLETE_WITH("(", "TABLESPACE");
@@ -1612,14 +1631,14 @@ psql_completion(const char *text, int start, int end)
 		COMPLETE_WITH("(");
 	/* ALTER INDEX <foo> SET|RESET ( */
 	else if (Matches("ALTER", "INDEX", MatchAny, "RESET", "("))
-		COMPLETE_WITH("fillfactor", "recheck_on_update",
+		COMPLETE_WITH("fillfactor",
 					  "vacuum_cleanup_index_scale_factor",	/* BTREE */
 					  "fastupdate", "gin_pending_list_limit",	/* GIN */
 					  "buffering",	/* GiST */
 					  "pages_per_range", "autosummarize"	/* BRIN */
 			);
 	else if (Matches("ALTER", "INDEX", MatchAny, "SET", "("))
-		COMPLETE_WITH("fillfactor =", "recheck_on_update =",
+		COMPLETE_WITH("fillfactor =",
 					  "vacuum_cleanup_index_scale_factor =",	/* BTREE */
 					  "fastupdate =", "gin_pending_list_limit =",	/* GIN */
 					  "buffering =",	/* GiST */
@@ -1909,6 +1928,12 @@ psql_completion(const char *text, int start, int end)
 	else if (Matches("ALTER", "TABLE", MatchAny, "ALTER", "COLUMN", MatchAny, "SET", "STORAGE") ||
 			 Matches("ALTER", "TABLE", MatchAny, "ALTER", MatchAny, "SET", "STORAGE"))
 		COMPLETE_WITH("PLAIN", "EXTERNAL", "EXTENDED", "MAIN");
+	/* ALTER TABLE ALTER [COLUMN] <foo> SET STATISTICS */
+	else if (Matches("ALTER", "TABLE", MatchAny, "ALTER", "COLUMN", MatchAny, "SET", "STATISTICS") ||
+			 Matches("ALTER", "TABLE", MatchAny, "ALTER", MatchAny, "SET", "STATISTICS"))
+	{
+		/* Enforce no completion here, as an integer has to be specified */
+	}
 	/* ALTER TABLE ALTER [COLUMN] <foo> DROP */
 	else if (Matches("ALTER", "TABLE", MatchAny, "ALTER", "COLUMN", MatchAny, "DROP") ||
 			 Matches("ALTER", "TABLE", MatchAny, "ALTER", MatchAny, "DROP"))

@@ -95,7 +95,7 @@
  * with the higher XID backs out.
  *
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -106,13 +106,14 @@
  */
 #include "postgres.h"
 
+#include "access/genam.h"
 #include "access/relscan.h"
 #include "access/xact.h"
 #include "catalog/index.h"
 #include "executor/executor.h"
 #include "nodes/nodeFuncs.h"
 #include "storage/lmgr.h"
-#include "utils/tqual.h"
+#include "utils/snapmgr.h"
 
 /* waitMode argument to check_exclusion_or_unique_constraint() */
 typedef enum
@@ -184,7 +185,7 @@ ExecOpenIndices(ResultRelInfo *resultRelInfo, bool speculative)
 	 * For each index, open the index relation and save pg_index info. We
 	 * acquire RowExclusiveLock, signifying we will update the index.
 	 *
-	 * Note: we do this even if the index is not IndexIsReady; it's not worth
+	 * Note: we do this even if the index is not indisready; it's not worth
 	 * the trouble to optimize for the case where it isn't.
 	 */
 	i = 0;

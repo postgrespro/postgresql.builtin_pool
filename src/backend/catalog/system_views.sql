@@ -1,7 +1,7 @@
 /*
  * PostgreSQL System Views
  *
- * Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Copyright (c) 1996-2019, PostgreSQL Global Development Group
  *
  * src/backend/catalog/system_views.sql
  *
@@ -782,7 +782,9 @@ CREATE VIEW pg_stat_ssl AS
             S.sslcipher AS cipher,
             S.sslbits AS bits,
             S.sslcompression AS compression,
-            S.sslclientdn AS clientdn
+            S.ssl_client_dn AS client_dn,
+            S.ssl_client_serial AS client_serial,
+            S.ssl_issuer_dn AS issuer_dn
     FROM pg_stat_get_activity(NULL) AS S;
 
 CREATE VIEW pg_replication_slots AS

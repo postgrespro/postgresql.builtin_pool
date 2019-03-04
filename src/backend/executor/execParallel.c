@@ -3,7 +3,7 @@
  * execParallel.c
  *	  Support routines for parallel execution.
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * This file contains routines that are intended to support setting up,
@@ -39,8 +39,6 @@
 #include "executor/tqueue.h"
 #include "jit/jit.h"
 #include "nodes/nodeFuncs.h"
-#include "optimizer/planmain.h"
-#include "optimizer/planner.h"
 #include "storage/spin.h"
 #include "tcop/tcopprot.h"
 #include "utils/datum.h"
@@ -1049,7 +1047,7 @@ ExecParallelRetrieveJitInstrumentation(PlanState *planstate,
 			MemoryContextAllocZero(planstate->state->es_query_cxt, sizeof(JitInstrumentation));
 	combined = planstate->state->es_jit_worker_instr;
 
-	/* Accummulate all the workers' instrumentations. */
+	/* Accumulate all the workers' instrumentations. */
 	for (n = 0; n < shared_jit->num_workers; ++n)
 		InstrJitAgg(combined, &shared_jit->jit_instr[n]);
 

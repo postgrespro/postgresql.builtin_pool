@@ -4,7 +4,7 @@
  *	  prototypes for pathnode.c, relnode.c.
  *
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/optimizer/pathnode.h
@@ -15,7 +15,7 @@
 #define PATHNODE_H
 
 #include "nodes/bitmapset.h"
-#include "nodes/relation.h"
+#include "nodes/pathnodes.h"
 
 
 /*
@@ -41,7 +41,6 @@ extern Path *create_samplescan_path(PlannerInfo *root, RelOptInfo *rel,
 extern IndexPath *create_index_path(PlannerInfo *root,
 				  IndexOptInfo *index,
 				  List *indexclauses,
-				  List *indexclausecols,
 				  List *indexorderbys,
 				  List *indexorderbycols,
 				  List *pathkeys,
@@ -75,8 +74,10 @@ extern MergeAppendPath *create_merge_append_path(PlannerInfo *root,
 						 List *pathkeys,
 						 Relids required_outer,
 						 List *partitioned_rels);
-extern ResultPath *create_result_path(PlannerInfo *root, RelOptInfo *rel,
-				   PathTarget *target, List *resconstantqual);
+extern GroupResultPath *create_group_result_path(PlannerInfo *root,
+						 RelOptInfo *rel,
+						 PathTarget *target,
+						 List *havingqual);
 extern MaterialPath *create_material_path(RelOptInfo *rel, Path *subpath);
 extern UniquePath *create_unique_path(PlannerInfo *root, RelOptInfo *rel,
 				   Path *subpath, SpecialJoinInfo *sjinfo);
@@ -105,6 +106,8 @@ extern Path *create_ctescan_path(PlannerInfo *root, RelOptInfo *rel,
 					Relids required_outer);
 extern Path *create_namedtuplestorescan_path(PlannerInfo *root, RelOptInfo *rel,
 								Relids required_outer);
+extern Path *create_resultscan_path(PlannerInfo *root, RelOptInfo *rel,
+					   Relids required_outer);
 extern Path *create_worktablescan_path(PlannerInfo *root, RelOptInfo *rel,
 						  Relids required_outer);
 extern ForeignPath *create_foreignscan_path(PlannerInfo *root, RelOptInfo *rel,
@@ -114,6 +117,19 @@ extern ForeignPath *create_foreignscan_path(PlannerInfo *root, RelOptInfo *rel,
 						Relids required_outer,
 						Path *fdw_outerpath,
 						List *fdw_private);
+extern ForeignPath *create_foreign_join_path(PlannerInfo *root, RelOptInfo *rel,
+						 PathTarget *target,
+						 double rows, Cost startup_cost, Cost total_cost,
+						 List *pathkeys,
+						 Relids required_outer,
+						 Path *fdw_outerpath,
+						 List *fdw_private);
+extern ForeignPath *create_foreign_upper_path(PlannerInfo *root, RelOptInfo *rel,
+						  PathTarget *target,
+						  double rows, Cost startup_cost, Cost total_cost,
+						  List *pathkeys,
+						  Path *fdw_outerpath,
+						  List *fdw_private);
 
 extern Relids calc_nestloop_required_outer(Relids outerrelids,
 							 Relids outer_paramrels,
@@ -275,7 +291,6 @@ extern Relids min_join_parameterization(PlannerInfo *root,
 						  Relids joinrelids,
 						  RelOptInfo *outer_rel,
 						  RelOptInfo *inner_rel);
-extern RelOptInfo *build_empty_join_rel(PlannerInfo *root);
 extern RelOptInfo *fetch_upper_rel(PlannerInfo *root, UpperRelationKind kind,
 				Relids relids);
 extern Relids find_childrel_parents(PlannerInfo *root, RelOptInfo *rel);

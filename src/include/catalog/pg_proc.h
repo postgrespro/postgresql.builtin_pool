@@ -3,7 +3,7 @@
  * pg_proc.h
  *	  definition of the "procedure" system catalog (pg_proc)
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/catalog/pg_proc.h
@@ -42,7 +42,7 @@ CATALOG(pg_proc,1255,ProcedureRelationId) BKI_BOOTSTRAP BKI_ROWTYPE_OID(81,Proce
 	Oid			proowner BKI_DEFAULT(PGUID);
 
 	/* OID of pg_language entry */
-	Oid			prolang BKI_DEFAULT(12);
+	Oid			prolang BKI_DEFAULT(internal) BKI_LOOKUP(pg_language);
 
 	/* estimated execution cost */
 	float4		procost BKI_DEFAULT(1);
@@ -53,8 +53,8 @@ CATALOG(pg_proc,1255,ProcedureRelationId) BKI_BOOTSTRAP BKI_ROWTYPE_OID(81,Proce
 	/* element type of variadic array, or 0 */
 	Oid			provariadic BKI_DEFAULT(0) BKI_LOOKUP(pg_type);
 
-	/* transforms calls to it during planning */
-	regproc		protransform BKI_DEFAULT(0) BKI_LOOKUP(pg_proc);
+	/* planner support function for this function, or 0 if none */
+	regproc		prosupport BKI_DEFAULT(0) BKI_LOOKUP(pg_proc);
 
 	/* see PROKIND_ categories below */
 	char		prokind BKI_DEFAULT(f);
@@ -201,6 +201,7 @@ extern ObjectAddress ProcedureCreate(const char *procedureName,
 				List *parameterDefaults,
 				Datum trftypes,
 				Datum proconfig,
+				Oid prosupport,
 				float4 procost,
 				float4 prorows);
 

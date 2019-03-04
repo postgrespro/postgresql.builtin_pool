@@ -4,7 +4,7 @@
  *	  definitions for executor state nodes
  *
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/nodes/execnodes.h
@@ -14,8 +14,6 @@
 #ifndef EXECNODES_H
 #define EXECNODES_H
 
-#include "access/genam.h"
-#include "access/heapam.h"
 #include "access/tupconvert.h"
 #include "executor/instrument.h"
 #include "lib/pairingheap.h"
@@ -25,6 +23,7 @@
 #include "utils/queryenvironment.h"
 #include "utils/reltrigger.h"
 #include "utils/sharedtuplestore.h"
+#include "utils/snapshot.h"
 #include "utils/sortsupport.h"
 #include "utils/tuplestore.h"
 #include "utils/tuplesort.h"
@@ -428,6 +427,11 @@ typedef struct ResultRelInfo
 	/* optional runtime measurements for triggers */
 	Instrumentation *ri_TrigInstrument;
 
+	/* On-demand created slots for triggers / returning processing */
+	TupleTableSlot *ri_ReturningSlot; /* for trigger output tuples */
+	TupleTableSlot *ri_TrigOldSlot; /* for a trigger's old tuple */
+	TupleTableSlot *ri_TrigNewSlot; /* for a trigger's new tuple */
+
 	/* FDW callback functions, if foreign table */
 	struct FdwRoutine *ri_FdwRoutine;
 
@@ -525,9 +529,6 @@ typedef struct EState
 
 	/* Stuff used for firing triggers: */
 	List	   *es_trig_target_relations;	/* trigger-only ResultRelInfos */
-	TupleTableSlot *es_trig_tuple_slot; /* for trigger output tuples */
-	TupleTableSlot *es_trig_oldtup_slot;	/* for TriggerEnabled */
-	TupleTableSlot *es_trig_newtup_slot;	/* for TriggerEnabled */
 
 	/* Parameter info: */
 	ParamListInfo es_param_list_info;	/* values of external params */
@@ -561,15 +562,15 @@ typedef struct EState
 
 	/*
 	 * These fields are for re-evaluating plan quals when an updated tuple is
-	 * substituted in READ COMMITTED mode.  es_epqTuple[] contains tuples that
-	 * scan plan nodes should return instead of whatever they'd normally
-	 * return, or NULL if nothing to return; es_epqTupleSet[] is true if a
-	 * particular array entry is valid; and es_epqScanDone[] is state to
-	 * remember if the tuple has been returned already.  Arrays are of size
-	 * es_range_table_size and are indexed by scan node scanrelid - 1.
+	 * substituted in READ COMMITTED mode.  es_epqTupleSlot[] contains test
+	 * tuples that scan plan nodes should return instead of whatever they'd
+	 * normally return, or an empty slot if there is nothing to return; if
+	 * es_epqTupleSlot[] is not NULL if a particular array entry is valid; and
+	 * es_epqScanDone[] is state to remember if the tuple has been returned
+	 * already.  Arrays are of size es_range_table_size and are indexed by
+	 * scan node scanrelid - 1.
 	 */
-	HeapTuple  *es_epqTuple;	/* array of EPQ substitute tuples */
-	bool	   *es_epqTupleSet; /* true if EPQ tuple is provided */
+	TupleTableSlot **es_epqTupleSlot;	/* array of EPQ substitute tuples */
 	bool	   *es_epqScanDone; /* true if EPQ tuple has been fetched */
 
 	bool		es_use_parallel_mode;	/* can we use parallel workers? */
@@ -827,7 +828,7 @@ typedef struct SetExprState
 	 * (by InitFunctionCallInfoData) if func.fn_oid is valid.  It also saves
 	 * argument values between calls, when setArgsValid is true.
 	 */
-	FunctionCallInfoData fcinfo_data;
+	FunctionCallInfo fcinfo;
 } SetExprState;
 
 /* ----------------
@@ -1137,7 +1138,7 @@ typedef struct ModifyTableState
  *		nplans				how many plans are in the array
  *		whichplan			which plan is being executed (0 .. n-1), or a
  *							special negative value. See nodeAppend.c.
- *		pruningstate		details required to allow partitions to be
+ *		prune_state			details required to allow partitions to be
  *							eliminated from the scan, or NULL if not possible.
  *		valid_subplans		for runtime pruning, valid appendplans indexes to
  *							scan.
@@ -1268,7 +1269,7 @@ typedef struct ScanState
 {
 	PlanState	ps;				/* its first field is NodeTag */
 	Relation	ss_currentRelation;
-	HeapScanDesc ss_currentScanDesc;
+	struct HeapScanDescData *ss_currentScanDesc;
 	TupleTableSlot *ss_ScanTupleSlot;
 } ScanState;
 
@@ -1307,14 +1308,14 @@ typedef struct SampleScanState
  */
 typedef struct
 {
-	ScanKey		scan_key;		/* scankey to put value into */
+	struct ScanKeyData *scan_key;		/* scankey to put value into */
 	ExprState  *key_expr;		/* expr to evaluate to get value */
 	bool		key_toastable;	/* is expr's result a toastable datatype? */
 } IndexRuntimeKeyInfo;
 
 typedef struct
 {
-	ScanKey		scan_key;		/* scankey to put value into */
+	struct ScanKeyData *scan_key;		/* scankey to put value into */
 	ExprState  *array_expr;		/* expr to evaluate to get array value */
 	int			next_elem;		/* next array element to use */
 	int			num_elems;		/* number of elems in current array value */
@@ -1353,16 +1354,16 @@ typedef struct IndexScanState
 	ScanState	ss;				/* its first field is NodeTag */
 	ExprState  *indexqualorig;
 	List	   *indexorderbyorig;
-	ScanKey		iss_ScanKeys;
+	struct ScanKeyData *iss_ScanKeys;
 	int			iss_NumScanKeys;
-	ScanKey		iss_OrderByKeys;
+	struct ScanKeyData *iss_OrderByKeys;
 	int			iss_NumOrderByKeys;
 	IndexRuntimeKeyInfo *iss_RuntimeKeys;
 	int			iss_NumRuntimeKeys;
 	bool		iss_RuntimeKeysReady;
 	ExprContext *iss_RuntimeContext;
 	Relation	iss_RelationDesc;
-	IndexScanDesc iss_ScanDesc;
+	struct IndexScanDescData *iss_ScanDesc;
 
 	/* These are needed for re-checking ORDER BY expr ordering */
 	pairingheap *iss_ReorderQueue;
@@ -1398,16 +1399,16 @@ typedef struct IndexOnlyScanState
 {
 	ScanState	ss;				/* its first field is NodeTag */
 	ExprState  *indexqual;
-	ScanKey		ioss_ScanKeys;
+	struct ScanKeyData *ioss_ScanKeys;
 	int			ioss_NumScanKeys;
-	ScanKey		ioss_OrderByKeys;
+	struct ScanKeyData *ioss_OrderByKeys;
 	int			ioss_NumOrderByKeys;
 	IndexRuntimeKeyInfo *ioss_RuntimeKeys;
 	int			ioss_NumRuntimeKeys;
 	bool		ioss_RuntimeKeysReady;
 	ExprContext *ioss_RuntimeContext;
 	Relation	ioss_RelationDesc;
-	IndexScanDesc ioss_ScanDesc;
+	struct IndexScanDescData *ioss_ScanDesc;
 	Buffer		ioss_VMBuffer;
 	Size		ioss_PscanLen;
 } IndexOnlyScanState;
@@ -1432,7 +1433,7 @@ typedef struct BitmapIndexScanState
 {
 	ScanState	ss;				/* its first field is NodeTag */
 	TIDBitmap  *biss_result;
-	ScanKey		biss_ScanKeys;
+	struct ScanKeyData *biss_ScanKeys;
 	int			biss_NumScanKeys;
 	IndexRuntimeKeyInfo *biss_RuntimeKeys;
 	int			biss_NumRuntimeKeys;
@@ -1441,7 +1442,7 @@ typedef struct BitmapIndexScanState
 	bool		biss_RuntimeKeysReady;
 	ExprContext *biss_RuntimeContext;
 	Relation	biss_RelationDesc;
-	IndexScanDesc biss_ScanDesc;
+	struct IndexScanDescData *biss_ScanDesc;
 } BitmapIndexScanState;
 
 /* ----------------
@@ -2256,8 +2257,6 @@ typedef struct LockRowsState
 	PlanState	ps;				/* its first field is NodeTag */
 	List	   *lr_arowMarks;	/* List of ExecAuxRowMarks */
 	EPQState	lr_epqstate;	/* for evaluating EvalPlanQual rechecks */
-	HeapTuple  *lr_curtuples;	/* locked tuples (one entry per RT entry) */
-	int			lr_ntables;		/* length of lr_curtuples[] array */
 } LockRowsState;
 
 /* ----------------

@@ -8,7 +8,7 @@
  * pager open/close functions, all that stuff came with it.
  *
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/fe_utils/print.c
@@ -3250,7 +3250,7 @@ printTableCleanup(printTableContent *const content)
 		for (i = 0; i < content->nrows * content->ncolumns; i++)
 		{
 			if (content->cellmustfree[i])
-				free((char *) content->cells[i]);
+				free(unconstify(char *, content->cells[i]));
 		}
 		free(content->cellmustfree);
 		content->cellmustfree = NULL;

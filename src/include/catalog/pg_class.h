@@ -4,7 +4,7 @@
  *	  definition of the "relation" system catalog (pg_class)
  *
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/catalog/pg_class.h
@@ -127,7 +127,7 @@ typedef FormData_pg_class *Form_pg_class;
  * relfilenode set to non-zero, but it can also be zero if the relation is
  * mapped.
  */
-#define RELKIND_CAN_HAVE_STORAGE(relkind) \
+#define RELKIND_HAS_STORAGE(relkind) \
 	((relkind) == RELKIND_RELATION || \
 	 (relkind) == RELKIND_INDEX || \
 	 (relkind) == RELKIND_SEQUENCE || \

@@ -3,7 +3,7 @@
  * spi.c
  *				Server Programming Interface
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -1314,7 +1314,7 @@ SPI_cursor_open_internal(const char *name, SPIPlanPtr plan,
 	 * throws an error.
 	 */
 	spierrcontext.callback = _SPI_error_callback;
-	spierrcontext.arg = (void *) plansource->query_string;
+	spierrcontext.arg = unconstify(char *, plansource->query_string);
 	spierrcontext.previous = error_context_stack;
 	error_context_stack = &spierrcontext;
 
@@ -1753,7 +1753,7 @@ SPI_plan_get_cached_plan(SPIPlanPtr plan)
 
 	/* Setup error traceback support for ereport() */
 	spierrcontext.callback = _SPI_error_callback;
-	spierrcontext.arg = (void *) plansource->query_string;
+	spierrcontext.arg = unconstify(char *, plansource->query_string);
 	spierrcontext.previous = error_context_stack;
 	error_context_stack = &spierrcontext;
 
@@ -1884,7 +1884,7 @@ _SPI_prepare_plan(const char *src, SPIPlanPtr plan)
 	 * Setup error traceback support for ereport()
 	 */
 	spierrcontext.callback = _SPI_error_callback;
-	spierrcontext.arg = (void *) src;
+	spierrcontext.arg = unconstify(char *, src);
 	spierrcontext.previous = error_context_stack;
 	error_context_stack = &spierrcontext;
 
@@ -1989,7 +1989,7 @@ _SPI_prepare_oneshot_plan(const char *src, SPIPlanPtr plan)
 	 * Setup error traceback support for ereport()
 	 */
 	spierrcontext.callback = _SPI_error_callback;
-	spierrcontext.arg = (void *) src;
+	spierrcontext.arg = unconstify(char *, src);
 	spierrcontext.previous = error_context_stack;
 	error_context_stack = &spierrcontext;
 
@@ -2100,7 +2100,7 @@ _SPI_execute_plan(SPIPlanPtr plan, ParamListInfo paramLI,
 		List	   *stmt_list;
 		ListCell   *lc2;
 
-		spierrcontext.arg = (void *) plansource->query_string;
+		spierrcontext.arg = unconstify(char *, plansource->query_string);
 
 		/*
 		 * If this is a one-shot plan, we still need to do parse analysis.

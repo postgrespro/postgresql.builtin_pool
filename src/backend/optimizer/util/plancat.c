@@ -4,7 +4,7 @@
  *	   routines for accessing the system catalogs
  *
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -18,27 +18,29 @@
 #include <math.h>
 
 #include "access/genam.h"
-#include "access/heapam.h"
 #include "access/htup_details.h"
 #include "access/nbtree.h"
 #include "access/sysattr.h"
+#include "access/table.h"
 #include "access/transam.h"
 #include "access/xlog.h"
 #include "catalog/catalog.h"
 #include "catalog/dependency.h"
 #include "catalog/heap.h"
-#include "catalog/partition.h"
 #include "catalog/pg_am.h"
+#include "catalog/pg_proc.h"
 #include "catalog/pg_statistic_ext.h"
 #include "foreign/fdwapi.h"
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
+#include "nodes/supportnodes.h"
 #include "optimizer/clauses.h"
 #include "optimizer/cost.h"
+#include "optimizer/optimizer.h"
 #include "optimizer/plancat.h"
-#include "optimizer/predtest.h"
 #include "optimizer/prep.h"
 #include "partitioning/partbounds.h"
+#include "partitioning/partdesc.h"
 #include "parser/parse_relation.h"
 #include "parser/parsetree.h"
 #include "rewrite/rewriteManip.h"
@@ -118,7 +120,7 @@ get_relation_info(PlannerInfo *root, Oid relationObjectId, bool inhparent,
 	 * the rewriter or when expand_inherited_rtentry() added it to the query's
 	 * rangetable.
 	 */
-	relation = heap_open(relationObjectId, NoLock);
+	relation = table_open(relationObjectId, NoLock);
 
 	/* Temporary and unlogged relations are inaccessible during recovery. */
 	if (!RelationNeedsWAL(relation) && RecoveryInProgress())
@@ -201,9 +203,9 @@ get_relation_info(PlannerInfo *root, Oid relationObjectId, bool inhparent,
 			 * queries.  Note that this is OK because the data structure we
 			 * are constructing is only used by the planner --- the executor
 			 * still needs to insert into "invalid" indexes, if they're marked
-			 * IndexIsReady.
+			 * indisready.
 			 */
-			if (!IndexIsValid(index))
+			if (!index->indisvalid)
 			{
 				index_close(indexRelation, NoLock);
 				continue;
@@ -263,8 +265,8 @@ get_relation_info(PlannerInfo *root, Oid relationObjectId, bool inhparent,
 
 			info->relam = indexRelation->rd_rel->relam;
 
-			/* We copy just the fields we need, not all of rd_amroutine */
-			amroutine = indexRelation->rd_amroutine;
+			/* We copy just the fields we need, not all of rd_indam */
+			amroutine = indexRelation->rd_indam;
 			info->amcanorderbyop = amroutine->amcanorderbyop;
 			info->amoptionalkey = amroutine->amoptionalkey;
 			info->amsearcharray = amroutine->amsearcharray;
@@ -450,7 +452,7 @@ get_relation_info(PlannerInfo *root, Oid relationObjectId, bool inhparent,
 	if (inhparent && relation->rd_rel->relkind == RELKIND_PARTITIONED_TABLE)
 		set_relation_partition_info(root, rel, relation);
 
-	heap_close(relation, NoLock);
+	table_close(relation, NoLock);
 
 	/*
 	 * Allow a plugin to editorialize on the info we obtained from the
@@ -621,7 +623,7 @@ infer_arbiter_indexes(PlannerInfo *root)
 	relationObjectId = rt_fetch(root->parse->resultRelation,
 								root->parse->rtable)->relid;
 
-	relation = heap_open(relationObjectId, NoLock);
+	relation = table_open(relationObjectId, NoLock);
 
 	/*
 	 * Build normalized/BMS representation of plain indexed attributes, as
@@ -696,7 +698,7 @@ infer_arbiter_indexes(PlannerInfo *root)
 		idxRel = index_open(indexoid, RowExclusiveLock);
 		idxForm = idxRel->rd_index;
 
-		if (!IndexIsValid(idxForm))
+		if (!idxForm->indisvalid)
 			goto next;
 
 		/*
@@ -720,7 +722,7 @@ infer_arbiter_indexes(PlannerInfo *root)
 			results = lappend_oid(results, idxForm->indexrelid);
 			list_free(indexList);
 			index_close(idxRel, NoLock);
-			heap_close(relation, NoLock);
+			table_close(relation, NoLock);
 			return results;
 		}
 		else if (indexOidFromConstraint != InvalidOid)
@@ -815,7 +817,7 @@ next:
 	}
 
 	list_free(indexList);
-	heap_close(relation, NoLock);
+	table_close(relation, NoLock);
 
 	if (results == NIL)
 		ereport(ERROR,
@@ -1143,11 +1145,11 @@ get_relation_data_width(Oid relid, int32 *attr_widths)
 	Relation	relation;
 
 	/* As above, assume relation is already locked */
-	relation = heap_open(relid, NoLock);
+	relation = table_open(relid, NoLock);
 
 	result = get_rel_data_width(relation, attr_widths);
 
-	heap_close(relation, NoLock);
+	table_close(relation, NoLock);
 
 	return result;
 }
@@ -1183,7 +1185,7 @@ get_relation_constraints(PlannerInfo *root,
 	/*
 	 * We assume the relation has already been safely locked.
 	 */
-	relation = heap_open(relationObjectId, NoLock);
+	relation = table_open(relationObjectId, NoLock);
 
 	constr = relation->rd_att->constr;
 	if (constr != NULL)
@@ -1294,7 +1296,7 @@ get_relation_constraints(PlannerInfo *root,
 		}
 	}
 
-	heap_close(relation, NoLock);
+	table_close(relation, NoLock);
 
 	return result;
 }
@@ -1571,7 +1573,7 @@ build_physical_tlist(PlannerInfo *root, RelOptInfo *rel)
 	{
 		case RTE_RELATION:
 			/* Assume we already have adequate lock */
-			relation = heap_open(rte->relid, NoLock);
+			relation = table_open(rte->relid, NoLock);
 
 			numattrs = RelationGetNumberOfAttributes(relation);
 			for (attrno = 1; attrno <= numattrs; attrno++)
@@ -1600,7 +1602,7 @@ build_physical_tlist(PlannerInfo *root, RelOptInfo *rel)
 												false));
 			}
 
-			heap_close(relation, NoLock);
+			table_close(relation, NoLock);
 			break;
 
 		case RTE_SUBQUERY:
@@ -1628,6 +1630,7 @@ build_physical_tlist(PlannerInfo *root, RelOptInfo *rel)
 		case RTE_VALUES:
 		case RTE_CTE:
 		case RTE_NAMEDTUPLESTORE:
+		case RTE_RESULT:
 			/* Not all of these can have dropped cols, but share code anyway */
 			expandRTE(rte, varno, 0, -1, true /* include dropped */ ,
 					  NULL, &colvars);
@@ -1771,6 +1774,8 @@ restriction_selectivity(PlannerInfo *root,
  * Returns the selectivity of a specified join operator clause.
  * This code executes registered procedures stored in the
  * operator relation, by calling the function manager.
+ *
+ * See clause_selectivity() for the meaning of the additional parameters.
  */
 Selectivity
 join_selectivity(PlannerInfo *root,
@@ -1802,6 +1807,184 @@ join_selectivity(PlannerInfo *root,
 		elog(ERROR, "invalid join selectivity: %f", result);
 
 	return (Selectivity) result;
+}
+
+/*
+ * function_selectivity
+ *
+ * Returns the selectivity of a specified boolean function clause.
+ * This code executes registered procedures stored in the
+ * pg_proc relation, by calling the function manager.
+ *
+ * See clause_selectivity() for the meaning of the additional parameters.
+ */
+Selectivity
+function_selectivity(PlannerInfo *root,
+					 Oid funcid,
+					 List *args,
+					 Oid inputcollid,
+					 bool is_join,
+					 int varRelid,
+					 JoinType jointype,
+					 SpecialJoinInfo *sjinfo)
+{
+	RegProcedure prosupport = get_func_support(funcid);
+	SupportRequestSelectivity req;
+	SupportRequestSelectivity *sresult;
+
+	/*
+	 * If no support function is provided, use our historical default
+	 * estimate, 0.3333333.  This seems a pretty unprincipled choice, but
+	 * Postgres has been using that estimate for function calls since 1992.
+	 * The hoariness of this behavior suggests that we should not be in too
+	 * much hurry to use another value.
+	 */
+	if (!prosupport)
+		return (Selectivity) 0.3333333;
+
+	req.type = T_SupportRequestSelectivity;
+	req.root = root;
+	req.funcid = funcid;
+	req.args = args;
+	req.inputcollid = inputcollid;
+	req.is_join = is_join;
+	req.varRelid = varRelid;
+	req.jointype = jointype;
+	req.sjinfo = sjinfo;
+	req.selectivity = -1;		/* to catch failure to set the value */
+
+	sresult = (SupportRequestSelectivity *)
+		DatumGetPointer(OidFunctionCall1(prosupport,
+										 PointerGetDatum(&req)));
+
+	/* If support function fails, use default */
+	if (sresult != &req)
+		return (Selectivity) 0.3333333;
+
+	if (req.selectivity < 0.0 || req.selectivity > 1.0)
+		elog(ERROR, "invalid function selectivity: %f", req.selectivity);
+
+	return (Selectivity) req.selectivity;
+}
+
+/*
+ * add_function_cost
+ *
+ * Get an estimate of the execution cost of a function, and *add* it to
+ * the contents of *cost.  The estimate may include both one-time and
+ * per-tuple components, since QualCost does.
+ *
+ * The funcid must always be supplied.  If it is being called as the
+ * implementation of a specific parsetree node (FuncExpr, OpExpr,
+ * WindowFunc, etc), pass that as "node", else pass NULL.
+ *
+ * In some usages root might be NULL, too.
+ */
+void
+add_function_cost(PlannerInfo *root, Oid funcid, Node *node,
+				  QualCost *cost)
+{
+	HeapTuple	proctup;
+	Form_pg_proc procform;
+
+	proctup = SearchSysCache1(PROCOID, ObjectIdGetDatum(funcid));
+	if (!HeapTupleIsValid(proctup))
+		elog(ERROR, "cache lookup failed for function %u", funcid);
+	procform = (Form_pg_proc) GETSTRUCT(proctup);
+
+	if (OidIsValid(procform->prosupport))
+	{
+		SupportRequestCost req;
+		SupportRequestCost *sresult;
+
+		req.type = T_SupportRequestCost;
+		req.root = root;
+		req.funcid = funcid;
+		req.node = node;
+
+		/* Initialize cost fields so that support function doesn't have to */
+		req.startup = 0;
+		req.per_tuple = 0;
+
+		sresult = (SupportRequestCost *)
+			DatumGetPointer(OidFunctionCall1(procform->prosupport,
+											 PointerGetDatum(&req)));
+
+		if (sresult == &req)
+		{
+			/* Success, so accumulate support function's estimate into *cost */
+			cost->startup += req.startup;
+			cost->per_tuple += req.per_tuple;
+			ReleaseSysCache(proctup);
+			return;
+		}
+	}
+
+	/* No support function, or it failed, so rely on procost */
+	cost->per_tuple += procform->procost * cpu_operator_cost;
+
+	ReleaseSysCache(proctup);
+}
+
+/*
+ * get_function_rows
+ *
+ * Get an estimate of the number of rows returned by a set-returning function.
+ *
+ * The funcid must always be supplied.  In current usage, the calling node
+ * will always be supplied, and will be either a FuncExpr or OpExpr.
+ * But it's a good idea to not fail if it's NULL.
+ *
+ * In some usages root might be NULL, too.
+ *
+ * Note: this returns the unfiltered result of the support function, if any.
+ * It's usually a good idea to apply clamp_row_est() to the result, but we
+ * leave it to the caller to do so.
+ */
+double
+get_function_rows(PlannerInfo *root, Oid funcid, Node *node)
+{
+	HeapTuple	proctup;
+	Form_pg_proc procform;
+	double		result;
+
+	proctup = SearchSysCache1(PROCOID, ObjectIdGetDatum(funcid));
+	if (!HeapTupleIsValid(proctup))
+		elog(ERROR, "cache lookup failed for function %u", funcid);
+	procform = (Form_pg_proc) GETSTRUCT(proctup);
+
+	Assert(procform->proretset);	/* else caller error */
+
+	if (OidIsValid(procform->prosupport))
+	{
+		SupportRequestRows req;
+		SupportRequestRows *sresult;
+
+		req.type = T_SupportRequestRows;
+		req.root = root;
+		req.funcid = funcid;
+		req.node = node;
+
+		req.rows = 0;			/* just for sanity */
+
+		sresult = (SupportRequestRows *)
+			DatumGetPointer(OidFunctionCall1(procform->prosupport,
+											 PointerGetDatum(&req)));
+
+		if (sresult == &req)
+		{
+			/* Success */
+			ReleaseSysCache(proctup);
+			return req.rows;
+		}
+	}
+
+	/* No support function, or it failed, so rely on prorows */
+	result = procform->prorows;
+
+	ReleaseSysCache(proctup);
+
+	return result;
 }
 
 /*
@@ -1857,7 +2040,7 @@ has_row_triggers(PlannerInfo *root, Index rti, CmdType event)
 	bool		result = false;
 
 	/* Assume we already have adequate lock */
-	relation = heap_open(rte->relid, NoLock);
+	relation = table_open(rte->relid, NoLock);
 
 	trigDesc = relation->trigdesc;
 	switch (event)
@@ -1885,7 +2068,7 @@ has_row_triggers(PlannerInfo *root, Index rti, CmdType event)
 			break;
 	}
 
-	heap_close(relation, NoLock);
+	table_close(relation, NoLock);
 	return result;
 }
 

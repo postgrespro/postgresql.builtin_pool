@@ -3,7 +3,7 @@
  * nbtinsert.c
  *	  Item insertion in Lehman and Yao btrees for Postgres.
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -24,7 +24,6 @@
 #include "storage/lmgr.h"
 #include "storage/predicate.h"
 #include "storage/smgr.h"
-#include "utils/tqual.h"
 
 /* Minimum tree height for application of fastpath optimization */
 #define BTREE_FASTPATH_MIN_LEVEL	2
@@ -1887,7 +1886,7 @@ _bt_insert_parent(Relation rel,
 		 * 05/27/97
 		 */
 		stack->bts_btentry = bknum;
-		pbuf = _bt_getstackbuf(rel, stack, BT_WRITE);
+		pbuf = _bt_getstackbuf(rel, stack);
 
 		/*
 		 * Now we can unlock the right child. The left child will be unlocked
@@ -1977,10 +1976,11 @@ _bt_finish_split(Relation rel, Buffer lbuf, BTStack stack)
  *
  *		Adjusts bts_blkno & bts_offset if changed.
  *
- *		Returns InvalidBuffer if item not found (should not happen).
+ *		Returns write-locked buffer, or InvalidBuffer if item not found
+ *		(should not happen).
  */
 Buffer
-_bt_getstackbuf(Relation rel, BTStack stack, int access)
+_bt_getstackbuf(Relation rel, BTStack stack)
 {
 	BlockNumber blkno;
 	OffsetNumber start;
@@ -1994,11 +1994,11 @@ _bt_getstackbuf(Relation rel, BTStack stack, int access)
 		Page		page;
 		BTPageOpaque opaque;
 
-		buf = _bt_getbuf(rel, blkno, access);
+		buf = _bt_getbuf(rel, blkno, BT_WRITE);
 		page = BufferGetPage(buf);
 		opaque = (BTPageOpaque) PageGetSpecialPointer(page);
 
-		if (access == BT_WRITE && P_INCOMPLETE_SPLIT(opaque))
+		if (P_INCOMPLETE_SPLIT(opaque))
 		{
 			_bt_finish_split(rel, buf, stack->bts_parent);
 			continue;

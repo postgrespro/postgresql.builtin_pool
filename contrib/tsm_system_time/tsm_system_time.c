@@ -13,7 +13,7 @@
  * However, we do what we can to reduce surprising behavior by selecting
  * the sampling pattern just once per query, much as in tsm_system_rows.
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -26,12 +26,12 @@
 
 #include <math.h>
 
+#include "access/heapam.h"
 #include "access/relscan.h"
 #include "access/tsmapi.h"
 #include "catalog/pg_type.h"
 #include "miscadmin.h"
-#include "optimizer/clauses.h"
-#include "optimizer/cost.h"
+#include "optimizer/optimizer.h"
 #include "utils/sampling.h"
 #include "utils/spccache.h"
 

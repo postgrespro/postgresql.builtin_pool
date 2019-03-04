@@ -2,7 +2,7 @@
  * brin_pageops.c
  *		Page-handling routines for BRIN indexes
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -178,7 +178,7 @@ brin_doupdate(Relation idxrel, BlockNumber pagesPerRange,
 		brin_can_do_samepage_update(oldbuf, origsz, newsz))
 	{
 		START_CRIT_SECTION();
-		if (!PageIndexTupleOverwrite(oldpage, oldoff, (Item) newtup, newsz))
+		if (!PageIndexTupleOverwrite(oldpage, oldoff, (Item) unconstify(BrinTuple *, newtup), newsz))
 			elog(ERROR, "failed to replace BRIN tuple");
 		MarkBufferDirty(oldbuf);
 
@@ -195,7 +195,7 @@ brin_doupdate(Relation idxrel, BlockNumber pagesPerRange,
 			XLogRegisterData((char *) &xlrec, SizeOfBrinSamepageUpdate);
 
 			XLogRegisterBuffer(0, oldbuf, REGBUF_STANDARD);
-			XLogRegisterBufData(0, (char *) newtup, newsz);
+			XLogRegisterBufData(0, (char *) unconstify(BrinTuple *, newtup), newsz);
 
 			recptr = XLogInsert(RM_BRIN_ID, info);
 
@@ -252,7 +252,7 @@ brin_doupdate(Relation idxrel, BlockNumber pagesPerRange,
 			brin_page_init(newpage, BRIN_PAGETYPE_REGULAR);
 
 		PageIndexTupleDeleteNoCompact(oldpage, oldoff);
-		newoff = PageAddItem(newpage, (Item) newtup, newsz,
+		newoff = PageAddItem(newpage, (Item) unconstify(BrinTuple *, newtup), newsz,
 							 InvalidOffsetNumber, false, false);
 		if (newoff == InvalidOffsetNumber)
 			elog(ERROR, "failed to add BRIN tuple to new page");
@@ -287,7 +287,7 @@ brin_doupdate(Relation idxrel, BlockNumber pagesPerRange,
 			XLogRegisterData((char *) &xlrec, SizeOfBrinUpdate);
 
 			XLogRegisterBuffer(0, newbuf, REGBUF_STANDARD | (extended ? REGBUF_WILL_INIT : 0));
-			XLogRegisterBufData(0, (char *) newtup, newsz);
+			XLogRegisterBufData(0, (char *) unconstify(BrinTuple *, newtup), newsz);
 
 			/* revmap page */
 			XLogRegisterBuffer(1, revmapbuf, 0);
@@ -310,7 +310,7 @@ brin_doupdate(Relation idxrel, BlockNumber pagesPerRange,
 
 		if (extended)
 		{
-			RecordPageWithFreeSpace(idxrel, newblk, freespace);
+			RecordPageWithFreeSpace(idxrel, newblk, freespace, InvalidBlockNumber);
 			FreeSpaceMapVacuumRange(idxrel, newblk, newblk + 1);
 		}
 
@@ -461,7 +461,7 @@ brin_doinsert(Relation idxrel, BlockNumber pagesPerRange,
 
 	if (extended)
 	{
-		RecordPageWithFreeSpace(idxrel, blk, freespace);
+		RecordPageWithFreeSpace(idxrel, blk, freespace, InvalidBlockNumber);
 		FreeSpaceMapVacuumRange(idxrel, blk, blk + 1);
 	}
 
@@ -654,7 +654,7 @@ brin_page_cleanup(Relation idxrel, Buffer buf)
 
 	/* Measure free space and record it */
 	RecordPageWithFreeSpace(idxrel, BufferGetBlockNumber(buf),
-							br_page_get_freespace(page));
+							br_page_get_freespace(page), InvalidBlockNumber);
 }
 
 /*
@@ -703,7 +703,7 @@ brin_getinsertbuffer(Relation irel, Buffer oldbuf, Size itemsz,
 	/* Choose initial target page, re-using existing target if known */
 	newblk = RelationGetTargetBlock(irel);
 	if (newblk == InvalidBlockNumber)
-		newblk = GetPageWithFreeSpace(irel, itemsz);
+		newblk = GetPageWithFreeSpace(irel, itemsz, true);
 
 	/*
 	 * Loop until we find a page with sufficient free space.  By the time we
@@ -895,7 +895,7 @@ brin_initialize_empty_new_buffer(Relation idxrel, Buffer buffer)
 	 * pages whose FSM records were forgotten in a crash.
 	 */
 	RecordPageWithFreeSpace(idxrel, BufferGetBlockNumber(buffer),
-							br_page_get_freespace(page));
+							br_page_get_freespace(page), InvalidBlockNumber);
 }
 
 

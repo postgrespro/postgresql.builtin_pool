@@ -259,11 +259,11 @@ pgbench(
 	[
 		qr{setting random seed to 5432\b},
 
-		# After explicit seeding, the four * random checks (1-3,20) should be
-		# deterministic, but not necessarily portable.
-		qr{command=1.: int 1\d\b},        # uniform random: 12 on linux
-		qr{command=2.: int 1\d\d\b},      # exponential random: 106 on linux
-		qr{command=3.: int 1\d\d\d\b},    # gaussian random: 1462 on linux
+		# After explicit seeding, the four random checks (1-3,20) are
+		# deterministic
+		qr{command=1.: int 13\b},      # uniform random
+		qr{command=2.: int 116\b},     # exponential random
+		qr{command=3.: int 1498\b},    # gaussian random
 		qr{command=4.: int 4\b},
 		qr{command=5.: int 5\b},
 		qr{command=6.: int 6\b},
@@ -276,7 +276,7 @@ pgbench(
 		qr{command=15.: double 15\b},
 		qr{command=16.: double 16\b},
 		qr{command=17.: double 17\b},
-		qr{command=20.: int \d\b},    # zipfian random: 1 on linux
+		qr{command=20.: int 1\b},      # zipfian random
 		qr{command=21.: double -27\b},
 		qr{command=22.: double 1024\b},
 		qr{command=23.: double 1\b},
@@ -471,7 +471,7 @@ for my $i (1, 2)
 \set ur random(1000, 1999)
 \set er random_exponential(2000, 2999, 2.0)
 \set gr random_gaussian(3000, 3999, 3.0)
-\set zr random_zipfian(4000, 4999, 2.5)
+\set zr random_zipfian(4000, 4999, 1.5)
 INSERT INTO seeded_random(seed, rand, val) VALUES
   (:random_seed, 'uniform', :ur),
   (:random_seed, 'exponential', :er),
@@ -527,6 +527,48 @@ pgbench(
 \shell echo shell-echo-output
 }
 	});
+
+# working \gset and \cset
+pgbench(
+	'-t 1', 0,
+	[ qr{type: .*/001_pgbench_gset_and_cset}, qr{processed: 1/1} ],
+	[   qr{command=3.: int 0\b},
+		qr{command=5.: int 1\b},
+		qr{command=6.: int 2\b},
+		qr{command=8.: int 3\b},
+		qr{command=9.: int 4\b},
+		qr{command=10.: int 5\b},
+		qr{command=12.: int 6\b},
+		qr{command=13.: int 7\b},
+		qr{command=14.: int 8\b},
+		qr{command=16.: int 9\b} ],
+	'pgbench gset and cset commands',
+	{   '001_pgbench_gset_and_cset' => q{-- test gset and cset
+-- no columns
+SELECT \gset
+-- one value
+SELECT 0 AS i0 \gset
+\set i debug(:i0)
+-- two values
+SELECT 1 AS i1, 2 AS i2 \gset
+\set i debug(:i1)
+\set i debug(:i2)
+-- cset & gset to follow
+SELECT :i2 + 1 AS i3, :i2 * :i2 AS i4 \cset
+  SELECT 5 AS i5 \gset
+\set i debug(:i3)
+\set i debug(:i4)
+\set i debug(:i5)
+-- with prefix
+SELECT 6 AS i6, 7 AS i7 \cset x_
+  SELECT 8 AS i8 \gset y_
+\set i debug(:x_i6)
+\set i debug(:x_i7)
+\set i debug(:y_i8)
+-- overwrite existing variable
+SELECT 0 AS i9, 9 AS i9 \gset
+\set i debug(:i9)
+} });
 
 # trigger many expression errors
 my @errors = (
@@ -735,21 +777,45 @@ SELECT LEAST(:i, :i, :i, :i, :i, :i, :i, :i, :i, :i, :i);
 		[qr{invalid command .* "nosuchcommand"}], q{\nosuchcommand}
 	],
 	[ 'misc empty script', 1, [qr{empty command list for script}], q{} ],
-	[
-		'bad boolean',                     2,
-		[qr{malformed variable.*trueXXX}], q{\set b :badtrue or true}
-	],);
+	[   'bad boolean',                     2,
+		[qr{malformed variable.*trueXXX}], q{\set b :badtrue or true} ],
 
+	# GSET & CSET
+	[   'gset no row',                    2,
+		[qr{expected one row, got 0\b}], q{SELECT WHERE FALSE \gset} ],
+	[   'cset no row',                    2,
+		[qr{expected one row, got 0\b}], q{SELECT WHERE FALSE \cset
+SELECT 1 AS i\gset}, 1 ],
+	[ 'gset alone', 1, [qr{gset/cset cannot start a script}], q{\gset} ],
+	[   'gset no SQL',                        1,
+		[qr{gset/cset must follow a SQL command}], q{\set i +1
+\gset} ],
+	[   'gset too many arguments',                   1,
+		[qr{too many arguments}], q{SELECT 1 \gset a b} ],
+	[   'gset after gset',                        1,
+	    [qr{gset/cset cannot follow one another}], q{SELECT 1 AS i \gset
+\gset} ],
+	[   'gset non SELECT', 2,
+		[qr{expected one row, got 0}],
+		q{DROP TABLE IF EXISTS no_such_table \gset} ],
+	[   'gset bad default name', 2,
+		[qr{error storing into variable \?column\?}],
+		q{SELECT 1 \gset} ],
+	[   'gset bad name', 2,
+		[qr{error storing into variable bad name!}],
+		q{SELECT 1 AS "bad name!" \gset} ],
+	);
 
 for my $e (@errors)
 {
-	my ($name, $status, $re, $script) = @$e;
+	my ($name, $status, $re, $script, $no_prepare) = @$e;
 	$status != 0 or die "invalid expected status for test \"$name\"";
 	my $n = '001_pgbench_error_' . $name;
 	$n =~ s/ /_/g;
 	pgbench(
-		'-n -t 1 -M prepared -Dfoo=bla -Dnull=null -Dtrue=true -Done=1 -Dzero=0.0 ' .
-		'-Dbadtrue=trueXXX -Dmaxint=9223372036854775807 -Dminint=-9223372036854775808',
+		'-n -t 1 -Dfoo=bla -Dnull=null -Dtrue=true -Done=1 -Dzero=0.0 -Dbadtrue=trueXXX' .
+		' -Dmaxint=9223372036854775807 -Dminint=-9223372036854775808' .
+			($no_prepare ? '' : ' -M prepared'),
 		$status,
 		[ $status == 1 ? qr{^$} : qr{processed: 0/1} ],
 		$re,

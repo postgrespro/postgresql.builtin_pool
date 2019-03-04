@@ -3,7 +3,7 @@
  * float.c
  *	  Functions for the built-in floating-point types.
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -21,15 +21,25 @@
 
 #include "catalog/pg_type.h"
 #include "common/int.h"
+#include "common/shortest_dec.h"
 #include "libpq/pqformat.h"
+#include "miscadmin.h"
 #include "utils/array.h"
 #include "utils/float.h"
 #include "utils/fmgrprotos.h"
 #include "utils/sortsupport.h"
+#include "utils/timestamp.h"
 
 
-/* Configurable GUC parameter */
-int			extra_float_digits = 0; /* Added to DBL_DIG or FLT_DIG */
+/*
+ * Configurable GUC parameter
+ *
+ * If >0, use shortest-decimal format for output; this is both the default and
+ * allows for compatibility with clients that explicitly set a value here to
+ * get round-trip-accurate results. If 0 or less, then use the old, slow,
+ * decimal rounding method.
+ */
+int			extra_float_digits = 1;
 
 /* Cached constants for degree-based trig functions */
 static bool degree_consts_set = false;
@@ -52,6 +62,10 @@ float8		degree_c_forty_five = 45.0;
 float8		degree_c_sixty = 60.0;
 float8		degree_c_one_half = 0.5;
 float8		degree_c_one = 1.0;
+
+/* State for drandom() and setseed() */
+static bool drandom_seed_set = false;
+static unsigned short drandom_seed[3] = {0, 0, 0};
 
 /* Local function prototypes */
 static double sind_q1(double x);
@@ -98,13 +112,39 @@ is_infinite(double val)
 
 /*
  *		float4in		- converts "num" to float4
+ *
+ * Note that this code now uses strtof(), where it used to use strtod().
+ *
+ * The motivation for using strtof() is to avoid a double-rounding problem:
+ * for certain decimal inputs, if you round the input correctly to a double,
+ * and then round the double to a float, the result is incorrect in that it
+ * does not match the result of rounding the decimal value to float directly.
+ *
+ * One of the best examples is 7.038531e-26:
+ *
+ * 0xAE43FDp-107 = 7.03853069185120912085...e-26
+ *      midpoint   7.03853100000000022281...e-26
+ * 0xAE43FEp-107 = 7.03853130814879132477...e-26
+ *
+ * making 0xAE43FDp-107 the correct float result, but if you do the conversion
+ * via a double, you get
+ *
+ * 0xAE43FD.7FFFFFF8p-107 = 7.03853099999999907487...e-26
+ *               midpoint   7.03853099999999964884...e-26
+ * 0xAE43FD.80000000p-107 = 7.03853100000000022281...e-26
+ * 0xAE43FD.80000008p-107 = 7.03853100000000137076...e-26
+ *
+ * so the value rounds to the double exactly on the midpoint between the two
+ * nearest floats, and then rounding again to a float gives the incorrect
+ * result of 0xAE43FEp-107.
+ *
  */
 Datum
 float4in(PG_FUNCTION_ARGS)
 {
 	char	   *num = PG_GETARG_CSTRING(0);
 	char	   *orig_num;
-	double		val;
+	float		val;
 	char	   *endptr;
 
 	/*
@@ -129,7 +169,7 @@ float4in(PG_FUNCTION_ARGS)
 						"real", orig_num)));
 
 	errno = 0;
-	val = strtod(num, &endptr);
+	val = strtof(num, &endptr);
 
 	/* did we not see anything that looks like a double? */
 	if (endptr == num || errno != 0)
@@ -137,14 +177,14 @@ float4in(PG_FUNCTION_ARGS)
 		int			save_errno = errno;
 
 		/*
-		 * C99 requires that strtod() accept NaN, [+-]Infinity, and [+-]Inf,
+		 * C99 requires that strtof() accept NaN, [+-]Infinity, and [+-]Inf,
 		 * but not all platforms support all of these (and some accept them
 		 * but set ERANGE anyway...)  Therefore, we check for these inputs
-		 * ourselves if strtod() fails.
+		 * ourselves if strtof() fails.
 		 *
 		 * Note: C99 also requires hexadecimal input as well as some extended
 		 * forms of NaN, but we consider these forms unportable and don't try
-		 * to support them.  You can use 'em if your strtod() takes 'em.
+		 * to support them.  You can use 'em if your strtof() takes 'em.
 		 */
 		if (pg_strncasecmp(num, "NaN", 3) == 0)
 		{
@@ -189,8 +229,18 @@ float4in(PG_FUNCTION_ARGS)
 			 * precision).  We'd prefer not to throw error for that, so try to
 			 * detect whether it's a "real" out-of-range condition by checking
 			 * to see if the result is zero or huge.
+			 *
+			 * Use isinf() rather than HUGE_VALF on VS2013 because it generates
+			 * a spurious overflow warning for -HUGE_VALF. Also use isinf() if
+			 * HUGE_VALF is missing.
 			 */
-			if (val == 0.0 || val >= HUGE_VAL || val <= -HUGE_VAL)
+			if (val == 0.0 ||
+#if !defined(HUGE_VALF) || (defined(_MSC_VER) && (_MSC_VER < 1900))
+				isinf(val)
+#else
+				(val >= HUGE_VALF || val <= -HUGE_VALF)
+#endif
+				)
 				ereport(ERROR,
 						(errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
 						 errmsg("\"%s\" is out of range for type real",
@@ -226,13 +276,7 @@ float4in(PG_FUNCTION_ARGS)
 				 errmsg("invalid input syntax for type %s: \"%s\"",
 						"real", orig_num)));
 
-	/*
-	 * if we get here, we have a legal double, still need to check to see if
-	 * it's a legal float4
-	 */
-	check_float4_val((float4) val, isinf(val), val == 0);
-
-	PG_RETURN_FLOAT4((float4) val);
+	PG_RETURN_FLOAT4(val);
 }
 
 /*
@@ -245,6 +289,12 @@ float4out(PG_FUNCTION_ARGS)
 	float4		num = PG_GETARG_FLOAT4(0);
 	char	   *ascii = (char *) palloc(32);
 	int			ndig = FLT_DIG + extra_float_digits;
+
+	if (extra_float_digits > 0)
+	{
+		float_to_shortest_decimal_buf(num, ascii);
+		PG_RETURN_CSTRING(ascii);
+	}
 
 	(void) pg_strfromd(ascii, 32, ndig, num);
 	PG_RETURN_CSTRING(ascii);
@@ -461,6 +511,12 @@ float8out_internal(double num)
 {
 	char	   *ascii = (char *) palloc(32);
 	int			ndig = DBL_DIG + extra_float_digits;
+
+	if (extra_float_digits > 0)
+	{
+		double_to_shortest_decimal_buf(num, ascii);
+		return ascii;
+	}
 
 	(void) pg_strfromd(ascii, 32, ndig, num);
 	return ascii;
@@ -2378,8 +2434,30 @@ drandom(PG_FUNCTION_ARGS)
 {
 	float8		result;
 
-	/* result [0.0 - 1.0) */
-	result = (double) random() / ((double) MAX_RANDOM_VALUE + 1);
+	/* Initialize random seed, if not done yet in this process */
+	if (unlikely(!drandom_seed_set))
+	{
+		/*
+		 * If possible, initialize the seed using high-quality random bits.
+		 * Should that fail for some reason, we fall back on a lower-quality
+		 * seed based on current time and PID.
+		 */
+		if (!pg_strong_random(drandom_seed, sizeof(drandom_seed)))
+		{
+			TimestampTz now = GetCurrentTimestamp();
+			uint64		iseed;
+
+			/* Mix the PID with the most predictable bits of the timestamp */
+			iseed = (uint64) now ^ ((uint64) MyProcPid << 32);
+			drandom_seed[0] = (unsigned short) iseed;
+			drandom_seed[1] = (unsigned short) (iseed >> 16);
+			drandom_seed[2] = (unsigned short) (iseed >> 32);
+		}
+		drandom_seed_set = true;
+	}
+
+	/* pg_erand48 produces desired result range [0.0 - 1.0) */
+	result = pg_erand48(drandom_seed);
 
 	PG_RETURN_FLOAT8(result);
 }
@@ -2392,13 +2470,20 @@ Datum
 setseed(PG_FUNCTION_ARGS)
 {
 	float8		seed = PG_GETARG_FLOAT8(0);
-	int			iseed;
+	uint64		iseed;
 
-	if (seed < -1 || seed > 1)
-		elog(ERROR, "setseed parameter %f out of range [-1,1]", seed);
+	if (seed < -1 || seed > 1 || isnan(seed))
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("setseed parameter %g is out of allowed range [-1,1]",
+						seed)));
 
-	iseed = (int) (seed * MAX_RANDOM_VALUE);
-	srandom((unsigned int) iseed);
+	/* Use sign bit + 47 fractional bits to fill drandom_seed[] */
+	iseed = (int64) (seed * (float8) UINT64CONST(0x7FFFFFFFFFFF));
+	drandom_seed[0] = (unsigned short) iseed;
+	drandom_seed[1] = (unsigned short) (iseed >> 16);
+	drandom_seed[2] = (unsigned short) (iseed >> 32);
+	drandom_seed_set = true;
 
 	PG_RETURN_VOID();
 }

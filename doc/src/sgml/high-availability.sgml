@@ -690,8 +690,8 @@ protocol to make nodes agree on a serializable transactional order.
     <filename>standby.signal</filename> in the standby's cluster data
     directory. Set <xref linkend="guc-restore-command"/> to a simple command to copy files from
     the WAL archive. If you plan to have multiple standby servers for high
-    availability purposes, set <varname>recovery_target_timeline</varname> to
-    <literal>latest</literal>, to make the standby server follow the timeline change
+    availability purposes, make sure that <varname>recovery_target_timeline</varname> is set to
+    <literal>latest</literal> (the default), to make the standby server follow the timeline change
     that occurs at failover to another standby.
    </para>
 
@@ -1024,7 +1024,7 @@ primary_slot_name = 'node_a_slot'
    <para>
     If an upstream standby server is promoted to become new master, downstream
     servers will continue to stream from the new master if
-    <varname>recovery_target_timeline</varname> is set to <literal>'latest'</literal>.
+    <varname>recovery_target_timeline</varname> is set to <literal>'latest'</literal> (the default).
    </para>
 
    <para>
@@ -1767,6 +1767,11 @@ if (!triggered)
        Plugins and extensions - <command>LOAD</command>
       </para>
      </listitem>
+     <listitem>
+      <para>
+       <command>UNLISTEN</command>
+      </para>
+     </listitem>
     </itemizedlist>
    </para>
 
@@ -1856,7 +1861,7 @@ if (!triggered)
      </listitem>
      <listitem>
       <para>
-       <command>LISTEN</command>, <command>UNLISTEN</command>, <command>NOTIFY</command>
+       <command>LISTEN</command>, <command>NOTIFY</command>
       </para>
      </listitem>
     </itemizedlist>
@@ -1864,8 +1869,8 @@ if (!triggered)
 
    <para>
     In normal operation, <quote>read-only</quote> transactions are allowed to
-    use <command>LISTEN</command>, <command>UNLISTEN</command>, and
-    <command>NOTIFY</command>, so Hot Standby sessions operate under slightly tighter
+    use <command>LISTEN</command> and <command>NOTIFY</command>,
+    so Hot Standby sessions operate under slightly tighter
     restrictions than ordinary read-only sessions.  It is possible that some
     of these restrictions might be loosened in a future release.
    </para>
@@ -2170,6 +2175,11 @@ LOG:  database system is ready to accept read only connections
        <listitem>
         <para>
          <varname>max_locks_per_transaction</varname>
+        </para>
+       </listitem>
+       <listitem>
+        <para>
+         <varname>max_wal_senders</varname>
         </para>
        </listitem>
        <listitem>

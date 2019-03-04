@@ -11,7 +11,7 @@
  *			- Add a pgstat config column to pg_database, so this
  *			  entire thing can be enabled/disabled on a per db basis.
  *
- *	Copyright (c) 2001-2018, PostgreSQL Global Development Group
+ *	Copyright (c) 2001-2019, PostgreSQL Global Development Group
  *
  *	src/backend/postmaster/pgstat.c
  * ----------
@@ -67,7 +67,6 @@
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
 #include "utils/timestamp.h"
-#include "utils/tqual.h"
 
 
 /* ----------
@@ -1219,7 +1218,7 @@ pgstat_collect_oids(Oid catalogid, AttrNumber anum_oid)
 					   &hash_ctl,
 					   HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 
-	rel = heap_open(catalogid, AccessShareLock);
+	rel = table_open(catalogid, AccessShareLock);
 	snapshot = RegisterSnapshot(GetLatestSnapshot());
 	scan = heap_beginscan(rel, snapshot, 0, NULL);
 	while ((tup = heap_getnext(scan, ForwardScanDirection)) != NULL)
@@ -1236,7 +1235,7 @@ pgstat_collect_oids(Oid catalogid, AttrNumber anum_oid)
 	}
 	heap_endscan(scan);
 	UnregisterSnapshot(snapshot);
-	heap_close(rel, AccessShareLock);
+	table_close(rel, AccessShareLock);
 
 	return htab;
 }
@@ -1582,7 +1581,7 @@ pgstat_send_inquiry(TimestampTz clock_time, TimestampTz cutoff_time, Oid databas
  * Called by the executor before invoking a function.
  */
 void
-pgstat_init_function_usage(FunctionCallInfoData *fcinfo,
+pgstat_init_function_usage(FunctionCallInfo fcinfo,
 						   PgStat_FunctionCallUsage *fcu)
 {
 	PgStat_BackendFunctionEntry *htabent;
@@ -2907,7 +2906,9 @@ pgstat_bestart(void)
 		beentry->st_sslstatus->ssl_compression = be_tls_get_compression(MyProcPort);
 		strlcpy(beentry->st_sslstatus->ssl_version, be_tls_get_version(MyProcPort), NAMEDATALEN);
 		strlcpy(beentry->st_sslstatus->ssl_cipher, be_tls_get_cipher(MyProcPort), NAMEDATALEN);
-		be_tls_get_peerdn_name(MyProcPort, beentry->st_sslstatus->ssl_clientdn, NAMEDATALEN);
+		be_tls_get_peer_subject_name(MyProcPort, beentry->st_sslstatus->ssl_client_dn, NAMEDATALEN);
+		be_tls_get_peer_serial(MyProcPort, beentry->st_sslstatus->ssl_client_serial, NAMEDATALEN);
+		be_tls_get_peer_issuer_name(MyProcPort, beentry->st_sslstatus->ssl_issuer_dn, NAMEDATALEN);
 	}
 	else
 	{
@@ -3799,7 +3800,7 @@ pgstat_get_wait_io(WaitEventIO w)
 			event_name = "LockFileCreateSync";
 			break;
 		case WAIT_EVENT_LOCK_FILE_CREATE_WRITE:
-			event_name = "LockFileCreateWRITE";
+			event_name = "LockFileCreateWrite";
 			break;
 		case WAIT_EVENT_LOCK_FILE_RECHECKDATADIR_READ:
 			event_name = "LockFileReCheckDataDirRead";

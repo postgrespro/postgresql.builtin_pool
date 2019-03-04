@@ -3,7 +3,7 @@
  * planner.c
  *	  The query optimizer external interface.
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -18,9 +18,11 @@
 #include <limits.h>
 #include <math.h>
 
+#include "access/genam.h"
 #include "access/htup_details.h"
 #include "access/parallel.h"
 #include "access/sysattr.h"
+#include "access/table.h"
 #include "access/xact.h"
 #include "catalog/pg_constraint.h"
 #include "catalog/pg_proc.h"
@@ -37,8 +39,12 @@
 #ifdef OPTIMIZER_DEBUG
 #include "nodes/print.h"
 #endif
+#include "optimizer/appendinfo.h"
 #include "optimizer/clauses.h"
 #include "optimizer/cost.h"
+#include "optimizer/inherit.h"
+#include "optimizer/optimizer.h"
+#include "optimizer/paramassign.h"
 #include "optimizer/pathnode.h"
 #include "optimizer/paths.h"
 #include "optimizer/plancat.h"
@@ -47,7 +53,6 @@
 #include "optimizer/prep.h"
 #include "optimizer/subselect.h"
 #include "optimizer/tlist.h"
-#include "optimizer/var.h"
 #include "parser/analyze.h"
 #include "parser/parsetree.h"
 #include "parser/parse_agg.h"
@@ -143,9 +148,6 @@ static double get_number_of_groups(PlannerInfo *root,
 					 double path_rows,
 					 grouping_sets_data *gd,
 					 List *target_list);
-static Size estimate_hashagg_tablesize(Path *path,
-						   const AggClauseCosts *agg_costs,
-						   double dNumGroups);
 static RelOptInfo *create_grouping_paths(PlannerInfo *root,
 					  RelOptInfo *input_rel,
 					  PathTarget *target,
@@ -606,6 +608,7 @@ subquery_planner(PlannerGlobal *glob, Query *parse,
 	List	   *newWithCheckOptions;
 	List	   *newHaving;
 	bool		hasOuterJoins;
+	bool		hasResultRTEs;
 	RelOptInfo *final_rel;
 	ListCell   *l;
 
@@ -633,18 +636,24 @@ subquery_planner(PlannerGlobal *glob, Query *parse,
 	root->inhTargetKind = INHKIND_NONE;
 	root->hasRecursion = hasRecursion;
 	if (hasRecursion)
-		root->wt_param_id = SS_assign_special_param(root);
+		root->wt_param_id = assign_special_exec_param(root);
 	else
 		root->wt_param_id = -1;
 	root->non_recursive_path = NULL;
 	root->partColsUpdated = false;
 
 	/*
-	 * If there is a WITH list, process each WITH query and build an initplan
-	 * SubPlan structure for it.
+	 * If there is a WITH list, process each WITH query and either convert it
+	 * to RTE_SUBQUERY RTE(s) or build an initplan SubPlan structure for it.
 	 */
 	if (parse->cteList)
 		SS_process_ctes(root);
+
+	/*
+	 * If the FROM clause is empty, replace it with a dummy RTE_RESULT RTE, so
+	 * that we don't need so many special cases to deal with that situation.
+	 */
+	replace_empty_jointree(parse);
 
 	/*
 	 * Look for ANY and EXISTS SubLinks in WHERE and JOIN/ON clauses, and try
@@ -679,14 +688,16 @@ subquery_planner(PlannerGlobal *glob, Query *parse,
 
 	/*
 	 * Detect whether any rangetable entries are RTE_JOIN kind; if not, we can
-	 * avoid the expense of doing flatten_join_alias_vars().  Also check for
-	 * outer joins --- if none, we can skip reduce_outer_joins().  And check
-	 * for LATERAL RTEs, too.  This must be done after we have done
-	 * pull_up_subqueries(), of course.
+	 * avoid the expense of doing flatten_join_alias_vars().  Likewise check
+	 * whether any are RTE_RESULT kind; if not, we can skip
+	 * remove_useless_result_rtes().  Also check for outer joins --- if none,
+	 * we can skip reduce_outer_joins().  And check for LATERAL RTEs, too.
+	 * This must be done after we have done pull_up_subqueries(), of course.
 	 */
 	root->hasJoinRTEs = false;
 	root->hasLateralRTEs = false;
 	hasOuterJoins = false;
+	hasResultRTEs = false;
 	foreach(l, parse->rtable)
 	{
 		RangeTblEntry *rte = lfirst_node(RangeTblEntry, l);
@@ -696,6 +707,10 @@ subquery_planner(PlannerGlobal *glob, Query *parse,
 			root->hasJoinRTEs = true;
 			if (IS_OUTER_JOIN(rte->jointype))
 				hasOuterJoins = true;
+		}
+		else if (rte->rtekind == RTE_RESULT)
+		{
+			hasResultRTEs = true;
 		}
 		if (rte->lateral)
 			root->hasLateralRTEs = true;
@@ -712,10 +727,10 @@ subquery_planner(PlannerGlobal *glob, Query *parse,
 	/*
 	 * Expand any rangetable entries that are inheritance sets into "append
 	 * relations".  This can add entries to the rangetable, but they must be
-	 * plain base relations not joins, so it's OK (and marginally more
-	 * efficient) to do it after checking for join RTEs.  We must do it after
-	 * pulling up subqueries, else we'd fail to handle inherited tables in
-	 * subqueries.
+	 * plain RTE_RELATION entries, so it's OK (and marginally more efficient)
+	 * to do it after checking for joins and other special RTEs.  We must do
+	 * this after pulling up subqueries, else we'd fail to handle inherited
+	 * tables in subqueries.
 	 */
 	expand_inherited_tables(root);
 
@@ -831,7 +846,8 @@ subquery_planner(PlannerGlobal *glob, Query *parse,
 			 */
 			if (rte->lateral && root->hasJoinRTEs)
 				rte->subquery = (Query *)
-					flatten_join_alias_vars(root, (Node *) rte->subquery);
+					flatten_join_alias_vars(root->parse,
+											(Node *) rte->subquery);
 		}
 		else if (rte->rtekind == RTE_FUNCTION)
 		{
@@ -963,6 +979,14 @@ subquery_planner(PlannerGlobal *glob, Query *parse,
 		reduce_outer_joins(root);
 
 	/*
+	 * If we have any RTE_RESULT relations, see if they can be deleted from
+	 * the jointree.  This step is most effectively done after we've done
+	 * expression preprocessing and outer join reduction.
+	 */
+	if (hasResultRTEs)
+		remove_useless_result_rtes(root);
+
+	/*
 	 * Do the main planning.  If we have an inherited target relation, that
 	 * needs special processing, else go straight to grouping_planner.
 	 */
@@ -1028,7 +1052,7 @@ preprocess_expression(PlannerInfo *root, Node *expr, int kind)
 		  kind == EXPRKIND_VALUES ||
 		  kind == EXPRKIND_TABLESAMPLE ||
 		  kind == EXPRKIND_TABLEFUNC))
-		expr = flatten_join_alias_vars(root, expr);
+		expr = flatten_join_alias_vars(root->parse, expr);
 
 	/*
 	 * Simplify constant expressions.
@@ -1559,34 +1583,58 @@ inheritance_planner(PlannerInfo *root)
 	 * to get control here.
 	 */
 
-	/*
-	 * If we managed to exclude every child rel, return a dummy plan; it
-	 * doesn't even need a ModifyTable node.
-	 */
 	if (subpaths == NIL)
 	{
-		set_dummy_rel_pathlist(final_rel);
-		return;
+		/*
+		 * We managed to exclude every child rel, so generate a dummy path
+		 * representing the empty set.  Although it's clear that no data will
+		 * be updated or deleted, we will still need to have a ModifyTable
+		 * node so that any statement triggers are executed.  (This could be
+		 * cleaner if we fixed nodeModifyTable.c to support zero child nodes,
+		 * but that probably wouldn't be a net win.)
+		 */
+		List	   *tlist;
+		Path	   *dummy_path;
+
+		/* tlist processing never got done, either */
+		tlist = root->processed_tlist = preprocess_targetlist(root);
+		final_rel->reltarget = create_pathtarget(root, tlist);
+
+		/* Make a dummy path, cf set_dummy_rel_pathlist() */
+		dummy_path = (Path *) create_append_path(NULL, final_rel, NIL, NIL,
+												 NULL, 0, false, NIL, -1);
+
+		/* These lists must be nonempty to make a valid ModifyTable node */
+		subpaths = list_make1(dummy_path);
+		subroots = list_make1(root);
+		resultRelations = list_make1_int(parse->resultRelation);
+		if (parse->withCheckOptions)
+			withCheckOptionLists = list_make1(parse->withCheckOptions);
+		if (parse->returningList)
+			returningLists = list_make1(parse->returningList);
 	}
-
-	/*
-	 * Put back the final adjusted rtable into the master copy of the Query.
-	 * (We mustn't do this if we found no non-excluded children.)
-	 */
-	parse->rtable = final_rtable;
-	root->simple_rel_array_size = save_rel_array_size;
-	root->simple_rel_array = save_rel_array;
-	root->append_rel_array = save_append_rel_array;
-
-	/* Must reconstruct master's simple_rte_array, too */
-	root->simple_rte_array = (RangeTblEntry **)
-		palloc0((list_length(final_rtable) + 1) * sizeof(RangeTblEntry *));
-	rti = 1;
-	foreach(lc, final_rtable)
+	else
 	{
-		RangeTblEntry *rte = lfirst_node(RangeTblEntry, lc);
+		/*
+		 * Put back the final adjusted rtable into the master copy of the
+		 * Query.  (We mustn't do this if we found no non-excluded children,
+		 * since we never saved an adjusted rtable at all.)
+		 */
+		parse->rtable = final_rtable;
+		root->simple_rel_array_size = save_rel_array_size;
+		root->simple_rel_array = save_rel_array;
+		root->append_rel_array = save_append_rel_array;
 
-		root->simple_rte_array[rti++] = rte;
+		/* Must reconstruct master's simple_rte_array, too */
+		root->simple_rte_array = (RangeTblEntry **)
+			palloc0((list_length(final_rtable) + 1) * sizeof(RangeTblEntry *));
+		rti = 1;
+		foreach(lc, final_rtable)
+		{
+			RangeTblEntry *rte = lfirst_node(RangeTblEntry, lc);
+
+			root->simple_rte_array[rti++] = rte;
+		}
 	}
 
 	/*
@@ -1614,7 +1662,7 @@ inheritance_planner(PlannerInfo *root)
 									 returningLists,
 									 rowMarks,
 									 NULL,
-									 SS_assign_special_param(root)));
+									 assign_special_exec_param(root)));
 }
 
 /*--------------------
@@ -2008,6 +2056,8 @@ grouping_planner(PlannerInfo *root, bool inheritance_update,
 		 * of the corresponding upperrels might not be needed for this query.
 		 */
 		root->upper_targets[UPPERREL_FINAL] = final_target;
+		root->upper_targets[UPPERREL_ORDERED] = final_target;
+		root->upper_targets[UPPERREL_DISTINCT] = sort_input_target;
 		root->upper_targets[UPPERREL_WINDOW] = sort_input_target;
 		root->upper_targets[UPPERREL_GROUP_AGG] = grouping_target;
 
@@ -2129,7 +2179,7 @@ grouping_planner(PlannerInfo *root, bool inheritance_update,
 		{
 			path = (Path *) create_lockrows_path(root, final_rel, path,
 												 root->rowMarks,
-												 SS_assign_special_param(root));
+												 assign_special_exec_param(root));
 		}
 
 		/*
@@ -2202,7 +2252,7 @@ grouping_planner(PlannerInfo *root, bool inheritance_update,
 										returningLists,
 										rowMarks,
 										parse->onConflict,
-										SS_assign_special_param(root));
+										assign_special_exec_param(root));
 		}
 
 		/* And shove it into final_rel */
@@ -3631,40 +3681,6 @@ get_number_of_groups(PlannerInfo *root,
 }
 
 /*
- * estimate_hashagg_tablesize
- *	  estimate the number of bytes that a hash aggregate hashtable will
- *	  require based on the agg_costs, path width and dNumGroups.
- *
- * XXX this may be over-estimating the size now that hashagg knows to omit
- * unneeded columns from the hashtable. Also for mixed-mode grouping sets,
- * grouping columns not in the hashed set are counted here even though hashagg
- * won't store them. Is this a problem?
- */
-static Size
-estimate_hashagg_tablesize(Path *path, const AggClauseCosts *agg_costs,
-						   double dNumGroups)
-{
-	Size		hashentrysize;
-
-	/* Estimate per-hash-entry space at tuple width... */
-	hashentrysize = MAXALIGN(path->pathtarget->width) +
-		MAXALIGN(SizeofMinimalTupleHeader);
-
-	/* plus space for pass-by-ref transition values... */
-	hashentrysize += agg_costs->transitionSpace;
-	/* plus the per-hash-entry overhead */
-	hashentrysize += hash_agg_entry_size(agg_costs->numAggs);
-
-	/*
-	 * Note that this disregards the effect of fill-factor and growth policy
-	 * of the hash-table. That's probably ok, given default the default
-	 * fill-factor is relatively high. It'd be hard to meaningfully factor in
-	 * "double-in-size" growth policies here.
-	 */
-	return hashentrysize * dNumGroups;
-}
-
-/*
  * create_grouping_paths
  *
  * Build a new upperrel containing Paths for grouping and/or aggregation.
@@ -3889,9 +3905,9 @@ create_degenerate_grouping_paths(PlannerInfo *root, RelOptInfo *input_rel,
 		while (--nrows >= 0)
 		{
 			path = (Path *)
-				create_result_path(root, grouped_rel,
-								   grouped_rel->reltarget,
-								   (List *) parse->havingQual);
+				create_group_result_path(root, grouped_rel,
+										 grouped_rel->reltarget,
+										 (List *) parse->havingQual);
 			paths = lappend(paths, path);
 		}
 		path = (Path *)
@@ -3909,9 +3925,9 @@ create_degenerate_grouping_paths(PlannerInfo *root, RelOptInfo *input_rel,
 	{
 		/* No grouping sets, or just one, so one output row */
 		path = (Path *)
-			create_result_path(root, grouped_rel,
-							   grouped_rel->reltarget,
-							   (List *) parse->havingQual);
+			create_group_result_path(root, grouped_rel,
+									 grouped_rel->reltarget,
+									 (List *) parse->havingQual);
 	}
 
 	add_path(grouped_rel, path);
@@ -4101,7 +4117,7 @@ consider_groupingsets_paths(PlannerInfo *root,
 		ListCell   *lc;
 		ListCell   *l_start = list_head(gd->rollups);
 		AggStrategy strat = AGG_HASHED;
-		Size		hashsize;
+		double		hashsize;
 		double		exclude_groups = 0.0;
 
 		Assert(can_hash);
@@ -4268,9 +4284,9 @@ consider_groupingsets_paths(PlannerInfo *root,
 		/*
 		 * Account first for space needed for groups we can't sort at all.
 		 */
-		availspace -= (double) estimate_hashagg_tablesize(path,
-														  agg_costs,
-														  gd->dNumHashGroups);
+		availspace -= estimate_hashagg_tablesize(path,
+												 agg_costs,
+												 gd->dNumHashGroups);
 
 		if (availspace > 0 && list_length(gd->rollups) > 1)
 		{
@@ -6109,7 +6125,7 @@ plan_cluster_use_sort(Oid tableOid, Oid indexOid)
 
 	/* Estimate the cost of index scan */
 	indexScanPath = create_index_path(root, indexInfo,
-									  NIL, NIL, NIL, NIL, NIL,
+									  NIL, NIL, NIL, NIL,
 									  ForwardScanDirection, false,
 									  NULL, 1.0, false);
 
@@ -6187,7 +6203,7 @@ plan_create_index_workers(Oid tableOid, Oid indexOid)
 	/* Build RelOptInfo */
 	rel = build_simple_rel(root, 1, NULL);
 
-	heap = heap_open(tableOid, NoLock);
+	heap = table_open(tableOid, NoLock);
 	index = index_open(indexOid, NoLock);
 
 	/*
@@ -6248,7 +6264,7 @@ plan_create_index_workers(Oid tableOid, Oid indexOid)
 
 done:
 	index_close(index, NoLock);
-	heap_close(heap, NoLock);
+	table_close(heap, NoLock);
 
 	return parallel_workers;
 }
@@ -6395,7 +6411,7 @@ add_paths_to_grouping_rel(PlannerInfo *root, RelOptInfo *input_rel,
 
 	if (can_hash)
 	{
-		Size		hashaggtablesize;
+		double		hashaggtablesize;
 
 		if (parse->groupingSets)
 		{
@@ -6706,7 +6722,7 @@ create_partial_grouping_paths(PlannerInfo *root,
 
 	if (can_hash && cheapest_total_path != NULL)
 	{
-		Size		hashaggtablesize;
+		double		hashaggtablesize;
 
 		/* Checked above */
 		Assert(parse->hasAggs || parse->groupClause);
@@ -6739,7 +6755,7 @@ create_partial_grouping_paths(PlannerInfo *root,
 
 	if (can_hash && cheapest_partial_path != NULL)
 	{
-		Size		hashaggtablesize;
+		double		hashaggtablesize;
 
 		hashaggtablesize =
 			estimate_hashagg_tablesize(cheapest_partial_path,

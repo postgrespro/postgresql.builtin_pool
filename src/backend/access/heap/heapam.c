@@ -3,7 +3,7 @@
  * heapam.c
  *	  heap access method code
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -12,12 +12,6 @@
  *
  *
  * INTERFACE ROUTINES
- *		relation_open	- open any relation by relation OID
- *		relation_openrv - open any relation specified by a RangeVar
- *		relation_close	- close any relation
- *		heap_open		- open a heap relation by relation OID
- *		heap_openrv		- open a heap relation specified by a RangeVar
- *		heap_close		- (now just a macro for relation_close)
  *		heap_beginscan	- begin relation scan
  *		heap_rescan		- restart a relation scan
  *		heap_endscan	- end relation scan
@@ -39,6 +33,7 @@
 #include "postgres.h"
 
 #include "access/bufmask.h"
+#include "access/genam.h"
 #include "access/heapam.h"
 #include "access/heapam_xlog.h"
 #include "access/hio.h"
@@ -55,8 +50,6 @@
 #include "access/xloginsert.h"
 #include "access/xlogutils.h"
 #include "catalog/catalog.h"
-#include "catalog/namespace.h"
-#include "catalog/index.h"
 #include "miscadmin.h"
 #include "pgstat.h"
 #include "port/atomics.h"
@@ -73,11 +66,7 @@
 #include "utils/lsyscache.h"
 #include "utils/relcache.h"
 #include "utils/snapmgr.h"
-#include "utils/syscache.h"
-#include "utils/tqual.h"
-#include "utils/memutils.h"
-#include "nodes/execnodes.h"
-#include "executor/executor.h"
+
 
 /* GUC variable */
 bool		synchronize_seqscans = true;
@@ -129,7 +118,6 @@ static bool ConditionalMultiXactIdWait(MultiXactId multi, MultiXactStatus status
 static XLogRecPtr log_heap_new_cid(Relation relation, HeapTuple tup);
 static HeapTuple ExtractReplicaIdentity(Relation rel, HeapTuple tup, bool key_modified,
 					   bool *copy);
-static bool ProjIndexIsUnchanged(Relation relation, HeapTuple oldtup, HeapTuple newtup);
 
 
 /*
@@ -1106,287 +1094,6 @@ fastgetattr(HeapTuple tup, int attnum, TupleDesc tupleDesc,
  * ----------------------------------------------------------------
  */
 
-/* ----------------
- *		relation_open - open any relation by relation OID
- *
- *		If lockmode is not "NoLock", the specified kind of lock is
- *		obtained on the relation.  (Generally, NoLock should only be
- *		used if the caller knows it has some appropriate lock on the
- *		relation already.)
- *
- *		An error is raised if the relation does not exist.
- *
- *		NB: a "relation" is anything with a pg_class entry.  The caller is
- *		expected to check whether the relkind is something it can handle.
- * ----------------
- */
-Relation
-relation_open(Oid relationId, LOCKMODE lockmode)
-{
-	Relation	r;
-
-	Assert(lockmode >= NoLock && lockmode < MAX_LOCKMODES);
-
-	/* Get the lock before trying to open the relcache entry */
-	if (lockmode != NoLock)
-		LockRelationOid(relationId, lockmode);
-
-	/* The relcache does all the real work... */
-	r = RelationIdGetRelation(relationId);
-
-	if (!RelationIsValid(r))
-		elog(ERROR, "could not open relation with OID %u", relationId);
-
-	/*
-	 * If we didn't get the lock ourselves, assert that caller holds one,
-	 * except in bootstrap mode where no locks are used.
-	 */
-	Assert(lockmode != NoLock ||
-		   IsBootstrapProcessingMode() ||
-		   CheckRelationLockedByMe(r, AccessShareLock, true));
-
-	/* Make note that we've accessed a temporary relation */
-	if (RelationUsesLocalBuffers(r))
-		MyXactFlags |= XACT_FLAGS_ACCESSEDTEMPREL;
-
-	pgstat_initstats(r);
-
-	return r;
-}
-
-/* ----------------
- *		try_relation_open - open any relation by relation OID
- *
- *		Same as relation_open, except return NULL instead of failing
- *		if the relation does not exist.
- * ----------------
- */
-Relation
-try_relation_open(Oid relationId, LOCKMODE lockmode)
-{
-	Relation	r;
-
-	Assert(lockmode >= NoLock && lockmode < MAX_LOCKMODES);
-
-	/* Get the lock first */
-	if (lockmode != NoLock)
-		LockRelationOid(relationId, lockmode);
-
-	/*
-	 * Now that we have the lock, probe to see if the relation really exists
-	 * or not.
-	 */
-	if (!SearchSysCacheExists1(RELOID, ObjectIdGetDatum(relationId)))
-	{
-		/* Release useless lock */
-		if (lockmode != NoLock)
-			UnlockRelationOid(relationId, lockmode);
-
-		return NULL;
-	}
-
-	/* Should be safe to do a relcache load */
-	r = RelationIdGetRelation(relationId);
-
-	if (!RelationIsValid(r))
-		elog(ERROR, "could not open relation with OID %u", relationId);
-
-	/* If we didn't get the lock ourselves, assert that caller holds one */
-	Assert(lockmode != NoLock ||
-		   CheckRelationLockedByMe(r, AccessShareLock, true));
-
-	/* Make note that we've accessed a temporary relation */
-	if (RelationUsesLocalBuffers(r))
-		MyXactFlags |= XACT_FLAGS_ACCESSEDTEMPREL;
-
-	pgstat_initstats(r);
-
-	return r;
-}
-
-/* ----------------
- *		relation_openrv - open any relation specified by a RangeVar
- *
- *		Same as relation_open, but the relation is specified by a RangeVar.
- * ----------------
- */
-Relation
-relation_openrv(const RangeVar *relation, LOCKMODE lockmode)
-{
-	Oid			relOid;
-
-	/*
-	 * Check for shared-cache-inval messages before trying to open the
-	 * relation.  This is needed even if we already hold a lock on the
-	 * relation, because GRANT/REVOKE are executed without taking any lock on
-	 * the target relation, and we want to be sure we see current ACL
-	 * information.  We can skip this if asked for NoLock, on the assumption
-	 * that such a call is not the first one in the current command, and so we
-	 * should be reasonably up-to-date already.  (XXX this all could stand to
-	 * be redesigned, but for the moment we'll keep doing this like it's been
-	 * done historically.)
-	 */
-	if (lockmode != NoLock)
-		AcceptInvalidationMessages();
-
-	/* Look up and lock the appropriate relation using namespace search */
-	relOid = RangeVarGetRelid(relation, lockmode, false);
-
-	/* Let relation_open do the rest */
-	return relation_open(relOid, NoLock);
-}
-
-/* ----------------
- *		relation_openrv_extended - open any relation specified by a RangeVar
- *
- *		Same as relation_openrv, but with an additional missing_ok argument
- *		allowing a NULL return rather than an error if the relation is not
- *		found.  (Note that some other causes, such as permissions problems,
- *		will still result in an ereport.)
- * ----------------
- */
-Relation
-relation_openrv_extended(const RangeVar *relation, LOCKMODE lockmode,
-						 bool missing_ok)
-{
-	Oid			relOid;
-
-	/*
-	 * Check for shared-cache-inval messages before trying to open the
-	 * relation.  See comments in relation_openrv().
-	 */
-	if (lockmode != NoLock)
-		AcceptInvalidationMessages();
-
-	/* Look up and lock the appropriate relation using namespace search */
-	relOid = RangeVarGetRelid(relation, lockmode, missing_ok);
-
-	/* Return NULL on not-found */
-	if (!OidIsValid(relOid))
-		return NULL;
-
-	/* Let relation_open do the rest */
-	return relation_open(relOid, NoLock);
-}
-
-/* ----------------
- *		relation_close - close any relation
- *
- *		If lockmode is not "NoLock", we then release the specified lock.
- *
- *		Note that it is often sensible to hold a lock beyond relation_close;
- *		in that case, the lock is released automatically at xact end.
- * ----------------
- */
-void
-relation_close(Relation relation, LOCKMODE lockmode)
-{
-	LockRelId	relid = relation->rd_lockInfo.lockRelId;
-
-	Assert(lockmode >= NoLock && lockmode < MAX_LOCKMODES);
-
-	/* The relcache does the real work... */
-	RelationClose(relation);
-
-	if (lockmode != NoLock)
-		UnlockRelationId(&relid, lockmode);
-}
-
-
-/* ----------------
- *		heap_open - open a heap relation by relation OID
- *
- *		This is essentially relation_open plus check that the relation
- *		is not an index nor a composite type.  (The caller should also
- *		check that it's not a view or foreign table before assuming it has
- *		storage.)
- * ----------------
- */
-Relation
-heap_open(Oid relationId, LOCKMODE lockmode)
-{
-	Relation	r;
-
-	r = relation_open(relationId, lockmode);
-
-	if (r->rd_rel->relkind == RELKIND_INDEX ||
-		r->rd_rel->relkind == RELKIND_PARTITIONED_INDEX)
-		ereport(ERROR,
-				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
-				 errmsg("\"%s\" is an index",
-						RelationGetRelationName(r))));
-	else if (r->rd_rel->relkind == RELKIND_COMPOSITE_TYPE)
-		ereport(ERROR,
-				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
-				 errmsg("\"%s\" is a composite type",
-						RelationGetRelationName(r))));
-
-	return r;
-}
-
-/* ----------------
- *		heap_openrv - open a heap relation specified
- *		by a RangeVar node
- *
- *		As above, but relation is specified by a RangeVar.
- * ----------------
- */
-Relation
-heap_openrv(const RangeVar *relation, LOCKMODE lockmode)
-{
-	Relation	r;
-
-	r = relation_openrv(relation, lockmode);
-
-	if (r->rd_rel->relkind == RELKIND_INDEX ||
-		r->rd_rel->relkind == RELKIND_PARTITIONED_INDEX)
-		ereport(ERROR,
-				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
-				 errmsg("\"%s\" is an index",
-						RelationGetRelationName(r))));
-	else if (r->rd_rel->relkind == RELKIND_COMPOSITE_TYPE)
-		ereport(ERROR,
-				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
-				 errmsg("\"%s\" is a composite type",
-						RelationGetRelationName(r))));
-
-	return r;
-}
-
-/* ----------------
- *		heap_openrv_extended - open a heap relation specified
- *		by a RangeVar node
- *
- *		As above, but optionally return NULL instead of failing for
- *		relation-not-found.
- * ----------------
- */
-Relation
-heap_openrv_extended(const RangeVar *relation, LOCKMODE lockmode,
-					 bool missing_ok)
-{
-	Relation	r;
-
-	r = relation_openrv_extended(relation, lockmode, missing_ok);
-
-	if (r)
-	{
-		if (r->rd_rel->relkind == RELKIND_INDEX ||
-			r->rd_rel->relkind == RELKIND_PARTITIONED_INDEX)
-			ereport(ERROR,
-					(errcode(ERRCODE_WRONG_OBJECT_TYPE),
-					 errmsg("\"%s\" is an index",
-							RelationGetRelationName(r))));
-		else if (r->rd_rel->relkind == RELKIND_COMPOSITE_TYPE)
-			ereport(ERROR,
-					(errcode(ERRCODE_WRONG_OBJECT_TYPE),
-					 errmsg("\"%s\" is a composite type",
-							RelationGetRelationName(r))));
-	}
-
-	return r;
-}
-
 
 /* ----------------
  *		heap_beginscan	- begin relation scan
@@ -1618,8 +1325,14 @@ heap_endscan(HeapScanDesc scan)
 Size
 heap_parallelscan_estimate(Snapshot snapshot)
 {
-	return add_size(offsetof(ParallelHeapScanDescData, phs_snapshot_data),
-					EstimateSnapshotSpace(snapshot));
+	Size		sz = offsetof(ParallelHeapScanDescData, phs_snapshot_data);
+
+	if (IsMVCCSnapshot(snapshot))
+		sz = add_size(sz, EstimateSnapshotSpace(snapshot));
+	else
+		Assert(snapshot == SnapshotAny);
+
+	return sz;
 }
 
 /* ----------------
@@ -1987,7 +1700,7 @@ heap_fetch(Relation relation,
 	tuple->t_tableOid = RelationGetRelid(relation);
 
 	/*
-	 * check time qualification of tuple, then release lock
+	 * check tuple visibility, then release lock
 	 */
 	valid = HeapTupleSatisfiesVisibility(tuple, snapshot, buffer);
 
@@ -2307,8 +2020,8 @@ heap_get_latest_tid(Relation relation,
 		}
 
 		/*
-		 * Check time qualification of tuple; if visible, set it as the new
-		 * result candidate.
+		 * Check tuple visibility; if visible, set it as the new result
+		 * candidate.
 		 */
 		valid = HeapTupleSatisfiesVisibility(&tp, snapshot, buffer);
 		CheckForSerializableConflictOut(valid, relation, &tp, buffer, snapshot);
@@ -2448,11 +2161,10 @@ ReleaseBulkInsertStatePin(BulkInsertState bistate)
  * The BulkInsertState object (if any; bistate can be NULL for default
  * behavior) is also just passed through to RelationGetBufferForTuple.
  *
- * The return value is the OID assigned to the tuple (either here or by the
- * caller), or InvalidOid if no OID.  The header fields of *tup are updated
- * to match the stored tuple; in particular tup->t_self receives the actual
- * TID where the tuple was stored.  But note that any toasting of fields
- * within the tuple data is NOT reflected into *tup.
+ * On return the header fields of *tup are updated to match the stored tuple;
+ * in particular tup->t_self receives the actual TID where the tuple was
+ * stored.  But note that any toasting of fields within the tuple data is NOT
+ * reflected into *tup.
  */
 void
 heap_insert(Relation relation, HeapTuple tup, CommandId cid,
@@ -2465,8 +2177,7 @@ heap_insert(Relation relation, HeapTuple tup, CommandId cid,
 	bool		all_visible_cleared = false;
 
 	/*
-	 * Fill in tuple header fields, assign an OID, and toast the tuple if
-	 * necessary.
+	 * Fill in tuple header fields and toast the tuple if necessary.
 	 *
 	 * Note: below this point, heaptup is the data we actually intend to store
 	 * into the relation; tup is the caller's original untoasted data.
@@ -2632,10 +2343,9 @@ heap_insert(Relation relation, HeapTuple tup, CommandId cid,
 
 /*
  * Subroutine for heap_insert(). Prepares a tuple for insertion. This sets the
- * tuple header fields, assigns an OID, and toasts the tuple if necessary.
- * Returns a toasted version of the tuple if it was toasted, or the original
- * tuple if not. Note that in any case, the header fields are also set in
- * the original tuple.
+ * tuple header fields and toasts the tuple if necessary.  Returns a toasted
+ * version of the tuple if it was toasted, or the original tuple if not. Note
+ * that in any case, the header fields are also set in the original tuple.
  */
 static HeapTuple
 heap_prepare_insert(Relation relation, HeapTuple tup, TransactionId xid,
@@ -3329,6 +3039,7 @@ l1:
 	if (RelationNeedsWAL(relation))
 	{
 		xl_heap_delete xlrec;
+		xl_heap_header xlhdr;
 		XLogRecPtr	recptr;
 
 		/* For logical decode we need combocids to properly decode the catalog */
@@ -3363,8 +3074,6 @@ l1:
 		 */
 		if (old_key_tuple != NULL)
 		{
-			xl_heap_header xlhdr;
-
 			xlhdr.t_infomask2 = old_key_tuple->t_data->t_infomask2;
 			xlhdr.t_infomask = old_key_tuple->t_data->t_infomask;
 			xlhdr.t_hoff = old_key_tuple->t_data->t_hoff;
@@ -3510,7 +3219,6 @@ heap_update(Relation relation, ItemPointer otid, HeapTuple newtup,
 	HTSU_Result result;
 	TransactionId xid = GetCurrentTransactionId();
 	Bitmapset  *hot_attrs;
-	Bitmapset  *proj_idx_attrs;
 	Bitmapset  *key_attrs;
 	Bitmapset  *id_attrs;
 	Bitmapset  *interesting_attrs;
@@ -3574,11 +3282,12 @@ heap_update(Relation relation, ItemPointer otid, HeapTuple newtup,
 	 * Note that we get copies of each bitmap, so we need not worry about
 	 * relcache flush happening midway through.
 	 */
-	hot_attrs = RelationGetIndexAttrBitmap(relation, INDEX_ATTR_BITMAP_HOT);
-	proj_idx_attrs = RelationGetIndexAttrBitmap(relation, INDEX_ATTR_BITMAP_PROJ);
+	hot_attrs = RelationGetIndexAttrBitmap(relation, INDEX_ATTR_BITMAP_ALL);
 	key_attrs = RelationGetIndexAttrBitmap(relation, INDEX_ATTR_BITMAP_KEY);
 	id_attrs = RelationGetIndexAttrBitmap(relation,
 										  INDEX_ATTR_BITMAP_IDENTITY_KEY);
+
+
 	block = ItemPointerGetBlockNumber(otid);
 	buffer = ReadBuffer(relation, block);
 	page = BufferGetPage(buffer);
@@ -3598,7 +3307,6 @@ heap_update(Relation relation, ItemPointer otid, HeapTuple newtup,
 	if (!PageIsFull(page))
 	{
 		interesting_attrs = bms_add_members(interesting_attrs, hot_attrs);
-		interesting_attrs = bms_add_members(interesting_attrs, proj_idx_attrs);
 		hot_attrs_checked = true;
 	}
 	interesting_attrs = bms_add_members(interesting_attrs, key_attrs);
@@ -3882,7 +3590,6 @@ l2:
 		if (vmbuffer != InvalidBuffer)
 			ReleaseBuffer(vmbuffer);
 		bms_free(hot_attrs);
-		bms_free(proj_idx_attrs);
 		bms_free(key_attrs);
 		bms_free(id_attrs);
 		bms_free(modified_attrs);
@@ -4190,18 +3897,11 @@ l2:
 		/*
 		 * Since the new tuple is going into the same page, we might be able
 		 * to do a HOT update.  Check if any of the index columns have been
-		 * changed, or if we have projection functional indexes, check whether
-		 * the old and the new values are the same.   If the page was already
-		 * full, we may have skipped checking for index columns. If so, HOT
-		 * update is possible.
+		 * changed. If the page was already full, we may have skipped checking
+		 * for index columns. If so, HOT update is possible.
 		 */
-		if (hot_attrs_checked
-			&& !bms_overlap(modified_attrs, hot_attrs)
-			&& (!bms_overlap(modified_attrs, proj_idx_attrs)
-				|| ProjIndexIsUnchanged(relation, &oldtup, newtup)))
-		{
+		if (hot_attrs_checked && !bms_overlap(modified_attrs, hot_attrs))
 			use_hot_update = true;
-		}
 	}
 	else
 	{
@@ -4363,7 +4063,6 @@ l2:
 		heap_freetuple(old_key_tuple);
 
 	bms_free(hot_attrs);
-	bms_free(proj_idx_attrs);
 	bms_free(key_attrs);
 	bms_free(id_attrs);
 	bms_free(modified_attrs);
@@ -4448,87 +4147,6 @@ heap_tuple_attr_equals(TupleDesc tupdesc, int attrnum,
 		return datumIsEqual(value1, value2, att->attbyval, att->attlen);
 	}
 }
-
-/*
- * Check whether the value is unchanged after update of a projection
- * functional index. Compare the new and old values of the indexed
- * expression to see if we are able to use a HOT update or not.
- */
-static bool
-ProjIndexIsUnchanged(Relation relation, HeapTuple oldtup, HeapTuple newtup)
-{
-	ListCell   *l;
-	List	   *indexoidlist = RelationGetIndexList(relation);
-	EState	   *estate = CreateExecutorState();
-	ExprContext *econtext = GetPerTupleExprContext(estate);
-	TupleTableSlot *slot = MakeSingleTupleTableSlot(RelationGetDescr(relation),
-													&TTSOpsHeapTuple);
-	bool		equals = true;
-	Datum		old_values[INDEX_MAX_KEYS];
-	bool		old_isnull[INDEX_MAX_KEYS];
-	Datum		new_values[INDEX_MAX_KEYS];
-	bool		new_isnull[INDEX_MAX_KEYS];
-	int			indexno = 0;
-
-	econtext->ecxt_scantuple = slot;
-
-	foreach(l, indexoidlist)
-	{
-		if (bms_is_member(indexno, relation->rd_projidx))
-		{
-			Oid			indexOid = lfirst_oid(l);
-			Relation	indexDesc = index_open(indexOid, AccessShareLock);
-			IndexInfo  *indexInfo = BuildIndexInfo(indexDesc);
-			int			i;
-
-			ResetExprContext(econtext);
-			ExecStoreHeapTuple(oldtup, slot, false);
-			FormIndexDatum(indexInfo,
-						   slot,
-						   estate,
-						   old_values,
-						   old_isnull);
-
-			ExecStoreHeapTuple(newtup, slot, false);
-			FormIndexDatum(indexInfo,
-						   slot,
-						   estate,
-						   new_values,
-						   new_isnull);
-
-			for (i = 0; i < indexInfo->ii_NumIndexAttrs; i++)
-			{
-				if (old_isnull[i] != new_isnull[i])
-				{
-					equals = false;
-					break;
-				}
-				else if (!old_isnull[i])
-				{
-					Form_pg_attribute att = TupleDescAttr(RelationGetDescr(indexDesc), i);
-
-					if (!datumIsEqual(old_values[i], new_values[i], att->attbyval, att->attlen))
-					{
-						equals = false;
-						break;
-					}
-				}
-			}
-			index_close(indexDesc, AccessShareLock);
-
-			if (!equals)
-			{
-				break;
-			}
-		}
-		indexno += 1;
-	}
-	ExecDropSingleTupleTableSlot(slot);
-	FreeExecutorState(estate);
-
-	return equals;
-}
-
 
 /*
  * Check which columns are being updated.
@@ -5664,8 +5282,8 @@ test_lockmode_for_conflict(MultiXactStatus status, TransactionId xid,
 
 	/*
 	 * Note: we *must* check TransactionIdIsInProgress before
-	 * TransactionIdDidAbort/Commit; see comment at top of tqual.c for an
-	 * explanation.
+	 * TransactionIdDidAbort/Commit; see comment at top of heapam_visibility.c
+	 * for an explanation.
 	 */
 	if (TransactionIdIsCurrentTransactionId(xid))
 	{
@@ -6634,7 +6252,8 @@ FreezeMultiXactId(MultiXactId multi, uint16 t_infomask,
 			 *
 			 * As with all tuple visibility routines, it's critical to test
 			 * TransactionIdIsInProgress before TransactionIdDidCommit,
-			 * because of race conditions explained in detail in tqual.c.
+			 * because of race conditions explained in detail in
+			 * heapam_visibility.c.
 			 */
 			if (TransactionIdIsCurrentTransactionId(xid) ||
 				TransactionIdIsInProgress(xid))
@@ -9370,10 +8989,10 @@ heap_sync(Relation rel)
 	{
 		Relation	toastrel;
 
-		toastrel = heap_open(rel->rd_rel->reltoastrelid, AccessShareLock);
+		toastrel = table_open(rel->rd_rel->reltoastrelid, AccessShareLock);
 		FlushRelationBuffers(toastrel);
 		smgrimmedsync(toastrel->rd_smgr, MAIN_FORKNUM);
-		heap_close(toastrel, AccessShareLock);
+		table_close(toastrel, AccessShareLock);
 	}
 }
 

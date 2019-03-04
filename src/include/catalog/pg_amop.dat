@@ -3,7 +3,7 @@
 # pg_amop.dat
 #    Initial contents of the pg_amop system catalog.
 #
-# Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+# Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
 # Portions Copyright (c) 1994, Regents of the University of California
 #
 # src/include/catalog/pg_amop.dat
@@ -1012,6 +1012,10 @@
 # cid_ops
 { amopfamily => 'hash/cid_ops', amoplefttype => 'cid', amoprighttype => 'cid',
   amopstrategy => '1', amopopr => '=(cid,cid)', amopmethod => 'hash' },
+
+# tid_ops
+{ amopfamily => 'hash/tid_ops', amoplefttype => 'tid', amoprighttype => 'tid',
+  amopstrategy => '1', amopopr => '=(tid,tid)', amopmethod => 'hash' },
 
 # text_pattern_ops
 { amopfamily => 'hash/text_pattern_ops', amoplefttype => 'text',

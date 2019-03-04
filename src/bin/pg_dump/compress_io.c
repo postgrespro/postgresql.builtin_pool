@@ -4,7 +4,7 @@
  *	 Routines for archivers to write an uncompressed or compressed data
  *	 stream.
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * This file includes two APIs for dealing with compressed data. The first
@@ -312,7 +312,7 @@ static void
 WriteDataToArchiveZlib(ArchiveHandle *AH, CompressorState *cs,
 					   const char *data, size_t dLen)
 {
-	cs->zp->next_in = (void *) data;
+	cs->zp->next_in = (void *) unconstify(char *, data);
 	cs->zp->avail_in = dLen;
 	DeflateCompressorZlib(AH, cs, false);
 

@@ -3,7 +3,7 @@
  * pg_collation.c
  *	  routines to support manipulation of the pg_collation relation
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -15,9 +15,9 @@
 #include "postgres.h"
 
 #include "access/genam.h"
-#include "access/heapam.h"
 #include "access/htup_details.h"
 #include "access/sysattr.h"
+#include "access/table.h"
 #include "catalog/catalog.h"
 #include "catalog/dependency.h"
 #include "catalog/indexing.h"
@@ -30,7 +30,6 @@
 #include "utils/pg_locale.h"
 #include "utils/rel.h"
 #include "utils/syscache.h"
-#include "utils/tqual.h"
 
 
 /*
@@ -107,7 +106,7 @@ CollationCreate(const char *collname, Oid collnamespace,
 	}
 
 	/* open pg_collation; see below about the lock level */
-	rel = heap_open(CollationRelationId, ShareRowExclusiveLock);
+	rel = table_open(CollationRelationId, ShareRowExclusiveLock);
 
 	/*
 	 * Also forbid a specific-encoding collation shadowing an any-encoding
@@ -129,12 +128,12 @@ CollationCreate(const char *collname, Oid collnamespace,
 	{
 		if (quiet)
 		{
-			heap_close(rel, NoLock);
+			table_close(rel, NoLock);
 			return InvalidOid;
 		}
 		else if (if_not_exists)
 		{
-			heap_close(rel, NoLock);
+			table_close(rel, NoLock);
 			ereport(NOTICE,
 					(errcode(ERRCODE_DUPLICATE_OBJECT),
 					 errmsg("collation \"%s\" already exists, skipping",
@@ -198,7 +197,7 @@ CollationCreate(const char *collname, Oid collnamespace,
 	InvokeObjectPostCreateHook(CollationRelationId, oid, 0);
 
 	heap_freetuple(tup);
-	heap_close(rel, NoLock);
+	table_close(rel, NoLock);
 
 	return oid;
 }
@@ -217,7 +216,7 @@ RemoveCollationById(Oid collationOid)
 	SysScanDesc scandesc;
 	HeapTuple	tuple;
 
-	rel = heap_open(CollationRelationId, RowExclusiveLock);
+	rel = table_open(CollationRelationId, RowExclusiveLock);
 
 	ScanKeyInit(&scanKeyData,
 				Anum_pg_collation_oid,
@@ -236,5 +235,5 @@ RemoveCollationById(Oid collationOid)
 
 	systable_endscan(scandesc);
 
-	heap_close(rel, RowExclusiveLock);
+	table_close(rel, RowExclusiveLock);
 }

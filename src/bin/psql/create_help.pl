@@ -3,7 +3,7 @@
 #################################################################
 # create_help.pl -- converts SGML docs to internal psql help
 #
-# Copyright (c) 2000-2018, PostgreSQL Global Development Group
+# Copyright (c) 2000-2019, PostgreSQL Global Development Group
 #
 # src/bin/psql/create_help.pl
 #################################################################
@@ -128,8 +128,6 @@ foreach my $file (sort readdir DIR)
 
 		my $nl_count = () = $cmdsynopsis =~ /\n/g;
 
-		$cmdsynopsis =~ m!</>!
-		  and die "$0: $file: null end tag not supported in synopsis\n";
 		$cmdsynopsis =~ s/%/%%/g;
 
 		while ($cmdsynopsis =~ m!<(\w+)[^>]*>(.+?)</\1[^>]*>!)

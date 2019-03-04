@@ -24,6 +24,7 @@
 
 #include "postgres.h"
 
+#include "access/heapam.h"
 #include "access/multixact.h"
 #include "access/relscan.h"
 #include "access/xact.h"
@@ -37,7 +38,6 @@
 #include "utils/builtins.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
-#include "utils/tqual.h"
 #include "utils/varlena.h"
 
 PG_MODULE_MAGIC;
@@ -306,7 +306,7 @@ pgrowlocks(PG_FUNCTION_ARGS)
 	}
 
 	heap_endscan(scan);
-	heap_close(mydata->rel, AccessShareLock);
+	table_close(mydata->rel, AccessShareLock);
 
 	SRF_RETURN_DONE(funcctx);
 }

@@ -3,7 +3,7 @@
  * postgres_fdw.h
  *		  Foreign-data wrapper for remote PostgreSQL servers
  *
- * Portions Copyright (c) 2012-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 2012-2019, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *		  contrib/postgres_fdw/postgres_fdw.h
@@ -15,7 +15,7 @@
 
 #include "foreign/foreign.h"
 #include "lib/stringinfo.h"
-#include "nodes/relation.h"
+#include "nodes/pathnodes.h"
 #include "utils/relcache.h"
 
 #include "libpq-fe.h"

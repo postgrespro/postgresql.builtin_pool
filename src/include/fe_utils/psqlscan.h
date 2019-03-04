@@ -10,7 +10,7 @@
  * backslash commands.
  *
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/fe_utils/psqlscan.h
@@ -89,6 +89,8 @@ extern PsqlScanResult psql_scan(PsqlScanState state,
 		  promptStatus_t *prompt);
 
 extern void psql_scan_reset(PsqlScanState state);
+
+extern int psql_scan_get_escaped_semicolons(PsqlScanState state);
 
 extern void psql_scan_reselect_sql_lexer(PsqlScanState state);
 

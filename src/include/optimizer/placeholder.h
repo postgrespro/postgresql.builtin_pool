@@ -4,7 +4,7 @@
  *	  prototypes for optimizer/util/placeholder.c.
  *
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/optimizer/placeholder.h
@@ -14,7 +14,7 @@
 #ifndef PLACEHOLDER_H
 #define PLACEHOLDER_H
 
-#include "nodes/relation.h"
+#include "nodes/pathnodes.h"
 
 
 extern PlaceHolderVar *make_placeholder_expr(PlannerInfo *root, Expr *expr,

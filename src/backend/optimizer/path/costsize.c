@@ -60,7 +60,7 @@
  * values.
  *
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -79,9 +79,11 @@
 #include "executor/executor.h"
 #include "executor/nodeHash.h"
 #include "miscadmin.h"
+#include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
 #include "optimizer/clauses.h"
 #include "optimizer/cost.h"
+#include "optimizer/optimizer.h"
 #include "optimizer/pathnode.h"
 #include "optimizer/paths.h"
 #include "optimizer/placeholder.h"
@@ -143,7 +145,7 @@ typedef struct
 	QualCost	total;
 } cost_qual_eval_context;
 
-static List *extract_nonindex_conditions(List *qual_clauses, List *indexquals);
+static List *extract_nonindex_conditions(List *qual_clauses, List *indexclauses);
 static MergeScanSelCache *cached_scansel(PlannerInfo *root,
 			   RestrictInfo *rinfo,
 			   PathKey *pathkey);
@@ -515,18 +517,17 @@ cost_index(IndexPath *path, PlannerInfo *root, double loop_count,
 	{
 		path->path.rows = path->path.param_info->ppi_rows;
 		/* qpquals come from the rel's restriction clauses and ppi_clauses */
-		qpquals = list_concat(
-							  extract_nonindex_conditions(path->indexinfo->indrestrictinfo,
-														  path->indexquals),
+		qpquals = list_concat(extract_nonindex_conditions(path->indexinfo->indrestrictinfo,
+														  path->indexclauses),
 							  extract_nonindex_conditions(path->path.param_info->ppi_clauses,
-														  path->indexquals));
+														  path->indexclauses));
 	}
 	else
 	{
 		path->path.rows = baserel->rows;
 		/* qpquals come from just the rel's restriction clauses */
 		qpquals = extract_nonindex_conditions(path->indexinfo->indrestrictinfo,
-											  path->indexquals);
+											  path->indexclauses);
 	}
 
 	if (!enable_indexscan)
@@ -538,7 +539,7 @@ cost_index(IndexPath *path, PlannerInfo *root, double loop_count,
 	 * for scanning the index, as well as the selectivity of the index (ie,
 	 * the fraction of main-table tuples we will have to retrieve) and its
 	 * correlation to the main-table tuple order.  We need a cast here because
-	 * relation.h uses a weak function type to avoid including amapi.h.
+	 * pathnodes.h uses a weak function type to avoid including amapi.h.
 	 */
 	amcostestimate = (amcostestimate_function) index->amcostestimate;
 	amcostestimate(root, path, loop_count,
@@ -751,20 +752,19 @@ cost_index(IndexPath *path, PlannerInfo *root, double loop_count,
  *
  * Given a list of quals to be enforced in an indexscan, extract the ones that
  * will have to be applied as qpquals (ie, the index machinery won't handle
- * them).  The actual rules for this appear in create_indexscan_plan() in
- * createplan.c, but the full rules are fairly expensive and we don't want to
- * go to that much effort for index paths that don't get selected for the
- * final plan.  So we approximate it as quals that don't appear directly in
- * indexquals and also are not redundant children of the same EquivalenceClass
- * as some indexqual.  This method neglects some infrequently-relevant
- * considerations, specifically clauses that needn't be checked because they
- * are implied by an indexqual.  It does not seem worth the cycles to try to
- * factor that in at this stage, even though createplan.c will take pains to
- * remove such unnecessary clauses from the qpquals list if this path is
- * selected for use.
+ * them).  Here we detect only whether a qual clause is directly redundant
+ * with some indexclause.  If the index path is chosen for use, createplan.c
+ * will try a bit harder to get rid of redundant qual conditions; specifically
+ * it will see if quals can be proven to be implied by the indexquals.  But
+ * it does not seem worth the cycles to try to factor that in at this stage,
+ * since we're only trying to estimate qual eval costs.  Otherwise this must
+ * match the logic in create_indexscan_plan().
+ *
+ * qual_clauses, and the result, are lists of RestrictInfos.
+ * indexclauses is a list of IndexClauses.
  */
 static List *
-extract_nonindex_conditions(List *qual_clauses, List *indexquals)
+extract_nonindex_conditions(List *qual_clauses, List *indexclauses)
 {
 	List	   *result = NIL;
 	ListCell   *lc;
@@ -775,10 +775,8 @@ extract_nonindex_conditions(List *qual_clauses, List *indexquals)
 
 		if (rinfo->pseudoconstant)
 			continue;			/* we may drop pseudoconstants here */
-		if (list_member_ptr(indexquals, rinfo))
-			continue;			/* simple duplicate */
-		if (is_redundant_derived_clause(rinfo, indexquals))
-			continue;			/* derived from same EquivalenceClass */
+		if (is_redundant_with_indexclauses(rinfo, indexclauses))
+			continue;			/* dup or derived from same EquivalenceClass */
 		/* ... skip the predicate proof attempt createplan.c will try ... */
 		result = lappend(result, rinfo);
 	}
@@ -817,7 +815,7 @@ extract_nonindex_conditions(List *qual_clauses, List *indexquals)
  * product rather than calculating it here.  "pages" is the number of pages
  * in the object under consideration (either an index or a table).
  * "index_pages" is the amount to add to the total table space, which was
- * computed for us by query_planner.
+ * computed for us by make_one_rel.
  *
  * Caller is expected to have ensured that tuples_fetched is greater than zero
  * and rounded to integer (see clamp_row_est).  The result will likewise be
@@ -1202,15 +1200,18 @@ cost_tidscan(Path *path, PlannerInfo *root,
 	ntuples = 0;
 	foreach(l, tidquals)
 	{
-		if (IsA(lfirst(l), ScalarArrayOpExpr))
+		RestrictInfo *rinfo = lfirst_node(RestrictInfo, l);
+		Expr	   *qual = rinfo->clause;
+
+		if (IsA(qual, ScalarArrayOpExpr))
 		{
 			/* Each element of the array yields 1 tuple */
-			ScalarArrayOpExpr *saop = (ScalarArrayOpExpr *) lfirst(l);
+			ScalarArrayOpExpr *saop = (ScalarArrayOpExpr *) qual;
 			Node	   *arraynode = (Node *) lsecond(saop->args);
 
 			ntuples += estimate_array_length(arraynode);
 		}
-		else if (IsA(lfirst(l), CurrentOfExpr))
+		else if (IsA(qual, CurrentOfExpr))
 		{
 			/* CURRENT OF yields 1 tuple */
 			isCurrentOf = true;
@@ -1561,6 +1562,40 @@ cost_namedtuplestorescan(Path *path, PlannerInfo *root,
 
 	startup_cost += qpqual_cost.startup;
 	cpu_per_tuple += cpu_tuple_cost + qpqual_cost.per_tuple;
+	run_cost += cpu_per_tuple * baserel->tuples;
+
+	path->startup_cost = startup_cost;
+	path->total_cost = startup_cost + run_cost;
+}
+
+/*
+ * cost_resultscan
+ *	  Determines and returns the cost of scanning an RTE_RESULT relation.
+ */
+void
+cost_resultscan(Path *path, PlannerInfo *root,
+				RelOptInfo *baserel, ParamPathInfo *param_info)
+{
+	Cost		startup_cost = 0;
+	Cost		run_cost = 0;
+	QualCost	qpqual_cost;
+	Cost		cpu_per_tuple;
+
+	/* Should only be applied to RTE_RESULT base relations */
+	Assert(baserel->relid > 0);
+	Assert(baserel->rtekind == RTE_RESULT);
+
+	/* Mark the path with the correct row estimate */
+	if (param_info)
+		path->rows = param_info->ppi_rows;
+	else
+		path->rows = baserel->rows;
+
+	/* We charge qual cost plus cpu_tuple_cost */
+	get_restriction_qual_cost(root, baserel, param_info, &qpqual_cost);
+
+	startup_cost += qpqual_cost.startup;
+	cpu_per_tuple = cpu_tuple_cost + qpqual_cost.per_tuple;
 	run_cost += cpu_per_tuple * baserel->tuples;
 
 	path->startup_cost = startup_cost;
@@ -2077,9 +2112,9 @@ cost_agg(Path *path, PlannerInfo *root,
 	/*
 	 * The transCost.per_tuple component of aggcosts should be charged once
 	 * per input tuple, corresponding to the costs of evaluating the aggregate
-	 * transfns and their input expressions (with any startup cost of course
-	 * charged but once).  The finalCost component is charged once per output
-	 * tuple, corresponding to the costs of evaluating the finalfns.
+	 * transfns and their input expressions. The finalCost.per_tuple component
+	 * is charged once per output tuple, corresponding to the costs of
+	 * evaluating the finalfns.  Startup costs are of course charged but once.
 	 *
 	 * If we are grouping, we charge an additional cpu_operator_cost per
 	 * grouping column per input tuple for grouping comparisons.
@@ -2101,7 +2136,8 @@ cost_agg(Path *path, PlannerInfo *root,
 		startup_cost = input_total_cost;
 		startup_cost += aggcosts->transCost.startup;
 		startup_cost += aggcosts->transCost.per_tuple * input_tuples;
-		startup_cost += aggcosts->finalCost;
+		startup_cost += aggcosts->finalCost.startup;
+		startup_cost += aggcosts->finalCost.per_tuple;
 		/* we aren't grouping */
 		total_cost = startup_cost + cpu_tuple_cost;
 		output_tuples = 1;
@@ -2120,7 +2156,8 @@ cost_agg(Path *path, PlannerInfo *root,
 		total_cost += aggcosts->transCost.startup;
 		total_cost += aggcosts->transCost.per_tuple * input_tuples;
 		total_cost += (cpu_operator_cost * numGroupCols) * input_tuples;
-		total_cost += aggcosts->finalCost * numGroups;
+		total_cost += aggcosts->finalCost.startup;
+		total_cost += aggcosts->finalCost.per_tuple * numGroups;
 		total_cost += cpu_tuple_cost * numGroups;
 		output_tuples = numGroups;
 	}
@@ -2133,8 +2170,9 @@ cost_agg(Path *path, PlannerInfo *root,
 		startup_cost += aggcosts->transCost.startup;
 		startup_cost += aggcosts->transCost.per_tuple * input_tuples;
 		startup_cost += (cpu_operator_cost * numGroupCols) * input_tuples;
+		startup_cost += aggcosts->finalCost.startup;
 		total_cost = startup_cost;
-		total_cost += aggcosts->finalCost * numGroups;
+		total_cost += aggcosts->finalCost.per_tuple * numGroups;
 		total_cost += cpu_tuple_cost * numGroups;
 		output_tuples = numGroups;
 	}
@@ -2199,7 +2237,11 @@ cost_windowagg(Path *path, PlannerInfo *root,
 		Cost		wfunccost;
 		QualCost	argcosts;
 
-		wfunccost = get_func_cost(wfunc->winfnoid) * cpu_operator_cost;
+		argcosts.startup = argcosts.per_tuple = 0;
+		add_function_cost(root, wfunc->winfnoid, (Node *) wfunc,
+						  &argcosts);
+		startup_cost += argcosts.startup;
+		wfunccost = argcosts.per_tuple;
 
 		/* also add the input expressions' cost to per-input-row costs */
 		cost_qual_eval_node(&argcosts, (Node *) wfunc->args, root);
@@ -3829,8 +3871,8 @@ cost_qual_eval_walker(Node *node, cost_qual_eval_context *context)
 	 */
 	if (IsA(node, FuncExpr))
 	{
-		context->total.per_tuple +=
-			get_func_cost(((FuncExpr *) node)->funcid) * cpu_operator_cost;
+		add_function_cost(context->root, ((FuncExpr *) node)->funcid, node,
+						  &context->total);
 	}
 	else if (IsA(node, OpExpr) ||
 			 IsA(node, DistinctExpr) ||
@@ -3838,8 +3880,8 @@ cost_qual_eval_walker(Node *node, cost_qual_eval_context *context)
 	{
 		/* rely on struct equivalence to treat these all alike */
 		set_opfuncid((OpExpr *) node);
-		context->total.per_tuple +=
-			get_func_cost(((OpExpr *) node)->opfuncid) * cpu_operator_cost;
+		add_function_cost(context->root, ((OpExpr *) node)->opfuncid, node,
+						  &context->total);
 	}
 	else if (IsA(node, ScalarArrayOpExpr))
 	{
@@ -3849,10 +3891,15 @@ cost_qual_eval_walker(Node *node, cost_qual_eval_context *context)
 		 */
 		ScalarArrayOpExpr *saop = (ScalarArrayOpExpr *) node;
 		Node	   *arraynode = (Node *) lsecond(saop->args);
+		QualCost	sacosts;
 
 		set_sa_opfuncid(saop);
-		context->total.per_tuple += get_func_cost(saop->opfuncid) *
-			cpu_operator_cost * estimate_array_length(arraynode) * 0.5;
+		sacosts.startup = sacosts.per_tuple = 0;
+		add_function_cost(context->root, saop->opfuncid, NULL,
+						  &sacosts);
+		context->total.startup += sacosts.startup;
+		context->total.per_tuple += sacosts.per_tuple *
+			estimate_array_length(arraynode) * 0.5;
 	}
 	else if (IsA(node, Aggref) ||
 			 IsA(node, WindowFunc))
@@ -3878,11 +3925,13 @@ cost_qual_eval_walker(Node *node, cost_qual_eval_context *context)
 		/* check the result type's input function */
 		getTypeInputInfo(iocoerce->resulttype,
 						 &iofunc, &typioparam);
-		context->total.per_tuple += get_func_cost(iofunc) * cpu_operator_cost;
+		add_function_cost(context->root, iofunc, NULL,
+						  &context->total);
 		/* check the input type's output function */
 		getTypeOutputInfo(exprType((Node *) iocoerce->arg),
 						  &iofunc, &typisvarlena);
-		context->total.per_tuple += get_func_cost(iofunc) * cpu_operator_cost;
+		add_function_cost(context->root, iofunc, NULL,
+						  &context->total);
 	}
 	else if (IsA(node, ArrayCoerceExpr))
 	{
@@ -3906,8 +3955,8 @@ cost_qual_eval_walker(Node *node, cost_qual_eval_context *context)
 		{
 			Oid			opid = lfirst_oid(lc);
 
-			context->total.per_tuple += get_func_cost(get_opcode(opid)) *
-				cpu_operator_cost;
+			add_function_cost(context->root, get_opcode(opid), NULL,
+							  &context->total);
 		}
 	}
 	else if (IsA(node, MinMaxExpr) ||
@@ -4033,7 +4082,7 @@ get_restriction_qual_cost(PlannerInfo *root, RelOptInfo *baserel,
  *	sjinfo: SpecialJoinInfo relevant to this join
  *	restrictlist: join quals
  * Output parameters:
- *	*semifactors is filled in (see relation.h for field definitions)
+ *	*semifactors is filled in (see pathnodes.h for field definitions)
  */
 void
 compute_semi_anti_join_factors(PlannerInfo *root,
@@ -4203,8 +4252,7 @@ has_indexed_join_quals(NestPath *joinpath)
 										innerpath->parent->relids,
 										joinrelids))
 		{
-			if (!(list_member_ptr(indexclauses, rinfo) ||
-				  is_redundant_derived_clause(rinfo, indexclauses)))
+			if (!is_redundant_with_indexclauses(rinfo, indexclauses))
 				return false;
 			found_one = true;
 		}
@@ -4907,7 +4955,7 @@ set_function_size_estimates(PlannerInfo *root, RelOptInfo *rel)
 	foreach(lc, rte->functions)
 	{
 		RangeTblFunction *rtfunc = (RangeTblFunction *) lfirst(lc);
-		double		ntup = expression_returns_set_rows(rtfunc->funcexpr);
+		double		ntup = expression_returns_set_rows(root, rtfunc->funcexpr);
 
 		if (ntup > rel->tuples)
 			rel->tuples = ntup;
@@ -5036,6 +5084,29 @@ set_namedtuplestore_size_estimates(PlannerInfo *root, RelOptInfo *rel)
 	rel->tuples = rte->enrtuples;
 	if (rel->tuples < 0)
 		rel->tuples = 1000;
+
+	/* Now estimate number of output rows, etc */
+	set_baserel_size_estimates(root, rel);
+}
+
+/*
+ * set_result_size_estimates
+ *		Set the size estimates for an RTE_RESULT base relation
+ *
+ * The rel's targetlist and restrictinfo list must have been constructed
+ * already.
+ *
+ * We set the same fields as set_baserel_size_estimates.
+ */
+void
+set_result_size_estimates(PlannerInfo *root, RelOptInfo *rel)
+{
+	/* Should only be applied to RTE_RESULT base relations */
+	Assert(rel->relid > 0);
+	Assert(planner_rt_fetch(rel->relid, root)->rtekind == RTE_RESULT);
+
+	/* RTE_RESULT always generates a single row, natively */
+	rel->tuples = 1;
 
 	/* Now estimate number of output rows, etc */
 	set_baserel_size_estimates(root, rel);
