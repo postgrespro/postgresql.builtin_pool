@@ -153,7 +153,7 @@ backend_reschedule(Channel* chan)
 			chan->pool->n_pending_clients -= 1;
 			if (pending->tx_size == 0) /* new client has sent startup packet and we now need to send handshake response */
 			{
-				Assert(chan->handshake_response != NULL); /* backend already send handshake response */
+				Assert(chan->handshake_response != NULL); /* backend already sent handshake response */
 				Assert(chan->handshake_response_size < chan->buf_size);
 				memcpy(chan->buf, chan->handshake_response, chan->handshake_response_size);
 				chan->rx_pos = chan->tx_size = chan->handshake_response_size;
@@ -388,6 +388,11 @@ channel_write(Channel* chan, bool synchronous)
 		memmove(peer->buf, peer->buf + peer->tx_size, peer->rx_pos - peer->tx_size);
 		peer->rx_pos -= peer->tx_size;
 		peer->tx_pos = peer->tx_size = 0;
+		if (peer->backend_is_ready) {
+			Assert(peer->rx_pos == 0);
+			backend_reschedule(peer);
+			return true;
+		}
 	}
 	return synchronous || channel_read(peer); /* write is not invoked from read */
 }
@@ -500,6 +505,7 @@ channel_read(Channel* chan)
 							Assert(backend->handshake_response_size < backend->buf_size);
 							memcpy(backend->buf, backend->handshake_response, backend->handshake_response_size);
 							backend->rx_pos = backend->tx_size = backend->handshake_response_size;
+							backend->backend_is_ready = true;
 							return channel_write(chan, false);
 						}
 						else

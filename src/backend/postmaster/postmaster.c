@@ -1934,8 +1934,6 @@ ServerLoop(void)
 		if (StartWorkerNeeded || HaveCrashedWorker)
 			maybe_start_bgworkers();
 
-		StartConnectionProxies();
-
 #ifdef HAVE_PTHREAD_IS_THREADED_NP
 
 		/*
