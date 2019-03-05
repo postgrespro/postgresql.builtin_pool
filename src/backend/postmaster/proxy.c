@@ -148,6 +148,7 @@ backend_reschedule(Channel* chan)
             /* Has pending clients: serve one of them */
 			ELOG(LOG, "Backed %d is reassigned to client %p", chan->backend_pid, pending);
 			chan->pool->pending_clients = pending->next;
+			Assert(chan != pending);
 			chan->peer = pending;
 			pending->peer = chan;
 			chan->pool->n_pending_clients -= 1;
@@ -170,6 +171,7 @@ backend_reschedule(Channel* chan)
 		else /* return backend to the list of idle backends */
 		{
 			ELOG(LOG, "Backed %d is idle", chan->backend_pid);
+			Assert(!chan->client_port);
 			chan->next = chan->pool->idle_backends;
 			chan->pool->idle_backends = chan;
 			chan->pool->n_idle_backends += 1;
@@ -248,7 +250,8 @@ client_attach(Channel* chan)
 	if (idle_backend)
 	{
 		/* has some idle backend */
-		Assert(!idle_backend->backend_is_tainted);
+		Assert(!idle_backend->backend_is_tainted && !idle_backend->client_port);
+		Assert(chan != idle_backend);
 		chan->peer = idle_backend;
 		idle_backend->peer = chan;
 		chan->pool->idle_backends = idle_backend->next;
@@ -265,6 +268,7 @@ client_attach(Channel* chan)
 			{
 				ELOG(LOG, "Start new backend %p (pid %d) for client %p",
 					 idle_backend, idle_backend->backend_pid, chan);
+				Assert(chan != idle_backend);
 				chan->peer = idle_backend;
 				idle_backend->peer = chan;
 				return true;
@@ -292,9 +296,17 @@ channel_hangout(Channel* chan, char const* op)
 	   return;
 
 	if (chan->client_port) {
-		ELOG(LOG, "Hangout client %p due to %s error: %m", chan, op);
+		elog(LOG, "Hangout client %p due to %s error: %m", chan, op);
 	} else {
-		ELOG(LOG, "Hangout backend %p (pid %d) due to %s error: %m", chan, chan->backend_pid, op);
+		Channel** ipp;
+		elog(LOG, "Hangout backend %p (pid %d) due to %s error: %m", chan, chan->backend_pid, op);
+		for (ipp = &chan->pool->idle_backends; *ipp != NULL; ipp = &(*ipp)->next) {
+			if (*ipp == chan) {
+				*ipp = chan->next;
+				chan->pool->n_idle_backends -= 1;
+				break;
+			}
+		}
 	}
 	chan->next = chan->proxy->hangout;
 	chan->proxy->hangout = chan;
@@ -306,10 +318,11 @@ channel_hangout(Channel* chan, char const* op)
 	{
 		if (!chan->is_interrupted) /* Client didn't sent 'X' command, so do it for him. */
 		{
+			elog(LOG, "Send terminate command to backend %p (pid %d)", peer, peer->backend_pid);
 			peer->is_interrupted = true; /* interrupted flags makes channel_write to send 'X' message */
 			channel_write(peer, false);
 		}
-		else
+		else if (!peer->is_interrupted)
 		{
 			/* Client already sent 'X' command, so we can safely reschedule backend to some other client session */
 			backend_reschedule(peer);
