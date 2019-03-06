@@ -372,10 +372,7 @@ channel_write(Channel* chan, bool synchronous)
 		char const terminate[] = {'X', 0, 0, 0, 4};
 		if (socket_write(chan, terminate, sizeof(terminate)) <= 0)
 			return false;
-		/* Detach backend from client... */
-		chan->is_interrupted = false;
-		/* ... and reschedule it */
-		backend_reschedule(chan);
+		channel_hangout(chan, "terminate");
 		return true;
 	}
 	if (peer == NULL)
