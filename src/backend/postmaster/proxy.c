@@ -296,10 +296,10 @@ channel_hangout(Channel* chan, char const* op)
 	   return;
 
 	if (chan->client_port) {
-		elog(LOG, "Hangout client %p due to %s error: %m", chan, op);
+		ELOG(LOG, "Hangout client %p due to %s error: %m", chan, op);
 	} else {
 		Channel** ipp;
-		elog(LOG, "Hangout backend %p (pid %d) due to %s error: %m", chan, chan->backend_pid, op);
+		ELOG(LOG, "Hangout backend %p (pid %d) due to %s error: %m", chan, chan->backend_pid, op);
 		for (ipp = &chan->pool->idle_backends; *ipp != NULL; ipp = &(*ipp)->next) {
 			if (*ipp == chan) {
 				*ipp = chan->next;
@@ -318,7 +318,7 @@ channel_hangout(Channel* chan, char const* op)
 	{
 		if (!chan->is_interrupted) /* Client didn't sent 'X' command, so do it for him. */
 		{
-			elog(LOG, "Send terminate command to backend %p (pid %d)", peer, peer->backend_pid);
+			ELOG(LOG, "Send terminate command to backend %p (pid %d)", peer, peer->backend_pid);
 			peer->is_interrupted = true; /* interrupted flags makes channel_write to send 'X' message */
 			channel_write(peer, false);
 		}
