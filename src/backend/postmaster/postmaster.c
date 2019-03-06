@@ -1850,19 +1850,17 @@ ServerLoop(void)
 							{
 								elog(LOG, "could not send socket to connection pool: %m");
 							}
-							ConnFree(port);
 						}
 						else
 						{
 							BackendStartup(port, NULL);
-
-							/*
-							 * We no longer need the open socket or port structure
-							 * in this process
-							 */
-							StreamClose(port->sock);
-							ConnFree(port);
 						}
+						/*
+						 * We no longer need the open socket or port structure
+						 * in this process
+						 */
+						StreamClose(port->sock);
+						ConnFree(port);
 					}
 				}
 			}
