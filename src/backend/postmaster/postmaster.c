@@ -586,7 +586,7 @@ StartConnectionProxies(void)
 		int i;
 		if (ConnectionProxies == NULL)
 		{
-			ConnectionProxies = malloc(sizeof(ConnectionProxy*)*ConnectionProxiesNumber);
+			ConnectionProxies = malloc(sizeof(ConnectionProxy)*ConnectionProxiesNumber);
 			for (i = 0; i < ConnectionProxiesNumber; i++)
 			{
 				if (socketpair(AF_UNIX, SOCK_STREAM, 0, ConnectionProxies[i].socks) < 0)
