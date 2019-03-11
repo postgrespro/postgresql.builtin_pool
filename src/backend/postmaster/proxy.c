@@ -292,14 +292,21 @@ client_attach(Channel* chan)
 static void
 channel_hangout(Channel* chan, char const* op)
 {
+	Channel** ipp;
 	Channel* peer = chan->peer;
 	if (chan->is_disconnected)
 	   return;
 
 	if (chan->client_port) {
 		ELOG(LOG, "Hangout client %p due to %s error: %m", chan, op);
+		for (ipp = &chan->pool->pending_clients; *ipp != NULL; ipp = &(*ipp)->next) {
+			if (*ipp == chan) {
+				*ipp = chan->next;
+				chan->pool->n_pending_clients -= 1;
+				break;
+			}
+		}
 	} else {
-		Channel** ipp;
 		ELOG(LOG, "Hangout backend %p (pid %d) due to %s error: %m", chan, chan->backend_pid, op);
 		for (ipp = &chan->pool->idle_backends; *ipp != NULL; ipp = &(*ipp)->next) {
 			if (*ipp == chan) {
