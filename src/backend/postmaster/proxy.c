@@ -610,8 +610,8 @@ backend_start(SessionPool* pool, Port* client_port)
 {
 	Channel* chan;
 	char postmaster_port[8];
-	char const* keywords[] = {"host","port","dbname","user","sslmode","application_name",NULL};
-	char const* values[] = {"localhost",postmaster_port,pool->key.database,pool->key.username,"disable","pool_worker",NULL};
+	char const* keywords[] = {"port","dbname","user","sslmode","application_name",NULL};
+	char const* values[] = {postmaster_port,pool->key.database,pool->key.username,"disable","pool_worker",NULL};
 	PGconn* conn;
 	char* msg;
 	int int32_buf;
