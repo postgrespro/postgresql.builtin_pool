@@ -117,6 +117,7 @@ static bool channel_write(Channel* chan, bool synchronous);
  * #define ELOG(severity, fmt,...) elog(severity, "PROXY: " fmt, ## __VA_ARGS__)
  */
 #define ELOG(severity,fmt,...)
+//#define ELOG(severity, fmt,...) elog(severity, "PROXY: " fmt, ## __VA_ARGS__)
 
 static Proxy* proxy;
 int MyProxyId;
@@ -160,6 +161,7 @@ backend_reschedule(Channel* chan)
 				memcpy(chan->buf, chan->handshake_response, chan->handshake_response_size);
 				chan->rx_pos = chan->tx_size = chan->handshake_response_size;
 				ELOG(LOG, "Simulate response for startup packet to client %p", pending);
+				chan->backend_is_ready = true;
 				return channel_write(pending, false);
 			}
 			else
@@ -316,15 +318,12 @@ channel_hangout(Channel* chan, char const* op)
 			}
 		}
 	}
-	chan->next = chan->proxy->hangout;
-	chan->proxy->hangout = chan;
-	chan->is_disconnected = true;
-	chan->backend_is_ready = false;
-	if (chan->peer)
+	if (peer)
 	{
-		chan->peer->peer = NULL;
+		peer->peer = NULL;
 		chan->peer = NULL;
 	}
+	chan->backend_is_ready = false;
 
 	if (chan->client_port && peer) /* If it is client connected to backend. */
 	{
@@ -333,6 +332,7 @@ channel_hangout(Channel* chan, char const* op)
 			ELOG(LOG, "Send terminate command to backend %p (pid %d)", peer, peer->backend_pid);
 			peer->is_interrupted = true; /* interrupted flags makes channel_write to send 'X' message */
 			channel_write(peer, false);
+			return;
 		}
 		else if (!peer->is_interrupted)
 		{
@@ -340,6 +340,9 @@ channel_hangout(Channel* chan, char const* op)
 			backend_reschedule(peer);
 		}
 	}
+	chan->next = chan->proxy->hangout;
+	chan->proxy->hangout = chan;
+	chan->is_disconnected = true;
 }
 
 /*
