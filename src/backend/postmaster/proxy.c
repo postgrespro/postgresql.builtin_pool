@@ -141,7 +141,8 @@ backend_reschedule(Channel* chan)
 	{
 		Channel* pending = chan->pool->pending_clients;
 		Assert(!chan->backend_is_tainted);
-		chan->peer->peer = NULL;
+		if (chan->peer)
+			chan->peer->peer = NULL;
 		chan->pool->n_idle_clients += 1;
 		if (pending)
 		{
@@ -312,7 +313,11 @@ channel_hangout(Channel* chan, char const* op)
 	chan->proxy->hangout = chan;
 	chan->is_disconnected = true;
 	chan->backend_is_ready = false;
-	chan->peer = NULL;
+	if (chan->peer)
+	{
+		chan->peer->peer = NULL;
+		chan->peer = NULL;
+	}
 
 	if (chan->client_port && peer) /* If it is client connected to backend. */
 	{
