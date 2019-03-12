@@ -211,9 +211,11 @@ client_connect(Channel* chan, int startup_packet_size)
 
 	if (ParseStartupPacket(chan->client_port, chan->proxy->tmpctx, startup_packet+4, startup_packet_size-4, false) != STATUS_OK) /* skip packet size */
 	{
+		MyProcPort = NULL;
 		elog(WARNING, "Failed to parse startup packet for client %p", chan);
 		return false;
 	}
+	MyProcPort = NULL;
 	if (am_walsender)
 	{
 		elog(WARNING, "WAL sender should not be connected through proxy");
