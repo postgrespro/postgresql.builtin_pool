@@ -149,11 +149,19 @@ pg_recv_sock(pgsocket chan)
 	{
 		if (errno != EINTR)
 			return PGINVALID_SOCKET;
+		else if (errno == EAGAIN)
+		{
+			elog(WARNING, "Failed to receive send socket message: %m");
+			pg_usleep(100000);
+		}
 	}
 
     cmsg = CMSG_FIRSTHDR(&msg);
 	if (!cmsg)
+	{
+		elog(WARNING, "Invalid send socket message");
 		return PGINVALID_SOCKET;
+	}
 
     memcpy(&sock, CMSG_DATA(cmsg), sizeof(sock));
 
