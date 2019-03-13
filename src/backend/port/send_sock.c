@@ -87,7 +87,6 @@ pg_send_sock(pgsocket chan, pgsocket sock, pid_t pid)
 		if (errno != EINTR)
 			return PGINVALID_SOCKET;
 	}
-
 	return 0;
 #endif
 }
@@ -136,41 +135,29 @@ pg_recv_sock(pgsocket chan)
     struct iovec io;
 	struct cmsghdr * cmsg;
 	pgsocket sock;
-	int rc;
 
-	while (true)
+    io.iov_base = m_buffer;
+	io.iov_len = sizeof(m_buffer);
+    msg.msg_iov = &io;
+    msg.msg_iovlen = 1;
+
+    msg.msg_control = c_buffer;
+    msg.msg_controllen = sizeof(c_buffer);
+
+    while (recvmsg(chan, &msg, 0) < 0)
 	{
-		io.iov_base = m_buffer;
-		io.iov_len = sizeof(m_buffer);
-		msg.msg_iov = &io;
-		msg.msg_iovlen = 1;
-
-		msg.msg_control = c_buffer;
-		msg.msg_controllen = sizeof(c_buffer);
-
-		rc = recvmsg(chan, &msg, 0);
-		if (rc < 0 && errno == EINTR)
-			continue;
-
-		if (rc > 0)
-			break;
-
-		if (rc == 0)
-			elog(WARNING, "Empty datagram is received");
-		else
-			elog(WARNING, "Failed to receive socket: %m");
-		return PGINVALID_SOCKET;
+		if (errno != EINTR)
+			return PGINVALID_SOCKET;
 	}
 
     cmsg = CMSG_FIRSTHDR(&msg);
 	if (!cmsg)
 	{
-		elog(WARNING, "Invalid send socket message");
+		elog(WARNING, "Failed to transfer socket");
 		return PGINVALID_SOCKET;
 	}
 
     memcpy(&sock, CMSG_DATA(cmsg), sizeof(sock));
-
 	pg_set_noblock(sock);
 
     return sock;
