@@ -10571,7 +10571,7 @@
   proargtypes => 'regclass', prosrc => 'pg_partition_root' },
 
 # builin connection pool
-{ oid => '3425', descr => 'information about connection pooler proxies workload',
+{ oid => '3435', descr => 'information about connection pooler proxies workload',
   proname => 'pg_pooler_state', prorows => '1000', proretset => 't',
   provolatile => 'v', prorettype => 'record', proargtypes => '',
   proallargtypes => '{int4,int4,int4,int4,int4,int4,int8,int8,int8}', proargmodes => '{o,o,o,o,o,o,o,o,o}',
