@@ -30,13 +30,13 @@
 #include <fcntl.h>
 #include <unistd.h>
 
-#include "access/hash.h"
 #include "access/htup_details.h"
 #include "access/multixact.h"
 #include "access/nbtree.h"
 #include "access/reloptions.h"
 #include "access/sysattr.h"
 #include "access/table.h"
+#include "access/tableam.h"
 #include "access/tupdesc_details.h"
 #include "access/xact.h"
 #include "access/xlog.h"
@@ -1137,10 +1137,32 @@ RelationBuildDesc(Oid targetRelId, bool insertIt)
 	}
 
 	/*
-	 * if it's an index, initialize index-related information
+	 * initialize access method information
 	 */
-	if (OidIsValid(relation->rd_rel->relam))
-		RelationInitIndexAccessInfo(relation);
+	switch (relation->rd_rel->relkind)
+	{
+		case RELKIND_INDEX:
+		case RELKIND_PARTITIONED_INDEX:
+			Assert(relation->rd_rel->relam != InvalidOid);
+			RelationInitIndexAccessInfo(relation);
+			break;
+		case RELKIND_RELATION:
+		case RELKIND_TOASTVALUE:
+		case RELKIND_MATVIEW:
+			Assert(relation->rd_rel->relam != InvalidOid);
+			RelationInitTableAccessMethod(relation);
+			break;
+		case RELKIND_SEQUENCE:
+			Assert(relation->rd_rel->relam == InvalidOid);
+			RelationInitTableAccessMethod(relation);
+			break;
+		case RELKIND_VIEW:
+		case RELKIND_COMPOSITE_TYPE:
+		case RELKIND_FOREIGN_TABLE:
+		case RELKIND_PARTITIONED_TABLE:
+			Assert(relation->rd_rel->relam == InvalidOid);
+			break;
+	}
 
 	/* extract reloptions if any */
 	RelationParseRelOptions(relation, pg_class_tuple);
@@ -1646,6 +1668,65 @@ LookupOpclassInfo(Oid operatorClassOid,
 	return opcentry;
 }
 
+/*
+ * Fill in the TableAmRoutine for a relation
+ *
+ * relation's rd_amhandler must be valid already.
+ */
+static void
+InitTableAmRoutine(Relation relation)
+{
+	relation->rd_tableam = GetTableAmRoutine(relation->rd_amhandler);
+}
+
+/*
+ * Initialize table access method support for a table like relation
+ */
+void
+RelationInitTableAccessMethod(Relation relation)
+{
+	HeapTuple	tuple;
+	Form_pg_am	aform;
+
+	if (relation->rd_rel->relkind == RELKIND_SEQUENCE)
+	{
+		/*
+		 * Sequences are currently accessed like heap tables, but it doesn't
+		 * seem prudent to show that in the catalog. So just overwrite it
+		 * here.
+		 */
+		relation->rd_amhandler = HEAP_TABLE_AM_HANDLER_OID;
+	}
+	else if (IsCatalogRelation(relation))
+	{
+		/*
+		 * Avoid doing a syscache lookup for catalog tables.
+		 */
+		Assert(relation->rd_rel->relam == HEAP_TABLE_AM_OID);
+		relation->rd_amhandler = HEAP_TABLE_AM_HANDLER_OID;
+	}
+	else
+	{
+		/*
+		 * Look up the table access method, save the OID of its handler
+		 * function.
+		 */
+		Assert(relation->rd_rel->relam != InvalidOid);
+		tuple = SearchSysCache1(AMOID,
+								ObjectIdGetDatum(relation->rd_rel->relam));
+		if (!HeapTupleIsValid(tuple))
+			elog(ERROR, "cache lookup failed for access method %u",
+				 relation->rd_rel->relam);
+		aform = (Form_pg_am) GETSTRUCT(tuple);
+		relation->rd_amhandler = aform->amhandler;
+		ReleaseSysCache(tuple);
+	}
+
+	/*
+	 * Now we can fetch the table AM's API struct
+	 */
+	InitTableAmRoutine(relation);
+}
 
 /*
  *		formrdesc
@@ -1732,6 +1813,7 @@ formrdesc(const char *relationName, Oid relationReltype,
 	relation->rd_rel->relallvisible = 0;
 	relation->rd_rel->relkind = RELKIND_RELATION;
 	relation->rd_rel->relnatts = (int16) natts;
+	relation->rd_rel->relam = HEAP_TABLE_AM_OID;
 
 	/*
 	 * initialize attribute tuple form
@@ -1798,6 +1880,12 @@ formrdesc(const char *relationName, Oid relationReltype,
 	 * initialize physical addressing information for the relation
 	 */
 	RelationInitPhysicalAddr(relation);
+
+	/*
+	 * initialize the table am handler
+	 */
+	relation->rd_rel->relam = HEAP_TABLE_AM_OID;
+	relation->rd_tableam = GetHeapamTableAmRoutine();
 
 	/*
 	 * initialize the rel-has-index flag, using hardwired knowledge
@@ -2480,6 +2568,26 @@ RelationClearRelation(Relation relation, bool rebuild)
 			SWAPFIELD(PartitionDesc, rd_partdesc);
 			SWAPFIELD(MemoryContext, rd_pdcxt);
 		}
+		else if (rebuild && newrel->rd_pdcxt != NULL)
+		{
+			/*
+			 * We are rebuilding a partitioned relation with a non-zero
+			 * reference count, so keep the old partition descriptor around,
+			 * in case there's a PartitionDirectory with a pointer to it.
+			 * Attach it to the new rd_pdcxt so that it gets cleaned up
+			 * eventually.  In the case where the reference count is 0, this
+			 * code is not reached, which should be OK because in that case
+			 * there should be no PartitionDirectory with a pointer to the old
+			 * entry.
+			 *
+			 * Note that newrel and relation have already been swapped, so
+			 * the "old" partition descriptor is actually the one hanging off
+			 * of newrel.
+			 */
+			MemoryContextSetParent(newrel->rd_pdcxt, relation->rd_pdcxt);
+			newrel->rd_partdesc = NULL;
+			newrel->rd_pdcxt = NULL;
+		}
 
 #undef SWAPFIELD
 
@@ -3032,6 +3140,7 @@ RelationBuildLocalRelation(const char *relname,
 						   Oid relnamespace,
 						   TupleDesc tupDesc,
 						   Oid relid,
+						   Oid accessmtd,
 						   Oid relfilenode,
 						   Oid reltablespace,
 						   bool shared_relation,
@@ -3210,6 +3319,14 @@ RelationBuildLocalRelation(const char *relname,
 	RelationInitLockInfo(rel);	/* see lmgr.c */
 
 	RelationInitPhysicalAddr(rel);
+
+	rel->rd_rel->relam = accessmtd;
+
+	if (relkind == RELKIND_RELATION ||
+		relkind == RELKIND_SEQUENCE ||
+		relkind == RELKIND_TOASTVALUE ||
+		relkind == RELKIND_MATVIEW)
+		RelationInitTableAccessMethod(rel);
 
 	/*
 	 * Okay to insert into the relcache hash table.
@@ -3727,6 +3844,18 @@ RelationCacheInitializePhase3(void)
 		{
 			RelationBuildPartitionDesc(relation);
 			Assert(relation->rd_partdesc != NULL);
+
+			restart = true;
+		}
+
+		if (relation->rd_tableam == NULL &&
+			(relation->rd_rel->relkind == RELKIND_RELATION ||
+			 relation->rd_rel->relkind == RELKIND_SEQUENCE ||
+			 relation->rd_rel->relkind == RELKIND_TOASTVALUE ||
+			 relation->rd_rel->relkind == RELKIND_MATVIEW))
+		{
+			RelationInitTableAccessMethod(relation);
+			Assert(relation->rd_tableam != NULL);
 
 			restart = true;
 		}
@@ -5379,6 +5508,13 @@ load_relcache_init_file(bool shared)
 			/* Count nailed rels to ensure we have 'em all */
 			if (rel->rd_isnailed)
 				nailed_rels++;
+
+			/* Load table AM data */
+			if (rel->rd_rel->relkind == RELKIND_RELATION ||
+				rel->rd_rel->relkind == RELKIND_SEQUENCE ||
+				rel->rd_rel->relkind == RELKIND_TOASTVALUE ||
+				rel->rd_rel->relkind == RELKIND_MATVIEW)
+				RelationInitTableAccessMethod(rel);
 
 			Assert(rel->rd_index == NULL);
 			Assert(rel->rd_indextuple == NULL);

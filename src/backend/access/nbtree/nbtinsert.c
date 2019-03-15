@@ -908,8 +908,10 @@ _bt_insertonpg(Relation rel,
 		 *
 		 * We're ready to do the parent insertion.  We need to hold onto the
 		 * locks for the child pages until we locate the parent, but we can
-		 * release them before doing the actual insertion (see Lehman and Yao
-		 * for the reasoning).
+		 * at least release the lock on the right child before doing the
+		 * actual insertion.  The lock on the left child will be released
+		 * last of all by parent insertion, where it is the 'cbuf' of parent
+		 * page.
 		 *----------
 		 */
 		_bt_insert_parent(rel, buf, rbuf, stack, is_root, is_only);
@@ -1491,9 +1493,7 @@ _bt_split(Relation rel, Buffer buf, Buffer cbuf, OffsetNumber firstright,
 
 		/*
 		 * Log the contents of the right page in the format understood by
-		 * _bt_restore_page(). We set lastrdata->buffer to InvalidBuffer,
-		 * because we're going to recreate the whole page anyway, so it should
-		 * never be stored by XLogInsert.
+		 * _bt_restore_page().  The whole right page will be recreated.
 		 *
 		 * Direct access to page is not good but faster - we should implement
 		 * some new func in page API.  Note we only store the tuples

@@ -897,6 +897,19 @@
       </row>
 
       <row>
+       <entry>
+        <indexterm>
+         <primary>log10</primary>
+        </indexterm>
+        <literal><function>log10(<type>dp</type> or <type>numeric</type>)</function></literal>
+       </entry>
+       <entry>(same as input)</entry>
+       <entry>base 10 logarithm</entry>
+       <entry><literal>log10(100.0)</literal></entry>
+       <entry><literal>2</literal></entry>
+      </row>
+
+      <row>
        <entry><literal><function>log(<parameter>b</parameter> <type>numeric</type>,
         <parameter>x</parameter> <type>numeric</type>)</function></literal></entry>
        <entry><type>numeric</type></entry>
@@ -1147,8 +1160,8 @@
   </para>
 
   <para>
-   Finally, <xref linkend="functions-math-trig-table"/> shows the
-   available trigonometric functions.  All trigonometric functions
+   <xref linkend="functions-math-trig-table"/> shows the
+   available trigonometric functions.  All these functions
    take arguments and return values of type <type>double
    precision</type>.  Each of the trigonometric functions comes in
    two variants, one that measures angles in radians and one that
@@ -1310,6 +1323,96 @@
     as <literal>sind(30)</literal>.
    </para>
   </note>
+
+  <para>
+   <xref linkend="functions-math-hyp-table"/> shows the
+   available hyperbolic functions.  All these functions
+   take arguments and return values of type <type>double
+   precision</type>.
+  </para>
+
+  <table id="functions-math-hyp-table">
+    <title>Hyperbolic Functions</title>
+
+    <tgroup cols="4">
+     <thead>
+      <row>
+       <entry>Function</entry>
+       <entry>Description</entry>
+       <entry>Example</entry>
+       <entry>Result</entry>
+      </row>
+     </thead>
+     <tbody>
+      <row>
+       <entry>
+        <indexterm>
+         <primary>sinh</primary>
+        </indexterm>
+        <literal><function>sinh(<replaceable>x</replaceable>)</function></literal>
+       </entry>
+       <entry>hyperbolic sine</entry>
+       <entry><literal>sinh(0)</literal></entry>
+       <entry><literal>0</literal></entry>
+      </row>
+      <row>
+       <entry>
+        <indexterm>
+         <primary>cosh</primary>
+        </indexterm>
+        <literal><function>cosh(<replaceable>x</replaceable>)</function></literal>
+       </entry>
+       <entry>hyperbolic cosine</entry>
+       <entry><literal>cosh(0)</literal></entry>
+       <entry><literal>1</literal></entry>
+      </row>
+      <row>
+       <entry>
+        <indexterm>
+         <primary>tanh</primary>
+        </indexterm>
+        <literal><function>tanh(<replaceable>x</replaceable>)</function></literal>
+       </entry>
+       <entry>hyperbolic tangent</entry>
+       <entry><literal>tanh(0)</literal></entry>
+       <entry><literal>0</literal></entry>
+      </row>
+      <row>
+       <entry>
+        <indexterm>
+         <primary>asinh</primary>
+        </indexterm>
+        <literal><function>asinh(<replaceable>x</replaceable>)</function></literal>
+       </entry>
+       <entry>inverse hyperbolic sine</entry>
+       <entry><literal>asinh(0)</literal></entry>
+       <entry><literal>0</literal></entry>
+      </row>
+      <row>
+       <entry>
+        <indexterm>
+         <primary>acosh</primary>
+        </indexterm>
+        <literal><function>acosh(<replaceable>x</replaceable>)</function></literal>
+       </entry>
+       <entry>inverse hyperbolic cosine</entry>
+       <entry><literal>acosh(1)</literal></entry>
+       <entry><literal>0</literal></entry>
+      </row>
+      <row>
+       <entry>
+        <indexterm>
+         <primary>atanh</primary>
+        </indexterm>
+        <literal><function>atanh(<replaceable>x</replaceable>)</function></literal>
+       </entry>
+       <entry>inverse hyperbolic tangent</entry>
+       <entry><literal>atanh(0)</literal></entry>
+       <entry><literal>0</literal></entry>
+      </row>
+     </tbody>
+    </tgroup>
+   </table>
 
   </sect1>
 
@@ -10583,7 +10686,7 @@ SELECT xmlagg(x) FROM (SELECT * FROM test ORDER BY y DESC) AS tab;
     </indexterm>
 
 <synopsis>
-<function>XMLEXISTS</function>(<replaceable>text</replaceable> PASSING <optional>BY REF</optional> <replaceable>xml</replaceable> <optional>BY REF</optional>)
+<function>XMLEXISTS</function>(<replaceable>text</replaceable> PASSING <optional>BY { REF | VALUE }</optional> <replaceable>xml</replaceable> <optional>BY { REF | VALUE }</optional>)
 </synopsis>
 
     <para>
@@ -10596,7 +10699,7 @@ SELECT xmlagg(x) FROM (SELECT * FROM test ORDER BY y DESC) AS tab;
     <para>
      Example:
      <screen><![CDATA[
-SELECT xmlexists('//town[text() = ''Toronto'']' PASSING BY REF '<towns><town>Toronto</town><town>Ottawa</town></towns>');
+SELECT xmlexists('//town[text() = ''Toronto'']' PASSING BY VALUE '<towns><town>Toronto</town><town>Ottawa</town></towns>');
 
  xmlexists
 ------------
@@ -10606,14 +10709,25 @@ SELECT xmlexists('//town[text() = ''Toronto'']' PASSING BY REF '<towns><town>Tor
     </para>
 
     <para>
-     The <literal>BY REF</literal> clauses have no effect in
-     PostgreSQL, but are allowed for SQL conformance and compatibility
-     with other implementations.  Per SQL standard, the
-     first <literal>BY REF</literal> is required, the second is
-     optional.  Also note that the SQL standard specifies
-     the <function>xmlexists</function> construct to take an XQuery
-     expression as first argument, but PostgreSQL currently only
-     supports XPath, which is a subset of XQuery.
+     The <literal>BY REF</literal> or <literal>BY VALUE</literal> clauses
+     have no effect in <productname>PostgreSQL</productname>, but are allowed
+     for compatibility with other implementations.  Per the <acronym>SQL</acronym>
+     standard, the one that precedes any argument is required, and indicates
+     the default for arguments that follow, and one may follow any argument to
+     override the default.
+     <productname>PostgreSQL</productname> ignores <literal>BY REF</literal>
+     and passes by value always.
+    </para>
+
+    <para>
+     In the <acronym>SQL</acronym> standard, an <function>xmlexists</function>
+     construct evaluates an expression in the XQuery language, allows passing
+     values for named parameters in the expression as well as for the context
+     item, and does not require the passed values to be documents, or even of
+     XML type.
+     In <productname>PostgreSQL</productname>, this construct currently only
+     evaluates an XPath 1.0 expression, and allows passing only one value,
+     which must be an XML document, to be the context item.
     </para>
    </sect3>
 
@@ -10820,7 +10934,7 @@ SELECT xpath_exists('/my:a/text()', '<my:a xmlns:my="http://example.com">test</m
 
 <synopsis>
 <function>xmltable</function>( <optional>XMLNAMESPACES(<replaceable>namespace uri</replaceable> AS <replaceable>namespace name</replaceable><optional>, ...</optional>), </optional>
-          <replaceable>row_expression</replaceable> PASSING <optional>BY REF</optional> <replaceable>document_expression</replaceable> <optional>BY REF</optional>
+          <replaceable>row_expression</replaceable> PASSING <optional>BY { REF | VALUE }</optional> <replaceable>document_expression</replaceable> <optional>BY { REF | VALUE }</optional>
           COLUMNS <replaceable>name</replaceable> { <replaceable>type</replaceable> <optional>PATH <replaceable>column_expression</replaceable></optional> <optional>DEFAULT <replaceable>default_expression</replaceable></optional> <optional>NOT NULL | NULL</optional>
                         | FOR ORDINALITY }
                    <optional>, ...</optional>
@@ -10850,11 +10964,11 @@ SELECT xpath_exists('/my:a/text()', '<my:a xmlns:my="http://example.com">test</m
     <para>
      <replaceable>document_expression</replaceable> provides the XML document to
      operate on.
-     The <literal>BY REF</literal> clauses have no effect in PostgreSQL,
-     but are allowed for SQL conformance and compatibility with other
-     implementations.
      The argument must be a well-formed XML document; fragments/forests
      are not accepted.
+     The <literal>BY REF</literal> or <literal>BY VALUE</literal> clauses are
+     accepted, as described for the <function>xmlexists</function> predicate,
+     but ignored; PostgreSQL currently passes XML by value always.
     </para>
 
     <para>
@@ -10999,9 +11113,9 @@ $$ AS data;
 
 SELECT xmltable.*
   FROM xmlelements, XMLTABLE('/root' PASSING data COLUMNS element text);
-       element        
-----------------------
-   Hello2a2   bbbCC  
+         element         
+-------------------------
+   Hello2a2   bbbxxxCC  
 ]]></screen>
     </para>
 
@@ -12469,6 +12583,15 @@ SELECT setval('foo', 42, false);    <lineannotation>Next <function>nextval</func
     in a more expressive programming language.
    </para>
   </tip>
+
+   <note>
+    <para>
+     Although <token>COALESCE</token>, <token>GREATEST</token>, and
+     <token>LEAST</token> are syntactically similar to functions, they are
+     not ordinary functions, and thus cannot be used with explicit
+     <token>VARIADIC</token> array arguments.
+    </para>
+   </note>
 
   <sect2 id="functions-case">
    <title><literal>CASE</literal></title>
@@ -20272,6 +20395,17 @@ postgres=# SELECT * FROM pg_walfile_name_offset(pg_stop_backup());
         or index in its role as the root of the partition tree,
         <literal>1</literal> for its partitions, <literal>2</literal> for
         their partitions, and so on.
+       </entry>
+      </row>
+      <row>
+       <entry>
+        <indexterm><primary>pg_partition_ancestors</primary></indexterm>
+        <literal><function>pg_partition_ancestors(<type>regclass</type>)</function></literal>
+       </entry>
+       <entry><type>setof regclass</type></entry>
+       <entry>
+        List the ancestor relations of the given partition,
+        including the partition itself.
        </entry>
       </row>
       <row>

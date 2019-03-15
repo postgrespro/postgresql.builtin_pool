@@ -48,12 +48,14 @@
 #include "access/parallel.h"
 #include "access/relscan.h"
 #include "access/table.h"
+#include "access/tableam.h"
 #include "access/transam.h"
 #include "executor/executor.h"
 #include "jit/jit.h"
 #include "mb/pg_wchar.h"
 #include "nodes/nodeFuncs.h"
 #include "parser/parsetree.h"
+#include "partitioning/partdesc.h"
 #include "storage/lmgr.h"
 #include "utils/builtins.h"
 #include "utils/memutils.h"
@@ -212,6 +214,13 @@ FreeExecutorState(EState *estate)
 	{
 		jit_release_context(estate->es_jit);
 		estate->es_jit = NULL;
+	}
+
+	/* release partition directory, if allocated */
+	if (estate->es_partition_directory)
+	{
+		DestroyPartitionDirectory(estate->es_partition_directory);
+		estate->es_partition_directory = NULL;
 	}
 
 	/*
@@ -1113,7 +1122,7 @@ ExecGetTriggerOldSlot(EState *estate, ResultRelInfo *relInfo)
 		relInfo->ri_TrigOldSlot =
 			ExecInitExtraTupleSlot(estate,
 								   RelationGetDescr(rel),
-								   &TTSOpsBufferHeapTuple);
+								   table_slot_callbacks(rel));
 
 		MemoryContextSwitchTo(oldcontext);
 	}
@@ -1135,7 +1144,7 @@ ExecGetTriggerNewSlot(EState *estate, ResultRelInfo *relInfo)
 		relInfo->ri_TrigNewSlot =
 			ExecInitExtraTupleSlot(estate,
 								   RelationGetDescr(rel),
-								   &TTSOpsBufferHeapTuple);
+								   table_slot_callbacks(rel));
 
 		MemoryContextSwitchTo(oldcontext);
 	}
@@ -1157,7 +1166,7 @@ ExecGetReturningSlot(EState *estate, ResultRelInfo *relInfo)
 		relInfo->ri_ReturningSlot =
 			ExecInitExtraTupleSlot(estate,
 								   RelationGetDescr(rel),
-								   &TTSOpsBufferHeapTuple);
+								   table_slot_callbacks(rel));
 
 		MemoryContextSwitchTo(oldcontext);
 	}

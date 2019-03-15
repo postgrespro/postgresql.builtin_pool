@@ -19,6 +19,7 @@
 #include "lib/pairingheap.h"
 #include "nodes/params.h"
 #include "nodes/plannodes.h"
+#include "partitioning/partdefs.h"
 #include "utils/hsearch.h"
 #include "utils/queryenvironment.h"
 #include "utils/reltrigger.h"
@@ -377,8 +378,9 @@ typedef struct OnConflictSetState
 {
 	NodeTag		type;
 
+	TupleTableSlot *oc_Existing;	/* slot to store existing target tuple in */
+	TupleTableSlot *oc_ProjSlot;	/* CONFLICT ... SET ... projection target */
 	ProjectionInfo *oc_ProjInfo;	/* for ON CONFLICT DO UPDATE SET */
-	TupleDesc	oc_ProjTupdesc; /* TupleDesc for the above projection */
 	ExprState  *oc_WhereClause; /* state for the WHERE clause */
 } OnConflictSetState;
 
@@ -520,6 +522,7 @@ typedef struct EState
 	 */
 	ResultRelInfo *es_root_result_relations;	/* array of ResultRelInfos */
 	int			es_num_root_result_relations;	/* length of the array */
+	PartitionDirectory es_partition_directory;	/* for PartitionDesc lookup */
 
 	/*
 	 * The following list contains ResultRelInfos created by the tuple routing
@@ -1109,9 +1112,7 @@ typedef struct ModifyTableState
 	List	  **mt_arowmarks;	/* per-subplan ExecAuxRowMark lists */
 	EPQState	mt_epqstate;	/* for evaluating EvalPlanQual rechecks */
 	bool		fireBSTriggers; /* do we need to fire stmt triggers? */
-	TupleTableSlot *mt_existing;	/* slot to store existing target tuple in */
 	List	   *mt_excludedtlist;	/* the excluded pseudo relation's tlist  */
-	TupleTableSlot *mt_conflproj;	/* CONFLICT ... SET ... projection target */
 
 	/*
 	 * Slot for storing tuples in the root partitioned table's rowtype during
@@ -1269,7 +1270,7 @@ typedef struct ScanState
 {
 	PlanState	ps;				/* its first field is NodeTag */
 	Relation	ss_currentRelation;
-	struct HeapScanDescData *ss_currentScanDesc;
+	struct TableScanDescData *ss_currentScanDesc;
 	TupleTableSlot *ss_ScanTupleSlot;
 } ScanState;
 

@@ -295,6 +295,18 @@ my %pgdump_runs = (
 			"$tempdir/role_parallel",
 		],
 	},
+	rows_per_insert => {
+		dump_cmd => [
+			'pg_dump',
+			'--no-sync',
+			"--file=$tempdir/rows_per_insert.sql",
+			'-a',
+			'--rows-per-insert=4',
+			'--table=dump_test.test_table',
+			'--table=dump_test.test_fourth_table',
+			'postgres',
+		],
+	},
 	schema_only => {
 		dump_cmd => [
 			'pg_dump',                         '--format=plain',
@@ -1228,10 +1240,11 @@ my %tests = (
 	'COPY test_fourth_table' => {
 		create_order => 7,
 		create_sql =>
-		  'INSERT INTO dump_test.test_fourth_table DEFAULT VALUES;',
+		  'INSERT INTO dump_test.test_fourth_table DEFAULT VALUES;'
+		  . 'INSERT INTO dump_test.test_fourth_table DEFAULT VALUES;',
 		regexp => qr/^
 			\QCOPY dump_test.test_fourth_table  FROM stdin;\E
-			\n\n\\\.\n
+			\n\n\n\\\.\n
 			/xm,
 		like => {
 			%full_runs,
@@ -1295,6 +1308,19 @@ my %tests = (
 		like => { column_inserts => 1, },
 	},
 
+	'test_table with 4-row INSERTs' => {
+		regexp => qr/^
+			(?:
+				INSERT\ INTO\ dump_test\.test_table\ VALUES\n
+				(?:\t\(\d,\ NULL,\ NULL,\ NULL\),\n){3}
+				\t\(\d,\ NULL,\ NULL,\ NULL\);\n
+			){2}
+			INSERT\ INTO\ dump_test\.test_table\ VALUES\n
+			\t\(\d,\ NULL,\ NULL,\ NULL\);
+			/xm,
+		like => { rows_per_insert => 1, },
+	},
+
 	'INSERT INTO test_second_table' => {
 		regexp => qr/^
 			(?:INSERT\ INTO\ dump_test\.test_second_table\ \(col1,\ col2\)
@@ -1304,8 +1330,8 @@ my %tests = (
 
 	'INSERT INTO test_fourth_table' => {
 		regexp =>
-		  qr/^\QINSERT INTO dump_test.test_fourth_table DEFAULT VALUES;\E/m,
-		like => { column_inserts => 1, },
+		  qr/^(?:INSERT INTO dump_test\.test_fourth_table DEFAULT VALUES;\n){2}/m,
+		like => { column_inserts => 1, rows_per_insert => 1, },
 	},
 
 	'INSERT INTO test_fifth_table' => {
@@ -3070,6 +3096,66 @@ my %tests = (
 		unlike => { no_privs => 1, },
 	},
 
+
+	'CREATE ACCESS METHOD regress_test_table_am' => {
+		create_order => 11,
+		create_sql   => 'CREATE ACCESS METHOD regress_table_am TYPE TABLE HANDLER heap_tableam_handler;',
+		regexp => qr/^
+			\QCREATE ACCESS METHOD regress_table_am TYPE TABLE HANDLER heap_tableam_handler;\E
+			\n/xm,
+		like => {
+			%full_runs,
+			section_pre_data	=> 1,
+		},
+	},
+
+	# It's a bit tricky to ensure that the proper SET of default table
+	# AM occurs. To achieve that we create a table with the standard
+	# AM, test AM, standard AM. That guarantees that there needs to be
+	# a SET interspersed.  Then use a regex that prevents interspersed
+	# SET ...; statements, followed by the exptected CREATE TABLE. Not
+	# pretty, but seems hard to do better in this framework.
+	'CREATE TABLE regress_pg_dump_table_am' => {
+		create_order => 12,
+		create_sql => '
+			CREATE TABLE dump_test.regress_pg_dump_table_am_0() USING heap;
+			CREATE TABLE dump_test.regress_pg_dump_table_am_1 (col1 int) USING regress_table_am;
+			CREATE TABLE dump_test.regress_pg_dump_table_am_2() USING heap;',
+		regexp => qr/^
+			\QSET default_table_access_method = regress_table_am;\E
+			(\n(?!SET[^;]+;)[^\n]*)*
+			\n\QCREATE TABLE dump_test.regress_pg_dump_table_am_1 (\E
+			\n\s+\Qcol1 integer\E
+			\n\);/xm,
+		like => {
+			%full_runs,
+			%dump_test_schema_runs,
+			section_pre_data => 1,
+		},
+		unlike => { exclude_dump_test_schema => 1},
+	},
+
+	'CREATE MATERIALIZED VIEW regress_pg_dump_matview_am' => {
+		create_order => 13,
+		create_sql => '
+			CREATE MATERIALIZED VIEW dump_test.regress_pg_dump_matview_am_0 USING heap AS SELECT 1;
+			CREATE MATERIALIZED VIEW dump_test.regress_pg_dump_matview_am_1
+				USING regress_table_am AS SELECT count(*) FROM pg_class;
+			CREATE MATERIALIZED VIEW dump_test.regress_pg_dump_matview_am_2 USING heap AS SELECT 1;',
+		regexp => qr/^
+			\QSET default_table_access_method = regress_table_am;\E
+			(\n(?!SET[^;]+;)[^\n]*)*
+			\QCREATE MATERIALIZED VIEW dump_test.regress_pg_dump_matview_am_1 AS\E
+			\n\s+\QSELECT count(*) AS count\E
+			\n\s+\QFROM pg_class\E
+			\n\s+\QWITH NO DATA;\E\n/xm,
+		like => {
+			%full_runs,
+			%dump_test_schema_runs,
+			section_pre_data => 1,
+		},
+		unlike => { exclude_dump_test_schema => 1},
+	}
 );
 
 #########################################

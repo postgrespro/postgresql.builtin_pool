@@ -39,6 +39,7 @@
 
 #include "access/heapam.h"
 #include "access/htup_details.h"
+#include "access/tableam.h"
 #include "access/xact.h"
 #include "catalog/catalog.h"
 #include "commands/trigger.h"
@@ -1304,6 +1305,7 @@ ExecOnConflictUpdate(ModifyTableState *mtstate,
 	ExprContext *econtext = mtstate->ps.ps_ExprContext;
 	Relation	relation = resultRelInfo->ri_RelationDesc;
 	ExprState  *onConflictSetWhere = resultRelInfo->ri_onConflict->oc_WhereClause;
+	TupleTableSlot *existing = resultRelInfo->ri_onConflict->oc_Existing;
 	HeapTupleData tuple;
 	HeapUpdateFailureData hufd;
 	LockTupleMode lockmode;
@@ -1413,7 +1415,7 @@ ExecOnConflictUpdate(ModifyTableState *mtstate,
 	ExecCheckHeapTupleVisible(estate, &tuple, buffer);
 
 	/* Store target's existing tuple in the state's dedicated slot */
-	ExecStoreBufferHeapTuple(&tuple, mtstate->mt_existing, buffer);
+	ExecStorePinnedBufferHeapTuple(&tuple, existing, buffer);
 
 	/*
 	 * Make tuple and any needed join variables available to ExecQual and
@@ -1422,13 +1424,13 @@ ExecOnConflictUpdate(ModifyTableState *mtstate,
 	 * has been made to reference INNER_VAR in setrefs.c, but there is no
 	 * other redirection.
 	 */
-	econtext->ecxt_scantuple = mtstate->mt_existing;
+	econtext->ecxt_scantuple = existing;
 	econtext->ecxt_innertuple = excludedSlot;
 	econtext->ecxt_outertuple = NULL;
 
 	if (!ExecQual(onConflictSetWhere, econtext))
 	{
-		ReleaseBuffer(buffer);
+		ExecClearTuple(existing);	/* see return below */
 		InstrCountFiltered1(&mtstate->ps, 1);
 		return true;			/* done with the tuple */
 	}
@@ -1451,7 +1453,7 @@ ExecOnConflictUpdate(ModifyTableState *mtstate,
 		 * INSERT or UPDATE path.
 		 */
 		ExecWithCheckOptions(WCO_RLS_CONFLICT_CHECK, resultRelInfo,
-							 mtstate->mt_existing,
+							 existing,
 							 mtstate->ps.state);
 	}
 
@@ -1469,11 +1471,17 @@ ExecOnConflictUpdate(ModifyTableState *mtstate,
 
 	/* Execute UPDATE with projection */
 	*returning = ExecUpdate(mtstate, &tuple.t_self, NULL,
-							mtstate->mt_conflproj, planSlot,
+							resultRelInfo->ri_onConflict->oc_ProjSlot,
+							planSlot,
 							&mtstate->mt_epqstate, mtstate->ps.state,
 							canSetTag);
 
-	ReleaseBuffer(buffer);
+	/*
+	 * Clear out existing tuple, as there might not be another conflict among
+	 * the next input rows. Don't want to hold resources till the end of the
+	 * query.
+	 */
+	ExecClearTuple(existing);
 	return true;
 }
 
@@ -1633,7 +1641,6 @@ ExecPrepareTupleRouting(ModifyTableState *mtstate,
 						ResultRelInfo *targetRelInfo,
 						TupleTableSlot *slot)
 {
-	ModifyTable *node;
 	ResultRelInfo *partrel;
 	PartitionRoutingInfo *partrouteinfo;
 	TupleConversionMap *map;
@@ -1696,19 +1703,6 @@ ExecPrepareTupleRouting(ModifyTableState *mtstate,
 		TupleTableSlot *new_slot = partrouteinfo->pi_PartitionTupleSlot;
 
 		slot = execute_attr_map_slot(map->attrMap, slot, new_slot);
-	}
-
-	/* Initialize information needed to handle ON CONFLICT DO UPDATE. */
-	Assert(mtstate != NULL);
-	node = (ModifyTable *) mtstate->ps.plan;
-	if (node->onConflictAction == ONCONFLICT_UPDATE)
-	{
-		Assert(mtstate->mt_existing != NULL);
-		ExecSetSlotDescriptor(mtstate->mt_existing,
-							  RelationGetDescr(partrel->ri_RelationDesc));
-		Assert(mtstate->mt_conflproj != NULL);
-		ExecSetSlotDescriptor(mtstate->mt_conflproj,
-							  partrel->ri_onConflict->oc_ProjTupdesc);
 	}
 
 	return slot;
@@ -2154,7 +2148,7 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 		mtstate->mt_plans[i] = ExecInitNode(subplan, estate, eflags);
 		mtstate->mt_scans[i] =
 			ExecInitExtraTupleSlot(mtstate->ps.state, ExecGetResultType(mtstate->mt_plans[i]),
-								   &TTSOpsHeapTuple);
+								   table_slot_callbacks(resultRelInfo->ri_RelationDesc));
 
 		/* Also let FDWs init themselves for foreign-table result rels */
 		if (!resultRelInfo->ri_usesFdwDirectModify &&
@@ -2193,7 +2187,7 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 	if (rel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE &&
 		(operation == CMD_INSERT || update_tuple_routing_needed))
 		mtstate->mt_partition_tuple_routing =
-			ExecSetupPartitionTupleRouting(mtstate, rel);
+			ExecSetupPartitionTupleRouting(estate, mtstate, rel);
 
 	/*
 	 * Build state for collecting transition tuples.  This requires having a
@@ -2214,8 +2208,7 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 	if (update_tuple_routing_needed)
 	{
 		ExecSetupChildParentMapForSubplan(mtstate);
-		mtstate->mt_root_tuple_slot = MakeTupleTableSlot(RelationGetDescr(rel),
-														 &TTSOpsHeapTuple);
+		mtstate->mt_root_tuple_slot = table_slot_create(rel, NULL);
 	}
 
 	/*
@@ -2319,43 +2312,28 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 		econtext = mtstate->ps.ps_ExprContext;
 		relationDesc = resultRelInfo->ri_RelationDesc->rd_att;
 
-		/*
-		 * Initialize slot for the existing tuple.  If we'll be performing
-		 * tuple routing, the tuple descriptor to use for this will be
-		 * determined based on which relation the update is actually applied
-		 * to, so we don't set its tuple descriptor here.
-		 */
-		mtstate->mt_existing =
-			ExecInitExtraTupleSlot(mtstate->ps.state,
-								   mtstate->mt_partition_tuple_routing ?
-								   NULL : relationDesc, &TTSOpsBufferHeapTuple);
-
 		/* carried forward solely for the benefit of explain */
 		mtstate->mt_excludedtlist = node->exclRelTlist;
 
 		/* create state for DO UPDATE SET operation */
 		resultRelInfo->ri_onConflict = makeNode(OnConflictSetState);
 
-		/*
-		 * Create the tuple slot for the UPDATE SET projection.
-		 *
-		 * Just like mt_existing above, we leave it without a tuple descriptor
-		 * in the case of partitioning tuple routing, so that it can be
-		 * changed by ExecPrepareTupleRouting.  In that case, we still save
-		 * the tupdesc in the parent's state: it can be reused by partitions
-		 * with an identical descriptor to the parent.
-		 */
+		/* initialize slot for the existing tuple */
+		resultRelInfo->ri_onConflict->oc_Existing =
+			table_slot_create(resultRelInfo->ri_RelationDesc,
+							  &mtstate->ps.state->es_tupleTable);
+
+		/* create the tuple slot for the UPDATE SET projection */
 		tupDesc = ExecTypeFromTL((List *) node->onConflictSet);
-		mtstate->mt_conflproj =
-			ExecInitExtraTupleSlot(mtstate->ps.state,
-								   mtstate->mt_partition_tuple_routing ?
-								   NULL : tupDesc, &TTSOpsHeapTuple);
-		resultRelInfo->ri_onConflict->oc_ProjTupdesc = tupDesc;
+		resultRelInfo->ri_onConflict->oc_ProjSlot =
+			ExecInitExtraTupleSlot(mtstate->ps.state, tupDesc,
+								   &TTSOpsVirtual);
 
 		/* build UPDATE SET projection state */
 		resultRelInfo->ri_onConflict->oc_ProjInfo =
 			ExecBuildProjectionInfo(node->onConflictSet, econtext,
-									mtstate->mt_conflproj, &mtstate->ps,
+									resultRelInfo->ri_onConflict->oc_ProjSlot,
+									&mtstate->ps,
 									relationDesc);
 
 		/* initialize state to evaluate the WHERE clause, if any */
@@ -2452,15 +2430,18 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 			for (i = 0; i < nplans; i++)
 			{
 				JunkFilter *j;
+				TupleTableSlot *junkresslot;
 
 				subplan = mtstate->mt_plans[i]->plan;
 				if (operation == CMD_INSERT || operation == CMD_UPDATE)
 					ExecCheckPlanOutput(resultRelInfo->ri_RelationDesc,
 										subplan->targetlist);
 
+				junkresslot =
+					ExecInitExtraTupleSlot(estate, NULL,
+										   table_slot_callbacks(resultRelInfo->ri_RelationDesc));
 				j = ExecInitJunkFilter(subplan->targetlist,
-									   ExecInitExtraTupleSlot(estate, NULL,
-															  &TTSOpsHeapTuple));
+									   junkresslot);
 
 				if (operation == CMD_UPDATE || operation == CMD_DELETE)
 				{

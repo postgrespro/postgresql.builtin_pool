@@ -861,7 +861,7 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
 
       <tbody>
        <row>
-        <entry morerows="63"><literal>LWLock</literal></entry>
+        <entry morerows="64"><literal>LWLock</literal></entry>
         <entry><literal>ShmemIndexLock</literal></entry>
         <entry>Waiting to find or allocate space in shared memory.</entry>
        </row>
@@ -1122,6 +1122,11 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
          <entry>Waiting to add or examine predicate lock information.</entry>
         </row>
         <row>
+         <entry><literal>serializable_xact</literal></entry>
+         <entry>Waiting to perform an operation on a serializable transaction
+         in a parallel query.</entry>
+        </row>
+        <row>
          <entry><literal>parallel_query_dsa</literal></entry>
          <entry>Waiting for parallel query dynamic shared memory allocation lock.</entry>
         </row>
@@ -1281,7 +1286,7 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
          <entry>Waiting in an extension.</entry>
         </row>
         <row>
-         <entry morerows="34"><literal>IPC</literal></entry>
+         <entry morerows="36"><literal>IPC</literal></entry>
          <entry><literal>BgWorkerShutdown</literal></entry>
          <entry>Waiting for background worker to shut down.</entry>
         </row>
@@ -1292,6 +1297,14 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
         <row>
          <entry><literal>BtreePage</literal></entry>
          <entry>Waiting for the page number needed to continue a parallel B-tree scan to become available.</entry>
+        </row>
+        <row>
+         <entry><literal>CheckpointDone</literal></entry>
+         <entry>Waiting for a checkpoint to complete.</entry>
+        </row>
+        <row>
+         <entry><literal>CheckpointStart</literal></entry>
+         <entry>Waiting for a checkpoint to start.</entry>
         </row>
         <row>
          <entry><literal>ClogGroupUpdate</literal></entry>
@@ -2507,6 +2520,11 @@ SELECT pid, wait_event_type, wait_event FROM pg_stat_activity WHERE wait_event i
      <entry><structfield>deadlocks</structfield></entry>
      <entry><type>bigint</type></entry>
      <entry>Number of deadlocks detected in this database</entry>
+    </row>
+    <row>
+     <entry><structfield>checksum_failures</structfield></entry>
+     <entry><type>bigint</type></entry>
+     <entry>Number of data page checksum failures detected in this database</entry>
     </row>
     <row>
      <entry><structfield>blk_read_time</structfield></entry>
