@@ -24,6 +24,7 @@
 #include "access/htup_details.h"
 #include "access/session.h"
 #include "access/sysattr.h"
+#include "access/tableam.h"
 #include "access/xact.h"
 #include "access/xlog.h"
 #include "catalog/catalog.h"
@@ -527,7 +528,7 @@ InitializeMaxBackends(void)
 
 	/* the extra unit accounts for the autovacuum launcher */
 	MaxBackends = MaxConnections + autovacuum_max_workers + 1 +
-		max_worker_processes;
+		max_worker_processes + max_wal_senders;
 
 	/* internal error because the values were all checked previously */
 	if (MaxBackends > MAX_BACKENDS)
@@ -811,12 +812,11 @@ InitPostgres(const char *in_dbname, Oid dboid, const char *username,
 	}
 
 	/*
-	 * The last few connection slots are reserved for superusers.  Although
-	 * replication connections currently require superuser privileges, we
-	 * don't allow them to consume the reserved slots, which are intended for
-	 * interactive use.
+	 * The last few connection slots are reserved for superusers.  Replication
+	 * connections are drawn from slots reserved with max_wal_senders and not
+	 * limited by max_connections or superuser_reserved_connections.
 	 */
-	if ((!am_superuser || am_walsender) &&
+	if (!am_superuser && !am_walsender &&
 		ReservedBackends > 0 &&
 		!HaveNFreeProcs(ReservedBackends))
 		ereport(FATAL,
@@ -1246,15 +1246,15 @@ static bool
 ThereIsAtLeastOneRole(void)
 {
 	Relation	pg_authid_rel;
-	HeapScanDesc scan;
+	TableScanDesc scan;
 	bool		result;
 
 	pg_authid_rel = table_open(AuthIdRelationId, AccessShareLock);
 
-	scan = heap_beginscan_catalog(pg_authid_rel, 0, NULL);
+	scan = table_beginscan_catalog(pg_authid_rel, 0, NULL);
 	result = (heap_getnext(scan, ForwardScanDirection) != NULL);
 
-	heap_endscan(scan);
+	table_endscan(scan);
 	table_close(pg_authid_rel, AccessShareLock);
 
 	return result;

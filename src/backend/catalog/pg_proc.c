@@ -88,6 +88,7 @@ ProcedureCreate(const char *procedureName,
 				List *parameterDefaults,
 				Datum trftypes,
 				Datum proconfig,
+				Oid prosupport,
 				float4 procost,
 				float4 prorows)
 {
@@ -319,7 +320,7 @@ ProcedureCreate(const char *procedureName,
 	values[Anum_pg_proc_procost - 1] = Float4GetDatum(procost);
 	values[Anum_pg_proc_prorows - 1] = Float4GetDatum(prorows);
 	values[Anum_pg_proc_provariadic - 1] = ObjectIdGetDatum(variadicType);
-	values[Anum_pg_proc_protransform - 1] = ObjectIdGetDatum(InvalidOid);
+	values[Anum_pg_proc_prosupport - 1] = ObjectIdGetDatum(prosupport);
 	values[Anum_pg_proc_prokind - 1] = CharGetDatum(prokind);
 	values[Anum_pg_proc_prosecdef - 1] = BoolGetDatum(security_definer);
 	values[Anum_pg_proc_proleakproof - 1] = BoolGetDatum(isLeakProof);
@@ -403,7 +404,9 @@ ProcedureCreate(const char *procedureName,
 					  errdetail("\"%s\" is a window function.", procedureName) :
 					  0)));
 
-		dropcmd = (prokind == PROKIND_PROCEDURE ? "DROP PROCEDURE" : "DROP FUNCTION");
+		dropcmd = (prokind == PROKIND_PROCEDURE ? "DROP PROCEDURE" :
+				   prokind == PROKIND_AGGREGATE ? "DROP AGGREGATE" :
+				   "DROP FUNCTION");
 
 		/*
 		 * Not okay to change the return type of the existing proc, since
@@ -420,7 +423,7 @@ ProcedureCreate(const char *procedureName,
 					 prokind == PROKIND_PROCEDURE
 					 ? errmsg("cannot change whether a procedure has output parameters")
 					 : errmsg("cannot change return type of existing function"),
-					 /* translator: first %s is DROP FUNCTION or DROP PROCEDURE */
+					 /* translator: first %s is DROP FUNCTION, DROP PROCEDURE or DROP AGGREGATE */
 					 errhint("Use %s %s first.",
 							 dropcmd,
 							 format_procedure(oldproc->oid))));
@@ -655,6 +658,15 @@ ProcedureCreate(const char *procedureName,
 	if (parameterDefaults)
 		recordDependencyOnExpr(&myself, (Node *) parameterDefaults,
 							   NIL, DEPENDENCY_NORMAL);
+
+	/* dependency on support function, if any */
+	if (OidIsValid(prosupport))
+	{
+		referenced.classId = ProcedureRelationId;
+		referenced.objectId = prosupport;
+		referenced.objectSubId = 0;
+		recordDependencyOn(&myself, &referenced, DEPENDENCY_NORMAL);
+	}
 
 	/* dependency on owner */
 	if (!is_update)

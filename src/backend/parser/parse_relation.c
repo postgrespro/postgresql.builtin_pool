@@ -1590,9 +1590,15 @@ addRangeTableEntryForFunction(ParseState *pstate,
 
 			/*
 			 * Ensure that the coldeflist defines a legal set of names (no
-			 * duplicates) and datatypes (no pseudo-types, for instance).
+			 * duplicates, but we needn't worry about system column names) and
+			 * datatypes.  Although we mostly can't allow pseudo-types, it
+			 * seems safe to allow RECORD and RECORD[], since values within
+			 * those type classes are self-identifying at runtime, and the
+			 * coldeflist doesn't represent anything that will be visible to
+			 * other sessions.
 			 */
-			CheckAttributeNamesTypes(tupdesc, RELKIND_COMPOSITE_TYPE, false);
+			CheckAttributeNamesTypes(tupdesc, RELKIND_COMPOSITE_TYPE,
+									 CHKATYPE_ANYRECORD);
 		}
 		else
 			ereport(ERROR,
@@ -2519,6 +2525,9 @@ expandRTE(RangeTblEntry *rte, int rtindex, int sublevels_up,
 				}
 			}
 			break;
+		case RTE_RESULT:
+			/* These expose no columns, so nothing to do */
+			break;
 		default:
 			elog(ERROR, "unrecognized RTE kind: %d", (int) rte->rtekind);
 	}
@@ -2911,6 +2920,14 @@ get_rte_attribute_type(RangeTblEntry *rte, AttrNumber attnum,
 									rte->eref->aliasname)));
 			}
 			break;
+		case RTE_RESULT:
+			/* this probably can't happen ... */
+			ereport(ERROR,
+					(errcode(ERRCODE_UNDEFINED_COLUMN),
+					 errmsg("column %d of relation \"%s\" does not exist",
+							attnum,
+							rte->eref->aliasname)));
+			break;
 		default:
 			elog(ERROR, "unrecognized RTE kind: %d", (int) rte->rtekind);
 	}
@@ -3038,6 +3055,15 @@ get_rte_attribute_is_dropped(RangeTblEntry *rte, AttrNumber attnum)
 								rte->eref->aliasname)));
 				result = false; /* keep compiler quiet */
 			}
+			break;
+		case RTE_RESULT:
+			/* this probably can't happen ... */
+			ereport(ERROR,
+					(errcode(ERRCODE_UNDEFINED_COLUMN),
+					 errmsg("column %d of relation \"%s\" does not exist",
+							attnum,
+							rte->eref->aliasname)));
+			result = false;		/* keep compiler quiet */
 			break;
 		default:
 			elog(ERROR, "unrecognized RTE kind: %d", (int) rte->rtekind);

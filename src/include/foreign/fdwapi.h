@@ -14,7 +14,7 @@
 
 #include "access/parallel.h"
 #include "nodes/execnodes.h"
-#include "nodes/relation.h"
+#include "nodes/pathnodes.h"
 
 /* To avoid including explain.h here, reference ExplainState thus: */
 struct ExplainState;
@@ -121,10 +121,11 @@ typedef void (*EndDirectModify_function) (ForeignScanState *node);
 typedef RowMarkType (*GetForeignRowMarkType_function) (RangeTblEntry *rte,
 													   LockClauseStrength strength);
 
-typedef HeapTuple (*RefetchForeignRow_function) (EState *estate,
-												 ExecRowMark *erm,
-												 Datum rowid,
-												 bool *updated);
+typedef void (*RefetchForeignRow_function) (EState *estate,
+											ExecRowMark *erm,
+											Datum rowid,
+											TupleTableSlot *slot,
+											bool *updated);
 
 typedef void (*ExplainForeignScan_function) (ForeignScanState *node,
 											 struct ExplainState *es);

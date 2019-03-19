@@ -696,15 +696,6 @@ static const SchemaQuery Query_for_list_of_statistics = {
 " UNION ALL SELECT 'SESSION_USER'"
 
 /* the silly-looking length condition is just to eat up the current word */
-#define Query_for_table_owning_index \
-"SELECT pg_catalog.quote_ident(c1.relname) "\
-"  FROM pg_catalog.pg_class c1, pg_catalog.pg_class c2, pg_catalog.pg_index i"\
-" WHERE c1.oid=i.indrelid and i.indexrelid=c2.oid"\
-"       and (%d = pg_catalog.length('%s'))"\
-"       and pg_catalog.quote_ident(c2.relname)='%s'"\
-"       and pg_catalog.pg_table_is_visible(c2.oid)"
-
-/* the silly-looking length condition is just to eat up the current word */
 #define Query_for_index_of_table \
 "SELECT pg_catalog.quote_ident(c2.relname) "\
 "  FROM pg_catalog.pg_class c1, pg_catalog.pg_class c2, pg_catalog.pg_index i"\
@@ -2074,15 +2065,21 @@ psql_completion(const char *text, int start, int end)
 /*
  * ANALYZE [ ( option [, ...] ) ] [ table_and_columns [, ...] ]
  * ANALYZE [ VERBOSE ] [ table_and_columns [, ...] ]
- *
- * Currently the only allowed option is VERBOSE, so we can be skimpier on
- * the option processing than VACUUM has to be.
  */
 	else if (Matches("ANALYZE"))
 		COMPLETE_WITH_SCHEMA_QUERY(Query_for_list_of_analyzables,
 								   " UNION SELECT 'VERBOSE'");
-	else if (Matches("ANALYZE", "("))
-		COMPLETE_WITH("VERBOSE)");
+	else if (HeadMatches("ANALYZE", "(*") &&
+			 !HeadMatches("ANALYZE", "(*)"))
+	{
+		/*
+		 * This fires if we're in an unfinished parenthesized option list.
+		 * get_previous_words treats a completed parenthesized option list as
+		 * one word, so the above test is correct.
+		 */
+		if (ends_with(prev_wd, '(') || ends_with(prev_wd, ','))
+			COMPLETE_WITH("VERBOSE", "SKIP_LOCKED");
+	}
 	else if (HeadMatches("ANALYZE") && TailMatches("("))
 		/* "ANALYZE (" should be caught above, so assume we want columns */
 		COMPLETE_WITH_ATTR(prev2_wd, "");
@@ -3432,7 +3429,7 @@ psql_completion(const char *text, int start, int end)
 		 */
 		if (ends_with(prev_wd, '(') || ends_with(prev_wd, ','))
 			COMPLETE_WITH("FULL", "FREEZE", "ANALYZE", "VERBOSE",
-						  "DISABLE_PAGE_SKIPPING");
+						  "DISABLE_PAGE_SKIPPING", "SKIP_LOCKED");
 	}
 	else if (HeadMatches("VACUUM") && TailMatches("("))
 		/* "VACUUM (" should be caught above, so assume we want columns */

@@ -18,7 +18,7 @@ all: pg_config.h pg_config_ext.h pg_config_os.h
 
 # Subdirectories containing installable headers
 SUBDIRS = access bootstrap catalog commands common datatype \
-	executor fe_utils foreign \
+	executor fe_utils foreign jit \
 	lib libpq mb nodes optimizer parser partitioning postmaster \
 	regex replication rewrite \
 	statistics storage tcop snowball snowball/libstemmer tsearch \
@@ -54,7 +54,7 @@ install: all installdirs
 	  cp $(srcdir)/$$dir/*.h '$(DESTDIR)$(includedir_server)'/$$dir/ || exit; \
 	done
 ifeq ($(vpath_build),yes)
-	for file in catalog/schemapg.h catalog/pg_*_d.h parser/gram.h storage/lwlocknames.h utils/probes.h; do \
+	for file in catalog/schemapg.h catalog/pg_*_d.h parser/gram.h storage/lwlocknames.h utils/probes.h utils/jsonpath_gram.h; do \
 	  cp $$file '$(DESTDIR)$(includedir_server)'/$$file || exit; \
 	done
 endif
@@ -78,7 +78,7 @@ uninstall:
 
 clean:
 	rm -f utils/fmgroids.h utils/fmgrprotos.h utils/errcodes.h utils/header-stamp
-	rm -f parser/gram.h storage/lwlocknames.h utils/probes.h
+	rm -f parser/gram.h storage/lwlocknames.h utils/probes.h utils/jsonpath_gram.h
 	rm -f catalog/schemapg.h catalog/pg_*_d.h catalog/header-stamp
 
 distclean maintainer-clean: clean

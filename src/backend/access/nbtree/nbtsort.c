@@ -61,6 +61,7 @@
 #include "access/nbtree.h"
 #include "access/parallel.h"
 #include "access/relscan.h"
+#include "access/tableam.h"
 #include "access/xact.h"
 #include "access/xlog.h"
 #include "access/xloginsert.h"
@@ -156,12 +157,20 @@ typedef struct BTShared
 	bool		brokenhotchain;
 
 	/*
-	 * This variable-sized field must come last.
-	 *
-	 * See _bt_parallel_estimate_shared() and heap_parallelscan_estimate().
+	 * ParallelTableScanDescData data follows. Can't directly embed here, as
+	 * implementations of the parallel table scan desc interface might need
+	 * stronger alignment.
 	 */
-	ParallelHeapScanDescData heapdesc;
 } BTShared;
+
+/*
+ * Return pointer to a BTShared's parallel table scan.
+ *
+ * c.f. shm_toc_allocate as to why BUFFERALIGN is used, rather than just
+ * MAXALIGN.
+ */
+#define ParallelTableScanFromBTShared(shared) \
+	(ParallelTableScanDesc) ((char *) (shared) + BUFFERALIGN(sizeof(BTShared)))
 
 /*
  * Status for leader in parallel index build.
@@ -282,7 +291,7 @@ static void _bt_load(BTWriteState *wstate,
 static void _bt_begin_parallel(BTBuildState *buildstate, bool isconcurrent,
 				   int request);
 static void _bt_end_parallel(BTLeader *btleader);
-static Size _bt_parallel_estimate_shared(Snapshot snapshot);
+static Size _bt_parallel_estimate_shared(Relation heap, Snapshot snapshot);
 static double _bt_parallel_heapscan(BTBuildState *buildstate,
 					  bool *brokenhotchain);
 static void _bt_leader_participate_as_worker(BTBuildState *buildstate);
@@ -1256,7 +1265,7 @@ _bt_begin_parallel(BTBuildState *buildstate, bool isconcurrent, int request)
 	EnterParallelMode();
 	Assert(request > 0);
 	pcxt = CreateParallelContext("postgres", "_bt_parallel_build_main",
-								 request, true);
+								 request);
 	scantuplesortstates = leaderparticipates ? request + 1 : request;
 
 	/*
@@ -1275,7 +1284,7 @@ _bt_begin_parallel(BTBuildState *buildstate, bool isconcurrent, int request)
 	 * Estimate size for our own PARALLEL_KEY_BTREE_SHARED workspace, and
 	 * PARALLEL_KEY_TUPLESORT tuplesort workspace
 	 */
-	estbtshared = _bt_parallel_estimate_shared(snapshot);
+	estbtshared = _bt_parallel_estimate_shared(btspool->heap, snapshot);
 	shm_toc_estimate_chunk(&pcxt->estimator, estbtshared);
 	estsort = tuplesort_estimate_shared(scantuplesortstates);
 	shm_toc_estimate_chunk(&pcxt->estimator, estsort);
@@ -1316,7 +1325,9 @@ _bt_begin_parallel(BTBuildState *buildstate, bool isconcurrent, int request)
 	btshared->havedead = false;
 	btshared->indtuples = 0.0;
 	btshared->brokenhotchain = false;
-	heap_parallelscan_initialize(&btshared->heapdesc, btspool->heap, snapshot);
+	table_parallelscan_initialize(btspool->heap,
+								  ParallelTableScanFromBTShared(btshared),
+								  snapshot);
 
 	/*
 	 * Store shared tuplesort-private state, for which we reserved space.
@@ -1403,10 +1414,11 @@ _bt_end_parallel(BTLeader *btleader)
  * btree index build based on the snapshot its parallel scan will use.
  */
 static Size
-_bt_parallel_estimate_shared(Snapshot snapshot)
+_bt_parallel_estimate_shared(Relation heap, Snapshot snapshot)
 {
-	return add_size(offsetof(BTShared, heapdesc),
-					heap_parallelscan_estimate(snapshot));
+	/* c.f. shm_toc_allocate as to why BUFFERALIGN is used */
+	return add_size(BUFFERALIGN(sizeof(BTShared)),
+					table_parallelscan_estimate(heap, snapshot));
 }
 
 /*
@@ -1617,7 +1629,7 @@ _bt_parallel_scan_and_sort(BTSpool *btspool, BTSpool *btspool2,
 {
 	SortCoordinate coordinate;
 	BTBuildState buildstate;
-	HeapScanDesc scan;
+	TableScanDesc scan;
 	double		reltuples;
 	IndexInfo  *indexInfo;
 
@@ -1670,7 +1682,8 @@ _bt_parallel_scan_and_sort(BTSpool *btspool, BTSpool *btspool2,
 	/* Join parallel scan */
 	indexInfo = BuildIndexInfo(btspool->index);
 	indexInfo->ii_Concurrent = btshared->isconcurrent;
-	scan = heap_beginscan_parallel(btspool->heap, &btshared->heapdesc);
+	scan = table_beginscan_parallel(btspool->heap,
+									ParallelTableScanFromBTShared(btshared));
 	reltuples = IndexBuildHeapScan(btspool->heap, btspool->index, indexInfo,
 								   true, _bt_build_callback,
 								   (void *) &buildstate, scan);

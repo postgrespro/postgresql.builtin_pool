@@ -29,11 +29,10 @@
 #include "foreign/foreign.h"
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
-#include "optimizer/cost.h"
+#include "optimizer/optimizer.h"
 #include "optimizer/pathnode.h"
 #include "optimizer/planmain.h"
 #include "optimizer/restrictinfo.h"
-#include "optimizer/var.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
 #include "utils/sampling.h"
@@ -557,6 +556,10 @@ fileGetForeignPaths(PlannerInfo *root,
 	 * Create a ForeignPath node and add it as only possible path.  We use the
 	 * fdw_private list of the path to carry the convert_selectively option;
 	 * it will be propagated into the fdw_private list of the Plan node.
+	 *
+	 * We don't support pushing join clauses into the quals of this path, but
+	 * it could still have required parameterization due to LATERAL refs in
+	 * its tlist.
 	 */
 	add_path(baserel, (Path *)
 			 create_foreignscan_path(root, baserel,
@@ -565,7 +568,7 @@ fileGetForeignPaths(PlannerInfo *root,
 									 startup_cost,
 									 total_cost,
 									 NIL,	/* no pathkeys */
-									 NULL,	/* no outer rel either */
+									 baserel->lateral_relids,
 									 NULL,	/* no extra plan */
 									 coptions));
 

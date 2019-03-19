@@ -1177,6 +1177,36 @@ pg_xmlCharStrndup(const char *str, size_t len)
 }
 
 /*
+ * Copy xmlChar string to PostgreSQL-owned memory, freeing the input.
+ *
+ * The input xmlChar is freed regardless of success of the copy.
+ */
+static char *
+xml_pstrdup_and_free(xmlChar *str)
+{
+	char	   *result;
+
+	if (str)
+	{
+		PG_TRY();
+		{
+			result = pstrdup((char *) str);
+		}
+		PG_CATCH();
+		{
+			xmlFree(str);
+			PG_RE_THROW();
+		}
+		PG_END_TRY();
+		xmlFree(str);
+	}
+	else
+		result = NULL;
+
+	return result;
+}
+
+/*
  * str is the null-terminated input string.  Remaining arguments are
  * output arguments; each can be NULL if value is not wanted.
  * version and encoding are returned as locally-palloc'd strings.
@@ -1697,7 +1727,10 @@ xml_errorHandler(void *data, xmlErrorPtr error)
 		appendStringInfo(errorBuf, "line %d: ", error->line);
 	if (name != NULL)
 		appendStringInfo(errorBuf, "element %s: ", name);
-	appendStringInfoString(errorBuf, error->message);
+	if (error->message != NULL)
+		appendStringInfoString(errorBuf, error->message);
+	else
+		appendStringInfoString(errorBuf, "(no message provided)");
 
 	/*
 	 * Append context information to errorBuf.
@@ -3675,45 +3708,69 @@ SPI_sql_row_to_xmlelement(uint64 rownum, StringInfo result, char *tablename,
 #ifdef USE_LIBXML
 
 /*
- * Convert XML node to text (dump subtree in case of element,
- * return value otherwise)
+ * Convert XML node to text.
+ *
+ * For attribute and text nodes, return the escaped text.  For anything else,
+ * dump the whole subtree.
  */
 static text *
 xml_xmlnodetoxmltype(xmlNodePtr cur, PgXmlErrorContext *xmlerrcxt)
 {
 	xmltype    *result;
 
-	if (cur->type == XML_ELEMENT_NODE)
+	if (cur->type != XML_ATTRIBUTE_NODE && cur->type != XML_TEXT_NODE)
 	{
-		xmlBufferPtr buf;
-		xmlNodePtr	cur_copy;
-
-		buf = xmlBufferCreate();
-
-		/*
-		 * The result of xmlNodeDump() won't contain namespace definitions
-		 * from parent nodes, but xmlCopyNode() duplicates a node along with
-		 * its required namespace definitions.
-		 */
-		cur_copy = xmlCopyNode(cur, 1);
-
-		if (cur_copy == NULL)
-			xml_ereport(xmlerrcxt, ERROR, ERRCODE_OUT_OF_MEMORY,
-						"could not copy node");
+		void		(*nodefree) (xmlNodePtr) = NULL;
+		volatile xmlBufferPtr buf = NULL;
+		volatile xmlNodePtr cur_copy = NULL;
 
 		PG_TRY();
 		{
-			xmlNodeDump(buf, NULL, cur_copy, 0, 1);
+			int			bytes;
+
+			buf = xmlBufferCreate();
+			if (buf == NULL || xmlerrcxt->err_occurred)
+				xml_ereport(xmlerrcxt, ERROR, ERRCODE_OUT_OF_MEMORY,
+							"could not allocate xmlBuffer");
+
+			/*
+			 * Produce a dump of the node that we can serialize.  xmlNodeDump
+			 * does that, but the result of that function won't contain
+			 * namespace definitions from ancestor nodes, so we first do a
+			 * xmlCopyNode() which duplicates the node along with its required
+			 * namespace definitions.
+			 *
+			 * Some old libxml2 versions such as 2.7.6 produce partially
+			 * broken XML_DOCUMENT_NODE nodes (unset content field) when
+			 * copying them.  xmlNodeDump of such a node works fine, but
+			 * xmlFreeNode crashes; set us up to call xmlFreeDoc instead.
+			 */
+			cur_copy = xmlCopyNode(cur, 1);
+			if (cur_copy == NULL || xmlerrcxt->err_occurred)
+				xml_ereport(xmlerrcxt, ERROR, ERRCODE_OUT_OF_MEMORY,
+							"could not copy node");
+			nodefree = (cur_copy->type == XML_DOCUMENT_NODE) ?
+				(void (*) (xmlNodePtr)) xmlFreeDoc : xmlFreeNode;
+
+			bytes = xmlNodeDump(buf, NULL, cur_copy, 0, 1);
+			if (bytes == -1 || xmlerrcxt->err_occurred)
+				xml_ereport(xmlerrcxt, ERROR, ERRCODE_OUT_OF_MEMORY,
+							"could not dump node");
+
 			result = xmlBuffer_to_xmltype(buf);
 		}
 		PG_CATCH();
 		{
-			xmlFreeNode(cur_copy);
-			xmlBufferFree(buf);
+			if (nodefree)
+				nodefree(cur_copy);
+			if (buf)
+				xmlBufferFree(buf);
 			PG_RE_THROW();
 		}
 		PG_END_TRY();
-		xmlFreeNode(cur_copy);
+
+		if (nodefree)
+			nodefree(cur_copy);
 		xmlBufferFree(buf);
 	}
 	else
@@ -4476,9 +4533,9 @@ XmlTableGetValue(TableFuncScanState *state, int colnum,
 		/*
 		 * There are four possible cases, depending on the number of nodes
 		 * returned by the XPath expression and the type of the target column:
-		 * a) XPath returns no nodes.  b) One node is returned, and column is
-		 * of type XML.  c) One node, column type other than XML.  d) Multiple
-		 * nodes are returned.
+		 * a) XPath returns no nodes.  b) The target type is XML (return all
+		 * as XML).  For non-XML return types:  c) One node (return content).
+		 * d) Multiple nodes (error).
 		 */
 		if (xpathobj->type == XPATH_NODESET)
 		{
@@ -4491,84 +4548,69 @@ XmlTableGetValue(TableFuncScanState *state, int colnum,
 			{
 				*isnull = true;
 			}
-			else if (count == 1 && typid == XMLOID)
+			else
 			{
-				text	   *textstr;
-
-				/* simple case, result is one value */
-				textstr = xml_xmlnodetoxmltype(xpathobj->nodesetval->nodeTab[0],
-											   xtCxt->xmlerrcxt);
-				cstr = text_to_cstring(textstr);
-			}
-			else if (count == 1)
-			{
-				xmlChar    *str;
-				xmlNodePtr	node;
-
-				/*
-				 * Most nodes (elements and even attributes) store their data
-				 * in children nodes. If they don't have children nodes, it
-				 * means that they are empty (e.g. <element/>). Text nodes and
-				 * CDATA sections are an exception: they don't have children
-				 * but have content in the Text/CDATA node itself.
-				 */
-				node = xpathobj->nodesetval->nodeTab[0];
-				if (node->type != XML_CDATA_SECTION_NODE &&
-					node->type != XML_TEXT_NODE)
-					node = node->xmlChildrenNode;
-
-				str = xmlNodeListGetString(xtCxt->doc, node, 1);
-				if (str != NULL)
+				if (typid == XMLOID)
 				{
-					PG_TRY();
+					text	   *textstr;
+					StringInfoData str;
+
+					/* Concatenate serialized values */
+					initStringInfo(&str);
+					for (int i = 0; i < count; i++)
 					{
-						cstr = pstrdup((char *) str);
+						textstr =
+							xml_xmlnodetoxmltype(xpathobj->nodesetval->nodeTab[i],
+												 xtCxt->xmlerrcxt);
+
+						appendStringInfoText(&str, textstr);
 					}
-					PG_CATCH();
-					{
-						xmlFree(str);
-						PG_RE_THROW();
-					}
-					PG_END_TRY();
-					xmlFree(str);
+					cstr = str.data;
 				}
 				else
 				{
-					/* Ensure mapping of empty tags to PostgreSQL values. */
-					cstr = "";
+					xmlChar    *str;
+
+					if (count > 1)
+						ereport(ERROR,
+								(errcode(ERRCODE_CARDINALITY_VIOLATION),
+								 errmsg("more than one value returned by column XPath expression")));
+
+					str = xmlXPathCastNodeSetToString(xpathobj->nodesetval);
+					cstr = str ? xml_pstrdup_and_free(str) : "";
 				}
-			}
-			else
-			{
-				StringInfoData str;
-				int			i;
-
-				Assert(count > 1);
-
-				/*
-				 * When evaluating the XPath expression returns multiple
-				 * nodes, the result is the concatenation of them all. The
-				 * target type must be XML.
-				 */
-				if (typid != XMLOID)
-					ereport(ERROR,
-							(errcode(ERRCODE_CARDINALITY_VIOLATION),
-							 errmsg("more than one value returned by column XPath expression")));
-
-				/* Concatenate serialized values */
-				initStringInfo(&str);
-				for (i = 0; i < count; i++)
-				{
-					appendStringInfoText(&str,
-										 xml_xmlnodetoxmltype(xpathobj->nodesetval->nodeTab[i],
-															  xtCxt->xmlerrcxt));
-				}
-				cstr = str.data;
 			}
 		}
 		else if (xpathobj->type == XPATH_STRING)
 		{
-			cstr = (char *) xpathobj->stringval;
+			/* Content should be escaped when target will be XML */
+			if (typid == XMLOID)
+				cstr = escape_xml((char *) xpathobj->stringval);
+			else
+				cstr = (char *) xpathobj->stringval;
+		}
+		else if (xpathobj->type == XPATH_BOOLEAN)
+		{
+			char		typcategory;
+			bool		typispreferred;
+			xmlChar    *str;
+
+			/* Allow implicit casting from boolean to numbers */
+			get_type_category_preferred(typid, &typcategory, &typispreferred);
+
+			if (typcategory != TYPCATEGORY_NUMERIC)
+				str = xmlXPathCastBooleanToString(xpathobj->boolval);
+			else
+				str = xmlXPathCastNumberToString(xmlXPathCastBooleanToNumber(xpathobj->boolval));
+
+			cstr = xml_pstrdup_and_free(str);
+		}
+		else if (xpathobj->type == XPATH_NUMBER)
+		{
+			xmlChar    *str;
+
+			str = xmlXPathCastNumberToString(xpathobj->floatval);
+			cstr = xml_pstrdup_and_free(str);
 		}
 		else
 			elog(ERROR, "unexpected XPath object type %u", xpathobj->type);

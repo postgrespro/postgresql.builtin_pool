@@ -19,6 +19,7 @@
 #include "lib/pairingheap.h"
 #include "nodes/params.h"
 #include "nodes/plannodes.h"
+#include "partitioning/partdefs.h"
 #include "utils/hsearch.h"
 #include "utils/queryenvironment.h"
 #include "utils/reltrigger.h"
@@ -377,8 +378,9 @@ typedef struct OnConflictSetState
 {
 	NodeTag		type;
 
+	TupleTableSlot *oc_Existing;	/* slot to store existing target tuple in */
+	TupleTableSlot *oc_ProjSlot;	/* CONFLICT ... SET ... projection target */
 	ProjectionInfo *oc_ProjInfo;	/* for ON CONFLICT DO UPDATE SET */
-	TupleDesc	oc_ProjTupdesc; /* TupleDesc for the above projection */
 	ExprState  *oc_WhereClause; /* state for the WHERE clause */
 } OnConflictSetState;
 
@@ -426,6 +428,11 @@ typedef struct ResultRelInfo
 
 	/* optional runtime measurements for triggers */
 	Instrumentation *ri_TrigInstrument;
+
+	/* On-demand created slots for triggers / returning processing */
+	TupleTableSlot *ri_ReturningSlot; /* for trigger output tuples */
+	TupleTableSlot *ri_TrigOldSlot; /* for a trigger's old tuple */
+	TupleTableSlot *ri_TrigNewSlot; /* for a trigger's new tuple */
 
 	/* FDW callback functions, if foreign table */
 	struct FdwRoutine *ri_FdwRoutine;
@@ -515,6 +522,7 @@ typedef struct EState
 	 */
 	ResultRelInfo *es_root_result_relations;	/* array of ResultRelInfos */
 	int			es_num_root_result_relations;	/* length of the array */
+	PartitionDirectory es_partition_directory;	/* for PartitionDesc lookup */
 
 	/*
 	 * The following list contains ResultRelInfos created by the tuple routing
@@ -524,9 +532,6 @@ typedef struct EState
 
 	/* Stuff used for firing triggers: */
 	List	   *es_trig_target_relations;	/* trigger-only ResultRelInfos */
-	TupleTableSlot *es_trig_tuple_slot; /* for trigger output tuples */
-	TupleTableSlot *es_trig_oldtup_slot;	/* for TriggerEnabled */
-	TupleTableSlot *es_trig_newtup_slot;	/* for TriggerEnabled */
 
 	/* Parameter info: */
 	ParamListInfo es_param_list_info;	/* values of external params */
@@ -560,15 +565,15 @@ typedef struct EState
 
 	/*
 	 * These fields are for re-evaluating plan quals when an updated tuple is
-	 * substituted in READ COMMITTED mode.  es_epqTuple[] contains tuples that
-	 * scan plan nodes should return instead of whatever they'd normally
-	 * return, or NULL if nothing to return; es_epqTupleSet[] is true if a
-	 * particular array entry is valid; and es_epqScanDone[] is state to
-	 * remember if the tuple has been returned already.  Arrays are of size
-	 * es_range_table_size and are indexed by scan node scanrelid - 1.
+	 * substituted in READ COMMITTED mode.  es_epqTupleSlot[] contains test
+	 * tuples that scan plan nodes should return instead of whatever they'd
+	 * normally return, or an empty slot if there is nothing to return; if
+	 * es_epqTupleSlot[] is not NULL if a particular array entry is valid; and
+	 * es_epqScanDone[] is state to remember if the tuple has been returned
+	 * already.  Arrays are of size es_range_table_size and are indexed by
+	 * scan node scanrelid - 1.
 	 */
-	HeapTuple  *es_epqTuple;	/* array of EPQ substitute tuples */
-	bool	   *es_epqTupleSet; /* true if EPQ tuple is provided */
+	TupleTableSlot **es_epqTupleSlot;	/* array of EPQ substitute tuples */
 	bool	   *es_epqScanDone; /* true if EPQ tuple has been fetched */
 
 	bool		es_use_parallel_mode;	/* can we use parallel workers? */
@@ -1107,9 +1112,7 @@ typedef struct ModifyTableState
 	List	  **mt_arowmarks;	/* per-subplan ExecAuxRowMark lists */
 	EPQState	mt_epqstate;	/* for evaluating EvalPlanQual rechecks */
 	bool		fireBSTriggers; /* do we need to fire stmt triggers? */
-	TupleTableSlot *mt_existing;	/* slot to store existing target tuple in */
 	List	   *mt_excludedtlist;	/* the excluded pseudo relation's tlist  */
-	TupleTableSlot *mt_conflproj;	/* CONFLICT ... SET ... projection target */
 
 	/*
 	 * Slot for storing tuples in the root partitioned table's rowtype during
@@ -1267,7 +1270,7 @@ typedef struct ScanState
 {
 	PlanState	ps;				/* its first field is NodeTag */
 	Relation	ss_currentRelation;
-	struct HeapScanDescData *ss_currentScanDesc;
+	struct TableScanDescData *ss_currentScanDesc;
 	TupleTableSlot *ss_ScanTupleSlot;
 } ScanState;
 
@@ -2255,8 +2258,6 @@ typedef struct LockRowsState
 	PlanState	ps;				/* its first field is NodeTag */
 	List	   *lr_arowMarks;	/* List of ExecAuxRowMarks */
 	EPQState	lr_epqstate;	/* for evaluating EvalPlanQual rechecks */
-	HeapTuple  *lr_curtuples;	/* locked tuples (one entry per RT entry) */
-	int			lr_ntables;		/* length of lr_curtuples[] array */
 } LockRowsState;
 
 /* ----------------

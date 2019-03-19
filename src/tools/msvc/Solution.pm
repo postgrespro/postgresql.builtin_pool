@@ -276,7 +276,7 @@ sub GenerateFiles
 		|| IsNewer('fmgr-stamp', '../../../src/include/access/transam.h'))
 	{
 		system(
-			"perl -I ../catalog Gen_fmgrtab.pl -I../../../src/include/ $pg_proc_dat"
+			"perl -I ../catalog Gen_fmgrtab.pl --include-path ../../../src/include/ $pg_proc_dat"
 		);
 		open(my $f, '>', 'fmgr-stamp')
 		  || confess "Could not touch fmgr-stamp";
@@ -325,6 +325,24 @@ sub GenerateFiles
 		system(
 			'perl src/backend/utils/Gen_dummy_probes.pl src/backend/utils/probes.d > src/include/utils/probes.h'
 		);
+	}
+
+	if (IsNewer(
+			'src/backend/utils/adt/jsonpath_gram.h',
+			'src/backend/utils/adt/jsonpath_gram.y'))
+	{
+		print "Generating jsonpath_gram.h...\n";
+		chdir('src/backend/utils/adt');
+		system('perl ../../../tools/msvc/pgbison.pl jsonpath_gram.y');
+		chdir('../../../..');
+	}
+
+	if (IsNewer(
+			'src/include/utils/jsonpath_gram.h',
+			'src/backend/utils/adt/jsonpath_gram.h'))
+	{
+		copyFile('src/backend/utils/adt/jsonpath_gram.h',
+			'src/include/utils/jsonpath_gram.h');
 	}
 
 	if ($self->{options}->{python}
@@ -527,7 +545,7 @@ EOF
 	{
 		chdir('src/backend/catalog');
 		my $bki_srcs = join(' ../../../src/include/catalog/', @bki_srcs);
-		system("perl genbki.pl  -I../../../src/include/ --set-version=$self->{majorver} $bki_srcs");
+		system("perl genbki.pl --include-path ../../../src/include/ --set-version=$self->{majorver} $bki_srcs");
 		open(my $f, '>', 'bki-stamp')
 		  || confess "Could not touch bki-stamp";
 		close($f);

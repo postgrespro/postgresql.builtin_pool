@@ -29,7 +29,7 @@ ALTER TABLE attmp ADD COLUMN l tid;
 ALTER TABLE attmp ADD COLUMN m xid;
 ALTER TABLE attmp ADD COLUMN n oidvector;
 --ALTER TABLE attmp ADD COLUMN o lock;
-ALTER TABLE attmp ADD COLUMN p smgr;
+ALTER TABLE attmp ADD COLUMN p boolean;
 ALTER TABLE attmp ADD COLUMN q point;
 ALTER TABLE attmp ADD COLUMN r lseg;
 ALTER TABLE attmp ADD COLUMN s path;
@@ -44,13 +44,13 @@ INSERT INTO attmp (a, b, c, d, e, f, g,    i,    k, l, m, n, p, q, r, s, t,
    VALUES (4, 'name', 'text', 4.1, 4.1, 2, '(4.1,4.1,3.1,3.1)',
 	'c',
 	314159, '(1,1)', '512',
-	'1 2 3 4 5 6 7 8', 'magnetic disk', '(1.1,1.1)', '(4.1,4.1,3.1,3.1)',
+	'1 2 3 4 5 6 7 8', true, '(1.1,1.1)', '(4.1,4.1,3.1,3.1)',
 	'(0,2,4.1,4.1,3.1,3.1)', '(4.1,4.1,3.1,3.1)',
 	'epoch', '01:00:10', '{1.0,2.0,3.0,4.0}', '{1.0,2.0,3.0,4.0}', '{1,2,3,4}');
 SELECT * FROM attmp;
- initial | a |  b   |  c   |  d  |  e  | f |           g           | i |   k    |   l   |  m  |        n        |       p       |     q     |           r           |              s              |          t          |            v             |        w         |     x     |     y     |     z     
----------+---+------+------+-----+-----+---+-----------------------+---+--------+-------+-----+-----------------+---------------+-----------+-----------------------+-----------------------------+---------------------+--------------------------+------------------+-----------+-----------+-----------
-         | 4 | name | text | 4.1 | 4.1 | 2 | ((4.1,4.1),(3.1,3.1)) | c | 314159 | (1,1) | 512 | 1 2 3 4 5 6 7 8 | magnetic disk | (1.1,1.1) | [(4.1,4.1),(3.1,3.1)] | ((0,2),(4.1,4.1),(3.1,3.1)) | (4.1,4.1),(3.1,3.1) | Thu Jan 01 00:00:00 1970 | @ 1 hour 10 secs | {1,2,3,4} | {1,2,3,4} | {1,2,3,4}
+ initial | a |  b   |  c   |  d  |  e  | f |           g           | i |   k    |   l   |  m  |        n        | p |     q     |           r           |              s              |          t          |            v             |        w         |     x     |     y     |     z     
+---------+---+------+------+-----+-----+---+-----------------------+---+--------+-------+-----+-----------------+---+-----------+-----------------------+-----------------------------+---------------------+--------------------------+------------------+-----------+-----------+-----------
+         | 4 | name | text | 4.1 | 4.1 | 2 | ((4.1,4.1),(3.1,3.1)) | c | 314159 | (1,1) | 512 | 1 2 3 4 5 6 7 8 | t | (1.1,1.1) | [(4.1,4.1),(3.1,3.1)] | ((0,2),(4.1,4.1),(3.1,3.1)) | (4.1,4.1),(3.1,3.1) | Thu Jan 01 00:00:00 1970 | @ 1 hour 10 secs | {1,2,3,4} | {1,2,3,4} | {1,2,3,4}
 (1 row)
 
 DROP TABLE attmp;
@@ -71,7 +71,7 @@ ALTER TABLE attmp ADD COLUMN l tid;
 ALTER TABLE attmp ADD COLUMN m xid;
 ALTER TABLE attmp ADD COLUMN n oidvector;
 --ALTER TABLE attmp ADD COLUMN o lock;
-ALTER TABLE attmp ADD COLUMN p smgr;
+ALTER TABLE attmp ADD COLUMN p boolean;
 ALTER TABLE attmp ADD COLUMN q point;
 ALTER TABLE attmp ADD COLUMN r lseg;
 ALTER TABLE attmp ADD COLUMN s path;
@@ -86,13 +86,13 @@ INSERT INTO attmp (a, b, c, d, e, f, g,    i,   k, l, m, n, p, q, r, s, t,
    VALUES (4, 'name', 'text', 4.1, 4.1, 2, '(4.1,4.1,3.1,3.1)',
         'c',
 	314159, '(1,1)', '512',
-	'1 2 3 4 5 6 7 8', 'magnetic disk', '(1.1,1.1)', '(4.1,4.1,3.1,3.1)',
+	'1 2 3 4 5 6 7 8', true, '(1.1,1.1)', '(4.1,4.1,3.1,3.1)',
 	'(0,2,4.1,4.1,3.1,3.1)', '(4.1,4.1,3.1,3.1)',
 	'epoch', '01:00:10', '{1.0,2.0,3.0,4.0}', '{1.0,2.0,3.0,4.0}', '{1,2,3,4}');
 SELECT * FROM attmp;
- initial | a |  b   |  c   |  d  |  e  | f |           g           | i |   k    |   l   |  m  |        n        |       p       |     q     |           r           |              s              |          t          |            v             |        w         |     x     |     y     |     z     
----------+---+------+------+-----+-----+---+-----------------------+---+--------+-------+-----+-----------------+---------------+-----------+-----------------------+-----------------------------+---------------------+--------------------------+------------------+-----------+-----------+-----------
-         | 4 | name | text | 4.1 | 4.1 | 2 | ((4.1,4.1),(3.1,3.1)) | c | 314159 | (1,1) | 512 | 1 2 3 4 5 6 7 8 | magnetic disk | (1.1,1.1) | [(4.1,4.1),(3.1,3.1)] | ((0,2),(4.1,4.1),(3.1,3.1)) | (4.1,4.1),(3.1,3.1) | Thu Jan 01 00:00:00 1970 | @ 1 hour 10 secs | {1,2,3,4} | {1,2,3,4} | {1,2,3,4}
+ initial | a |  b   |  c   |  d  |  e  | f |           g           | i |   k    |   l   |  m  |        n        | p |     q     |           r           |              s              |          t          |            v             |        w         |     x     |     y     |     z     
+---------+---+------+------+-----+-----+---+-----------------------+---+--------+-------+-----+-----------------+---+-----------+-----------------------+-----------------------------+---------------------+--------------------------+------------------+-----------+-----------+-----------
+         | 4 | name | text | 4.1 | 4.1 | 2 | ((4.1,4.1),(3.1,3.1)) | c | 314159 | (1,1) | 512 | 1 2 3 4 5 6 7 8 | t | (1.1,1.1) | [(4.1,4.1),(3.1,3.1)] | ((0,2),(4.1,4.1),(3.1,3.1)) | (4.1,4.1),(3.1,3.1) | Thu Jan 01 00:00:00 1970 | @ 1 hour 10 secs | {1,2,3,4} | {1,2,3,4} | {1,2,3,4}
 (1 row)
 
 CREATE INDEX attmp_idx ON attmp (a, (d + e), b);
@@ -655,26 +655,26 @@ CREATE TEMP TABLE PKTABLE (ptest1 int, ptest2 inet,
 -- This should fail, because we just chose really odd types
 CREATE TEMP TABLE FKTABLE (ftest1 cidr, ftest2 timestamp);
 ALTER TABLE FKTABLE ADD FOREIGN KEY(ftest1, ftest2) references pktable;
-ERROR:  foreign key constraint "fktable_ftest1_fkey" cannot be implemented
+ERROR:  foreign key constraint "fktable_ftest1_ftest2_fkey" cannot be implemented
 DETAIL:  Key columns "ftest1" and "ptest1" are of incompatible types: cidr and integer.
 DROP TABLE FKTABLE;
 -- Again, so should this...
 CREATE TEMP TABLE FKTABLE (ftest1 cidr, ftest2 timestamp);
 ALTER TABLE FKTABLE ADD FOREIGN KEY(ftest1, ftest2)
      references pktable(ptest1, ptest2);
-ERROR:  foreign key constraint "fktable_ftest1_fkey" cannot be implemented
+ERROR:  foreign key constraint "fktable_ftest1_ftest2_fkey" cannot be implemented
 DETAIL:  Key columns "ftest1" and "ptest1" are of incompatible types: cidr and integer.
 DROP TABLE FKTABLE;
 -- This fails because we mixed up the column ordering
 CREATE TEMP TABLE FKTABLE (ftest1 int, ftest2 inet);
 ALTER TABLE FKTABLE ADD FOREIGN KEY(ftest1, ftest2)
      references pktable(ptest2, ptest1);
-ERROR:  foreign key constraint "fktable_ftest1_fkey" cannot be implemented
+ERROR:  foreign key constraint "fktable_ftest1_ftest2_fkey" cannot be implemented
 DETAIL:  Key columns "ftest1" and "ptest2" are of incompatible types: integer and inet.
 -- As does this...
 ALTER TABLE FKTABLE ADD FOREIGN KEY(ftest2, ftest1)
      references pktable(ptest1, ptest2);
-ERROR:  foreign key constraint "fktable_ftest2_fkey" cannot be implemented
+ERROR:  foreign key constraint "fktable_ftest2_ftest1_fkey" cannot be implemented
 DETAIL:  Key columns "ftest2" and "ptest1" are of incompatible types: inet and integer.
 DROP TABLE FKTABLE;
 DROP TABLE PKTABLE;
@@ -1064,6 +1064,41 @@ ERROR:  "myview" is not a table or foreign table
 alter table myview alter column test set not null;
 ERROR:  "myview" is not a table or foreign table
 drop view myview;
+drop table atacc1;
+-- set not null verified by constraints
+create table atacc1 (test_a int, test_b int);
+insert into atacc1 values (null, 1);
+-- constraint not cover all values, should fail
+alter table atacc1 add constraint atacc1_constr_or check(test_a is not null or test_b < 10);
+alter table atacc1 alter test_a set not null;
+ERROR:  column "test_a" contains null values
+alter table atacc1 drop constraint atacc1_constr_or;
+-- not valid constraint, should fail
+alter table atacc1 add constraint atacc1_constr_invalid check(test_a is not null) not valid;
+alter table atacc1 alter test_a set not null;
+ERROR:  column "test_a" contains null values
+alter table atacc1 drop constraint atacc1_constr_invalid;
+-- with valid constraint
+update atacc1 set test_a = 1;
+alter table atacc1 add constraint atacc1_constr_a_valid check(test_a is not null);
+alter table atacc1 alter test_a set not null;
+delete from atacc1;
+insert into atacc1 values (2, null);
+alter table atacc1 alter test_a drop not null;
+-- test multiple set not null at same time
+-- test_a checked by atacc1_constr_a_valid, test_b should fail by table scan
+alter table atacc1 alter test_a set not null, alter test_b set not null;
+ERROR:  column "test_b" contains null values
+-- commands order has no importance
+alter table atacc1 alter test_b set not null, alter test_a set not null;
+ERROR:  column "test_b" contains null values
+-- valid one by table scan, one by check constraints
+update atacc1 set test_b = 1;
+alter table atacc1 alter test_b set not null, alter test_a set not null;
+alter table atacc1 alter test_a drop not null, alter test_b drop not null;
+-- both column has check constraints
+alter table atacc1 add constraint atacc1_constr_b_valid check(test_b is not null);
+alter table atacc1 alter test_b set not null, alter test_a set not null;
 drop table atacc1;
 -- test inheritance
 create table parent (a int);
@@ -3050,10 +3085,9 @@ DETAIL:  System catalog modifications are currently disallowed.
 -- instead create in public first, move to catalog
 CREATE TABLE new_system_table(id serial primary key, othercol text);
 ALTER TABLE new_system_table SET SCHEMA pg_catalog;
--- XXX: it's currently impossible to move relations out of pg_catalog
 ALTER TABLE new_system_table SET SCHEMA public;
-ERROR:  cannot remove dependency on schema pg_catalog because it is a system object
--- move back, will be ignored -- already there
+ALTER TABLE new_system_table SET SCHEMA pg_catalog;
+-- will be ignored -- already there:
 ALTER TABLE new_system_table SET SCHEMA pg_catalog;
 ALTER TABLE new_system_table RENAME TO old_system_table;
 CREATE INDEX old_system_table__othercol ON old_system_table (othercol);

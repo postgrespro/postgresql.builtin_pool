@@ -40,10 +40,10 @@
 #include "catalog/pg_type.h"
 #include "nodes/nodeFuncs.h"
 #include "optimizer/clauses.h"
+#include "optimizer/optimizer.h"
 #include "optimizer/pathnode.h"
 #include "optimizer/paths.h"
 #include "optimizer/restrictinfo.h"
-#include "optimizer/var.h"
 
 
 /*
@@ -250,7 +250,7 @@ TidQualFromRestrictInfoList(List *rlist, RelOptInfo *rel)
 				List	   *sublist;
 
 				/* OR arguments should be ANDs or sub-RestrictInfos */
-				if (and_clause(orarg))
+				if (is_andclause(orarg))
 				{
 					List	   *andargs = ((BoolExpr *) orarg)->args;
 

@@ -40,6 +40,7 @@
 #include "access/heapam.h"
 #include "access/htup_details.h"
 #include "access/sysattr.h"
+#include "access/tableam.h"
 #include "access/transam.h"
 #include "access/xact.h"
 #include "catalog/namespace.h"
@@ -52,9 +53,7 @@
 #include "jit/jit.h"
 #include "mb/pg_wchar.h"
 #include "miscadmin.h"
-#include "optimizer/clauses.h"
 #include "parser/parsetree.h"
-#include "rewrite/rewriteManip.h"
 #include "storage/bufmgr.h"
 #include "storage/lmgr.h"
 #include "tcop/utility.h"
@@ -976,13 +975,9 @@ InitPlan(QueryDesc *queryDesc, int eflags)
 	 * Initialize the executor's tuple table to empty.
 	 */
 	estate->es_tupleTable = NIL;
-	estate->es_trig_tuple_slot = NULL;
-	estate->es_trig_oldtup_slot = NULL;
-	estate->es_trig_newtup_slot = NULL;
 
 	/* mark EvalPlanQual not active */
-	estate->es_epqTuple = NULL;
-	estate->es_epqTupleSet = NULL;
+	estate->es_epqTupleSlot = NULL;
 	estate->es_epqScanDone = NULL;
 
 	/*
@@ -1325,6 +1320,9 @@ InitResultRelInfo(ResultRelInfo *resultRelInfo,
 	resultRelInfo->ri_projectReturning = NULL;
 	resultRelInfo->ri_onConflictArbiterIndexes = NIL;
 	resultRelInfo->ri_onConflict = NULL;
+	resultRelInfo->ri_ReturningSlot = NULL;
+	resultRelInfo->ri_TrigOldSlot = NULL;
+	resultRelInfo->ri_TrigNewSlot = NULL;
 
 	/*
 	 * Partition constraint, which also includes the partition constraint of
@@ -2442,24 +2440,9 @@ EvalPlanQual(EState *estate, EPQState *epqstate,
 			 ItemPointer tid, TransactionId priorXmax)
 {
 	TupleTableSlot *slot;
-	HeapTuple	copyTuple;
+	TupleTableSlot *testslot;
 
 	Assert(rti > 0);
-
-	/*
-	 * Get and lock the updated version of the row; if fail, return NULL.
-	 */
-	copyTuple = EvalPlanQualFetch(estate, relation, lockmode, LockWaitBlock,
-								  tid, priorXmax);
-
-	if (copyTuple == NULL)
-		return NULL;
-
-	/*
-	 * For UPDATE/DELETE we have to return tid of actual row we're executing
-	 * PQ for.
-	 */
-	*tid = copyTuple->t_self;
 
 	/*
 	 * Need to run a recheck subquery.  Initialize or reinitialize EPQ state.
@@ -2467,10 +2450,19 @@ EvalPlanQual(EState *estate, EPQState *epqstate,
 	EvalPlanQualBegin(epqstate, estate);
 
 	/*
-	 * Free old test tuple, if any, and store new tuple where relation's scan
-	 * node will see it
+	 * Get and lock the updated version of the row; if fail, return NULL.
 	 */
-	EvalPlanQualSetTuple(epqstate, rti, copyTuple);
+	testslot = EvalPlanQualSlot(epqstate, relation, rti);
+	if (!EvalPlanQualFetch(estate, relation, lockmode, LockWaitBlock,
+						   tid, priorXmax,
+						   testslot))
+		return NULL;
+
+	/*
+	 * For UPDATE/DELETE we have to return tid of actual row we're executing
+	 * PQ for.
+	 */
+	*tid = testslot->tts_tid;
 
 	/*
 	 * Fetch any non-locked source rows
@@ -2497,7 +2489,7 @@ EvalPlanQual(EState *estate, EPQState *epqstate,
 	 * re-used to test a tuple for a different relation.  (Not clear that can
 	 * really happen, but let's be safe.)
 	 */
-	EvalPlanQualSetTuple(epqstate, rti, NULL);
+	ExecClearTuple(testslot);
 
 	return slot;
 }
@@ -2511,21 +2503,22 @@ EvalPlanQual(EState *estate, EPQState *epqstate,
  *	wait_policy - requested lock wait policy
  *	*tid - t_ctid from the outdated tuple (ie, next updated version)
  *	priorXmax - t_xmax from the outdated tuple
+ *	slot - slot to store newest tuple version
  *
- * Returns a palloc'd copy of the newest tuple version, or NULL if we find
- * that there is no newest version (ie, the row was deleted not updated).
- * We also return NULL if the tuple is locked and the wait policy is to skip
+ * Returns true, with slot containing the newest tuple version, or false if we
+ * find that there is no newest version (ie, the row was deleted not updated).
+ * We also return false if the tuple is locked and the wait policy is to skip
  * such tuples.
  *
  * If successful, we have locked the newest tuple version, so caller does not
  * need to worry about it changing anymore.
  */
-HeapTuple
+bool
 EvalPlanQualFetch(EState *estate, Relation relation, LockTupleMode lockmode,
 				  LockWaitPolicy wait_policy,
-				  ItemPointer tid, TransactionId priorXmax)
+				  ItemPointer tid, TransactionId priorXmax,
+				  TupleTableSlot *slot)
 {
-	HeapTuple	copyTuple = NULL;
 	HeapTupleData tuple;
 	SnapshotData SnapshotDirty;
 
@@ -2558,7 +2551,7 @@ EvalPlanQualFetch(EState *estate, Relation relation, LockTupleMode lockmode,
 									 priorXmax))
 			{
 				ReleaseBuffer(buffer);
-				return NULL;
+				return false;
 			}
 
 			/* otherwise xmin should not be dirty... */
@@ -2581,7 +2574,7 @@ EvalPlanQualFetch(EState *estate, Relation relation, LockTupleMode lockmode,
 						break;
 					case LockWaitSkip:
 						if (!ConditionalXactLockTableWait(SnapshotDirty.xmax))
-							return NULL;	/* skip instead of waiting */
+							return false;	/* skip instead of waiting */
 						break;
 					case LockWaitError:
 						if (!ConditionalXactLockTableWait(SnapshotDirty.xmax))
@@ -2609,7 +2602,7 @@ EvalPlanQualFetch(EState *estate, Relation relation, LockTupleMode lockmode,
 				HeapTupleHeaderGetCmin(tuple.t_data) >= estate->es_output_cid)
 			{
 				ReleaseBuffer(buffer);
-				return NULL;
+				return false;
 			}
 
 			/*
@@ -2641,7 +2634,7 @@ EvalPlanQualFetch(EState *estate, Relation relation, LockTupleMode lockmode,
 					 * now, treat the tuple as deleted and do not process.
 					 */
 					ReleaseBuffer(buffer);
-					return NULL;
+					return false;
 
 				case HeapTupleMayBeUpdated:
 					/* successfully locked */
@@ -2669,11 +2662,11 @@ EvalPlanQualFetch(EState *estate, Relation relation, LockTupleMode lockmode,
 						continue;
 					}
 					/* tuple was deleted, so give up */
-					return NULL;
+					return false;
 
 				case HeapTupleWouldBlock:
 					ReleaseBuffer(buffer);
-					return NULL;
+					return false;
 
 				case HeapTupleInvisible:
 					elog(ERROR, "attempted to lock invisible tuple");
@@ -2683,14 +2676,14 @@ EvalPlanQualFetch(EState *estate, Relation relation, LockTupleMode lockmode,
 					ReleaseBuffer(buffer);
 					elog(ERROR, "unrecognized heap_lock_tuple status: %u",
 						 test);
-					return NULL;	/* keep compiler quiet */
+					return false;	/* keep compiler quiet */
 			}
 
 			/*
-			 * We got tuple - now copy it for use by recheck query.
+			 * We got tuple - store it for use by the recheck query.
 			 */
-			copyTuple = heap_copytuple(&tuple);
-			ReleaseBuffer(buffer);
+			ExecStorePinnedBufferHeapTuple(&tuple, slot, buffer);
+			ExecMaterializeSlot(slot);
 			break;
 		}
 
@@ -2701,7 +2694,7 @@ EvalPlanQualFetch(EState *estate, Relation relation, LockTupleMode lockmode,
 		if (tuple.t_data == NULL)
 		{
 			ReleaseBuffer(buffer);
-			return NULL;
+			return false;
 		}
 
 		/*
@@ -2711,7 +2704,7 @@ EvalPlanQualFetch(EState *estate, Relation relation, LockTupleMode lockmode,
 								 priorXmax))
 		{
 			ReleaseBuffer(buffer);
-			return NULL;
+			return false;
 		}
 
 		/*
@@ -2738,7 +2731,7 @@ EvalPlanQualFetch(EState *estate, Relation relation, LockTupleMode lockmode,
 		{
 			/* deleted, so forget about it */
 			ReleaseBuffer(buffer);
-			return NULL;
+			return false;
 		}
 
 		/* updated, so look at the updated row */
@@ -2749,10 +2742,8 @@ EvalPlanQualFetch(EState *estate, Relation relation, LockTupleMode lockmode,
 		/* loop back to fetch next in chain */
 	}
 
-	/*
-	 * Return the copied tuple
-	 */
-	return copyTuple;
+	/* signal success */
+	return true;
 }
 
 /*
@@ -2793,38 +2784,35 @@ EvalPlanQualSetPlan(EPQState *epqstate, Plan *subplan, List *auxrowmarks)
 }
 
 /*
- * Install one test tuple into EPQ state, or clear test tuple if tuple == NULL
- *
- * NB: passed tuple must be palloc'd; it may get freed later
+ * Return, and create if necessary, a slot for an EPQ test tuple.
  */
-void
-EvalPlanQualSetTuple(EPQState *epqstate, Index rti, HeapTuple tuple)
+TupleTableSlot *
+EvalPlanQualSlot(EPQState *epqstate,
+				 Relation relation, Index rti)
 {
-	EState	   *estate = epqstate->estate;
+	TupleTableSlot **slot;
 
-	Assert(rti > 0);
+	Assert(rti > 0 && rti <= epqstate->estate->es_range_table_size);
+	slot = &epqstate->estate->es_epqTupleSlot[rti - 1];
 
-	/*
-	 * free old test tuple, if any, and store new tuple where relation's scan
-	 * node will see it
-	 */
-	if (estate->es_epqTuple[rti - 1] != NULL)
-		heap_freetuple(estate->es_epqTuple[rti - 1]);
-	estate->es_epqTuple[rti - 1] = tuple;
-	estate->es_epqTupleSet[rti - 1] = true;
-}
+	if (*slot == NULL)
+	{
+		MemoryContext oldcontext;
 
-/*
- * Fetch back the current test tuple (if any) for the specified RTI
- */
-HeapTuple
-EvalPlanQualGetTuple(EPQState *epqstate, Index rti)
-{
-	EState	   *estate = epqstate->estate;
+		oldcontext = MemoryContextSwitchTo(epqstate->estate->es_query_cxt);
 
-	Assert(rti > 0);
+		if (relation)
+			*slot = table_slot_create(relation,
+										 &epqstate->estate->es_tupleTable);
+		else
+			*slot = ExecAllocTableSlot(&epqstate->estate->es_tupleTable,
+									   epqstate->origslot->tts_tupleDescriptor,
+									   &TTSOpsVirtual);
 
-	return estate->es_epqTuple[rti - 1];
+		MemoryContextSwitchTo(oldcontext);
+	}
+
+	return *slot;
 }
 
 /*
@@ -2845,13 +2833,14 @@ EvalPlanQualFetchRowMarks(EPQState *epqstate)
 		ExecRowMark *erm = aerm->rowmark;
 		Datum		datum;
 		bool		isNull;
-		HeapTupleData tuple;
+		TupleTableSlot *slot;
 
 		if (RowMarkRequiresRowShareLock(erm->markType))
 			elog(ERROR, "EvalPlanQual doesn't support locking rowmarks");
 
 		/* clear any leftover test tuple for this rel */
-		EvalPlanQualSetTuple(epqstate, erm->rti, NULL);
+		slot = EvalPlanQualSlot(epqstate, erm->relation, erm->rti);
+		ExecClearTuple(slot);
 
 		/* if child rel, must check whether it produced this row */
 		if (erm->rti != erm->prti)
@@ -2876,8 +2865,6 @@ EvalPlanQualFetchRowMarks(EPQState *epqstate)
 
 		if (erm->markType == ROW_MARK_REFERENCE)
 		{
-			HeapTuple	copyTuple;
-
 			Assert(erm->relation != NULL);
 
 			/* fetch the tuple's ctid */
@@ -2901,11 +2888,13 @@ EvalPlanQualFetchRowMarks(EPQState *epqstate)
 							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 							 errmsg("cannot lock rows in foreign table \"%s\"",
 									RelationGetRelationName(erm->relation))));
-				copyTuple = fdwroutine->RefetchForeignRow(epqstate->estate,
-														  erm,
-														  datum,
-														  &updated);
-				if (copyTuple == NULL)
+
+				fdwroutine->RefetchForeignRow(epqstate->estate,
+											  erm,
+											  datum,
+											  slot,
+											  &updated);
+				if (TupIsNull(slot))
 					elog(ERROR, "failed to fetch tuple for EvalPlanQual recheck");
 
 				/*
@@ -2917,6 +2906,7 @@ EvalPlanQualFetchRowMarks(EPQState *epqstate)
 			else
 			{
 				/* ordinary table, fetch the tuple */
+				HeapTupleData tuple;
 				Buffer		buffer;
 
 				tuple.t_self = *((ItemPointer) DatumGetPointer(datum));
@@ -2924,18 +2914,13 @@ EvalPlanQualFetchRowMarks(EPQState *epqstate)
 								false, NULL))
 					elog(ERROR, "failed to fetch tuple for EvalPlanQual recheck");
 
-				/* successful, copy tuple */
-				copyTuple = heap_copytuple(&tuple);
-				ReleaseBuffer(buffer);
+				/* successful, store tuple */
+				ExecStorePinnedBufferHeapTuple(&tuple, slot, buffer);
+				ExecMaterializeSlot(slot);
 			}
-
-			/* store tuple */
-			EvalPlanQualSetTuple(epqstate, erm->rti, copyTuple);
 		}
 		else
 		{
-			HeapTupleHeader td;
-
 			Assert(erm->markType == ROW_MARK_COPY);
 
 			/* fetch the whole-row Var for the relation */
@@ -2945,19 +2930,8 @@ EvalPlanQualFetchRowMarks(EPQState *epqstate)
 			/* non-locked rels could be on the inside of outer joins */
 			if (isNull)
 				continue;
-			td = DatumGetHeapTupleHeader(datum);
 
-			/* build a temporary HeapTuple control structure */
-			tuple.t_len = HeapTupleHeaderGetDatumLength(td);
-			tuple.t_data = td;
-			/* relation might be a foreign table, if so provide tableoid */
-			tuple.t_tableOid = erm->relid;
-			/* also copy t_ctid in case there's valid data there */
-			tuple.t_self = td->t_ctid;
-
-			/* copy and store tuple */
-			EvalPlanQualSetTuple(epqstate, erm->rti,
-								 heap_copytuple(&tuple));
+			ExecStoreHeapTupleDatum(datum, slot);
 		}
 	}
 }
@@ -3153,17 +3127,14 @@ EvalPlanQualStart(EPQState *epqstate, EState *parentestate, Plan *planTree)
 	 * sub-rechecks to inherit the values being examined by an outer recheck.
 	 */
 	estate->es_epqScanDone = (bool *) palloc0(rtsize * sizeof(bool));
-	if (parentestate->es_epqTuple != NULL)
+	if (parentestate->es_epqTupleSlot != NULL)
 	{
-		estate->es_epqTuple = parentestate->es_epqTuple;
-		estate->es_epqTupleSet = parentestate->es_epqTupleSet;
+		estate->es_epqTupleSlot = parentestate->es_epqTupleSlot;
 	}
 	else
 	{
-		estate->es_epqTuple = (HeapTuple *)
-			palloc0(rtsize * sizeof(HeapTuple));
-		estate->es_epqTupleSet = (bool *)
-			palloc0(rtsize * sizeof(bool));
+		estate->es_epqTupleSlot = (TupleTableSlot **)
+			palloc0(rtsize * sizeof(TupleTableSlot *));
 	}
 
 	/*

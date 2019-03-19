@@ -418,6 +418,7 @@ _readCommonTableExpr(void)
 
 	READ_STRING_FIELD(ctename);
 	READ_NODE_FIELD(aliascolnames);
+	READ_ENUM_FIELD(ctematerialized, CTEMaterialize);
 	READ_NODE_FIELD(ctequery);
 	READ_LOCATION_FIELD(location);
 	READ_BOOL_FIELD(cterecursive);
@@ -515,6 +516,7 @@ _readIntoClause(void)
 
 	READ_NODE_FIELD(rel);
 	READ_NODE_FIELD(colNames);
+	READ_STRING_FIELD(accessMethod);
 	READ_NODE_FIELD(options);
 	READ_ENUM_FIELD(onCommit, OnCommitAction);
 	READ_STRING_FIELD(tableSpaceName);
@@ -657,14 +659,14 @@ _readWindowFunc(void)
 }
 
 /*
- * _readArrayRef
+ * _readSubscriptingRef
  */
-static ArrayRef *
-_readArrayRef(void)
+static SubscriptingRef *
+_readSubscriptingRef(void)
 {
-	READ_LOCALS(ArrayRef);
+	READ_LOCALS(SubscriptingRef);
 
-	READ_OID_FIELD(refarraytype);
+	READ_OID_FIELD(refcontainertype);
 	READ_OID_FIELD(refelemtype);
 	READ_INT_FIELD(reftypmod);
 	READ_OID_FIELD(refcollid);
@@ -1410,6 +1412,9 @@ _readRangeTblEntry(void)
 			READ_NODE_FIELD(coltypes);
 			READ_NODE_FIELD(coltypmods);
 			READ_NODE_FIELD(colcollations);
+			break;
+		case RTE_RESULT:
+			/* no extra fields */
 			break;
 		default:
 			elog(ERROR, "unrecognized RTE kind: %d",
@@ -2381,6 +2386,7 @@ _readPartitionedRelPruneInfo(void)
 	READ_INT_FIELD(nexprs);
 	READ_INT_ARRAY(subplan_map, local_node->nparts);
 	READ_INT_ARRAY(subpart_map, local_node->nparts);
+	READ_OID_ARRAY(relid_map, local_node->nparts);
 	READ_BOOL_ARRAY(hasexecparam, local_node->nexprs);
 	READ_BOOL_FIELD(do_initial_prune);
 	READ_BOOL_FIELD(do_exec_prune);
@@ -2594,8 +2600,8 @@ parseNodeString(void)
 		return_value = _readGroupingFunc();
 	else if (MATCH("WINDOWFUNC", 10))
 		return_value = _readWindowFunc();
-	else if (MATCH("ARRAYREF", 8))
-		return_value = _readArrayRef();
+	else if (MATCH("SUBSCRIPTINGREF", 15))
+		return_value = _readSubscriptingRef();
 	else if (MATCH("FUNCEXPR", 8))
 		return_value = _readFuncExpr();
 	else if (MATCH("NAMEDARGEXPR", 12))

@@ -30,8 +30,7 @@
 #include "funcapi.h"
 #include "miscadmin.h"
 #include "nodes/nodeFuncs.h"
-#include "optimizer/clauses.h"
-#include "optimizer/planner.h"
+#include "optimizer/optimizer.h"
 #include "parser/parse_coerce.h"
 #include "parser/scansup.h"
 #include "storage/proc.h"
@@ -3875,8 +3874,7 @@ plpgsql_estate_setup(PLpgSQL_execstate *estate,
 	estate->datum_context = CurrentMemoryContext;
 
 	/* initialize our ParamListInfo with appropriate hook functions */
-	estate->paramLI = (ParamListInfo)
-		palloc(offsetof(ParamListInfoData, params));
+	estate->paramLI = makeParamList(0);
 	estate->paramLI->paramFetch = plpgsql_param_fetch;
 	estate->paramLI->paramFetchArg = (void *) estate;
 	estate->paramLI->paramCompile = plpgsql_param_compile;
@@ -5208,8 +5206,8 @@ exec_assign_value(PLpgSQL_execstate *estate,
 
 				/*
 				 * Evaluate the subscripts, switch into left-to-right order.
-				 * Like the expression built by ExecInitArrayRef(), complain
-				 * if any subscript is null.
+				 * Like the expression built by ExecInitSubscriptingRef(),
+				 * complain if any subscript is null.
 				 */
 				for (i = 0; i < nsubscripts; i++)
 				{

@@ -21,6 +21,7 @@
 
 #include "catalog/pg_type.h"
 #include "common/int.h"
+#include "common/shortest_dec.h"
 #include "libpq/pqformat.h"
 #include "miscadmin.h"
 #include "utils/array.h"
@@ -30,8 +31,15 @@
 #include "utils/timestamp.h"
 
 
-/* Configurable GUC parameter */
-int			extra_float_digits = 0; /* Added to DBL_DIG or FLT_DIG */
+/*
+ * Configurable GUC parameter
+ *
+ * If >0, use shortest-decimal format for output; this is both the default and
+ * allows for compatibility with clients that explicitly set a value here to
+ * get round-trip-accurate results. If 0 or less, then use the old, slow,
+ * decimal rounding method.
+ */
+int			extra_float_digits = 1;
 
 /* Cached constants for degree-based trig functions */
 static bool degree_consts_set = false;
@@ -104,13 +112,39 @@ is_infinite(double val)
 
 /*
  *		float4in		- converts "num" to float4
+ *
+ * Note that this code now uses strtof(), where it used to use strtod().
+ *
+ * The motivation for using strtof() is to avoid a double-rounding problem:
+ * for certain decimal inputs, if you round the input correctly to a double,
+ * and then round the double to a float, the result is incorrect in that it
+ * does not match the result of rounding the decimal value to float directly.
+ *
+ * One of the best examples is 7.038531e-26:
+ *
+ * 0xAE43FDp-107 = 7.03853069185120912085...e-26
+ *      midpoint   7.03853100000000022281...e-26
+ * 0xAE43FEp-107 = 7.03853130814879132477...e-26
+ *
+ * making 0xAE43FDp-107 the correct float result, but if you do the conversion
+ * via a double, you get
+ *
+ * 0xAE43FD.7FFFFFF8p-107 = 7.03853099999999907487...e-26
+ *               midpoint   7.03853099999999964884...e-26
+ * 0xAE43FD.80000000p-107 = 7.03853100000000022281...e-26
+ * 0xAE43FD.80000008p-107 = 7.03853100000000137076...e-26
+ *
+ * so the value rounds to the double exactly on the midpoint between the two
+ * nearest floats, and then rounding again to a float gives the incorrect
+ * result of 0xAE43FEp-107.
+ *
  */
 Datum
 float4in(PG_FUNCTION_ARGS)
 {
 	char	   *num = PG_GETARG_CSTRING(0);
 	char	   *orig_num;
-	double		val;
+	float		val;
 	char	   *endptr;
 
 	/*
@@ -135,7 +169,7 @@ float4in(PG_FUNCTION_ARGS)
 						"real", orig_num)));
 
 	errno = 0;
-	val = strtod(num, &endptr);
+	val = strtof(num, &endptr);
 
 	/* did we not see anything that looks like a double? */
 	if (endptr == num || errno != 0)
@@ -143,14 +177,14 @@ float4in(PG_FUNCTION_ARGS)
 		int			save_errno = errno;
 
 		/*
-		 * C99 requires that strtod() accept NaN, [+-]Infinity, and [+-]Inf,
+		 * C99 requires that strtof() accept NaN, [+-]Infinity, and [+-]Inf,
 		 * but not all platforms support all of these (and some accept them
 		 * but set ERANGE anyway...)  Therefore, we check for these inputs
-		 * ourselves if strtod() fails.
+		 * ourselves if strtof() fails.
 		 *
 		 * Note: C99 also requires hexadecimal input as well as some extended
 		 * forms of NaN, but we consider these forms unportable and don't try
-		 * to support them.  You can use 'em if your strtod() takes 'em.
+		 * to support them.  You can use 'em if your strtof() takes 'em.
 		 */
 		if (pg_strncasecmp(num, "NaN", 3) == 0)
 		{
@@ -195,8 +229,18 @@ float4in(PG_FUNCTION_ARGS)
 			 * precision).  We'd prefer not to throw error for that, so try to
 			 * detect whether it's a "real" out-of-range condition by checking
 			 * to see if the result is zero or huge.
+			 *
+			 * Use isinf() rather than HUGE_VALF on VS2013 because it
+			 * generates a spurious overflow warning for -HUGE_VALF.  Also use
+			 * isinf() if HUGE_VALF is missing.
 			 */
-			if (val == 0.0 || val >= HUGE_VAL || val <= -HUGE_VAL)
+			if (val == 0.0 ||
+#if !defined(HUGE_VALF) || (defined(_MSC_VER) && (_MSC_VER < 1900))
+				isinf(val)
+#else
+				(val >= HUGE_VALF || val <= -HUGE_VALF)
+#endif
+				)
 				ereport(ERROR,
 						(errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
 						 errmsg("\"%s\" is out of range for type real",
@@ -232,13 +276,7 @@ float4in(PG_FUNCTION_ARGS)
 				 errmsg("invalid input syntax for type %s: \"%s\"",
 						"real", orig_num)));
 
-	/*
-	 * if we get here, we have a legal double, still need to check to see if
-	 * it's a legal float4
-	 */
-	check_float4_val((float4) val, isinf(val), val == 0);
-
-	PG_RETURN_FLOAT4((float4) val);
+	PG_RETURN_FLOAT4(val);
 }
 
 /*
@@ -251,6 +289,12 @@ float4out(PG_FUNCTION_ARGS)
 	float4		num = PG_GETARG_FLOAT4(0);
 	char	   *ascii = (char *) palloc(32);
 	int			ndig = FLT_DIG + extra_float_digits;
+
+	if (extra_float_digits > 0)
+	{
+		float_to_shortest_decimal_buf(num, ascii);
+		PG_RETURN_CSTRING(ascii);
+	}
 
 	(void) pg_strfromd(ascii, 32, ndig, num);
 	PG_RETURN_CSTRING(ascii);
@@ -292,8 +336,19 @@ float8in(PG_FUNCTION_ARGS)
 	PG_RETURN_FLOAT8(float8in_internal(num, NULL, "double precision", num));
 }
 
+/* Convenience macro: set *have_error flag (if provided) or throw error */
+#define RETURN_ERROR(throw_error) \
+do { \
+	if (have_error) { \
+		*have_error = true; \
+		return 0.0; \
+	} else { \
+		throw_error; \
+	} \
+} while (0)
+
 /*
- * float8in_internal - guts of float8in()
+ * float8in_internal_opt_error - guts of float8in()
  *
  * This is exposed for use by functions that want a reasonably
  * platform-independent way of inputting doubles.  The behavior is
@@ -309,10 +364,14 @@ float8in(PG_FUNCTION_ARGS)
  *
  * "num" could validly be declared "const char *", but that results in an
  * unreasonable amount of extra casting both here and in callers, so we don't.
+ *
+ * When "*have_error" flag is provided, it's set instead of throwing an
+ * error.  This is helpful when caller need to handle errors by itself.
  */
 double
-float8in_internal(char *num, char **endptr_p,
-				  const char *type_name, const char *orig_string)
+float8in_internal_opt_error(char *num, char **endptr_p,
+							const char *type_name, const char *orig_string,
+							bool *have_error)
 {
 	double		val;
 	char	   *endptr;
@@ -326,10 +385,10 @@ float8in_internal(char *num, char **endptr_p,
 	 * strtod() on different platforms.
 	 */
 	if (*num == '\0')
-		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
-				 errmsg("invalid input syntax for type %s: \"%s\"",
-						type_name, orig_string)));
+		RETURN_ERROR(ereport(ERROR,
+							 (errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
+							  errmsg("invalid input syntax for type %s: \"%s\"",
+									 type_name, orig_string))));
 
 	errno = 0;
 	val = strtod(num, &endptr);
@@ -402,17 +461,19 @@ float8in_internal(char *num, char **endptr_p,
 				char	   *errnumber = pstrdup(num);
 
 				errnumber[endptr - num] = '\0';
-				ereport(ERROR,
-						(errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
-						 errmsg("\"%s\" is out of range for type double precision",
-								errnumber)));
+				RETURN_ERROR(ereport(ERROR,
+									 (errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
+									  errmsg("\"%s\" is out of range for "
+											 "type double precision",
+											 errnumber))));
 			}
 		}
 		else
-			ereport(ERROR,
-					(errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
-					 errmsg("invalid input syntax for type %s: \"%s\"",
-							type_name, orig_string)));
+			RETURN_ERROR(ereport(ERROR,
+								 (errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
+								  errmsg("invalid input syntax for type "
+										 "%s: \"%s\"",
+										 type_name, orig_string))));
 	}
 #ifdef HAVE_BUGGY_SOLARIS_STRTOD
 	else
@@ -435,13 +496,26 @@ float8in_internal(char *num, char **endptr_p,
 	if (endptr_p)
 		*endptr_p = endptr;
 	else if (*endptr != '\0')
-		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
-				 errmsg("invalid input syntax for type %s: \"%s\"",
-						type_name, orig_string)));
+		RETURN_ERROR(ereport(ERROR,
+							 (errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
+							  errmsg("invalid input syntax for type "
+									 "%s: \"%s\"",
+									 type_name, orig_string))));
 
 	return val;
 }
+
+/*
+ * Interfact to float8in_internal_opt_error() without "have_error" argument.
+ */
+double
+float8in_internal(char *num, char **endptr_p,
+				  const char *type_name, const char *orig_string)
+{
+	return float8in_internal_opt_error(num, endptr_p, type_name,
+									   orig_string, NULL);
+}
+
 
 /*
  *		float8out		- converts float8 number to a string
@@ -467,6 +541,12 @@ float8out_internal(double num)
 {
 	char	   *ascii = (char *) palloc(32);
 	int			ndig = DBL_DIG + extra_float_digits;
+
+	if (extra_float_digits > 0)
+	{
+		double_to_shortest_decimal_buf(num, ascii);
+		return ascii;
+	}
 
 	(void) pg_strfromd(ascii, 32, ndig, num);
 	return ascii;
@@ -2373,6 +2453,160 @@ radians(PG_FUNCTION_ARGS)
 	float8		arg1 = PG_GETARG_FLOAT8(0);
 
 	PG_RETURN_FLOAT8(float8_mul(arg1, RADIANS_PER_DEGREE));
+}
+
+
+/* ========== HYPERBOLIC FUNCTIONS ========== */
+
+
+/*
+ *		dsinh			- returns the hyperbolic sine of arg1
+ */
+Datum
+dsinh(PG_FUNCTION_ARGS)
+{
+	float8		arg1 = PG_GETARG_FLOAT8(0);
+	float8		result;
+
+	errno = 0;
+	result = sinh(arg1);
+
+	/*
+	 * if an ERANGE error occurs, it means there is an overflow.  For sinh,
+	 * the result should be either -infinity or infinity, depending on the
+	 * sign of arg1.
+	 */
+	if (errno == ERANGE)
+	{
+		if (arg1 < 0)
+			result = -get_float8_infinity();
+		else
+			result = get_float8_infinity();
+	}
+
+	check_float8_val(result, true, true);
+	PG_RETURN_FLOAT8(result);
+}
+
+
+/*
+ *		dcosh			- returns the hyperbolic cosine of arg1
+ */
+Datum
+dcosh(PG_FUNCTION_ARGS)
+{
+	float8		arg1 = PG_GETARG_FLOAT8(0);
+	float8		result;
+
+	errno = 0;
+	result = cosh(arg1);
+
+	/*
+	 * if an ERANGE error occurs, it means there is an overflow.  As cosh is
+	 * always positive, it always means the result is positive infinity.
+	 */
+	if (errno == ERANGE)
+		result = get_float8_infinity();
+
+	check_float8_val(result, true, false);
+	PG_RETURN_FLOAT8(result);
+}
+
+/*
+ *		dtanh			- returns the hyperbolic tangent of arg1
+ */
+Datum
+dtanh(PG_FUNCTION_ARGS)
+{
+	float8		arg1 = PG_GETARG_FLOAT8(0);
+	float8		result;
+
+	/*
+	 * For tanh, we don't need an errno check because it never overflows.
+	 */
+	result = tanh(arg1);
+
+	check_float8_val(result, false, true);
+	PG_RETURN_FLOAT8(result);
+}
+
+/*
+ *		dasinh			- returns the inverse hyperbolic sine of arg1
+ */
+Datum
+dasinh(PG_FUNCTION_ARGS)
+{
+	float8		arg1 = PG_GETARG_FLOAT8(0);
+	float8		result;
+
+	/*
+	 * For asinh, we don't need an errno check because it never overflows.
+	 */
+	result = asinh(arg1);
+
+	check_float8_val(result, true, true);
+	PG_RETURN_FLOAT8(result);
+}
+
+/*
+ *		dacosh			- returns the inverse hyperbolic cosine of arg1
+ */
+Datum
+dacosh(PG_FUNCTION_ARGS)
+{
+	float8		arg1 = PG_GETARG_FLOAT8(0);
+	float8		result;
+
+	/*
+	 * acosh is only defined for inputs >= 1.0.  By checking this ourselves,
+	 * we need not worry about checking for an EDOM error, which is a good
+	 * thing because some implementations will report that for NaN. Otherwise,
+	 * no error is possible.
+	 */
+	if (arg1 < 1.0)
+		ereport(ERROR,
+				(errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
+				 errmsg("input is out of range")));
+
+	result = acosh(arg1);
+
+	check_float8_val(result, true, true);
+	PG_RETURN_FLOAT8(result);
+}
+
+/*
+ *		datanh			- returns the inverse hyperbolic tangent of arg1
+ */
+Datum
+datanh(PG_FUNCTION_ARGS)
+{
+	float8		arg1 = PG_GETARG_FLOAT8(0);
+	float8		result;
+
+	/*
+	 * atanh is only defined for inputs between -1 and 1.  By checking this
+	 * ourselves, we need not worry about checking for an EDOM error, which is
+	 * a good thing because some implementations will report that for NaN.
+	 */
+	if (arg1 < -1.0 || arg1 > 1.0)
+		ereport(ERROR,
+				(errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
+				 errmsg("input is out of range")));
+
+	/*
+	 * Also handle the infinity cases ourselves; this is helpful because old
+	 * glibc versions may produce the wrong errno for this.  All other inputs
+	 * cannot produce an error.
+	 */
+	if (arg1 == -1.0)
+		result = -get_float8_infinity();
+	else if (arg1 == 1.0)
+		result = get_float8_infinity();
+	else
+		result = atanh(arg1);
+
+	check_float8_val(result, true, true);
+	PG_RETURN_FLOAT8(result);
 }
 
 

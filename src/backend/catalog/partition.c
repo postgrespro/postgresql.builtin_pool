@@ -24,9 +24,7 @@
 #include "catalog/pg_inherits.h"
 #include "catalog/pg_partitioned_table.h"
 #include "nodes/makefuncs.h"
-#include "optimizer/clauses.h"
-#include "optimizer/prep.h"
-#include "optimizer/var.h"
+#include "optimizer/optimizer.h"
 #include "partitioning/partbounds.h"
 #include "rewrite/rewriteManip.h"
 #include "utils/fmgroids.h"
@@ -253,22 +251,6 @@ has_partition_attrs(Relation rel, Bitmapset *attnums, bool *used_in_expr)
 	}
 
 	return false;
-}
-
-/*
- * get_default_oid_from_partdesc
- *
- * Given a partition descriptor, return the OID of the default partition, if
- * one exists; else, return InvalidOid.
- */
-Oid
-get_default_oid_from_partdesc(PartitionDesc partdesc)
-{
-	if (partdesc && partdesc->boundinfo &&
-		partition_bound_has_default(partdesc->boundinfo))
-		return partdesc->oids[partdesc->boundinfo->default_index];
-
-	return InvalidOid;
 }
 
 /*

@@ -45,6 +45,7 @@
 #include "catalog/index.h"
 #include "catalog/objectaccess.h"
 #include "catalog/partition.h"
+#include "catalog/pg_am.h"
 #include "catalog/pg_attrdef.h"
 #include "catalog/pg_collation.h"
 #include "catalog/pg_constraint.h"
@@ -64,13 +65,12 @@
 #include "executor/executor.h"
 #include "miscadmin.h"
 #include "nodes/nodeFuncs.h"
-#include "optimizer/clauses.h"
-#include "optimizer/var.h"
-#include "optimizer/planner.h"
+#include "optimizer/optimizer.h"
 #include "parser/parse_coerce.h"
 #include "parser/parse_collate.h"
 #include "parser/parse_expr.h"
 #include "parser/parse_relation.h"
+#include "partitioning/partdesc.h"
 #include "storage/lmgr.h"
 #include "storage/predicate.h"
 #include "storage/smgr.h"
@@ -294,6 +294,7 @@ heap_create(const char *relname,
 			Oid reltablespace,
 			Oid relid,
 			Oid relfilenode,
+			Oid accessmtd,
 			TupleDesc tupDesc,
 			char relkind,
 			char relpersistence,
@@ -388,6 +389,7 @@ heap_create(const char *relname,
 									 relnamespace,
 									 tupDesc,
 									 relid,
+									 accessmtd,
 									 relfilenode,
 									 reltablespace,
 									 shared_relation,
@@ -447,11 +449,14 @@ heap_create(const char *relname,
  *		this is used to make certain the tuple descriptor contains a
  *		valid set of attribute names and datatypes.  a problem simply
  *		generates ereport(ERROR) which aborts the current transaction.
+ *
+ *		relkind is the relkind of the relation to be created.
+ *		flags controls which datatypes are allowed, cf CheckAttributeType.
  * --------------------------------
  */
 void
 CheckAttributeNamesTypes(TupleDesc tupdesc, char relkind,
-						 bool allow_system_table_mods)
+						 int flags)
 {
 	int			i;
 	int			j;
@@ -509,7 +514,7 @@ CheckAttributeNamesTypes(TupleDesc tupdesc, char relkind,
 						   TupleDescAttr(tupdesc, i)->atttypid,
 						   TupleDescAttr(tupdesc, i)->attcollation,
 						   NIL, /* assume we're creating a new rowtype */
-						   allow_system_table_mods);
+						   flags);
 	}
 }
 
@@ -526,13 +531,22 @@ CheckAttributeNamesTypes(TupleDesc tupdesc, char relkind,
  * containing_rowtypes.  When checking a to-be-created rowtype, it's
  * sufficient to pass NIL, because there could not be any recursive reference
  * to a not-yet-existing rowtype.
+ *
+ * flags is a bitmask controlling which datatypes we allow.  For the most
+ * part, pseudo-types are disallowed as attribute types, but there are some
+ * exceptions: ANYARRAYOID, RECORDOID, and RECORDARRAYOID can be allowed
+ * in some cases.  (This works because values of those type classes are
+ * self-identifying to some extent.  However, RECORDOID and RECORDARRAYOID
+ * are reliably identifiable only within a session, since the identity info
+ * may use a typmod that is only locally assigned.  The caller is expected
+ * to know whether these cases are safe.)
  * --------------------------------
  */
 void
 CheckAttributeType(const char *attname,
 				   Oid atttypid, Oid attcollation,
 				   List *containing_rowtypes,
-				   bool allow_system_table_mods)
+				   int flags)
 {
 	char		att_typtype = get_typtype(atttypid);
 	Oid			att_typelem;
@@ -540,12 +554,18 @@ CheckAttributeType(const char *attname,
 	if (att_typtype == TYPTYPE_PSEUDO)
 	{
 		/*
-		 * Refuse any attempt to create a pseudo-type column, except for a
-		 * special hack for pg_statistic: allow ANYARRAY when modifying system
-		 * catalogs (this allows creating pg_statistic and cloning it during
-		 * VACUUM FULL)
+		 * We disallow pseudo-type columns, with the exception of ANYARRAY,
+		 * RECORD, and RECORD[] when the caller says that those are OK.
+		 *
+		 * We don't need to worry about recursive containment for RECORD and
+		 * RECORD[] because (a) no named composite type should be allowed to
+		 * contain those, and (b) two "anonymous" record types couldn't be
+		 * considered to be the same type, so infinite recursion isn't
+		 * possible.
 		 */
-		if (atttypid != ANYARRAYOID || !allow_system_table_mods)
+		if (!((atttypid == ANYARRAYOID && (flags & CHKATYPE_ANYARRAY)) ||
+			  (atttypid == RECORDOID && (flags & CHKATYPE_ANYRECORD)) ||
+			  (atttypid == RECORDARRAYOID && (flags & CHKATYPE_ANYRECORD))))
 			ereport(ERROR,
 					(errcode(ERRCODE_INVALID_TABLE_DEFINITION),
 					 errmsg("column \"%s\" has pseudo-type %s",
@@ -558,7 +578,7 @@ CheckAttributeType(const char *attname,
 		 */
 		CheckAttributeType(attname, getBaseType(atttypid), attcollation,
 						   containing_rowtypes,
-						   allow_system_table_mods);
+						   flags);
 	}
 	else if (att_typtype == TYPTYPE_COMPOSITE)
 	{
@@ -596,7 +616,7 @@ CheckAttributeType(const char *attname,
 			CheckAttributeType(NameStr(attr->attname),
 							   attr->atttypid, attr->attcollation,
 							   containing_rowtypes,
-							   allow_system_table_mods);
+							   flags);
 		}
 
 		relation_close(relation, AccessShareLock);
@@ -610,7 +630,7 @@ CheckAttributeType(const char *attname,
 		 */
 		CheckAttributeType(attname, att_typelem, attcollation,
 						   containing_rowtypes,
-						   allow_system_table_mods);
+						   flags);
 	}
 
 	/*
@@ -761,7 +781,7 @@ AddNewAttributeTuples(Oid new_rel_oid,
 		{
 			FormData_pg_attribute attStruct;
 
-			memcpy(&attStruct, (char *) SysAtt[i], sizeof(FormData_pg_attribute));
+			memcpy(&attStruct, SysAtt[i], sizeof(FormData_pg_attribute));
 
 			/* Fill in the correct relation OID in the copied tuple */
 			attStruct.attrelid = new_rel_oid;
@@ -1046,6 +1066,7 @@ heap_create_with_catalog(const char *relname,
 						 Oid reltypeid,
 						 Oid reloftypeid,
 						 Oid ownerid,
+						 Oid accessmtd,
 						 TupleDesc tupdesc,
 						 List *cooked_constraints,
 						 char relkind,
@@ -1076,7 +1097,13 @@ heap_create_with_catalog(const char *relname,
 	 */
 	Assert(IsNormalProcessingMode() || IsBootstrapProcessingMode());
 
-	CheckAttributeNamesTypes(tupdesc, relkind, allow_system_table_mods);
+	/*
+	 * Validate proposed tupdesc for the desired relkind.  If
+	 * allow_system_table_mods is on, allow ANYARRAY to be used; this is a
+	 * hack to allow creating pg_statistic and cloning it during VACUUM FULL.
+	 */
+	CheckAttributeNamesTypes(tupdesc, relkind,
+							 allow_system_table_mods ? CHKATYPE_ANYARRAY : 0);
 
 	/*
 	 * This would fail later on anyway, if the relation already exists.  But
@@ -1187,6 +1214,7 @@ heap_create_with_catalog(const char *relname,
 							   reltablespace,
 							   relid,
 							   InvalidOid,
+							   accessmtd,
 							   tupdesc,
 							   relkind,
 							   relpersistence,
@@ -1340,6 +1368,22 @@ heap_create_with_catalog(const char *relname,
 		{
 			referenced.classId = TypeRelationId;
 			referenced.objectId = reloftypeid;
+			referenced.objectSubId = 0;
+			recordDependencyOn(&myself, &referenced, DEPENDENCY_NORMAL);
+		}
+
+		/*
+		 * Make a dependency link to force the relation to be deleted if its
+		 * access method is. Do this only for relation and materialized views.
+		 *
+		 * No need to add an explicit dependency for the toast table, as the
+		 * main table depends on it.
+		 */
+		if (relkind == RELKIND_RELATION ||
+			relkind == RELKIND_MATVIEW)
+		{
+			referenced.classId = AccessMethodRelationId;
+			referenced.objectId = accessmtd;
 			referenced.objectSubId = 0;
 			recordDependencyOn(&myself, &referenced, DEPENDENCY_NORMAL);
 		}

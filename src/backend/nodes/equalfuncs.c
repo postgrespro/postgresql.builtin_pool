@@ -31,7 +31,7 @@
 
 #include "miscadmin.h"
 #include "nodes/extensible.h"
-#include "nodes/relation.h"
+#include "nodes/pathnodes.h"
 #include "utils/datum.h"
 
 
@@ -142,6 +142,7 @@ _equalIntoClause(const IntoClause *a, const IntoClause *b)
 {
 	COMPARE_NODE_FIELD(rel);
 	COMPARE_NODE_FIELD(colNames);
+	COMPARE_STRING_FIELD(accessMethod);
 	COMPARE_NODE_FIELD(options);
 	COMPARE_SCALAR_FIELD(onCommit);
 	COMPARE_STRING_FIELD(tableSpaceName);
@@ -265,9 +266,9 @@ _equalWindowFunc(const WindowFunc *a, const WindowFunc *b)
 }
 
 static bool
-_equalArrayRef(const ArrayRef *a, const ArrayRef *b)
+_equalSubscriptingRef(const SubscriptingRef *a, const SubscriptingRef *b)
 {
-	COMPARE_SCALAR_FIELD(refarraytype);
+	COMPARE_SCALAR_FIELD(refcontainertype);
 	COMPARE_SCALAR_FIELD(refelemtype);
 	COMPARE_SCALAR_FIELD(reftypmod);
 	COMPARE_SCALAR_FIELD(refcollid);
@@ -814,7 +815,7 @@ _equalOnConflictExpr(const OnConflictExpr *a, const OnConflictExpr *b)
 }
 
 /*
- * Stuff from relation.h
+ * Stuff from pathnodes.h
  */
 
 static bool
@@ -1240,6 +1241,7 @@ _equalCreateStmt(const CreateStmt *a, const CreateStmt *b)
 	COMPARE_NODE_FIELD(options);
 	COMPARE_SCALAR_FIELD(oncommit);
 	COMPARE_STRING_FIELD(tablespacename);
+	COMPARE_STRING_FIELD(accessMethod);
 	COMPARE_SCALAR_FIELD(if_not_exists);
 
 	return true;
@@ -1263,6 +1265,7 @@ _equalDefineStmt(const DefineStmt *a, const DefineStmt *b)
 	COMPARE_NODE_FIELD(args);
 	COMPARE_NODE_FIELD(definition);
 	COMPARE_SCALAR_FIELD(if_not_exists);
+	COMPARE_SCALAR_FIELD(replace);
 
 	return true;
 }
@@ -1668,8 +1671,9 @@ _equalDropdbStmt(const DropdbStmt *a, const DropdbStmt *b)
 static bool
 _equalVacuumStmt(const VacuumStmt *a, const VacuumStmt *b)
 {
-	COMPARE_SCALAR_FIELD(options);
+	COMPARE_NODE_FIELD(options);
 	COMPARE_NODE_FIELD(rels);
+	COMPARE_SCALAR_FIELD(is_vacuumcmd);
 
 	return true;
 }
@@ -2791,6 +2795,7 @@ _equalCommonTableExpr(const CommonTableExpr *a, const CommonTableExpr *b)
 {
 	COMPARE_STRING_FIELD(ctename);
 	COMPARE_NODE_FIELD(aliascolnames);
+	COMPARE_SCALAR_FIELD(ctematerialized);
 	COMPARE_NODE_FIELD(ctequery);
 	COMPARE_LOCATION_FIELD(location);
 	COMPARE_SCALAR_FIELD(cterecursive);
@@ -3041,8 +3046,8 @@ equal(const void *a, const void *b)
 		case T_WindowFunc:
 			retval = _equalWindowFunc(a, b);
 			break;
-		case T_ArrayRef:
-			retval = _equalArrayRef(a, b);
+		case T_SubscriptingRef:
+			retval = _equalSubscriptingRef(a, b);
 			break;
 		case T_FuncExpr:
 			retval = _equalFuncExpr(a, b);

@@ -785,7 +785,9 @@ CREATE VIEW pg_stat_ssl AS
             S.sslcipher AS cipher,
             S.sslbits AS bits,
             S.sslcompression AS compression,
-            S.sslclientdn AS clientdn
+            S.ssl_client_dn AS client_dn,
+            S.ssl_client_serial AS client_serial,
+            S.ssl_issuer_dn AS issuer_dn
     FROM pg_stat_get_activity(NULL) AS S;
 
 CREATE VIEW pg_replication_slots AS
@@ -824,6 +826,7 @@ CREATE VIEW pg_stat_database AS
             pg_stat_get_db_temp_files(D.oid) AS temp_files,
             pg_stat_get_db_temp_bytes(D.oid) AS temp_bytes,
             pg_stat_get_db_deadlocks(D.oid) AS deadlocks,
+            pg_stat_get_db_checksum_failures(D.oid) AS checksum_failures,
             pg_stat_get_db_blk_read_time(D.oid) AS blk_read_time,
             pg_stat_get_db_blk_write_time(D.oid) AS blk_write_time,
             pg_stat_get_db_stat_reset_time(D.oid) AS stats_reset
@@ -1127,6 +1130,46 @@ RETURNS jsonb
 LANGUAGE INTERNAL
 STRICT IMMUTABLE PARALLEL SAFE
 AS 'jsonb_insert';
+
+CREATE OR REPLACE FUNCTION
+  jsonb_path_exists(target jsonb, path jsonpath, vars jsonb DEFAULT '{}',
+                    silent boolean DEFAULT false)
+RETURNS boolean
+LANGUAGE INTERNAL
+STRICT IMMUTABLE PARALLEL SAFE
+AS 'jsonb_path_exists';
+
+CREATE OR REPLACE FUNCTION
+  jsonb_path_match(target jsonb, path jsonpath, vars jsonb DEFAULT '{}',
+                   silent boolean DEFAULT false)
+RETURNS boolean
+LANGUAGE INTERNAL
+STRICT IMMUTABLE PARALLEL SAFE
+AS 'jsonb_path_match';
+
+CREATE OR REPLACE FUNCTION
+  jsonb_path_query(target jsonb, path jsonpath, vars jsonb DEFAULT '{}',
+                   silent boolean DEFAULT false)
+RETURNS SETOF jsonb
+LANGUAGE INTERNAL
+STRICT IMMUTABLE PARALLEL SAFE
+AS 'jsonb_path_query';
+
+CREATE OR REPLACE FUNCTION
+  jsonb_path_query_array(target jsonb, path jsonpath, vars jsonb DEFAULT '{}',
+                         silent boolean DEFAULT false)
+RETURNS jsonb
+LANGUAGE INTERNAL
+STRICT IMMUTABLE PARALLEL SAFE
+AS 'jsonb_path_query_array';
+
+CREATE OR REPLACE FUNCTION
+  jsonb_path_query_first(target jsonb, path jsonpath, vars jsonb DEFAULT '{}',
+                         silent boolean DEFAULT false)
+RETURNS jsonb
+LANGUAGE INTERNAL
+STRICT IMMUTABLE PARALLEL SAFE
+AS 'jsonb_path_query_first';
 
 --
 -- The default permissions for functions mean that anyone can execute them.

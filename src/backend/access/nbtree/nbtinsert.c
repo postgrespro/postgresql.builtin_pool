@@ -908,8 +908,10 @@ _bt_insertonpg(Relation rel,
 		 *
 		 * We're ready to do the parent insertion.  We need to hold onto the
 		 * locks for the child pages until we locate the parent, but we can
-		 * release them before doing the actual insertion (see Lehman and Yao
-		 * for the reasoning).
+		 * at least release the lock on the right child before doing the
+		 * actual insertion.  The lock on the left child will be released
+		 * last of all by parent insertion, where it is the 'cbuf' of parent
+		 * page.
 		 *----------
 		 */
 		_bt_insert_parent(rel, buf, rbuf, stack, is_root, is_only);
@@ -1491,9 +1493,7 @@ _bt_split(Relation rel, Buffer buf, Buffer cbuf, OffsetNumber firstright,
 
 		/*
 		 * Log the contents of the right page in the format understood by
-		 * _bt_restore_page(). We set lastrdata->buffer to InvalidBuffer,
-		 * because we're going to recreate the whole page anyway, so it should
-		 * never be stored by XLogInsert.
+		 * _bt_restore_page().  The whole right page will be recreated.
 		 *
 		 * Direct access to page is not good but faster - we should implement
 		 * some new func in page API.  Note we only store the tuples
@@ -1886,7 +1886,7 @@ _bt_insert_parent(Relation rel,
 		 * 05/27/97
 		 */
 		stack->bts_btentry = bknum;
-		pbuf = _bt_getstackbuf(rel, stack, BT_WRITE);
+		pbuf = _bt_getstackbuf(rel, stack);
 
 		/*
 		 * Now we can unlock the right child. The left child will be unlocked
@@ -1976,10 +1976,11 @@ _bt_finish_split(Relation rel, Buffer lbuf, BTStack stack)
  *
  *		Adjusts bts_blkno & bts_offset if changed.
  *
- *		Returns InvalidBuffer if item not found (should not happen).
+ *		Returns write-locked buffer, or InvalidBuffer if item not found
+ *		(should not happen).
  */
 Buffer
-_bt_getstackbuf(Relation rel, BTStack stack, int access)
+_bt_getstackbuf(Relation rel, BTStack stack)
 {
 	BlockNumber blkno;
 	OffsetNumber start;
@@ -1993,11 +1994,11 @@ _bt_getstackbuf(Relation rel, BTStack stack, int access)
 		Page		page;
 		BTPageOpaque opaque;
 
-		buf = _bt_getbuf(rel, blkno, access);
+		buf = _bt_getbuf(rel, blkno, BT_WRITE);
 		page = BufferGetPage(buf);
 		opaque = (BTPageOpaque) PageGetSpecialPointer(page);
 
-		if (access == BT_WRITE && P_INCOMPLETE_SPLIT(opaque))
+		if (P_INCOMPLETE_SPLIT(opaque))
 		{
 			_bt_finish_split(rel, buf, stack->bts_parent);
 			continue;

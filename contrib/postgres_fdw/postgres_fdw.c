@@ -28,11 +28,11 @@
 #include "nodes/nodeFuncs.h"
 #include "optimizer/cost.h"
 #include "optimizer/clauses.h"
+#include "optimizer/optimizer.h"
 #include "optimizer/pathnode.h"
 #include "optimizer/paths.h"
 #include "optimizer/planmain.h"
 #include "optimizer/restrictinfo.h"
-#include "optimizer/var.h"
 #include "optimizer/tlist.h"
 #include "parser/parsetree.h"
 #include "utils/builtins.h"
@@ -937,6 +937,9 @@ postgresGetForeignPaths(PlannerInfo *root,
 	 * baserestrict conditions we were able to send to remote, there might
 	 * actually be an indexscan happening there).  We already did all the work
 	 * to estimate cost and size of this path.
+	 *
+	 * Although this path uses no join clauses, it could still have required
+	 * parameterization due to LATERAL refs in its tlist.
 	 */
 	path = create_foreignscan_path(root, baserel,
 								   NULL,	/* default pathtarget */
@@ -944,7 +947,7 @@ postgresGetForeignPaths(PlannerInfo *root,
 								   fpinfo->startup_cost,
 								   fpinfo->total_cost,
 								   NIL, /* no pathkeys */
-								   NULL,	/* no outer rel either */
+								   baserel->lateral_relids,
 								   NULL,	/* no extra plan */
 								   NIL);	/* no fdw_private list */
 	add_path(baserel, (Path *) path);
@@ -2625,7 +2628,7 @@ estimate_path_cost_size(PlannerInfo *root,
 		 * bare scan each time. Instead, use the costs if we have cached them
 		 * already.
 		 */
-		if (fpinfo->rel_startup_cost > 0 && fpinfo->rel_total_cost > 0)
+		if (fpinfo->rel_startup_cost >= 0 && fpinfo->rel_total_cost >= 0)
 		{
 			startup_cost = fpinfo->rel_startup_cost;
 			run_cost = fpinfo->rel_total_cost - fpinfo->rel_startup_cost;
@@ -2776,6 +2779,7 @@ estimate_path_cost_size(PlannerInfo *root,
 			startup_cost = ofpinfo->rel_startup_cost;
 			startup_cost += aggcosts.transCost.startup;
 			startup_cost += aggcosts.transCost.per_tuple * input_rows;
+			startup_cost += aggcosts.finalCost.startup;
 			startup_cost += (cpu_operator_cost * numGroupCols) * input_rows;
 
 			/*-----
@@ -2785,7 +2789,7 @@ estimate_path_cost_size(PlannerInfo *root,
 			 *-----
 			 */
 			run_cost = ofpinfo->rel_total_cost - ofpinfo->rel_startup_cost;
-			run_cost += aggcosts.finalCost * numGroups;
+			run_cost += aggcosts.finalCost.per_tuple * numGroups;
 			run_cost += cpu_tuple_cost * numGroups;
 
 			/* Account for the eval cost of HAVING quals, if any */
@@ -3295,7 +3299,7 @@ execute_foreign_modify(EState *estate,
 					   TupleTableSlot *planSlot)
 {
 	PgFdwModifyState *fmstate = (PgFdwModifyState *) resultRelInfo->ri_FdwState;
-	ItemPointer	ctid = NULL;
+	ItemPointer ctid = NULL;
 	const char **p_values;
 	PGresult   *res;
 	int			n_rows;
@@ -3503,8 +3507,13 @@ store_returning_result(PgFdwModifyState *fmstate,
 											fmstate->retrieved_attrs,
 											NULL,
 											fmstate->temp_cxt);
-		/* tuple will be deleted when it is cleared from the slot */
-		ExecStoreHeapTuple(newtup, slot, true);
+		/*
+		 * The returning slot will not necessarily be suitable to store
+		 * heaptuples directly, so allow for conversion.
+		 */
+		ExecForceStoreHeapTuple(newtup, slot);
+		ExecMaterializeSlot(slot);
+		pfree(newtup);
 	}
 	PG_CATCH();
 	{
@@ -3882,6 +3891,7 @@ apply_returning_filter(PgFdwDirectModifyState *dmstate,
 					   TupleTableSlot *slot,
 					   EState *estate)
 {
+	ResultRelInfo *relInfo = estate->es_result_relation_info;
 	TupleDesc	resultTupType = RelationGetDescr(dmstate->resultRel);
 	TupleTableSlot *resultSlot;
 	Datum	   *values;
@@ -3891,11 +3901,9 @@ apply_returning_filter(PgFdwDirectModifyState *dmstate,
 	int			i;
 
 	/*
-	 * Use the trigger tuple slot as a place to store the result tuple.
+	 * Use the return tuple slot as a place to store the result tuple.
 	 */
-	resultSlot = estate->es_trig_tuple_slot;
-	if (resultSlot->tts_tupleDescriptor != resultTupType)
-		ExecSetSlotDescriptor(resultSlot, resultTupType);
+	resultSlot = ExecGetReturningSlot(estate, relInfo);
 
 	/*
 	 * Extract all the values of the scan tuple.
@@ -3936,8 +3944,9 @@ apply_returning_filter(PgFdwDirectModifyState *dmstate,
 	ExecStoreVirtualTuple(resultSlot);
 
 	/*
-	 * If we have any system columns to return, materialize a heap tuple in the
-	 * slot from column values set above and install system columns in that tuple.
+	 * If we have any system columns to return, materialize a heap tuple in
+	 * the slot from column values set above and install system columns in
+	 * that tuple.
 	 */
 	if (dmstate->hasSystemCols)
 	{
@@ -4943,16 +4952,28 @@ add_paths_with_pathkeys_for_rel(PlannerInfo *root, RelOptInfo *rel,
 								 useful_pathkeys,
 								 -1.0);
 
-		add_path(rel, (Path *)
-				 create_foreignscan_path(root, rel,
-										 NULL,
-										 rows,
-										 startup_cost,
-										 total_cost,
-										 useful_pathkeys,
-										 NULL,
-										 sorted_epq_path,
-										 NIL));
+		if (IS_SIMPLE_REL(rel))
+			add_path(rel, (Path *)
+					 create_foreignscan_path(root, rel,
+											 NULL,
+											 rows,
+											 startup_cost,
+											 total_cost,
+											 useful_pathkeys,
+											 rel->lateral_relids,
+											 sorted_epq_path,
+											 NIL));
+		else
+			add_path(rel, (Path *)
+					 create_foreign_join_path(root, rel,
+											  NULL,
+											  rows,
+											  startup_cost,
+											  total_cost,
+											  useful_pathkeys,
+											  rel->lateral_relids,
+											  sorted_epq_path,
+											  NIL));
 	}
 }
 
@@ -5088,6 +5109,13 @@ postgresGetForeignJoinPaths(PlannerInfo *root,
 		return;
 
 	/*
+	 * This code does not work for joins with lateral references, since those
+	 * must have parameterized paths, which we don't generate yet.
+	 */
+	if (!bms_is_empty(joinrel->lateral_relids))
+		return;
+
+	/*
 	 * Create unfinished PgFdwRelationInfo entry which is used to indicate
 	 * that the join relation is already considered, so that we won't waste
 	 * time in judging safety of join pushdown and adding the same paths again
@@ -5171,16 +5199,16 @@ postgresGetForeignJoinPaths(PlannerInfo *root,
 	 * Create a new join path and add it to the joinrel which represents a
 	 * join between foreign tables.
 	 */
-	joinpath = create_foreignscan_path(root,
-									   joinrel,
-									   NULL,	/* default pathtarget */
-									   rows,
-									   startup_cost,
-									   total_cost,
-									   NIL, /* no pathkeys */
-									   NULL,	/* no required_outer */
-									   epq_path,
-									   NIL);	/* no fdw_private */
+	joinpath = create_foreign_join_path(root,
+										joinrel,
+										NULL,	/* default pathtarget */
+										rows,
+										startup_cost,
+										total_cost,
+										NIL,	/* no pathkeys */
+										joinrel->lateral_relids,
+										epq_path,
+										NIL);	/* no fdw_private */
 
 	/* Add generated path into joinrel by add_path(). */
 	add_path(joinrel, (Path *) joinpath);
@@ -5515,16 +5543,15 @@ add_foreign_grouping_paths(PlannerInfo *root, RelOptInfo *input_rel,
 	fpinfo->total_cost = total_cost;
 
 	/* Create and add foreign path to the grouping relation. */
-	grouppath = create_foreignscan_path(root,
-										grouped_rel,
-										grouped_rel->reltarget,
-										rows,
-										startup_cost,
-										total_cost,
-										NIL,	/* no pathkeys */
-										NULL,	/* no required_outer */
-										NULL,
-										NIL);	/* no fdw_private */
+	grouppath = create_foreign_upper_path(root,
+										  grouped_rel,
+										  grouped_rel->reltarget,
+										  rows,
+										  startup_cost,
+										  total_cost,
+										  NIL,	/* no pathkeys */
+										  NULL,
+										  NIL); /* no fdw_private */
 
 	/* Add generated path into grouped_rel by add_path(). */
 	add_path(grouped_rel, (Path *) grouppath);

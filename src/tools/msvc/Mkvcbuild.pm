@@ -97,13 +97,15 @@ sub mkvcbuild
 	  srandom.c getaddrinfo.c gettimeofday.c inet_net_ntop.c kill.c open.c
 	  erand48.c snprintf.c strlcat.c strlcpy.c dirmod.c noblock.c path.c
 	  dirent.c dlopen.c getopt.c getopt_long.c
-	  pread.c pwrite.c
+	  pread.c pwrite.c pg_bitutils.c
 	  pg_strong_random.c pgcheckdir.c pgmkdirp.c pgsleep.c pgstrcasecmp.c
 	  pqsignal.c mkdtemp.c qsort.c qsort_arg.c quotes.c system.c
 	  sprompt.c strerror.c tar.c thread.c
 	  win32env.c win32error.c win32security.c win32setlocale.c);
 
 	push(@pgportfiles, 'rint.c') if ($vsVersion < '12.00');
+
+	push(@pgportfiles, 'strtof.c') if ($vsVersion < '14.00');
 
 	if ($vsVersion >= '9.00')
 	{
@@ -117,7 +119,7 @@ sub mkvcbuild
 	}
 
 	our @pgcommonallfiles = qw(
-	  base64.c config_info.c controldata_utils.c exec.c file_perm.c ip.c
+	  base64.c config_info.c controldata_utils.c d2s.c exec.c f2s.c file_perm.c ip.c
 	  keywords.c kwlookup.c link-canary.c md5.c
 	  pg_lzcompress.c pgfnames.c psprintf.c relpath.c rmtree.c
 	  saslprep.c scram-common.c string.c unicode_norm.c username.c
@@ -177,6 +179,8 @@ sub mkvcbuild
 		'src/backend/replication', 'repl_scanner.l',
 		'repl_gram.y',             'syncrep_scanner.l',
 		'syncrep_gram.y');
+	$postgres->AddFiles('src/backend/utils/adt', 'jsonpath_scan.l',
+		'jsonpath_gram.y');
 	$postgres->AddDefine('BUILDING_DLL');
 	$postgres->AddLibrary('secur32.lib');
 	$postgres->AddLibrary('ws2_32.lib');

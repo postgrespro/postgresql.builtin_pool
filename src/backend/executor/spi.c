@@ -1314,7 +1314,7 @@ SPI_cursor_open_internal(const char *name, SPIPlanPtr plan,
 	 * throws an error.
 	 */
 	spierrcontext.callback = _SPI_error_callback;
-	spierrcontext.arg = (void *) plansource->query_string;
+	spierrcontext.arg = unconstify(char *, plansource->query_string);
 	spierrcontext.previous = error_context_stack;
 	error_context_stack = &spierrcontext;
 
@@ -1753,7 +1753,7 @@ SPI_plan_get_cached_plan(SPIPlanPtr plan)
 
 	/* Setup error traceback support for ereport() */
 	spierrcontext.callback = _SPI_error_callback;
-	spierrcontext.arg = (void *) plansource->query_string;
+	spierrcontext.arg = unconstify(char *, plansource->query_string);
 	spierrcontext.previous = error_context_stack;
 	error_context_stack = &spierrcontext;
 
@@ -1884,7 +1884,7 @@ _SPI_prepare_plan(const char *src, SPIPlanPtr plan)
 	 * Setup error traceback support for ereport()
 	 */
 	spierrcontext.callback = _SPI_error_callback;
-	spierrcontext.arg = (void *) src;
+	spierrcontext.arg = unconstify(char *, src);
 	spierrcontext.previous = error_context_stack;
 	error_context_stack = &spierrcontext;
 
@@ -1989,7 +1989,7 @@ _SPI_prepare_oneshot_plan(const char *src, SPIPlanPtr plan)
 	 * Setup error traceback support for ereport()
 	 */
 	spierrcontext.callback = _SPI_error_callback;
-	spierrcontext.arg = (void *) src;
+	spierrcontext.arg = unconstify(char *, src);
 	spierrcontext.previous = error_context_stack;
 	error_context_stack = &spierrcontext;
 
@@ -2100,7 +2100,7 @@ _SPI_execute_plan(SPIPlanPtr plan, ParamListInfo paramLI,
 		List	   *stmt_list;
 		ListCell   *lc2;
 
-		spierrcontext.arg = (void *) plansource->query_string;
+		spierrcontext.arg = unconstify(char *, plansource->query_string);
 
 		/*
 		 * If this is a one-shot plan, we still need to do parse analysis.
@@ -2387,20 +2387,9 @@ _SPI_convert_params(int nargs, Oid *argtypes,
 
 	if (nargs > 0)
 	{
-		int			i;
+		paramLI = makeParamList(nargs);
 
-		paramLI = (ParamListInfo) palloc(offsetof(ParamListInfoData, params) +
-										 nargs * sizeof(ParamExternData));
-		/* we have static list of params, so no hooks needed */
-		paramLI->paramFetch = NULL;
-		paramLI->paramFetchArg = NULL;
-		paramLI->paramCompile = NULL;
-		paramLI->paramCompileArg = NULL;
-		paramLI->parserSetup = NULL;
-		paramLI->parserSetupArg = NULL;
-		paramLI->numParams = nargs;
-
-		for (i = 0; i < nargs; i++)
+		for (int i = 0; i < nargs; i++)
 		{
 			ParamExternData *prm = &paramLI->params[i];
 

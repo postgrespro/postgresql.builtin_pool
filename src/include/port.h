@@ -381,6 +381,15 @@ extern int	isinf(double x);
 #endif							/* __clang__ && !__cplusplus */
 #endif							/* !HAVE_ISINF */
 
+#ifndef HAVE_STRTOF
+extern float strtof(const char *nptr, char **endptr);
+#endif
+
+#ifdef HAVE_BUGGY_STRTOF
+extern float pg_strtof(const char *nptr, char **endptr);
+#define strtof(a,b) (pg_strtof((a),(b)))
+#endif
+
 #ifndef HAVE_MKDTEMP
 extern char *mkdtemp(char *path);
 #endif

@@ -108,6 +108,7 @@ create_ctas_internal(List *attrList, IntoClause *into)
 	create->oncommit = into->onCommit;
 	create->tablespacename = into->tableSpaceName;
 	create->if_not_exists = false;
+	create->accessMethod = into->accessMethod;
 
 	/*
 	 * Create the relation.  (This will error out if there's an existing view,
@@ -586,6 +587,9 @@ intorel_receive(TupleTableSlot *slot, DestReceiver *self)
 				myState->bistate);
 
 	/* We know this is a newly created relation, so there are no indexes */
+
+	/* Free the copied tuple. */
+	heap_freetuple(tuple);
 
 	return true;
 }

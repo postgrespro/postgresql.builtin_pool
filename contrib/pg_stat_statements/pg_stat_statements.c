@@ -61,7 +61,6 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-#include "access/hash.h"
 #include "catalog/pg_authid.h"
 #include "executor/instrument.h"
 #include "funcapi.h"
@@ -78,6 +77,7 @@
 #include "tcop/utility.h"
 #include "utils/acl.h"
 #include "utils/builtins.h"
+#include "utils/hashutils.h"
 #include "utils/memutils.h"
 
 PG_MODULE_MAGIC;
@@ -1991,7 +1991,10 @@ qtext_load_file(Size *buffer_size)
 		return NULL;
 	}
 
-	CloseTransientFile(fd);
+	if (CloseTransientFile(fd))
+		ereport(LOG,
+				(errcode_for_file_access(),
+				 errmsg("could not close file \"%s\": %m", PGSS_TEXT_FILE)));
 
 	*buffer_size = stat.st_size;
 	return buf;
@@ -2476,6 +2479,8 @@ JumbleRangeTable(pgssJumbleState *jstate, List *rtable)
 			case RTE_NAMEDTUPLESTORE:
 				APP_JUMB_STRING(rte->enrname);
 				break;
+			case RTE_RESULT:
+				break;
 			default:
 				elog(ERROR, "unrecognized RTE kind: %d", (int) rte->rtekind);
 				break;
@@ -2577,14 +2582,14 @@ JumbleExpr(pgssJumbleState *jstate, Node *node)
 				JumbleExpr(jstate, (Node *) expr->aggfilter);
 			}
 			break;
-		case T_ArrayRef:
+		case T_SubscriptingRef:
 			{
-				ArrayRef   *aref = (ArrayRef *) node;
+				SubscriptingRef *sbsref = (SubscriptingRef *) node;
 
-				JumbleExpr(jstate, (Node *) aref->refupperindexpr);
-				JumbleExpr(jstate, (Node *) aref->reflowerindexpr);
-				JumbleExpr(jstate, (Node *) aref->refexpr);
-				JumbleExpr(jstate, (Node *) aref->refassgnexpr);
+				JumbleExpr(jstate, (Node *) sbsref->refupperindexpr);
+				JumbleExpr(jstate, (Node *) sbsref->reflowerindexpr);
+				JumbleExpr(jstate, (Node *) sbsref->refexpr);
+				JumbleExpr(jstate, (Node *) sbsref->refassgnexpr);
 			}
 			break;
 		case T_FuncExpr:
@@ -2925,6 +2930,7 @@ JumbleExpr(pgssJumbleState *jstate, Node *node)
 
 				/* we store the string name because RTE_CTE RTEs need it */
 				APP_JUMB_STRING(cte->ctename);
+				APP_JUMB(cte->ctematerialized);
 				JumbleQuery(jstate, castNode(Query, cte->ctequery));
 			}
 			break;

@@ -77,7 +77,7 @@ static ArchiveHandle *_allocAH(const char *FileSpec, const ArchiveFormat fmt,
 static void _getObjectDescription(PQExpBuffer buf, TocEntry *te,
 					  ArchiveHandle *AH);
 static void _printTocEntry(ArchiveHandle *AH, TocEntry *te, bool isData);
-static char *replace_line_endings(const char *str);
+static char *sanitize_line(const char *str, bool want_hyphen);
 static void _doSetFixedOutputState(ArchiveHandle *AH);
 static void _doSetSessionAuth(ArchiveHandle *AH, const char *user);
 static void _reconnectToDB(ArchiveHandle *AH, const char *dbname);
@@ -85,6 +85,7 @@ static void _becomeUser(ArchiveHandle *AH, const char *user);
 static void _becomeOwner(ArchiveHandle *AH, TocEntry *te);
 static void _selectOutputSchema(ArchiveHandle *AH, const char *schemaName);
 static void _selectTablespace(ArchiveHandle *AH, const char *tablespace);
+static void _selectTableAccessMethod(ArchiveHandle *AH, const char *tableam);
 static void processEncodingEntry(ArchiveHandle *AH, TocEntry *te);
 static void processStdStringsEntry(ArchiveHandle *AH, TocEntry *te);
 static void processSearchPathEntry(ArchiveHandle *AH, TocEntry *te);
@@ -1066,17 +1067,8 @@ WriteData(Archive *AHX, const void *data, size_t dLen)
 
 /* Public */
 TocEntry *
-ArchiveEntry(Archive *AHX,
-			 CatalogId catalogId, DumpId dumpId,
-			 const char *tag,
-			 const char *namespace,
-			 const char *tablespace,
-			 const char *owner,
-			 const char *desc, teSection section,
-			 const char *defn,
-			 const char *dropStmt, const char *copyStmt,
-			 const DumpId *deps, int nDeps,
-			 DataDumperPtr dumpFn, void *dumpArg)
+ArchiveEntry(Archive *AHX, CatalogId catalogId, DumpId dumpId,
+			 ArchiveOpts *opts)
 {
 	ArchiveHandle *AH = (ArchiveHandle *) AHX;
 	TocEntry   *newToc;
@@ -1094,22 +1086,23 @@ ArchiveEntry(Archive *AHX,
 
 	newToc->catalogId = catalogId;
 	newToc->dumpId = dumpId;
-	newToc->section = section;
+	newToc->section = opts->section;
 
-	newToc->tag = pg_strdup(tag);
-	newToc->namespace = namespace ? pg_strdup(namespace) : NULL;
-	newToc->tablespace = tablespace ? pg_strdup(tablespace) : NULL;
-	newToc->owner = pg_strdup(owner);
-	newToc->desc = pg_strdup(desc);
-	newToc->defn = pg_strdup(defn);
-	newToc->dropStmt = pg_strdup(dropStmt);
-	newToc->copyStmt = copyStmt ? pg_strdup(copyStmt) : NULL;
+	newToc->tag = pg_strdup(opts->tag);
+	newToc->namespace = opts->namespace ? pg_strdup(opts->namespace) : NULL;
+	newToc->tablespace = opts->tablespace ? pg_strdup(opts->tablespace) : NULL;
+	newToc->tableam = opts->tableam ? pg_strdup(opts->tableam) : NULL;
+	newToc->owner = pg_strdup(opts->owner);
+	newToc->desc = pg_strdup(opts->description);
+	newToc->defn = pg_strdup(opts->createStmt);
+	newToc->dropStmt = pg_strdup(opts->dropStmt);
+	newToc->copyStmt = opts->copyStmt ? pg_strdup(opts->copyStmt) : NULL;
 
-	if (nDeps > 0)
+	if (opts->nDeps > 0)
 	{
-		newToc->dependencies = (DumpId *) pg_malloc(nDeps * sizeof(DumpId));
-		memcpy(newToc->dependencies, deps, nDeps * sizeof(DumpId));
-		newToc->nDeps = nDeps;
+		newToc->dependencies = (DumpId *) pg_malloc(opts->nDeps * sizeof(DumpId));
+		memcpy(newToc->dependencies, opts->deps, opts->nDeps * sizeof(DumpId));
+		newToc->nDeps = opts->nDeps;
 	}
 	else
 	{
@@ -1117,9 +1110,9 @@ ArchiveEntry(Archive *AHX,
 		newToc->nDeps = 0;
 	}
 
-	newToc->dataDumper = dumpFn;
-	newToc->dataDumperArg = dumpArg;
-	newToc->hadDumper = dumpFn ? true : false;
+	newToc->dataDumper = opts->dumpFn;
+	newToc->dataDumperArg = opts->dumpArg;
+	newToc->hadDumper = opts->dumpFn ? true : false;
 
 	newToc->formatData = NULL;
 	newToc->dataLength = 0;
@@ -1152,7 +1145,7 @@ PrintTOCSummary(Archive *AHX)
 
 	ahprintf(AH, ";\n; Archive created at %s\n", stamp_str);
 	ahprintf(AH, ";     dbname: %s\n;     TOC Entries: %d\n;     Compression: %d\n",
-			 replace_line_endings(AH->archdbname),
+			 sanitize_line(AH->archdbname, false),
 			 AH->tocCount, AH->compression);
 
 	switch (AH->format)
@@ -1197,21 +1190,10 @@ PrintTOCSummary(Archive *AHX)
 			char	   *sanitized_owner;
 
 			/*
-			 * As in _printTocEntry(), sanitize strings that might contain
-			 * newlines, to ensure that each logical output line is in fact
-			 * one physical output line.  This prevents confusion when the
-			 * file is read by "pg_restore -L".  Note that we currently don't
-			 * bother to quote names, meaning that the name fields aren't
-			 * automatically parseable.  "pg_restore -L" doesn't care because
-			 * it only examines the dumpId field, but someday we might want to
-			 * try harder.
 			 */
-			sanitized_name = replace_line_endings(te->tag);
-			if (te->namespace)
-				sanitized_schema = replace_line_endings(te->namespace);
-			else
-				sanitized_schema = pg_strdup("-");
-			sanitized_owner = replace_line_endings(te->owner);
+			sanitized_name = sanitize_line(te->tag, false);
+			sanitized_schema = sanitize_line(te->namespace, true);
+			sanitized_owner = sanitize_line(te->owner, false);
 
 			ahprintf(AH, "%d; %u %u %s %s %s %s\n", te->dumpId,
 					 te->catalogId.tableoid, te->catalogId.oid,
@@ -1813,8 +1795,11 @@ warn_or_exit_horribly(ArchiveHandle *AH,
 	{
 		write_msg(modulename, "Error from TOC entry %d; %u %u %s %s %s\n",
 				  AH->currentTE->dumpId,
-				  AH->currentTE->catalogId.tableoid, AH->currentTE->catalogId.oid,
-				  AH->currentTE->desc, AH->currentTE->tag, AH->currentTE->owner);
+				  AH->currentTE->catalogId.tableoid,
+				  AH->currentTE->catalogId.oid,
+				  AH->currentTE->desc ? AH->currentTE->desc : "(no desc)",
+				  AH->currentTE->tag ? AH->currentTE->tag : "(no tag)",
+				  AH->currentTE->owner ? AH->currentTE->owner : "(no owner)");
 	}
 	AH->lastErrorStage = AH->stage;
 	AH->lastErrorTE = AH->currentTE;
@@ -2367,6 +2352,7 @@ _allocAH(const char *FileSpec, const ArchiveFormat fmt,
 	AH->currUser = NULL;		/* unknown */
 	AH->currSchema = NULL;		/* ditto */
 	AH->currTablespace = NULL;	/* ditto */
+	AH->currTableAm = NULL;	/* ditto */
 
 	AH->toc = (TocEntry *) pg_malloc0(sizeof(TocEntry));
 
@@ -2593,6 +2579,7 @@ WriteToc(ArchiveHandle *AH)
 		WriteStr(AH, te->copyStmt);
 		WriteStr(AH, te->namespace);
 		WriteStr(AH, te->tablespace);
+		WriteStr(AH, te->tableam);
 		WriteStr(AH, te->owner);
 		WriteStr(AH, "false");
 
@@ -2694,6 +2681,9 @@ ReadToc(ArchiveHandle *AH)
 
 		if (AH->version >= K_VERS_1_10)
 			te->tablespace = ReadStr(AH);
+
+		if (AH->version >= K_VERS_1_14)
+			te->tableam = ReadStr(AH);
 
 		te->owner = ReadStr(AH);
 		if (AH->version < K_VERS_1_9 || strcmp(ReadStr(AH), "true") == 0)
@@ -3449,6 +3439,48 @@ _selectTablespace(ArchiveHandle *AH, const char *tablespace)
 }
 
 /*
+ * Set the proper default_table_access_method value for the table.
+ */
+static void
+_selectTableAccessMethod(ArchiveHandle *AH, const char *tableam)
+{
+	PQExpBuffer cmd;
+	const char *want, *have;
+
+	have = AH->currTableAm;
+	want = tableam;
+
+	if (!want)
+		return;
+
+	if (have && strcmp(want, have) == 0)
+		return;
+
+	cmd = createPQExpBuffer();
+	appendPQExpBuffer(cmd, "SET default_table_access_method = %s;", fmtId(want));
+
+	if (RestoringToDB(AH))
+	{
+		PGresult   *res;
+
+		res = PQexec(AH->connection, cmd->data);
+
+		if (!res || PQresultStatus(res) != PGRES_COMMAND_OK)
+			warn_or_exit_horribly(AH, modulename,
+								  "could not set default_table_access_method: %s",
+								  PQerrorMessage(AH->connection));
+
+		PQclear(res);
+	}
+	else
+		ahprintf(AH, "%s\n\n", cmd->data);
+
+	destroyPQExpBuffer(cmd);
+
+	AH->currTableAm = pg_strdup(want);
+}
+
+/*
  * Extract an object description for a TOC entry, and append it to buf.
  *
  * This is used for ALTER ... OWNER TO.
@@ -3543,10 +3575,11 @@ _printTocEntry(ArchiveHandle *AH, TocEntry *te, bool isData)
 {
 	RestoreOptions *ropt = AH->public.ropt;
 
-	/* Select owner, schema, and tablespace as necessary */
+	/* Select owner, schema, tablespace and default AM as necessary */
 	_becomeOwner(AH, te);
 	_selectOutputSchema(AH, te->namespace);
 	_selectTablespace(AH, te->tablespace);
+	_selectTableAccessMethod(AH, te->tableam);
 
 	/* Emit header comment for item */
 	if (!AH->noTocComments)
@@ -3577,21 +3610,9 @@ _printTocEntry(ArchiveHandle *AH, TocEntry *te, bool isData)
 			}
 		}
 
-		/*
-		 * Zap any line endings embedded in user-supplied fields, to prevent
-		 * corruption of the dump (which could, in the worst case, present an
-		 * SQL injection vulnerability if someone were to incautiously load a
-		 * dump containing objects with maliciously crafted names).
-		 */
-		sanitized_name = replace_line_endings(te->tag);
-		if (te->namespace)
-			sanitized_schema = replace_line_endings(te->namespace);
-		else
-			sanitized_schema = pg_strdup("-");
-		if (!ropt->noOwner)
-			sanitized_owner = replace_line_endings(te->owner);
-		else
-			sanitized_owner = pg_strdup("-");
+		sanitized_name = sanitize_line(te->tag, false);
+		sanitized_schema = sanitize_line(te->namespace, true);
+		sanitized_owner = sanitize_line(ropt->noOwner ? NULL : te->owner, true);
 
 		ahprintf(AH, "-- %sName: %s; Type: %s; Schema: %s; Owner: %s",
 				 pfx, sanitized_name, te->desc, sanitized_schema,
@@ -3605,7 +3626,7 @@ _printTocEntry(ArchiveHandle *AH, TocEntry *te, bool isData)
 		{
 			char	   *sanitized_tablespace;
 
-			sanitized_tablespace = replace_line_endings(te->tablespace);
+			sanitized_tablespace = sanitize_line(te->tablespace, false);
 			ahprintf(AH, "; Tablespace: %s", sanitized_tablespace);
 			free(sanitized_tablespace);
 		}
@@ -3713,15 +3734,29 @@ _printTocEntry(ArchiveHandle *AH, TocEntry *te, bool isData)
 }
 
 /*
- * Sanitize a string to be included in an SQL comment or TOC listing,
- * by replacing any newlines with spaces.
- * The result is a freshly malloc'd string.
+ * Sanitize a string to be included in an SQL comment or TOC listing, by
+ * replacing any newlines with spaces.  This ensures each logical output line
+ * is in fact one physical output line, to prevent corruption of the dump
+ * (which could, in the worst case, present an SQL injection vulnerability
+ * if someone were to incautiously load a dump containing objects with
+ * maliciously crafted names).
+ *
+ * The result is a freshly malloc'd string.  If the input string is NULL,
+ * return a malloc'ed empty string, unless want_hyphen, in which case return a
+ * malloc'ed hyphen.
+ *
+ * Note that we currently don't bother to quote names, meaning that the name
+ * fields aren't automatically parseable.  "pg_restore -L" doesn't care because
+ * it only examines the dumpId field, but someday we might want to try harder.
  */
 static char *
-replace_line_endings(const char *str)
+sanitize_line(const char *str, bool want_hyphen)
 {
 	char	   *result;
 	char	   *s;
+
+	if (!str)
+		return pg_strdup(want_hyphen ? "-" : "");
 
 	result = pg_strdup(str);
 
@@ -4021,6 +4056,9 @@ restore_toc_entries_prefork(ArchiveHandle *AH, TocEntry *pending_list)
 	if (AH->currTablespace)
 		free(AH->currTablespace);
 	AH->currTablespace = NULL;
+	if (AH->currTableAm)
+		free(AH->currTableAm);
+	AH->currTableAm = NULL;
 }
 
 /*
@@ -4906,6 +4944,8 @@ DeCloneArchive(ArchiveHandle *AH)
 		free(AH->currSchema);
 	if (AH->currTablespace)
 		free(AH->currTablespace);
+	if (AH->currTableAm)
+		free(AH->currTableAm);
 	if (AH->savedPassword)
 		free(AH->savedPassword);
 

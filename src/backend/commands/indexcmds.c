@@ -20,11 +20,11 @@
 #include "access/htup_details.h"
 #include "access/reloptions.h"
 #include "access/sysattr.h"
+#include "access/tableam.h"
 #include "access/xact.h"
 #include "catalog/catalog.h"
 #include "catalog/index.h"
 #include "catalog/indexing.h"
-#include "catalog/partition.h"
 #include "catalog/pg_am.h"
 #include "catalog/pg_constraint.h"
 #include "catalog/pg_inherits.h"
@@ -42,12 +42,11 @@
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
-#include "optimizer/clauses.h"
-#include "optimizer/planner.h"
-#include "optimizer/var.h"
+#include "optimizer/optimizer.h"
 #include "parser/parse_coerce.h"
 #include "parser/parse_func.h"
 #include "parser/parse_oper.h"
+#include "partitioning/partdesc.h"
 #include "rewrite/rewriteManip.h"
 #include "storage/lmgr.h"
 #include "storage/proc.h"
@@ -973,7 +972,8 @@ DefineIndex(Oid relationId,
 						IndexSetParentIndex(cldidx, indexRelationId);
 						if (createdConstraintId != InvalidOid)
 							ConstraintSetParentConstraint(cldConstrOid,
-														  createdConstraintId);
+														  createdConstraintId,
+														  childRelid);
 
 						if (!cldidx->rd_index->indisvalid)
 							invalidate_parent = true;
@@ -2109,7 +2109,8 @@ ChooseIndexName(const char *tabname, Oid namespaceId,
  * We know that less than NAMEDATALEN characters will actually be used,
  * so we can truncate the result once we've generated that many.
  *
- * XXX See also ChooseExtendedStatisticNameAddition.
+ * XXX See also ChooseForeignKeyConstraintNameAddition and
+ * ChooseExtendedStatisticNameAddition.
  */
 static char *
 ChooseIndexNameAddition(List *colnames)
@@ -2337,7 +2338,7 @@ ReindexMultipleTables(const char *objectName, ReindexObjectType objectKind,
 {
 	Oid			objectOid;
 	Relation	relationRelation;
-	HeapScanDesc scan;
+	TableScanDesc scan;
 	ScanKeyData scan_keys[1];
 	HeapTuple	tuple;
 	MemoryContext private_context;
@@ -2411,7 +2412,7 @@ ReindexMultipleTables(const char *objectName, ReindexObjectType objectKind,
 	 * rels will be processed indirectly by reindex_relation).
 	 */
 	relationRelation = table_open(RelationRelationId, AccessShareLock);
-	scan = heap_beginscan_catalog(relationRelation, num_keys, scan_keys);
+	scan = table_beginscan_catalog(relationRelation, num_keys, scan_keys);
 	while ((tuple = heap_getnext(scan, ForwardScanDirection)) != NULL)
 	{
 		Form_pg_class classtuple = (Form_pg_class) GETSTRUCT(tuple);
@@ -2470,7 +2471,7 @@ ReindexMultipleTables(const char *objectName, ReindexObjectType objectKind,
 
 		MemoryContextSwitchTo(old);
 	}
-	heap_endscan(scan);
+	table_endscan(scan);
 	table_close(relationRelation, AccessShareLock);
 
 	/* Now reindex each rel in a separate transaction */
@@ -2624,35 +2625,34 @@ IndexSetParentIndex(Relation partitionIdx, Oid parentOid)
 
 	if (fix_dependencies)
 	{
-		ObjectAddress partIdx;
-
 		/*
-		 * Insert/delete pg_depend rows.  If setting a parent, add an
-		 * INTERNAL_AUTO dependency to the parent index; if making standalone,
-		 * remove all existing rows and put back the regular dependency on the
-		 * table.
+		 * Insert/delete pg_depend rows.  If setting a parent, add PARTITION
+		 * dependencies on the parent index and the table; if removing a
+		 * parent, delete PARTITION dependencies.
 		 */
-		ObjectAddressSet(partIdx, RelationRelationId, partRelid);
-
 		if (OidIsValid(parentOid))
 		{
+			ObjectAddress partIdx;
 			ObjectAddress parentIdx;
+			ObjectAddress partitionTbl;
 
+			ObjectAddressSet(partIdx, RelationRelationId, partRelid);
 			ObjectAddressSet(parentIdx, RelationRelationId, parentOid);
-			recordDependencyOn(&partIdx, &parentIdx, DEPENDENCY_INTERNAL_AUTO);
+			ObjectAddressSet(partitionTbl, RelationRelationId,
+							 partitionIdx->rd_index->indrelid);
+			recordDependencyOn(&partIdx, &parentIdx,
+							   DEPENDENCY_PARTITION_PRI);
+			recordDependencyOn(&partIdx, &partitionTbl,
+							   DEPENDENCY_PARTITION_SEC);
 		}
 		else
 		{
-			ObjectAddress partitionTbl;
-
-			ObjectAddressSet(partitionTbl, RelationRelationId,
-							 partitionIdx->rd_index->indrelid);
-
 			deleteDependencyRecordsForClass(RelationRelationId, partRelid,
 											RelationRelationId,
-											DEPENDENCY_INTERNAL_AUTO);
-
-			recordDependencyOn(&partIdx, &partitionTbl, DEPENDENCY_AUTO);
+											DEPENDENCY_PARTITION_PRI);
+			deleteDependencyRecordsForClass(RelationRelationId, partRelid,
+											RelationRelationId,
+											DEPENDENCY_PARTITION_SEC);
 		}
 
 		/* make our updates visible */
