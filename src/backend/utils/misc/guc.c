@@ -2247,7 +2247,7 @@ static struct config_int ConfigureNamesInt[] =
 	{
 		{"autoprepare_memory_limit", PGC_USERSET, QUERY_TUNING_OTHER,
 		 gettext_noop("Maximal size of memory used by autoprepared queries."),
-		 gettext_noop("0 means that there is no memory limit. Calculating memory used by prepared queries adds somme extra overhead, "
+		 gettext_noop("0 means that there is no memory limit. Calculating memory used by prepared queries adds some extra overhead, "
 					  "so non-zero value of this parameter may cause some slowdown. autoprepare_limit is much faster way to limit number of autoprepared statements"),
 		 GUC_UNIT_KB
 		},

@@ -7547,7 +7547,7 @@
   proargmodes => '{o,o,o,o,o}',
   proargnames => '{name,statement,prepare_time,parameter_types,from_sql}',
   prosrc => 'pg_prepared_statement' },
-{ oid => '4013', descr => 'get the autoprepared statements for this session',
+{ oid => '4035', descr => 'get the autoprepared statements for this session',
   proname => 'pg_autoprepared_statement', prorows => '1000', proretset => 't',
   provolatile => 's', proparallel => 'r', prorettype => 'record',
   proargtypes => '', proallargtypes => '{text,_regtype,int8}',

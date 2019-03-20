@@ -5262,9 +5262,57 @@ SELECT * FROM parent WHERE key = 2400;
      </varlistentry>
 
      </variablelist>
+
+     <varlistentry id="guc-autoprepare-threshold" xreflabel="autoprepare_threshold">
+      <term><varname>autoprepare_threshold</varname> (<type>integer/type>)
+      <indexterm>
+       <primary><varname>autoprepare_threshold</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+         Threshold for autopreparing query. The <varname>autoprepare_threshold</varname> parameter
+         specifies how much times the statement should be executed before generic plan for this statement is generated.
+         Zero value (default) disables autoprepare.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-autoprepare-limit" xreflabel="autoprepare_limit">
+      <term><varname>autoprepare_limit</varname> (<type>integer/type>)
+      <indexterm>
+       <primary><varname>autoprepare_limit</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+         Maximal number of autoprepared queries.
+         Zero value means unlimited number of autoprepared queries.
+         Too large number of prepared queries can cause backend memory overflow and slowdown execution speed
+         (because of increased lookup time). Default value is <literal>113</literal>.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-autoprepare-memory-limit" xreflabel="autoprepare_memory_limit">
+      <term><varname>autoprepare_memory_limit</varname> (<type>integer/type>)
+      <indexterm>
+       <primary><varname>autoprepare_memory_limit</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+         Maximal size of memory used by autoprepared queries.
+         Zero value (default) means that there is no memory limit.
+         Calculating memory used by prepared queries adds some extra overhead,
+		 so non-zero value of this parameter may cause some slowdown.
+         <varname>autoprepare_limit</varname> is much faster way to limit number of autoprepared statements.
+       </para>
+      </listitem>
+     </varlistentry>
     </sect2>
    </sect1>
-
+ 
    <sect1 id="runtime-config-logging">
     <title>Error Reporting and Logging</title>
 
