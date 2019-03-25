@@ -463,6 +463,7 @@ _outRecursiveUnion(StringInfo str, const RecursiveUnion *node)
 	WRITE_INT_FIELD(numCols);
 	WRITE_ATTRNUMBER_ARRAY(dupColIdx, node->numCols);
 	WRITE_OID_ARRAY(dupOperators, node->numCols);
+	WRITE_OID_ARRAY(dupCollations, node->numCols);
 	WRITE_LONG_FIELD(numGroups);
 }
 
@@ -774,6 +775,7 @@ _outAgg(StringInfo str, const Agg *node)
 	WRITE_INT_FIELD(numCols);
 	WRITE_ATTRNUMBER_ARRAY(grpColIdx, node->numCols);
 	WRITE_OID_ARRAY(grpOperators, node->numCols);
+	WRITE_OID_ARRAY(grpCollations, node->numCols);
 	WRITE_LONG_FIELD(numGroups);
 	WRITE_BITMAPSET_FIELD(aggParams);
 	WRITE_NODE_FIELD(groupingSets);
@@ -791,9 +793,11 @@ _outWindowAgg(StringInfo str, const WindowAgg *node)
 	WRITE_INT_FIELD(partNumCols);
 	WRITE_ATTRNUMBER_ARRAY(partColIdx, node->partNumCols);
 	WRITE_OID_ARRAY(partOperators, node->partNumCols);
+	WRITE_OID_ARRAY(partCollations, node->partNumCols);
 	WRITE_INT_FIELD(ordNumCols);
 	WRITE_ATTRNUMBER_ARRAY(ordColIdx, node->ordNumCols);
 	WRITE_OID_ARRAY(ordOperators, node->ordNumCols);
+	WRITE_OID_ARRAY(ordCollations, node->ordNumCols);
 	WRITE_INT_FIELD(frameOptions);
 	WRITE_NODE_FIELD(startOffset);
 	WRITE_NODE_FIELD(endOffset);
@@ -814,6 +818,7 @@ _outGroup(StringInfo str, const Group *node)
 	WRITE_INT_FIELD(numCols);
 	WRITE_ATTRNUMBER_ARRAY(grpColIdx, node->numCols);
 	WRITE_OID_ARRAY(grpOperators, node->numCols);
+	WRITE_OID_ARRAY(grpCollations, node->numCols);
 }
 
 static void
@@ -848,6 +853,7 @@ _outUnique(StringInfo str, const Unique *node)
 	WRITE_INT_FIELD(numCols);
 	WRITE_ATTRNUMBER_ARRAY(uniqColIdx, node->numCols);
 	WRITE_OID_ARRAY(uniqOperators, node->numCols);
+	WRITE_OID_ARRAY(uniqCollations, node->numCols);
 }
 
 static void
@@ -875,6 +881,7 @@ _outSetOp(StringInfo str, const SetOp *node)
 	WRITE_INT_FIELD(numCols);
 	WRITE_ATTRNUMBER_ARRAY(dupColIdx, node->numCols);
 	WRITE_OID_ARRAY(dupOperators, node->numCols);
+	WRITE_OID_ARRAY(dupCollations, node->numCols);
 	WRITE_INT_FIELD(flagColIdx);
 	WRITE_INT_FIELD(firstFlag);
 	WRITE_LONG_FIELD(numGroups);
@@ -947,6 +954,7 @@ _outPartitionedRelPruneInfo(StringInfo str, const PartitionedRelPruneInfo *node)
 	WRITE_INT_FIELD(nexprs);
 	WRITE_INT_ARRAY(subplan_map, node->nparts);
 	WRITE_INT_ARRAY(subpart_map, node->nparts);
+	WRITE_OID_ARRAY(relid_map, node->nparts);
 	WRITE_BOOL_ARRAY(hasexecparam, node->nexprs);
 	WRITE_BOOL_FIELD(do_initial_prune);
 	WRITE_BOOL_FIELD(do_exec_prune);
@@ -1043,6 +1051,7 @@ _outIntoClause(StringInfo str, const IntoClause *node)
 
 	WRITE_NODE_FIELD(rel);
 	WRITE_NODE_FIELD(colNames);
+	WRITE_NODE_FIELD(accessMethod);
 	WRITE_NODE_FIELD(options);
 	WRITE_ENUM_FIELD(onCommit, OnCommitAction);
 	WRITE_STRING_FIELD(tableSpaceName);
@@ -2578,6 +2587,7 @@ _outCreateStmtInfo(StringInfo str, const CreateStmt *node)
 	WRITE_NODE_FIELD(options);
 	WRITE_ENUM_FIELD(oncommit, OnCommitAction);
 	WRITE_STRING_FIELD(tablespacename);
+	WRITE_STRING_FIELD(accessMethod);
 	WRITE_BOOL_FIELD(if_not_exists);
 }
 
@@ -2989,6 +2999,7 @@ _outCommonTableExpr(StringInfo str, const CommonTableExpr *node)
 
 	WRITE_STRING_FIELD(ctename);
 	WRITE_NODE_FIELD(aliascolnames);
+	WRITE_ENUM_FIELD(ctematerialized, CTEMaterialize);
 	WRITE_NODE_FIELD(ctequery);
 	WRITE_LOCATION_FIELD(location);
 	WRITE_BOOL_FIELD(cterecursive);

@@ -126,6 +126,9 @@ typedef struct
 
 	int			ckpt_flags;		/* checkpoint flags, as defined in xlog.h */
 
+	ConditionVariable start_cv; /* signaled when ckpt_started advances */
+	ConditionVariable done_cv;	/* signaled when ckpt_done advances */
+
 	uint32		num_backend_writes; /* counts user backend buffer writes */
 	uint32		num_backend_fsync;	/* counts user backend fsync calls */
 
@@ -150,7 +153,6 @@ double		CheckPointCompletionTarget = 0.5;
  * Flags set by interrupt handlers for later service in the main loop.
  */
 static volatile sig_atomic_t got_SIGHUP = false;
-static volatile sig_atomic_t checkpoint_requested = false;
 static volatile sig_atomic_t shutdown_requested = false;
 
 /*
@@ -367,12 +369,6 @@ CheckpointerMain(void)
 			 */
 			UpdateSharedMemoryConfig();
 		}
-		if (checkpoint_requested)
-		{
-			checkpoint_requested = false;
-			do_checkpoint = true;
-			BgWriterStats.m_requested_checkpoints++;
-		}
 		if (shutdown_requested)
 		{
 			/*
@@ -384,6 +380,17 @@ CheckpointerMain(void)
 			ShutdownXLOG(0, 0);
 			/* Normal exit from the checkpointer is here */
 			proc_exit(0);		/* done */
+		}
+
+		/*
+		 * Detect a pending checkpoint request by checking whether the flags
+		 * word in shared memory is nonzero.  We shouldn't need to acquire the
+		 * ckpt_lck for this.
+		 */
+		if (((volatile CheckpointerShmemStruct *) CheckpointerShmem)->ckpt_flags)
+		{
+			do_checkpoint = true;
+			BgWriterStats.m_requested_checkpoints++;
 		}
 
 		/*
@@ -427,6 +434,8 @@ CheckpointerMain(void)
 			CheckpointerShmem->ckpt_flags = 0;
 			CheckpointerShmem->ckpt_started++;
 			SpinLockRelease(&CheckpointerShmem->ckpt_lck);
+
+			ConditionVariableBroadcast(&CheckpointerShmem->start_cv);
 
 			/*
 			 * The end-of-recovery checkpoint is a real checkpoint that's
@@ -487,6 +496,8 @@ CheckpointerMain(void)
 			SpinLockAcquire(&CheckpointerShmem->ckpt_lck);
 			CheckpointerShmem->ckpt_done = CheckpointerShmem->ckpt_started;
 			SpinLockRelease(&CheckpointerShmem->ckpt_lck);
+
+			ConditionVariableBroadcast(&CheckpointerShmem->done_cv);
 
 			if (ckpt_performed)
 			{
@@ -623,17 +634,14 @@ CheckArchiveTimeout(void)
 static bool
 ImmediateCheckpointRequested(void)
 {
-	if (checkpoint_requested)
-	{
-		volatile CheckpointerShmemStruct *cps = CheckpointerShmem;
+	volatile CheckpointerShmemStruct *cps = CheckpointerShmem;
 
-		/*
-		 * We don't need to acquire the ckpt_lck in this case because we're
-		 * only looking at a single flag bit.
-		 */
-		if (cps->ckpt_flags & CHECKPOINT_IMMEDIATE)
-			return true;
-	}
+	/*
+	 * We don't need to acquire the ckpt_lck in this case because we're only
+	 * looking at a single flag bit.
+	 */
+	if (cps->ckpt_flags & CHECKPOINT_IMMEDIATE)
+		return true;
 	return false;
 }
 
@@ -836,7 +844,10 @@ ReqCheckpointHandler(SIGNAL_ARGS)
 {
 	int			save_errno = errno;
 
-	checkpoint_requested = true;
+	/*
+	 * The signalling process should have set ckpt_flags nonzero, so all we
+	 * need do is ensure that our main loop gets kicked out of any wait.
+	 */
 	SetLatch(MyLatch);
 
 	errno = save_errno;
@@ -915,6 +926,8 @@ CheckpointerShmemInit(void)
 		MemSet(CheckpointerShmem, 0, size);
 		SpinLockInit(&CheckpointerShmem->ckpt_lck);
 		CheckpointerShmem->max_requests = NBuffers;
+		ConditionVariableInit(&CheckpointerShmem->start_cv);
+		ConditionVariableInit(&CheckpointerShmem->done_cv);
 	}
 }
 
@@ -975,31 +988,35 @@ RequestCheckpoint(int flags)
 
 	old_failed = CheckpointerShmem->ckpt_failed;
 	old_started = CheckpointerShmem->ckpt_started;
-	CheckpointerShmem->ckpt_flags |= flags;
+	CheckpointerShmem->ckpt_flags |= (flags | CHECKPOINT_REQUESTED);
 
 	SpinLockRelease(&CheckpointerShmem->ckpt_lck);
 
 	/*
 	 * Send signal to request checkpoint.  It's possible that the checkpointer
 	 * hasn't started yet, or is in process of restarting, so we will retry a
-	 * few times if needed.  Also, if not told to wait for the checkpoint to
-	 * occur, we consider failure to send the signal to be nonfatal and merely
-	 * LOG it.
+	 * few times if needed.  (Actually, more than a few times, since on slow
+	 * or overloaded buildfarm machines, it's been observed that the
+	 * checkpointer can take several seconds to start.)  However, if not told
+	 * to wait for the checkpoint to occur, we consider failure to send the
+	 * signal to be nonfatal and merely LOG it.  The checkpointer should see
+	 * the request when it does start, with or without getting a signal.
 	 */
+#define MAX_SIGNAL_TRIES 600	/* max wait 60.0 sec */
 	for (ntries = 0;; ntries++)
 	{
 		if (CheckpointerShmem->checkpointer_pid == 0)
 		{
-			if (ntries >= 20)	/* max wait 2.0 sec */
+			if (ntries >= MAX_SIGNAL_TRIES || !(flags & CHECKPOINT_WAIT))
 			{
 				elog((flags & CHECKPOINT_WAIT) ? ERROR : LOG,
-					 "could not request checkpoint because checkpointer not running");
+					 "could not signal for checkpoint: checkpointer is not running");
 				break;
 			}
 		}
 		else if (kill(CheckpointerShmem->checkpointer_pid, SIGINT) != 0)
 		{
-			if (ntries >= 20)	/* max wait 2.0 sec */
+			if (ntries >= MAX_SIGNAL_TRIES || !(flags & CHECKPOINT_WAIT))
 			{
 				elog((flags & CHECKPOINT_WAIT) ? ERROR : LOG,
 					 "could not signal for checkpoint: %m");
@@ -1023,6 +1040,7 @@ RequestCheckpoint(int flags)
 					new_failed;
 
 		/* Wait for a new checkpoint to start. */
+		ConditionVariablePrepareToSleep(&CheckpointerShmem->start_cv);
 		for (;;)
 		{
 			SpinLockAcquire(&CheckpointerShmem->ckpt_lck);
@@ -1032,13 +1050,15 @@ RequestCheckpoint(int flags)
 			if (new_started != old_started)
 				break;
 
-			CHECK_FOR_INTERRUPTS();
-			pg_usleep(100000L);
+			ConditionVariableSleep(&CheckpointerShmem->start_cv,
+								   WAIT_EVENT_CHECKPOINT_START);
 		}
+		ConditionVariableCancelSleep();
 
 		/*
 		 * We are waiting for ckpt_done >= new_started, in a modulo sense.
 		 */
+		ConditionVariablePrepareToSleep(&CheckpointerShmem->done_cv);
 		for (;;)
 		{
 			int			new_done;
@@ -1051,9 +1071,10 @@ RequestCheckpoint(int flags)
 			if (new_done - new_started >= 0)
 				break;
 
-			CHECK_FOR_INTERRUPTS();
-			pg_usleep(100000L);
+			ConditionVariableSleep(&CheckpointerShmem->done_cv,
+								   WAIT_EVENT_CHECKPOINT_DONE);
 		}
+		ConditionVariableCancelSleep();
 
 		if (new_failed != old_failed)
 			ereport(ERROR,

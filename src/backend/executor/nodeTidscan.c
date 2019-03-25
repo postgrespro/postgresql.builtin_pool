@@ -24,6 +24,7 @@
 
 #include "access/heapam.h"
 #include "access/sysattr.h"
+#include "access/tableam.h"
 #include "catalog/pg_type.h"
 #include "executor/execdebug.h"
 #include "executor/nodeTidscan.h"
@@ -309,7 +310,6 @@ TidNext(TidScanState *node)
 	Relation	heapRelation;
 	HeapTuple	tuple;
 	TupleTableSlot *slot;
-	Buffer		buffer = InvalidBuffer;
 	ItemPointerData *tidList;
 	int			numTids;
 	bool		bBackward;
@@ -375,26 +375,10 @@ TidNext(TidScanState *node)
 		if (node->tss_isCurrentOf)
 			heap_get_latest_tid(heapRelation, snapshot, &tuple->t_self);
 
-		if (heap_fetch(heapRelation, snapshot, tuple, &buffer, false, NULL))
-		{
-			/*
-			 * Store the scanned tuple in the scan tuple slot of the scan
-			 * state.  Eventually we will only do this and not return a tuple.
-			 */
-			ExecStoreBufferHeapTuple(tuple, /* tuple to store */
-									 slot,	/* slot to store in */
-									 buffer);	/* buffer associated with
-												 * tuple */
-
-			/*
-			 * At this point we have an extra pin on the buffer, because
-			 * ExecStoreHeapTuple incremented the pin count. Drop our local
-			 * pin.
-			 */
-			ReleaseBuffer(buffer);
-
+		if (table_fetch_row_version(heapRelation, &tuple->t_self, snapshot,
+									slot))
 			return slot;
-		}
+
 		/* Bad TID or failed snapshot qual; try next */
 		if (bBackward)
 			node->tss_TidPtr--;
@@ -545,7 +529,7 @@ ExecInitTidScan(TidScan *node, EState *estate, int eflags)
 	 */
 	ExecInitScanTupleSlot(estate, &tidstate->ss,
 						  RelationGetDescr(currentRelation),
-						  &TTSOpsBufferHeapTuple);
+						  table_slot_callbacks(currentRelation));
 
 	/*
 	 * Initialize result type and projection.

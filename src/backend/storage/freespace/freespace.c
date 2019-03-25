@@ -97,7 +97,16 @@ typedef struct
 /* Address of the root page. */
 static const FSMAddress FSM_ROOT_ADDRESS = {FSM_ROOT_LEVEL, 0};
 
-/* Local map of block numbers for small heaps with no FSM. */
+/*
+ * For small relations, we don't create FSM to save space, instead we use
+ * local in-memory map of pages to try.  To locate free space, we simply try
+ * pages directly without knowing ahead of time how much free space they have.
+ *
+ * Note that this map is used to the find the block with required free space
+ * for any given relation.  We clear this map when we have found a block with
+ * enough free space, when we extend the relation, or on transaction abort.
+ * See src/backend/storage/freespace/README for further details.
+ */
 typedef struct
 {
 	BlockNumber nblocks;
@@ -189,7 +198,7 @@ GetPageWithFreeSpace(Relation rel, Size spaceNeeded, bool check_fsm_only)
 		}
 		else if (nblocks > 0)
 		{
-			/* Create or update local map and get first candidate block. */
+			/* Initialize local map and get first candidate block. */
 			fsm_local_set(rel, nblocks);
 			target_block = fsm_local_search();
 		}
@@ -1110,8 +1119,7 @@ fsm_allow_writes(Relation rel, BlockNumber heapblk,
 }
 
 /*
- * Initialize or update the local map of blocks to try, for when there is
- * no FSM.
+ * Initialize the local map of blocks to try, for when there is no FSM.
  *
  * When we initialize the map, the whole heap is potentially available to
  * try.  Testing revealed that trying every block can cause a small
@@ -1174,6 +1182,14 @@ fsm_local_search(void)
 		if (fsm_local_map.map[target_block] == FSM_LOCAL_AVAIL)
 			return target_block;
 	} while (target_block > 0);
+
+	/*
+	 * If we didn't find any available block to try in the local map, then
+	 * clear it.  This prevents us from using the map again without setting it
+	 * first, which would otherwise lead to the same conclusion again and
+	 * again.
+	 */
+	FSMClearLocalMap();
 
 	return InvalidBlockNumber;
 }

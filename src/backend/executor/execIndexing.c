@@ -108,6 +108,7 @@
 
 #include "access/genam.h"
 #include "access/relscan.h"
+#include "access/tableam.h"
 #include "access/xact.h"
 #include "catalog/index.h"
 #include "executor/executor.h"
@@ -270,12 +271,12 @@ ExecCloseIndices(ResultRelInfo *resultRelInfo)
  */
 List *
 ExecInsertIndexTuples(TupleTableSlot *slot,
-					  ItemPointer tupleid,
 					  EState *estate,
 					  bool noDupErr,
 					  bool *specConflict,
 					  List *arbiterIndexes)
 {
+	ItemPointer tupleid = &slot->tts_tid;
 	List	   *result = NIL;
 	ResultRelInfo *resultRelInfo;
 	int			i;
@@ -286,6 +287,8 @@ ExecInsertIndexTuples(TupleTableSlot *slot,
 	ExprContext *econtext;
 	Datum		values[INDEX_MAX_KEYS];
 	bool		isnull[INDEX_MAX_KEYS];
+
+	Assert(ItemPointerIsValid(tupleid));
 
 	/*
 	 * Get information from the result relation info structure.
@@ -651,7 +654,6 @@ check_exclusion_or_unique_constraint(Relation heap, Relation index,
 	Oid		   *index_collations = index->rd_indcollation;
 	int			indnkeyatts = IndexRelationGetNumberOfKeyAttributes(index);
 	IndexScanDesc index_scan;
-	HeapTuple	tup;
 	ScanKeyData scankeys[INDEX_MAX_KEYS];
 	SnapshotData DirtySnapshot;
 	int			i;
@@ -707,8 +709,7 @@ check_exclusion_or_unique_constraint(Relation heap, Relation index,
 	 * to this slot.  Be sure to save and restore caller's value for
 	 * scantuple.
 	 */
-	existing_slot = MakeSingleTupleTableSlot(RelationGetDescr(heap),
-											 &TTSOpsHeapTuple);
+	existing_slot = table_slot_create(heap, NULL);
 
 	econtext = GetPerTupleExprContext(estate);
 	save_scantuple = econtext->ecxt_scantuple;
@@ -724,11 +725,9 @@ retry:
 	index_scan = index_beginscan(heap, index, &DirtySnapshot, indnkeyatts, 0);
 	index_rescan(index_scan, scankeys, indnkeyatts, NULL, 0);
 
-	while ((tup = index_getnext(index_scan,
-								ForwardScanDirection)) != NULL)
+	while (index_getnext_slot(index_scan, ForwardScanDirection, existing_slot))
 	{
 		TransactionId xwait;
-		ItemPointerData ctid_wait;
 		XLTW_Oper	reason_wait;
 		Datum		existing_values[INDEX_MAX_KEYS];
 		bool		existing_isnull[INDEX_MAX_KEYS];
@@ -739,7 +738,7 @@ retry:
 		 * Ignore the entry for the tuple we're trying to check.
 		 */
 		if (ItemPointerIsValid(tupleid) &&
-			ItemPointerEquals(tupleid, &tup->t_self))
+			ItemPointerEquals(tupleid, &existing_slot->tts_tid))
 		{
 			if (found_self)		/* should not happen */
 				elog(ERROR, "found self tuple multiple times in index \"%s\"",
@@ -752,7 +751,6 @@ retry:
 		 * Extract the index column values and isnull flags from the existing
 		 * tuple.
 		 */
-		ExecStoreHeapTuple(tup, existing_slot, false);
 		FormIndexDatum(indexInfo, existing_slot, estate,
 					   existing_values, existing_isnull);
 
@@ -787,7 +785,6 @@ retry:
 			  DirtySnapshot.speculativeToken &&
 			  TransactionIdPrecedes(GetCurrentTransactionId(), xwait))))
 		{
-			ctid_wait = tup->t_data->t_ctid;
 			reason_wait = indexInfo->ii_ExclusionOps ?
 				XLTW_RecheckExclusionConstr : XLTW_InsertIndex;
 			index_endscan(index_scan);
@@ -795,7 +792,8 @@ retry:
 				SpeculativeInsertionWait(DirtySnapshot.xmin,
 										 DirtySnapshot.speculativeToken);
 			else
-				XactLockTableWait(xwait, heap, &ctid_wait, reason_wait);
+				XactLockTableWait(xwait, heap,
+								  &existing_slot->tts_tid, reason_wait);
 			goto retry;
 		}
 
@@ -807,7 +805,7 @@ retry:
 		{
 			conflict = true;
 			if (conflictTid)
-				*conflictTid = tup->t_self;
+				*conflictTid = existing_slot->tts_tid;
 			break;
 		}
 

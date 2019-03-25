@@ -17,7 +17,6 @@
 #include <ctype.h>
 #include <math.h>
 
-#include "access/hash.h"
 #include "access/htup_details.h"
 #include "catalog/pg_type.h"
 #include "funcapi.h"
@@ -3958,7 +3957,7 @@ hash_array(PG_FUNCTION_ARGS)
 	 * apply the hash function to each array element.
 	 */
 	InitFunctionCallInfoData(*locfcinfo, &typentry->hash_proc_finfo, 1,
-							 InvalidOid, NULL, NULL);
+							 PG_GET_COLLATION(), NULL, NULL);
 
 	/* Loop over source data */
 	nitems = ArrayGetNItems(ndims, dims);

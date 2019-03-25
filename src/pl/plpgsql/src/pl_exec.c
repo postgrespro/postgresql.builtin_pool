@@ -3874,8 +3874,7 @@ plpgsql_estate_setup(PLpgSQL_execstate *estate,
 	estate->datum_context = CurrentMemoryContext;
 
 	/* initialize our ParamListInfo with appropriate hook functions */
-	estate->paramLI = (ParamListInfo)
-		palloc(offsetof(ParamListInfoData, params));
+	estate->paramLI = makeParamList(0);
 	estate->paramLI->paramFetch = plpgsql_param_fetch;
 	estate->paramLI->paramFetchArg = (void *) estate;
 	estate->paramLI->paramCompile = plpgsql_param_compile;
@@ -4774,8 +4773,13 @@ exec_stmt_commit(PLpgSQL_execstate *estate, PLpgSQL_stmt_commit *stmt)
 {
 	HoldPinnedPortals();
 
-	SPI_commit();
-	SPI_start_transaction();
+	if (stmt->chain)
+		SPI_commit_and_chain();
+	else
+	{
+		SPI_commit();
+		SPI_start_transaction();
+	}
 
 	estate->simple_eval_estate = NULL;
 	plpgsql_create_econtext(estate);
@@ -4793,8 +4797,13 @@ exec_stmt_rollback(PLpgSQL_execstate *estate, PLpgSQL_stmt_rollback *stmt)
 {
 	HoldPinnedPortals();
 
-	SPI_rollback();
-	SPI_start_transaction();
+	if (stmt->chain)
+		SPI_rollback_and_chain();
+	else
+	{
+		SPI_rollback();
+		SPI_start_transaction();
+	}
 
 	estate->simple_eval_estate = NULL;
 	plpgsql_create_econtext(estate);

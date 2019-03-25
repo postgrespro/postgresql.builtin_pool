@@ -2065,15 +2065,21 @@ psql_completion(const char *text, int start, int end)
 /*
  * ANALYZE [ ( option [, ...] ) ] [ table_and_columns [, ...] ]
  * ANALYZE [ VERBOSE ] [ table_and_columns [, ...] ]
- *
- * Currently the only allowed option is VERBOSE, so we can be skimpier on
- * the option processing than VACUUM has to be.
  */
 	else if (Matches("ANALYZE"))
 		COMPLETE_WITH_SCHEMA_QUERY(Query_for_list_of_analyzables,
 								   " UNION SELECT 'VERBOSE'");
-	else if (Matches("ANALYZE", "("))
-		COMPLETE_WITH("VERBOSE)");
+	else if (HeadMatches("ANALYZE", "(*") &&
+			 !HeadMatches("ANALYZE", "(*)"))
+	{
+		/*
+		 * This fires if we're in an unfinished parenthesized option list.
+		 * get_previous_words treats a completed parenthesized option list as
+		 * one word, so the above test is correct.
+		 */
+		if (ends_with(prev_wd, '(') || ends_with(prev_wd, ','))
+			COMPLETE_WITH("VERBOSE", "SKIP_LOCKED");
+	}
 	else if (HeadMatches("ANALYZE") && TailMatches("("))
 		/* "ANALYZE (" should be caught above, so assume we want columns */
 		COMPLETE_WITH_ATTR(prev2_wd, "");
@@ -2085,16 +2091,18 @@ psql_completion(const char *text, int start, int end)
 		COMPLETE_WITH("WORK", "TRANSACTION", "ISOLATION LEVEL", "READ", "DEFERRABLE", "NOT DEFERRABLE");
 /* END, ABORT */
 	else if (Matches("END|ABORT"))
-		COMPLETE_WITH("WORK", "TRANSACTION");
+		COMPLETE_WITH("AND", "WORK", "TRANSACTION");
 /* COMMIT */
 	else if (Matches("COMMIT"))
-		COMPLETE_WITH("WORK", "TRANSACTION", "PREPARED");
+		COMPLETE_WITH("AND", "WORK", "TRANSACTION", "PREPARED");
 /* RELEASE SAVEPOINT */
 	else if (Matches("RELEASE"))
 		COMPLETE_WITH("SAVEPOINT");
 /* ROLLBACK */
 	else if (Matches("ROLLBACK"))
-		COMPLETE_WITH("WORK", "TRANSACTION", "TO SAVEPOINT", "PREPARED");
+		COMPLETE_WITH("AND", "WORK", "TRANSACTION", "TO SAVEPOINT", "PREPARED");
+	else if (Matches("ABORT|END|COMMIT|ROLLBACK", "AND"))
+		COMPLETE_WITH("CHAIN");
 /* CALL */
 	else if (Matches("CALL"))
 		COMPLETE_WITH_VERSIONED_SCHEMA_QUERY(Query_for_list_of_procedures, NULL);
@@ -3423,7 +3431,7 @@ psql_completion(const char *text, int start, int end)
 		 */
 		if (ends_with(prev_wd, '(') || ends_with(prev_wd, ','))
 			COMPLETE_WITH("FULL", "FREEZE", "ANALYZE", "VERBOSE",
-						  "DISABLE_PAGE_SKIPPING");
+						  "DISABLE_PAGE_SKIPPING", "SKIP_LOCKED");
 	}
 	else if (HeadMatches("VACUUM") && TailMatches("("))
 		/* "VACUUM (" should be caught above, so assume we want columns */

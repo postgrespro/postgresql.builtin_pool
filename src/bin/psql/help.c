@@ -366,6 +366,8 @@ helpVariables(unsigned short int pager)
 					  "    true if last query failed, else false\n"));
 	fprintf(output, _("  FETCH_COUNT\n"
 					  "    the number of result rows to fetch and display at a time (0 = unlimited)\n"));
+	fprintf(output, _("  HIDE_TABLEAM\n"
+					  "    if set, table access methods are not displayed\n"));
 	fprintf(output, _("  HISTCONTROL\n"
 					  "    controls command history [ignorespace, ignoredups, ignoreboth]\n"));
 	fprintf(output, _("  HISTFILE\n"
@@ -621,16 +623,23 @@ helpSQL(const char *topic, unsigned short int pager)
 					strcmp(topic, "*") == 0)
 				{
 					PQExpBufferData buffer;
+					char	   *url;
 
 					initPQExpBuffer(&buffer);
 					QL_HELP[i].syntaxfunc(&buffer);
 					help_found = true;
+					url = psprintf("https://www.postgresql.org/docs/%s/%s.html",
+								   strstr(PG_VERSION, "devel") ? "devel" : PG_MAJORVERSION,
+								   QL_HELP[i].docbook_id);
 					fprintf(output, _("Command:     %s\n"
 									  "Description: %s\n"
-									  "Syntax:\n%s\n\n"),
+									  "Syntax:\n%s\n\n"
+									  "URL: %s\n\n"),
 							QL_HELP[i].cmd,
 							_(QL_HELP[i].help),
-							buffer.data);
+							buffer.data,
+							url);
+					free(url);
 					/* If we have an exact match, exit.  Fixes \h SELECT */
 					if (pg_strcasecmp(topic, QL_HELP[i].cmd) == 0)
 						break;

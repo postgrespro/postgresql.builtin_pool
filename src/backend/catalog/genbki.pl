@@ -138,10 +138,13 @@ die "found $found duplicate OID(s) in catalog data\n" if $found;
 
 
 # Oids not specified in the input files are automatically assigned,
-# starting at FirstGenbkiObjectId.
+# starting at FirstGenbkiObjectId, extending up to FirstBootstrapObjectId.
 my $FirstGenbkiObjectId =
   Catalog::FindDefinedSymbol('access/transam.h', $include_path,
 	'FirstGenbkiObjectId');
+my $FirstBootstrapObjectId =
+  Catalog::FindDefinedSymbol('access/transam.h', $include_path,
+	'FirstBootstrapObjectId');
 my $GenbkiNextOid = $FirstGenbkiObjectId;
 
 
@@ -169,6 +172,20 @@ my %amoids;
 foreach my $row (@{ $catalog_data{pg_am} })
 {
 	$amoids{ $row->{amname} } = $row->{oid};
+}
+
+# class (relation) OID lookup (note this only covers bootstrap catalogs!)
+my %classoids;
+foreach my $row (@{ $catalog_data{pg_class} })
+{
+	$classoids{ $row->{relname} } = $row->{oid};
+}
+
+# collation OID lookup
+my %collationoids;
+foreach my $row (@{ $catalog_data{pg_collation} })
+{
+	$collationoids{ $row->{collname} } = $row->{oid};
 }
 
 # language OID lookup
@@ -240,6 +257,41 @@ foreach my $row (@{ $catalog_data{pg_proc} })
 	}
 }
 
+# tablespace OID lookup
+my %tablespaceoids;
+foreach my $row (@{ $catalog_data{pg_tablespace} })
+{
+	$tablespaceoids{ $row->{spcname} } = $row->{oid};
+}
+
+# text search configuration OID lookup
+my %tsconfigoids;
+foreach my $row (@{ $catalog_data{pg_ts_config} })
+{
+	$tsconfigoids{ $row->{cfgname} } = $row->{oid};
+}
+
+# text search dictionary OID lookup
+my %tsdictoids;
+foreach my $row (@{ $catalog_data{pg_ts_dict} })
+{
+	$tsdictoids{ $row->{dictname} } = $row->{oid};
+}
+
+# text search parser OID lookup
+my %tsparseroids;
+foreach my $row (@{ $catalog_data{pg_ts_parser} })
+{
+	$tsparseroids{ $row->{prsname} } = $row->{oid};
+}
+
+# text search template OID lookup
+my %tstemplateoids;
+foreach my $row (@{ $catalog_data{pg_ts_template} })
+{
+	$tstemplateoids{ $row->{tmplname} } = $row->{oid};
+}
+
 # type lookups
 my %typeoids;
 my %types;
@@ -284,14 +336,21 @@ close $ef;
 
 # Map lookup name to the corresponding hash table.
 my %lookup_kind = (
-	pg_am       => \%amoids,
-	pg_language => \%langoids,
-	pg_opclass  => \%opcoids,
-	pg_operator => \%operoids,
-	pg_opfamily => \%opfoids,
-	pg_proc     => \%procoids,
-	pg_type     => \%typeoids,
-	encoding    => \%encids);
+	pg_am          => \%amoids,
+	pg_class       => \%classoids,
+	pg_collation   => \%collationoids,
+	pg_language    => \%langoids,
+	pg_opclass     => \%opcoids,
+	pg_operator    => \%operoids,
+	pg_opfamily    => \%opfoids,
+	pg_proc        => \%procoids,
+	pg_tablespace  => \%tablespaceoids,
+	pg_ts_config   => \%tsconfigoids,
+	pg_ts_dict     => \%tsdictoids,
+	pg_ts_parser   => \%tsparseroids,
+	pg_ts_template => \%tstemplateoids,
+	pg_type        => \%typeoids,
+	encoding       => \%encids);
 
 
 # Open temp files
@@ -569,6 +628,11 @@ foreach my $declaration (@index_decls)
 # last command in the BKI file: build the indexes declared above
 print $bki "build indices\n";
 
+# check that we didn't overrun available OIDs
+die
+  "genbki OID counter reached $GenbkiNextOid, overrunning FirstBootstrapObjectId\n"
+  if $GenbkiNextOid > $FirstBootstrapObjectId;
+
 
 # Now generate schemapg.h
 
@@ -726,8 +790,8 @@ sub morph_row_for_pgattr
 	$row->{attndims} = $type->{typcategory} eq 'A' ? '1' : '0';
 
 	# collation-aware catalog columns must use C collation
-	$row->{attcollation} = $type->{typcollation} != 0 ?
-	    $C_COLLATION_OID : 0;
+	$row->{attcollation} =
+	  $type->{typcollation} ne '0' ? $C_COLLATION_OID : 0;
 
 	if (defined $attr->{forcenotnull})
 	{

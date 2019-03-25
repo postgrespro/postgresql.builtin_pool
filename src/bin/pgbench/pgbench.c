@@ -476,7 +476,12 @@ typedef struct
  */
 #define SQL_COMMAND		1
 #define META_COMMAND	2
-#define MAX_ARGS		10
+
+/*
+ * max number of backslash command arguments or SQL variables,
+ * including the command or SQL statement itself
+ */
+#define MAX_ARGS		256
 
 typedef enum MetaCommand
 {
@@ -3729,16 +3734,6 @@ static void
 initCreateTables(PGconn *con)
 {
 	/*
-	 * The scale factor at/beyond which 32-bit integers are insufficient for
-	 * storing TPC-B account IDs.
-	 *
-	 * Although the actual threshold is 21474, we use 20000 because it is
-	 * easier to document and remember, and isn't that far away from the real
-	 * threshold.
-	 */
-#define SCALE_32BIT_THRESHOLD 20000
-
-	/*
 	 * Note: TPC-B requires at least 100 bytes per row, and the "filler"
 	 * fields in these table declarations were intended to comply with that.
 	 * The pgbench_accounts table complies with that because the "filler"
@@ -4134,6 +4129,10 @@ parseQuery(Command *cmd)
 			continue;
 		}
 
+		/*
+		 * cmd->argv[0] is the SQL statement itself, so the max number of
+		 * arguments is one less than MAX_ARGS
+		 */
 		if (cmd->argc >= MAX_ARGS)
 		{
 			fprintf(stderr, "statement has too many arguments (maximum is %d): %s\n",
@@ -4471,6 +4470,10 @@ process_backslash_command(PsqlScanState sstate, const char *source)
 	/* For all other commands, collect remaining words. */
 	while (expr_lex_one_word(sstate, &word_buf, &word_offset))
 	{
+		/*
+		 * my_command->argv[0] is the command itself, so the max number of
+		 * arguments is one less than MAX_ARGS
+		 */
 		if (j >= MAX_ARGS)
 			syntax_error(source, lineno, my_command->first_line, my_command->argv[0],
 						 "too many arguments", NULL, -1);

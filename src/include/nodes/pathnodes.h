@@ -144,6 +144,8 @@ typedef struct PlannerGlobal
 	bool		parallelModeNeeded; /* parallel mode actually required? */
 
 	char		maxParallelHazard;	/* worst PROPARALLEL hazard level */
+
+	PartitionDirectory partition_directory; /* partition descriptors */
 } PlannerGlobal;
 
 /* macro for fetching the Plan associated with a SubPlan node */
@@ -715,15 +717,12 @@ typedef struct RelOptInfo
  *
  * It's not enough to test whether rel->part_scheme is set, because it might
  * be that the basic partitioning properties of the input relations matched
- * but the partition bounds did not.
- *
- * We treat dummy relations as unpartitioned.  We could alternatively
- * treat them as partitioned, but it's not clear whether that's a useful thing
- * to do.
+ * but the partition bounds did not.  Also, if we are able to prove a rel
+ * dummy (empty), we should henceforth treat it as unpartitioned.
  */
 #define IS_PARTITIONED_REL(rel) \
 	((rel)->part_scheme && (rel)->boundinfo && (rel)->nparts > 0 && \
-	 (rel)->part_rels && !(IS_DUMMY_REL(rel)))
+	 (rel)->part_rels && !IS_DUMMY_REL(rel))
 
 /*
  * Convenience macro to make sure that a partitioned relation has all the
@@ -1185,26 +1184,20 @@ typedef struct IndexPath
  * conditions is done by a planner support function attached to the
  * indexclause's top-level function or operator.
  *
- * If indexquals is NIL, it means that rinfo->clause is directly usable as
- * an indexqual.  Otherwise indexquals contains one or more directly-usable
- * indexqual conditions extracted from the given clause.  The 'lossy' flag
- * indicates whether the indexquals are semantically equivalent to the
- * original clause, or form a weaker condition.
- *
- * Currently, entries in indexquals are RestrictInfos, but they could perhaps
- * be bare clauses instead; the only advantage of making them RestrictInfos
- * is the possibility of caching cost and selectivity information across
- * multiple uses, and it's not clear that that's really worth the price of
- * constructing RestrictInfos for them.  Note however that the extended-stats
- * machinery won't do anything with non-RestrictInfo clauses, so that would
- * have to be fixed.
+ * indexquals is a list of RestrictInfos for the directly-usable index
+ * conditions associated with this IndexClause.  In the simplest case
+ * it's a one-element list whose member is iclause->rinfo.  Otherwise,
+ * it contains one or more directly-usable indexqual conditions extracted
+ * from the given clause.  The 'lossy' flag indicates whether the
+ * indexquals are semantically equivalent to the original clause, or
+ * represent a weaker condition.
  *
  * Normally, indexcol is the index of the single index column the clause
  * works on, and indexcols is NIL.  But if the clause is a RowCompareExpr,
  * indexcol is the index of the leading column, and indexcols is a list of
  * all the affected columns.  (Note that indexcols matches up with the
- * columns of the actual indexable RowCompareExpr, which might be in
- * indexquals rather than rinfo.)
+ * columns of the actual indexable RowCompareExpr in indexquals, which
+ * might be different from the original in rinfo.)
  *
  * An IndexPath's IndexClause list is required to be ordered by index
  * column, i.e. the indexcol values must form a nondecreasing sequence.
@@ -1214,7 +1207,7 @@ typedef struct IndexClause
 {
 	NodeTag		type;
 	struct RestrictInfo *rinfo; /* original restriction or join clause */
-	List	   *indexquals;		/* indexqual(s) derived from it, or NIL */
+	List	   *indexquals;		/* indexqual(s) derived from it */
 	bool		lossy;			/* are indexquals a lossy version of clause? */
 	AttrNumber	indexcol;		/* index column the clause uses (zero-based) */
 	List	   *indexcols;		/* multiple index columns, if RowCompare */
@@ -1355,6 +1348,9 @@ typedef struct CustomPath
  * elements.  These cases are optimized during create_append_plan.
  * In particular, an AppendPath with no subpaths is a "dummy" path that
  * is created to represent the case that a relation is provably empty.
+ * (This is a convenient representation because it means that when we build
+ * an appendrel and find that all its children have been excluded, no extra
+ * action is needed to recognize the relation as dummy.)
  */
 typedef struct AppendPath
 {
@@ -1367,13 +1363,16 @@ typedef struct AppendPath
 	int			first_partial_path;
 } AppendPath;
 
-#define IS_DUMMY_PATH(p) \
+#define IS_DUMMY_APPEND(p) \
 	(IsA((p), AppendPath) && ((AppendPath *) (p))->subpaths == NIL)
 
-/* A relation that's been proven empty will have one path that is dummy */
-#define IS_DUMMY_REL(r) \
-	((r)->cheapest_total_path != NULL && \
-	 IS_DUMMY_PATH((r)->cheapest_total_path))
+/*
+ * A relation that's been proven empty will have one path that is dummy
+ * (but might have projection paths on top).  For historical reasons,
+ * this is provided as a macro that wraps is_dummy_rel().
+ */
+#define IS_DUMMY_REL(r) is_dummy_rel(r)
+extern bool is_dummy_rel(RelOptInfo *rel);
 
 /*
  * MergeAppendPath represents a MergeAppend plan, ie, the merging of sorted

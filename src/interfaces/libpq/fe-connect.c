@@ -546,6 +546,10 @@ pqDropServerData(PGconn *conn)
 	conn->last_sqlstate[0] = '\0';
 	conn->auth_req_received = false;
 	conn->password_needed = false;
+	conn->write_failed = false;
+	if (conn->write_err_msg)
+		free(conn->write_err_msg);
+	conn->write_err_msg = NULL;
 	conn->be_pid = 0;
 	conn->be_key = 0;
 }
@@ -3393,9 +3397,6 @@ keep_going:						/* We will come back to here until there is
 					if (strncmp(val, "on", 2) == 0)
 					{
 						/* Not writable; fail this connection. */
-						const char *displayed_host;
-						const char *displayed_port;
-
 						PQclear(res);
 						restoreErrorMessage(conn, &savedMessage);
 
@@ -3751,6 +3752,8 @@ freePGconn(PGconn *conn)
 	/* Note that conn->Pfdebug is not ours to close or free */
 	if (conn->last_query)
 		free(conn->last_query);
+	if (conn->write_err_msg)
+		free(conn->write_err_msg);
 	if (conn->inBuffer)
 		free(conn->inBuffer);
 	if (conn->outBuffer)

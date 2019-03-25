@@ -1,26 +1,32 @@
-/*
- * pg_verify_checksums
+/*-------------------------------------------------------------------------
  *
- * Verifies page level checksums in an offline cluster
+ * pg_checksums.c
+ *	  Checks, enables or disables page level checksums for an offline
+ *	  cluster
  *
- *	Copyright (c) 2010-2019, PostgreSQL Global Development Group
+ * Copyright (c) 2010-2019, PostgreSQL Global Development Group
  *
- *	src/bin/pg_verify_checksums/pg_verify_checksums.c
+ * IDENTIFICATION
+ *	  src/bin/pg_checksums/pg_checksums.c
+ *
+ *-------------------------------------------------------------------------
  */
+
 #include "postgres_fe.h"
 
 #include <dirent.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
-#include "catalog/pg_control.h"
+#include "access/xlog_internal.h"
 #include "common/controldata_utils.h"
+#include "common/file_perm.h"
+#include "common/file_utils.h"
 #include "getopt_long.h"
 #include "pg_getopt.h"
 #include "storage/bufpage.h"
 #include "storage/checksum.h"
 #include "storage/checksum_impl.h"
-#include "storage/fd.h"
 
 
 static int64 files = 0;
@@ -29,18 +35,42 @@ static int64 badblocks = 0;
 static ControlFileData *ControlFile;
 
 static char *only_relfilenode = NULL;
+static bool do_sync = true;
 static bool verbose = false;
+
+typedef enum
+{
+	PG_MODE_CHECK,
+	PG_MODE_DISABLE,
+	PG_MODE_ENABLE
+} PgChecksumMode;
+
+/*
+ * Filename components.
+ *
+ * XXX: fd.h is not declared here as frontend side code is not able to
+ * interact with the backend-side definitions for the various fsync
+ * wrappers.
+ */
+#define PG_TEMP_FILES_DIR "pgsql_tmp"
+#define PG_TEMP_FILE_PREFIX "pgsql_tmp"
+
+static PgChecksumMode mode = PG_MODE_CHECK;
 
 static const char *progname;
 
 static void
 usage(void)
 {
-	printf(_("%s verifies data checksums in a PostgreSQL database cluster.\n\n"), progname);
+	printf(_("%s enables, disables or verifies data checksums in a PostgreSQL database cluster.\n\n"), progname);
 	printf(_("Usage:\n"));
 	printf(_("  %s [OPTION]... [DATADIR]\n"), progname);
 	printf(_("\nOptions:\n"));
 	printf(_(" [-D, --pgdata=]DATADIR  data directory\n"));
+	printf(_("  -c, --check            check data checksums (default)\n"));
+	printf(_("  -d, --disable          disable data checksums\n"));
+	printf(_("  -e, --enable           enable data checksums\n"));
+	printf(_("  -N, --no-sync          do not wait for changes to be written safely to disk\n"));
 	printf(_("  -v, --verbose          output verbose messages\n"));
 	printf(_("  -r RELFILENODE         check only relation with specified relfilenode\n"));
 	printf(_("  -V, --version          output version information, then exit\n"));
@@ -86,8 +116,14 @@ scan_file(const char *fn, BlockNumber segmentno)
 	PageHeader	header = (PageHeader) buf.data;
 	int			f;
 	BlockNumber blockno;
+	int			flags;
 
-	f = open(fn, O_RDONLY | PG_BINARY, 0);
+	Assert(mode == PG_MODE_ENABLE ||
+		   mode == PG_MODE_CHECK);
+
+	flags = (mode == PG_MODE_ENABLE) ? O_RDWR : O_RDONLY;
+	f = open(fn, PG_BINARY | flags, 0);
+
 	if (f < 0)
 	{
 		fprintf(stderr, _("%s: could not open file \"%s\": %s\n"),
@@ -117,18 +153,47 @@ scan_file(const char *fn, BlockNumber segmentno)
 			continue;
 
 		csum = pg_checksum_page(buf.data, blockno + segmentno * RELSEG_SIZE);
-		if (csum != header->pd_checksum)
+		if (mode == PG_MODE_CHECK)
 		{
-			if (ControlFile->data_checksum_version == PG_DATA_CHECKSUM_VERSION)
-				fprintf(stderr, _("%s: checksum verification failed in file \"%s\", block %u: calculated checksum %X but block contains %X\n"),
-						progname, fn, blockno, csum, header->pd_checksum);
-			badblocks++;
+			if (csum != header->pd_checksum)
+			{
+				if (ControlFile->data_checksum_version == PG_DATA_CHECKSUM_VERSION)
+					fprintf(stderr, _("%s: checksum verification failed in file \"%s\", block %u: calculated checksum %X but block contains %X\n"),
+							progname, fn, blockno, csum, header->pd_checksum);
+				badblocks++;
+			}
+		}
+		else if (mode == PG_MODE_ENABLE)
+		{
+			/* Set checksum in page header */
+			header->pd_checksum = csum;
+
+			/* Seek back to beginning of block */
+			if (lseek(f, -BLCKSZ, SEEK_CUR) < 0)
+			{
+				fprintf(stderr, _("%s: seek failed for block %d in file \"%s\": %s\n"), progname, blockno, fn, strerror(errno));
+				exit(1);
+			}
+
+			/* Write block with checksum */
+			if (write(f, buf.data, BLCKSZ) != BLCKSZ)
+			{
+				fprintf(stderr, _("%s: could not update checksum of block %d in file \"%s\": %s\n"),
+						progname, blockno, fn, strerror(errno));
+				exit(1);
+			}
 		}
 	}
 
 	if (verbose)
-		fprintf(stderr,
-				_("%s: checksums verified in file \"%s\"\n"), progname, fn);
+	{
+		if (mode == PG_MODE_CHECK)
+			fprintf(stderr,
+					_("%s: checksums verified in file \"%s\"\n"), progname, fn);
+		if (mode == PG_MODE_ENABLE)
+			fprintf(stderr,
+					_("%s: checksums enabled in file \"%s\"\n"), progname, fn);
+	}
 
 	close(f);
 }
@@ -167,7 +232,7 @@ scan_directory(const char *basedir, const char *subdir)
 		if (strncmp(de->d_name,
 					PG_TEMP_FILES_DIR,
 					strlen(PG_TEMP_FILES_DIR)) == 0)
-			return;
+			continue;
 
 		snprintf(fn, sizeof(fn), "%s/%s", path, de->d_name);
 		if (lstat(fn, &st) < 0)
@@ -230,7 +295,11 @@ int
 main(int argc, char *argv[])
 {
 	static struct option long_options[] = {
+		{"check", no_argument, NULL, 'c'},
 		{"pgdata", required_argument, NULL, 'D'},
+		{"disable", no_argument, NULL, 'd'},
+		{"enable", no_argument, NULL, 'e'},
+		{"no-sync", no_argument, NULL, 'N'},
 		{"verbose", no_argument, NULL, 'v'},
 		{NULL, 0, NULL, 0}
 	};
@@ -240,7 +309,7 @@ main(int argc, char *argv[])
 	int			option_index;
 	bool		crc_ok;
 
-	set_pglocale_pgservice(argv[0], PG_TEXTDOMAIN("pg_verify_checksums"));
+	set_pglocale_pgservice(argv[0], PG_TEXTDOMAIN("pg_checksums"));
 
 	progname = get_progname(argv[0]);
 
@@ -253,15 +322,27 @@ main(int argc, char *argv[])
 		}
 		if (strcmp(argv[1], "--version") == 0 || strcmp(argv[1], "-V") == 0)
 		{
-			puts("pg_verify_checksums (PostgreSQL) " PG_VERSION);
+			puts("pg_checksums (PostgreSQL) " PG_VERSION);
 			exit(0);
 		}
 	}
 
-	while ((c = getopt_long(argc, argv, "D:r:v", long_options, &option_index)) != -1)
+	while ((c = getopt_long(argc, argv, "cD:deNr:v", long_options, &option_index)) != -1)
 	{
 		switch (c)
 		{
+			case 'c':
+				mode = PG_MODE_CHECK;
+				break;
+			case 'd':
+				mode = PG_MODE_DISABLE;
+				break;
+			case 'e':
+				mode = PG_MODE_ENABLE;
+				break;
+			case 'N':
+				do_sync = false;
+				break;
 			case 'v':
 				verbose = true;
 				break;
@@ -308,6 +389,15 @@ main(int argc, char *argv[])
 		exit(1);
 	}
 
+	/* Relfilenode checking only works in --check mode */
+	if (mode != PG_MODE_CHECK && only_relfilenode)
+	{
+		fprintf(stderr, _("%s: relfilenode option only possible with --check\n"), progname);
+		fprintf(stderr, _("Try \"%s --help\" for more information.\n"),
+				progname);
+		exit(1);
+	}
+
 	/* Check if cluster is running */
 	ControlFile = get_controlfile(DataDir, progname, &crc_ok);
 	if (!crc_ok)
@@ -316,32 +406,96 @@ main(int argc, char *argv[])
 		exit(1);
 	}
 
-	if (ControlFile->state != DB_SHUTDOWNED &&
-		ControlFile->state != DB_SHUTDOWNED_IN_RECOVERY)
+	if (ControlFile->pg_control_version != PG_CONTROL_VERSION)
 	{
-		fprintf(stderr, _("%s: cluster must be shut down to verify checksums\n"), progname);
+		fprintf(stderr, _("%s: cluster is not compatible with this version of pg_checksums\n"),
+				progname);
 		exit(1);
 	}
 
-	if (ControlFile->data_checksum_version == 0)
+	if (ControlFile->blcksz != BLCKSZ)
+	{
+		fprintf(stderr, _("%s: database cluster is not compatible.\n"),
+				progname);
+		fprintf(stderr, _("The database cluster was initialized with block size %u, but pg_checksums was compiled with block size %u.\n"),
+				ControlFile->blcksz, BLCKSZ);
+		exit(1);
+	}
+
+	if (ControlFile->state != DB_SHUTDOWNED &&
+		ControlFile->state != DB_SHUTDOWNED_IN_RECOVERY)
+	{
+		fprintf(stderr, _("%s: cluster must be shut down\n"), progname);
+		exit(1);
+	}
+
+	if (ControlFile->data_checksum_version == 0 &&
+		mode == PG_MODE_CHECK)
 	{
 		fprintf(stderr, _("%s: data checksums are not enabled in cluster\n"), progname);
 		exit(1);
 	}
 
-	/* Scan all files */
-	scan_directory(DataDir, "global");
-	scan_directory(DataDir, "base");
-	scan_directory(DataDir, "pg_tblspc");
+	if (ControlFile->data_checksum_version == 0 &&
+		mode == PG_MODE_DISABLE)
+	{
+		fprintf(stderr, _("%s: data checksums are already disabled in cluster\n"), progname);
+		exit(1);
+	}
 
-	printf(_("Checksum scan completed\n"));
-	printf(_("Data checksum version: %d\n"), ControlFile->data_checksum_version);
-	printf(_("Files scanned:  %s\n"), psprintf(INT64_FORMAT, files));
-	printf(_("Blocks scanned: %s\n"), psprintf(INT64_FORMAT, blocks));
-	printf(_("Bad checksums:  %s\n"), psprintf(INT64_FORMAT, badblocks));
+	if (ControlFile->data_checksum_version > 0 &&
+		mode == PG_MODE_ENABLE)
+	{
+		fprintf(stderr, _("%s: data checksums are already enabled in cluster\n"), progname);
+		exit(1);
+	}
 
-	if (badblocks > 0)
-		return 1;
+	/* Operate on all files if checking or enabling checksums */
+	if (mode == PG_MODE_CHECK || mode == PG_MODE_ENABLE)
+	{
+		scan_directory(DataDir, "global");
+		scan_directory(DataDir, "base");
+		scan_directory(DataDir, "pg_tblspc");
+
+		printf(_("Checksum operation completed\n"));
+		printf(_("Files scanned:  %s\n"), psprintf(INT64_FORMAT, files));
+		printf(_("Blocks scanned: %s\n"), psprintf(INT64_FORMAT, blocks));
+		if (mode == PG_MODE_CHECK)
+		{
+			printf(_("Bad checksums:  %s\n"), psprintf(INT64_FORMAT, badblocks));
+			printf(_("Data checksum version: %d\n"), ControlFile->data_checksum_version);
+
+			if (badblocks > 0)
+				exit(1);
+		}
+	}
+
+	/*
+	 * Finally make the data durable on disk if enabling or disabling
+	 * checksums.  Flush first the data directory for safety, and then update
+	 * the control file to keep the switch consistent.
+	 */
+	if (mode == PG_MODE_ENABLE || mode == PG_MODE_DISABLE)
+	{
+		ControlFile->data_checksum_version =
+			(mode == PG_MODE_ENABLE) ? PG_DATA_CHECKSUM_VERSION : 0;
+
+		if (do_sync)
+		{
+			printf(_("Syncing data directory\n"));
+			fsync_pgdata(DataDir, progname, PG_VERSION_NUM);
+		}
+
+		printf(_("Updating control file\n"));
+		update_controlfile(DataDir, progname, ControlFile, do_sync);
+
+		if (verbose)
+			printf(_("Data checksum version: %d\n"), ControlFile->data_checksum_version);
+		if (mode == PG_MODE_ENABLE)
+			printf(_("Checksums enabled in cluster\n"));
+		else
+			printf(_("Checksums disabled in cluster\n"));
+	}
 
 	return 0;
 }

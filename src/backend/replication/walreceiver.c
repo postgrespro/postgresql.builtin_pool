@@ -293,7 +293,7 @@ WalReceiverMain(void)
 
 	/* Establish the connection to the primary for XLOG streaming */
 	EnableWalRcvImmediateExit();
-	wrconn = walrcv_connect(conninfo, false, "walreceiver", &err);
+	wrconn = walrcv_connect(conninfo, false, cluster_name[0] ? cluster_name : "walreceiver", &err);
 	if (!wrconn)
 		ereport(ERROR,
 				(errmsg("could not connect to the primary server: %s", err)));
@@ -330,7 +330,6 @@ WalReceiverMain(void)
 	{
 		char	   *primary_sysid;
 		char		standby_sysid[32];
-		int			server_version;
 		WalRcvStreamOptions options;
 
 		/*
@@ -338,8 +337,7 @@ WalReceiverMain(void)
 		 * IDENTIFY_SYSTEM replication command.
 		 */
 		EnableWalRcvImmediateExit();
-		primary_sysid = walrcv_identify_system(wrconn, &primaryTLI,
-											   &server_version);
+		primary_sysid = walrcv_identify_system(wrconn, &primaryTLI);
 
 		snprintf(standby_sysid, sizeof(standby_sysid), UINT64_FORMAT,
 				 GetSystemIdentifier());

@@ -1454,19 +1454,22 @@ results_differ(const char *testname, const char *resultsfile, const char *defaul
 	 * Use the best comparison file to generate the "pretty" diff, which we
 	 * append to the diffs summary file.
 	 */
-	snprintf(cmd, sizeof(cmd),
-			 "diff %s \"%s\" \"%s\" >> \"%s\"",
-			 pretty_diff_opts, best_expect_file, resultsfile, difffilename);
-	run_diff(cmd, difffilename);
 
-	/* And append a separator */
+	/* Write diff header */
 	difffile = fopen(difffilename, "a");
 	if (difffile)
 	{
 		fprintf(difffile,
-				"\n======================================================================\n\n");
+				"diff %s %s %s\n",
+				pretty_diff_opts, best_expect_file, resultsfile);
 		fclose(difffile);
 	}
+
+	/* Run diff */
+	snprintf(cmd, sizeof(cmd),
+			 "diff %s \"%s\" \"%s\" >> \"%s\"",
+			 pretty_diff_opts, best_expect_file, resultsfile, difffilename);
+	run_diff(cmd, difffilename);
 
 	unlink(diff);
 	return true;
@@ -1804,7 +1807,7 @@ run_schedule(const char *schedule, test_function tfunc)
 				log_child_failure(statuses[i]);
 
 			INSTR_TIME_SUBTRACT(stoptimes[i], starttimes[i]);
-			status(_(" (%.0f ms)"), INSTR_TIME_GET_MILLISEC(stoptimes[i]));
+			status(_(" %8.0f ms"), INSTR_TIME_GET_MILLISEC(stoptimes[i]));
 
 			status_end();
 		}
@@ -1884,7 +1887,7 @@ run_single_test(const char *test, test_function tfunc)
 		log_child_failure(exit_status);
 
 	INSTR_TIME_SUBTRACT(stoptime, starttime);
-	status(_(" (%.0f ms)"), INSTR_TIME_GET_MILLISEC(stoptime));
+	status(_(" %8.0f ms"), INSTR_TIME_GET_MILLISEC(stoptime));
 
 	status_end();
 }

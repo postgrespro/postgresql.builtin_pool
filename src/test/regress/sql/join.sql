@@ -1783,6 +1783,14 @@ select * from
     select * from (select 3 as z offset 0) z where z.z = x.x
   ) zz on zz.z = y.y;
 
+-- check dummy rels with lateral references (bug #15694)
+explain (verbose, costs off)
+select * from int8_tbl i8 left join lateral
+  (select *, i8.q2 from int4_tbl where false) ss on true;
+explain (verbose, costs off)
+select * from int8_tbl i8 left join lateral
+  (select *, i8.q2 from int4_tbl i1, int4_tbl i2 where false) ss on true;
+
 -- check handling of nested appendrels inside LATERAL
 select * from
   ((select 2 as v) union all (select 3 as v)) as q1
@@ -2014,15 +2022,20 @@ set enable_nestloop to 0;
 set enable_hashjoin to 0;
 set enable_sort to 0;
 
--- create an index that will be preferred over the PK to perform the join
+-- create indexes that will be preferred over the PKs to perform the join
 create index j1_id1_idx on j1 (id1) where id1 % 1000 = 1;
+create index j2_id1_idx on j2 (id1) where id1 % 1000 = 1;
 
-explain (costs off) select * from j1 j1
-inner join j1 j2 on j1.id1 = j2.id1 and j1.id2 = j2.id2
+-- need an additional row in j2, if we want j2_id1_idx to be preferred
+insert into j2 values(1,2);
+analyze j2;
+
+explain (costs off) select * from j1
+inner join j2 on j1.id1 = j2.id1 and j1.id2 = j2.id2
 where j1.id1 % 1000 = 1 and j2.id1 % 1000 = 1;
 
-select * from j1 j1
-inner join j1 j2 on j1.id1 = j2.id1 and j1.id2 = j2.id2
+select * from j1
+inner join j2 on j1.id1 = j2.id1 and j1.id2 = j2.id2
 where j1.id1 % 1000 = 1 and j2.id1 % 1000 = 1;
 
 reset enable_nestloop;

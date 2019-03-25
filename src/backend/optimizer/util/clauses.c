@@ -1172,6 +1172,16 @@ contain_nonstrict_functions_walker(Node *node, void *context)
 		return true;
 	if (IsA(node, FieldStore))
 		return true;
+	if (IsA(node, CoerceViaIO))
+	{
+		/*
+		 * CoerceViaIO is strict regardless of whether the I/O functions are,
+		 * so just go look at its argument; asking check_functions_in_node is
+		 * useless expense and could deliver the wrong answer.
+		 */
+		return contain_nonstrict_functions_walker((Node *) ((CoerceViaIO *) node)->arg,
+												  context);
+	}
 	if (IsA(node, ArrayCoerceExpr))
 	{
 		/*
@@ -1179,9 +1189,8 @@ contain_nonstrict_functions_walker(Node *node, void *context)
 		 * the per-element expression is; so we should ignore elemexpr and
 		 * recurse only into the arg.
 		 */
-		return expression_tree_walker((Node *) ((ArrayCoerceExpr *) node)->arg,
-									  contain_nonstrict_functions_walker,
-									  context);
+		return contain_nonstrict_functions_walker((Node *) ((ArrayCoerceExpr *) node)->arg,
+												  context);
 	}
 	if (IsA(node, CaseExpr))
 		return true;

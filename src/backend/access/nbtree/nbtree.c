@@ -310,7 +310,7 @@ btgetbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 		if (_bt_first(scan, ForwardScanDirection))
 		{
 			/* Save tuple ID, and continue scanning */
-			heapTid = &scan->xs_ctup.t_self;
+			heapTid = &scan->xs_heaptid;
 			tbm_add_tuples(tbm, heapTid, 1, false);
 			ntids++;
 
@@ -794,7 +794,7 @@ _bt_vacuum_needs_cleanup(IndexVacuumInfo *info)
 	metapg = BufferGetPage(metabuf);
 	metad = BTPageGetMeta(metapg);
 
-	if (metad->btm_version < BTREE_VERSION)
+	if (metad->btm_version < BTREE_NOVAC_VERSION)
 	{
 		/*
 		 * Do cleanup if metapage needs upgrade, because we don't have

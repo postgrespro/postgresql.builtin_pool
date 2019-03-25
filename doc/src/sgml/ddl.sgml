@@ -3827,7 +3827,8 @@ ALTER TABLE measurement ATTACH PARTITION measurement_y2008m02
      the system will be able to skip the scan to validate the implicit
      partition constraint. Without such a constraint, the table will be
      scanned to validate the partition constraint while holding an
-     <literal>ACCESS EXCLUSIVE</literal> lock on the parent table.
+     <literal>ACCESS EXCLUSIVE</literal> lock on that partition
+     and a <literal>SHARE UPDATE EXCLUSIVE</literal> lock on the parent table.
      One may then drop the constraint after <command>ATTACH PARTITION</command>
      is finished, because it is no longer necessary.
     </para>
@@ -3852,27 +3853,6 @@ ALTER TABLE measurement ATTACH PARTITION measurement_y2008m02
        While primary keys are supported on partitioned tables, foreign
        keys referencing partitioned tables are not supported.  (Foreign key
        references from a partitioned table to some other table are supported.)
-      </para>
-     </listitem>
-
-     <listitem>
-      <para>
-       When an <command>UPDATE</command> causes a row to move from one
-       partition to another, there is a chance that another concurrent
-       <command>UPDATE</command> or <command>DELETE</command> will get a
-       serialization failure error.  Suppose session 1 is performing an
-       <command>UPDATE</command> on a partition key, and meanwhile a concurrent
-       session 2 for which this row is visible performs an
-       <command>UPDATE</command> or <command>DELETE</command> operation on this
-       row.  In such case, session 2's <command>UPDATE</command> or
-       <command>DELETE</command>, will detect the row movement and raise a
-       serialization failure error (which always returns with an SQLSTATE code
-       '40001').  Applications may wish to retry the transaction if this
-       occurs.  In the usual case where the table is not partitioned, or where
-       there is no row movement, session 2 would have identified the newly
-       updated row and carried out the
-       <command>UPDATE</command>/<command>DELETE</command> on this new row
-       version.
       </para>
      </listitem>
 

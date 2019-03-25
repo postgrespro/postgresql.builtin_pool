@@ -1731,16 +1731,7 @@ exec_bind_message(StringInfo input_message)
 	 */
 	if (numParams > 0)
 	{
-		params = (ParamListInfo) palloc(offsetof(ParamListInfoData, params) +
-										numParams * sizeof(ParamExternData));
-		/* we have static list of params, so no hooks needed */
-		params->paramFetch = NULL;
-		params->paramFetchArg = NULL;
-		params->paramCompile = NULL;
-		params->paramCompileArg = NULL;
-		params->parserSetup = NULL;
-		params->parserSetupArg = NULL;
-		params->numParams = numParams;
+		params = makeParamList(numParams);
 
 		for (int paramno = 0; paramno < numParams; paramno++)
 		{
@@ -1767,7 +1758,7 @@ exec_bind_message(StringInfo input_message)
 				 * trailing null.  This is grotty but is a big win when
 				 * dealing with very large parameter strings.
 				 */
-				pbuf.data = (char *) pvalue;
+				pbuf.data = unconstify(char *, pvalue);
 				pbuf.maxlen = plength + 1;
 				pbuf.len = plength;
 				pbuf.cursor = 0;

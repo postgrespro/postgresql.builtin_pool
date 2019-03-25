@@ -68,18 +68,20 @@ our $node_standby;
 sub master_psql
 {
 	my $cmd = shift;
+	my $dbname = shift || 'postgres';
 
 	system_or_bail 'psql', '-q', '--no-psqlrc', '-d',
-	  $node_master->connstr('postgres'), '-c', "$cmd";
+	  $node_master->connstr($dbname), '-c', "$cmd";
 	return;
 }
 
 sub standby_psql
 {
 	my $cmd = shift;
+	my $dbname = shift || 'postgres';
 
 	system_or_bail 'psql', '-q', '--no-psqlrc', '-d',
-	  $node_standby->connstr('postgres'), '-c', "$cmd";
+	  $node_standby->connstr($dbname), '-c', "$cmd";
 	return;
 }
 
@@ -160,7 +162,7 @@ sub create_standby
 
 	$node_standby->append_conf(
 		"postgresql.conf", qq(
-primary_conninfo='$connstr_master application_name=rewind_standby'
+primary_conninfo='$connstr_master'
 ));
 
 	$node_standby->set_standby_mode();
@@ -180,7 +182,7 @@ sub promote_standby
 	# up standby
 
 	# Wait for the standby to receive and write all WAL.
-	$node_master->wait_for_catchup('rewind_standby', 'write');
+	$node_master->wait_for_catchup($node_standby, 'write');
 
 	# Now promote standby and insert some new data on master, this will put
 	# the master out-of-sync with the standby.

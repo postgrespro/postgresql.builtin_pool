@@ -124,6 +124,20 @@ typedef struct RelationData
 	 */
 	bytea	   *rd_options;		/* parsed pg_class.reloptions */
 
+	/*
+	 * Oid of the handler for this relation. For an index this is a function
+	 * returning IndexAmRoutine, for table like relations a function returning
+	 * TableAmRoutine.  This is stored separately from rd_indam, rd_tableam as
+	 * its lookup requires syscache access, but during relcache bootstrap we
+	 * need to be able to initialize rd_tableam without syscache lookups.
+	 */
+	Oid			rd_amhandler;	/* OID of index AM's handler function */
+
+	/*
+	 * Table access method.
+	 */
+	const struct TableAmRoutine *rd_tableam;
+
 	/* These are non-NULL only for an index relation: */
 	Form_pg_index rd_index;		/* pg_index tuple describing this index */
 	/* use "struct" here to avoid needing to include htup.h: */
@@ -144,7 +158,6 @@ typedef struct RelationData
 	 * rd_indexcxt.  A relcache reset will include freeing that chunk and
 	 * setting rd_amcache = NULL.
 	 */
-	Oid			rd_amhandler;	/* OID of index AM's handler function */
 	MemoryContext rd_indexcxt;	/* private memory cxt for this stuff */
 	/* use "struct" here to avoid needing to include amapi.h: */
 	struct IndexAmRoutine *rd_indam;	/* index AM's API struct */
@@ -230,7 +243,6 @@ typedef struct AutoVacOpts
 	bool		enabled;
 	int			vacuum_threshold;
 	int			analyze_threshold;
-	int			vacuum_cost_delay;
 	int			vacuum_cost_limit;
 	int			freeze_min_age;
 	int			freeze_max_age;
@@ -239,6 +251,7 @@ typedef struct AutoVacOpts
 	int			multixact_freeze_max_age;
 	int			multixact_freeze_table_age;
 	int			log_min_duration;
+	float8		vacuum_cost_delay;
 	float8		vacuum_scale_factor;
 	float8		analyze_scale_factor;
 } AutoVacOpts;

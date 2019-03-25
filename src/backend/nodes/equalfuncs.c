@@ -142,6 +142,7 @@ _equalIntoClause(const IntoClause *a, const IntoClause *b)
 {
 	COMPARE_NODE_FIELD(rel);
 	COMPARE_NODE_FIELD(colNames);
+	COMPARE_STRING_FIELD(accessMethod);
 	COMPARE_NODE_FIELD(options);
 	COMPARE_SCALAR_FIELD(onCommit);
 	COMPARE_STRING_FIELD(tableSpaceName);
@@ -1240,6 +1241,7 @@ _equalCreateStmt(const CreateStmt *a, const CreateStmt *b)
 	COMPARE_NODE_FIELD(options);
 	COMPARE_SCALAR_FIELD(oncommit);
 	COMPARE_STRING_FIELD(tablespacename);
+	COMPARE_STRING_FIELD(accessMethod);
 	COMPARE_SCALAR_FIELD(if_not_exists);
 
 	return true;
@@ -1263,6 +1265,7 @@ _equalDefineStmt(const DefineStmt *a, const DefineStmt *b)
 	COMPARE_NODE_FIELD(args);
 	COMPARE_NODE_FIELD(definition);
 	COMPARE_SCALAR_FIELD(if_not_exists);
+	COMPARE_SCALAR_FIELD(replace);
 
 	return true;
 }
@@ -1507,6 +1510,7 @@ _equalTransactionStmt(const TransactionStmt *a, const TransactionStmt *b)
 	COMPARE_NODE_FIELD(options);
 	COMPARE_STRING_FIELD(savepoint_name);
 	COMPARE_STRING_FIELD(gid);
+	COMPARE_SCALAR_FIELD(chain);
 
 	return true;
 }
@@ -1668,8 +1672,9 @@ _equalDropdbStmt(const DropdbStmt *a, const DropdbStmt *b)
 static bool
 _equalVacuumStmt(const VacuumStmt *a, const VacuumStmt *b)
 {
-	COMPARE_SCALAR_FIELD(options);
+	COMPARE_NODE_FIELD(options);
 	COMPARE_NODE_FIELD(rels);
+	COMPARE_SCALAR_FIELD(is_vacuumcmd);
 
 	return true;
 }
@@ -2791,6 +2796,7 @@ _equalCommonTableExpr(const CommonTableExpr *a, const CommonTableExpr *b)
 {
 	COMPARE_STRING_FIELD(ctename);
 	COMPARE_NODE_FIELD(aliascolnames);
+	COMPARE_SCALAR_FIELD(ctematerialized);
 	COMPARE_NODE_FIELD(ctequery);
 	COMPARE_LOCATION_FIELD(location);
 	COMPARE_SCALAR_FIELD(cterecursive);

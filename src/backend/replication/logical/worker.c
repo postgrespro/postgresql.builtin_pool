@@ -24,6 +24,7 @@
 #include "postgres.h"
 
 #include "access/table.h"
+#include "access/tableam.h"
 #include "access/xact.h"
 #include "access/xlog_internal.h"
 #include "catalog/catalog.h"
@@ -195,11 +196,6 @@ create_estate_for_relation(LogicalRepRelMapEntry *rel)
 	estate->es_result_relation_info = resultRelInfo;
 
 	estate->es_output_cid = GetCurrentCommandId(true);
-
-	/* Triggers might need a slot */
-	if (resultRelInfo->ri_TrigDesc)
-		estate->es_trig_tuple_slot = ExecInitExtraTupleSlot(estate, NULL,
-															&TTSOpsVirtual);
 
 	/* Prepare to catch AFTER triggers. */
 	AfterTriggerBeginQuery();
@@ -596,7 +592,7 @@ apply_handle_insert(StringInfo s)
 	estate = create_estate_for_relation(rel);
 	remoteslot = ExecInitExtraTupleSlot(estate,
 										RelationGetDescr(rel->localrel),
-										&TTSOpsHeapTuple);
+										&TTSOpsVirtual);
 
 	/* Input functions may need an active snapshot, so get one */
 	PushActiveSnapshot(GetTransactionSnapshot());
@@ -703,10 +699,9 @@ apply_handle_update(StringInfo s)
 	estate = create_estate_for_relation(rel);
 	remoteslot = ExecInitExtraTupleSlot(estate,
 										RelationGetDescr(rel->localrel),
-										&TTSOpsHeapTuple);
-	localslot = ExecInitExtraTupleSlot(estate,
-									   RelationGetDescr(rel->localrel),
-									   &TTSOpsHeapTuple);
+										&TTSOpsVirtual);
+	localslot = table_slot_create(rel->localrel,
+								  &estate->es_tupleTable);
 	EvalPlanQualInit(&epqstate, estate, NULL, NIL, -1);
 
 	PushActiveSnapshot(GetTransactionSnapshot());
@@ -824,9 +819,8 @@ apply_handle_delete(StringInfo s)
 	remoteslot = ExecInitExtraTupleSlot(estate,
 										RelationGetDescr(rel->localrel),
 										&TTSOpsVirtual);
-	localslot = ExecInitExtraTupleSlot(estate,
-									   RelationGetDescr(rel->localrel),
-									   &TTSOpsHeapTuple);
+	localslot = table_slot_create(rel->localrel,
+								  &estate->es_tupleTable);
 	EvalPlanQualInit(&epqstate, estate, NULL, NIL, -1);
 
 	PushActiveSnapshot(GetTransactionSnapshot());
@@ -1680,7 +1674,6 @@ ApplyWorkerMain(Datum main_arg)
 		RepOriginId originid;
 		TimeLineID	startpointTLI;
 		char	   *err;
-		int			server_version;
 
 		myslotname = MySubscription->slotname;
 
@@ -1714,8 +1707,7 @@ ApplyWorkerMain(Datum main_arg)
 		 * We don't really use the output identify_system for anything but it
 		 * does some initializations on the upstream so let's still call it.
 		 */
-		(void) walrcv_identify_system(wrconn, &startpointTLI,
-									  &server_version);
+		(void) walrcv_identify_system(wrconn, &startpointTLI);
 
 	}
 
