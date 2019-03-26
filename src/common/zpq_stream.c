@@ -440,7 +440,8 @@ zpq_write(ZpqStream *zs, void const *buf, size_t size, size_t* processed)
 void
 zpq_free(ZpqStream *zs)
 {
-	zpq_algorithms[zpq_algorithm_impl].free(zs);
+	if (zs)
+		zpq_algorithms[zpq_algorithm_impl].free(zs);
 }
 
 char const*
@@ -453,7 +454,7 @@ zpq_error(ZpqStream *zs)
 size_t
 zpq_buffered(ZpqStream *zs)
 {
-	return zpq_algorithms[zpq_algorithm_impl].buffered(zs);
+	return zs ? zpq_algorithms[zpq_algorithm_impl].buffered(zs) : 0;
 }
 
 /*

@@ -431,12 +431,10 @@ pgthreadlock_t pg_g_threadlock = default_threadlock;
 void
 pqDropConnection(PGconn *conn, bool flushInput)
 {
-	if (conn->zstream)
-	{
-		/* Release compression streams */
-		zpq_free(conn->zstream);
-		conn->zstream = NULL;
-	}
+	/* Release compression streams */
+	zpq_free(conn->zstream);
+	conn->zstream = NULL;
+
 	/* Drop any SSL state */
 	pqsecure_close(conn);
 

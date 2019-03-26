@@ -898,7 +898,7 @@ pqSendSome(PGconn *conn, int len)
 	}
 
 	/* while there's still data to send */
-	while (len > 0 || (conn->zstream && zpq_buffered(conn->zstream)))
+	while (len > 0 || zpq_buffered(conn->zstream))
 	{
 		int			sent;
 		size_t      processed = 0;
@@ -964,7 +964,7 @@ pqSendSome(PGconn *conn, int len)
 			remaining -= sent;
 		}
 
-		if (len > 0 || sent < 0 || (conn->zstream && zpq_buffered(conn->zstream)))
+		if (len > 0 || sent < 0 || zpq_buffered(conn->zstream))
 		{
 			/*
 			 * We didn't send it all, wait till we can send more.
