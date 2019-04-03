@@ -5243,6 +5243,13 @@ exec_cached_query(const char *query_string, List *parsetree_list)
 			snapshot_set = true;
 		}
 
+		/*
+		 * Avoid modificatoin of original parse tree
+		 */
+		MemoryContextSwitchTo(old_context);
+		raw_parse_tree = copyObject(raw_parse_tree);
+		MemoryContextSwitchTo(MessageContext);
+
 		querytree_list = pg_analyze_and_rewrite(raw_parse_tree, query_string,
 												NULL, 0, NULL);
 		/*
