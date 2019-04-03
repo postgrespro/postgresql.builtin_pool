@@ -43,8 +43,7 @@ static void gistprunepage(Relation rel, Page page, Buffer buffer,
 
 
 #define ROTATEDIST(d) do { \
-	SplitedPageLayout *tmp=(SplitedPageLayout*)palloc(sizeof(SplitedPageLayout)); \
-	memset(tmp,0,sizeof(SplitedPageLayout)); \
+	SplitedPageLayout *tmp=(SplitedPageLayout*)palloc0(sizeof(SplitedPageLayout)); \
 	tmp->block.blkno = InvalidBlockNumber;	\
 	tmp->buffer = InvalidBuffer;	\
 	tmp->next = (d); \
@@ -87,6 +86,7 @@ gisthandler(PG_FUNCTION_ARGS)
 	amroutine->amcostestimate = gistcostestimate;
 	amroutine->amoptions = gistoptions;
 	amroutine->amproperty = gistproperty;
+	amroutine->ambuildphasename = NULL;
 	amroutine->amvalidate = gistvalidate;
 	amroutine->ambeginscan = gistbeginscan;
 	amroutine->amrescan = gistrescan;
@@ -704,6 +704,9 @@ gistdoinsert(Relation r, IndexTuple itup, Size freespace,
 			GISTInsertStack *item;
 			OffsetNumber downlinkoffnum;
 
+			/* currently, internal pages are never deleted */
+			Assert(!GistPageIsDeleted(stack->page));
+
 			downlinkoffnum = gistchoose(state.r, stack->page, itup, giststate);
 			iid = PageGetItemId(stack->page, downlinkoffnum);
 			idxtuple = (IndexTuple) PageGetItem(stack->page, iid);
@@ -836,6 +839,18 @@ gistdoinsert(Relation r, IndexTuple itup, Size freespace,
 					state.stack = stack = stack->parent;
 					continue;
 				}
+			}
+
+			/*
+			 * The page might have been deleted after we scanned the parent
+			 * and saw the downlink.
+			 */
+			if (GistPageIsDeleted(stack->page))
+			{
+				UnlockReleaseBuffer(stack->buffer);
+				xlocked = false;
+				state.stack = stack = stack->parent;
+				continue;
 			}
 
 			/* now state.stack->(page, buffer and blkno) points to leaf page */

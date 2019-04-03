@@ -440,7 +440,7 @@ standard_ProcessUtility(PlannedStmt *pstmt,
 						break;
 
 					case TRANS_STMT_COMMIT:
-						if (!EndTransactionBlock())
+						if (!EndTransactionBlock(stmt->chain))
 						{
 							/* report unsuccessful commit in completionTag */
 							if (completionTag)
@@ -471,7 +471,7 @@ standard_ProcessUtility(PlannedStmt *pstmt,
 						break;
 
 					case TRANS_STMT_ROLLBACK:
-						UserAbortTransactionBlock();
+						UserAbortTransactionBlock(stmt->chain);
 						break;
 
 					case TRANS_STMT_SAVEPOINT:
@@ -776,16 +776,20 @@ standard_ProcessUtility(PlannedStmt *pstmt,
 			{
 				ReindexStmt *stmt = (ReindexStmt *) parsetree;
 
+				if (stmt->concurrent)
+					PreventInTransactionBlock(isTopLevel,
+											  "REINDEX CONCURRENTLY");
+
 				/* we choose to allow this during "read only" transactions */
 				PreventCommandDuringRecovery("REINDEX");
 				/* forbidden in parallel mode due to CommandIsReadOnly */
 				switch (stmt->kind)
 				{
 					case REINDEX_OBJECT_INDEX:
-						ReindexIndex(stmt->relation, stmt->options);
+						ReindexIndex(stmt->relation, stmt->options, stmt->concurrent);
 						break;
 					case REINDEX_OBJECT_TABLE:
-						ReindexTable(stmt->relation, stmt->options);
+						ReindexTable(stmt->relation, stmt->options, stmt->concurrent);
 						break;
 					case REINDEX_OBJECT_SCHEMA:
 					case REINDEX_OBJECT_SYSTEM:
@@ -801,7 +805,7 @@ standard_ProcessUtility(PlannedStmt *pstmt,
 												  (stmt->kind == REINDEX_OBJECT_SCHEMA) ? "REINDEX SCHEMA" :
 												  (stmt->kind == REINDEX_OBJECT_SYSTEM) ? "REINDEX SYSTEM" :
 												  "REINDEX DATABASE");
-						ReindexMultipleTables(stmt->name, stmt->kind, stmt->options);
+						ReindexMultipleTables(stmt->name, stmt->kind, stmt->options, stmt->concurrent);
 						break;
 					default:
 						elog(ERROR, "unrecognized object type: %d",

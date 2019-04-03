@@ -1146,18 +1146,90 @@ explain (costs off)
 CREATE TABLE delete_test_table (a bigint, b bigint, c bigint, d bigint);
 INSERT INTO delete_test_table SELECT i, 1, 2, 3 FROM generate_series(1,80000) i;
 ALTER TABLE delete_test_table ADD PRIMARY KEY (a,b,c,d);
+-- Delete many entries, and vacuum. This causes page deletions.
 DELETE FROM delete_test_table WHERE a > 40000;
 VACUUM delete_test_table;
-DELETE FROM delete_test_table WHERE a > 10;
+-- Delete most entries, and vacuum, deleting internal pages and creating "fast
+-- root"
+DELETE FROM delete_test_table WHERE a < 79990;
 VACUUM delete_test_table;
+
+--
+-- Test B-tree insertion with a metapage update (XLOG_BTREE_INSERT_META
+-- WAL record type). This happens when a "fast root" page is split.  This
+-- also creates coverage for nbtree FSM page recycling.
+--
+-- The vacuum above should've turned the leaf page into a fast root. We just
+-- need to insert some rows to cause the fast root page to split.
+INSERT INTO delete_test_table SELECT i, 1, 2, 3 FROM generate_series(1,1000) i;
 
 --
 -- REINDEX (VERBOSE)
 --
 CREATE TABLE reindex_verbose(id integer primary key);
-\set VERBOSITY terse
+\set VERBOSITY terse \\ -- suppress machine-dependent details
 REINDEX (VERBOSE) TABLE reindex_verbose;
+\set VERBOSITY default
 DROP TABLE reindex_verbose;
+
+--
+-- REINDEX CONCURRENTLY
+--
+CREATE TABLE concur_reindex_tab (c1 int);
+-- REINDEX
+REINDEX TABLE concur_reindex_tab; -- notice
+REINDEX TABLE CONCURRENTLY concur_reindex_tab; -- notice
+ALTER TABLE concur_reindex_tab ADD COLUMN c2 text; -- add toast index
+-- Normal index with integer column
+CREATE UNIQUE INDEX concur_reindex_ind1 ON concur_reindex_tab(c1);
+-- Normal index with text column
+CREATE INDEX concur_reindex_ind2 ON concur_reindex_tab(c2);
+-- UNIQUE index with expression
+CREATE UNIQUE INDEX concur_reindex_ind3 ON concur_reindex_tab(abs(c1));
+-- Duplicate column names
+CREATE INDEX concur_reindex_ind4 ON concur_reindex_tab(c1, c1, c2);
+-- Create table for check on foreign key dependence switch with indexes swapped
+ALTER TABLE concur_reindex_tab ADD PRIMARY KEY USING INDEX concur_reindex_ind1;
+CREATE TABLE concur_reindex_tab2 (c1 int REFERENCES concur_reindex_tab);
+INSERT INTO concur_reindex_tab VALUES  (1, 'a');
+INSERT INTO concur_reindex_tab VALUES  (2, 'a');
+-- Reindex concurrently of exclusion constraint currently not supported
+CREATE TABLE concur_reindex_tab3 (c1 int, c2 int4range, EXCLUDE USING gist (c2 WITH &&));
+INSERT INTO concur_reindex_tab3 VALUES  (3, '[1,2]');
+REINDEX INDEX CONCURRENTLY  concur_reindex_tab3_c2_excl;  -- error
+REINDEX TABLE CONCURRENTLY concur_reindex_tab3;  -- succeeds with warning
+INSERT INTO concur_reindex_tab3 VALUES  (4, '[2,4]');
+-- Check materialized views
+CREATE MATERIALIZED VIEW concur_reindex_matview AS SELECT * FROM concur_reindex_tab;
+REINDEX INDEX CONCURRENTLY concur_reindex_ind1;
+REINDEX TABLE CONCURRENTLY concur_reindex_tab;
+REINDEX TABLE CONCURRENTLY concur_reindex_matview;
+-- Check that comments are preserved
+CREATE TABLE testcomment (i int);
+CREATE INDEX testcomment_idx1 ON testcomment (i);
+COMMENT ON INDEX testcomment_idx1 IS 'test comment';
+SELECT obj_description('testcomment_idx1'::regclass, 'pg_class');
+REINDEX TABLE testcomment;
+SELECT obj_description('testcomment_idx1'::regclass, 'pg_class');
+REINDEX TABLE CONCURRENTLY testcomment ;
+SELECT obj_description('testcomment_idx1'::regclass, 'pg_class');
+DROP TABLE testcomment;
+
+-- Check errors
+-- Cannot run inside a transaction block
+BEGIN;
+REINDEX TABLE CONCURRENTLY concur_reindex_tab;
+COMMIT;
+REINDEX TABLE CONCURRENTLY pg_database; -- no shared relation
+REINDEX TABLE CONCURRENTLY pg_class; -- no catalog relations
+REINDEX SYSTEM CONCURRENTLY postgres; -- not allowed for SYSTEM
+-- Warns about catalog relations
+REINDEX SCHEMA CONCURRENTLY pg_catalog;
+
+-- Check the relation status, there should not be invalid indexes
+\d concur_reindex_tab
+DROP MATERIALIZED VIEW concur_reindex_matview;
+DROP TABLE concur_reindex_tab, concur_reindex_tab2, concur_reindex_tab3;
 
 --
 -- REINDEX SCHEMA
@@ -1201,6 +1273,9 @@ BEGIN;
 REINDEX SCHEMA schema_to_reindex; -- failure, cannot run in a transaction
 END;
 
+-- concurrently
+REINDEX SCHEMA CONCURRENTLY schema_to_reindex;
+
 -- Failure for unauthorized user
 CREATE ROLE regress_reindexuser NOLOGIN;
 SET SESSION ROLE regress_reindexuser;
@@ -1209,5 +1284,4 @@ REINDEX SCHEMA schema_to_reindex;
 -- Clean up
 RESET ROLE;
 DROP ROLE regress_reindexuser;
-\set VERBOSITY terse \\ -- suppress cascade details
 DROP SCHEMA schema_to_reindex CASCADE;

@@ -84,7 +84,7 @@ test: select_into select_distinct select_distinct_on select_implicit select_havi
 # ----------
 # Another group of parallel tests
 # ----------
-test: brin gin gist spgist privileges init_privs security_label collate matview lock replica_identity rowsecurity object_address tablesample groupingsets drop_operator password identity
+test: brin gin gist spgist privileges init_privs security_label collate matview lock replica_identity rowsecurity object_address tablesample groupingsets drop_operator password identity generated
 
 # ----------
 # Another group of parallel tests
@@ -109,7 +109,7 @@ test: select_views portals_p2 foreign_key cluster dependency guc bitmapops combo
 # ----------
 # Another group of parallel tests (JSON related)
 # ----------
-test: json jsonb json_encoding jsonpath jsonb_jsonpath
+test: json jsonb json_encoding jsonpath jsonpath_encoding jsonb_jsonpath
 
 # ----------
 # Another group of parallel tests

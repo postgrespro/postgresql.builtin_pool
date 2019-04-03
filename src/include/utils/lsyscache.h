@@ -86,10 +86,12 @@ extern Oid get_opfamily_proc(Oid opfamily, Oid lefttype, Oid righttype,
 				  int16 procnum);
 extern char *get_attname(Oid relid, AttrNumber attnum, bool missing_ok);
 extern AttrNumber get_attnum(Oid relid, const char *attname);
+extern char get_attgenerated(Oid relid, AttrNumber attnum);
 extern Oid	get_atttype(Oid relid, AttrNumber attnum);
 extern void get_atttypetypmodcoll(Oid relid, AttrNumber attnum,
 					  Oid *typid, int32 *typmod, Oid *collid);
 extern char *get_collation_name(Oid colloid);
+extern bool get_collation_isdeterministic(Oid colloid);
 extern char *get_constraint_name(Oid conoid);
 extern char *get_language_name(Oid langoid, bool missing_ok);
 extern Oid	get_opclass_family(Oid opclass);

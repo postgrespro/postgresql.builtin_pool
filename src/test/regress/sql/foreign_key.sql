@@ -1218,6 +1218,8 @@ UPDATE fk_partitioned_fk SET a = a + 1 WHERE a = 2501;
 UPDATE fk_notpartitioned_pk SET b = 502 WHERE a = 500;
 UPDATE fk_notpartitioned_pk SET b = 1502 WHERE a = 1500;
 UPDATE fk_notpartitioned_pk SET b = 2504 WHERE a = 2500;
+-- check psql behavior
+\d fk_notpartitioned_pk
 ALTER TABLE fk_partitioned_fk DROP CONSTRAINT fk_partitioned_fk_a_b_fkey;
 -- done.
 DROP TABLE fk_notpartitioned_pk, fk_partitioned_fk;
@@ -1440,6 +1442,4 @@ alter table fkpart2.fk_part detach partition fkpart2.fk_part_1;
 alter table fkpart2.fk_part_1 drop constraint fkey;	-- ok
 alter table fkpart2.fk_part_1_1 drop constraint my_fkey;	-- doesn't exist
 
-\set VERBOSITY terse	\\ -- suppress cascade details
 drop schema fkpart0, fkpart1, fkpart2 cascade;
-\set VERBOSITY default

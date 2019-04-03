@@ -307,8 +307,13 @@ struct PlannerInfo
 	struct PathTarget *upper_targets[UPPERREL_FINAL + 1];
 
 	/*
-	 * grouping_planner passes back its final processed targetlist here, for
-	 * use in relabeling the topmost tlist of the finished Plan.
+	 * The fully-processed targetlist is kept here.  It differs from
+	 * parse->targetList in that (for INSERT and UPDATE) it's been reordered
+	 * to match the target table, and defaults have been filled in.  Also,
+	 * additional resjunk targets may be present.  preprocess_targetlist()
+	 * does most of this work, but note that more resjunk targets can get
+	 * added during appendrel expansion.  (Hence, upper_targets mustn't get
+	 * set up till after that.)
 	 */
 	List	   *processed_tlist;
 
@@ -2433,6 +2438,24 @@ typedef struct
 	List	   *targetList;
 	PartitionwiseAggregateType patype;
 } GroupPathExtraData;
+
+/*
+ * Struct for extra information passed to subroutines of grouping_planner
+ *
+ * limit_needed is true if we actually need a Limit plan node
+ * limit_tuples is an estimated bound on the number of output tuples,
+ *		or -1 if no LIMIT or couldn't estimate
+ * count_est and offset_est are the estimated values of the LIMIT and OFFSET
+ * 		expressions computed by preprocess_limit() (see comments for
+ * 		preprocess_limit() for more information).
+ */
+typedef struct
+{
+	bool		limit_needed;
+	double		limit_tuples;
+	int64		count_est;
+	int64		offset_est;
+} FinalPathExtraData;
 
 /*
  * For speed reasons, cost estimation for join paths is performed in two

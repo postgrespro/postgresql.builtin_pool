@@ -924,6 +924,26 @@ plpgsql_exec_trigger(PLpgSQL_function *func,
 								  false, false);
 		expanded_record_set_tuple(rec_old->erh, trigdata->tg_trigtuple,
 								  false, false);
+
+		/*
+		 * In BEFORE trigger, stored generated columns are not computed yet,
+		 * so make them null in the NEW row.  (Only needed in UPDATE branch;
+		 * in the INSERT case, they are already null, but in UPDATE, the field
+		 * still contains the old value.)  Alternatively, we could construct a
+		 * whole new row structure without the generated columns, but this way
+		 * seems more efficient and potentially less confusing.
+		 */
+		if (tupdesc->constr && tupdesc->constr->has_generated_stored &&
+			TRIGGER_FIRED_BEFORE(trigdata->tg_event))
+		{
+			for (int i = 0; i < tupdesc->natts; i++)
+				if (TupleDescAttr(tupdesc, i)->attgenerated == ATTRIBUTE_GENERATED_STORED)
+					expanded_record_set_field_internal(rec_new->erh,
+													   i + 1,
+													   (Datum) 0,
+													   true, /*isnull*/
+													   false, false);
+		}
 	}
 	else if (TRIGGER_FIRED_BY_DELETE(trigdata->tg_event))
 	{
@@ -4773,8 +4793,13 @@ exec_stmt_commit(PLpgSQL_execstate *estate, PLpgSQL_stmt_commit *stmt)
 {
 	HoldPinnedPortals();
 
-	SPI_commit();
-	SPI_start_transaction();
+	if (stmt->chain)
+		SPI_commit_and_chain();
+	else
+	{
+		SPI_commit();
+		SPI_start_transaction();
+	}
 
 	estate->simple_eval_estate = NULL;
 	plpgsql_create_econtext(estate);
@@ -4792,8 +4817,13 @@ exec_stmt_rollback(PLpgSQL_execstate *estate, PLpgSQL_stmt_rollback *stmt)
 {
 	HoldPinnedPortals();
 
-	SPI_rollback();
-	SPI_start_transaction();
+	if (stmt->chain)
+		SPI_rollback_and_chain();
+	else
+	{
+		SPI_rollback();
+		SPI_start_transaction();
+	}
 
 	estate->simple_eval_estate = NULL;
 	plpgsql_create_econtext(estate);

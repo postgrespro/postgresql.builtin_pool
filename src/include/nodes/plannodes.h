@@ -297,6 +297,7 @@ typedef struct RecursiveUnion
 								 * duplicate-ness */
 	AttrNumber *dupColIdx;		/* their indexes in the target list */
 	Oid		   *dupOperators;	/* equality operators to compare with */
+	Oid		   *dupCollations;
 	long		numGroups;		/* estimated number of groups in input */
 } RecursiveUnion;
 
@@ -773,6 +774,7 @@ typedef struct Group
 	int			numCols;		/* number of grouping columns */
 	AttrNumber *grpColIdx;		/* their indexes in the target list */
 	Oid		   *grpOperators;	/* equality operators to compare with */
+	Oid		   *grpCollations;
 } Group;
 
 /* ---------------
@@ -797,6 +799,7 @@ typedef struct Agg
 	int			numCols;		/* number of grouping columns */
 	AttrNumber *grpColIdx;		/* their indexes in the target list */
 	Oid		   *grpOperators;	/* equality operators to compare with */
+	Oid		   *grpCollations;
 	long		numGroups;		/* estimated number of groups in input */
 	Bitmapset  *aggParams;		/* IDs of Params used in Aggref inputs */
 	/* Note: planner provides numGroups & aggParams only in HASHED/MIXED case */
@@ -815,9 +818,11 @@ typedef struct WindowAgg
 	int			partNumCols;	/* number of columns in partition clause */
 	AttrNumber *partColIdx;		/* their indexes in the target list */
 	Oid		   *partOperators;	/* equality operators for partition columns */
+	Oid		   *partCollations;	/* collations for partition columns */
 	int			ordNumCols;		/* number of columns in ordering clause */
 	AttrNumber *ordColIdx;		/* their indexes in the target list */
 	Oid		   *ordOperators;	/* equality operators for ordering columns */
+	Oid		   *ordCollations;	/* collations for ordering columns */
 	int			frameOptions;	/* frame_clause options, see WindowDef */
 	Node	   *startOffset;	/* expression for starting bound, if any */
 	Node	   *endOffset;		/* expression for ending bound, if any */
@@ -839,6 +844,7 @@ typedef struct Unique
 	int			numCols;		/* number of columns to check for uniqueness */
 	AttrNumber *uniqColIdx;		/* their indexes in the target list */
 	Oid		   *uniqOperators;	/* equality operators to compare with */
+	Oid		   *uniqCollations;	/* collations for equality comparisons */
 } Unique;
 
 /* ------------
@@ -913,6 +919,7 @@ typedef struct SetOp
 								 * duplicate-ness */
 	AttrNumber *dupColIdx;		/* their indexes in the target list */
 	Oid		   *dupOperators;	/* equality operators to compare with */
+	Oid		   *dupCollations;
 	AttrNumber	flagColIdx;		/* where is the flag column, if any */
 	int			firstFlag;		/* flag value for first input relation */
 	long		numGroups;		/* estimated number of groups in input */
@@ -1096,6 +1103,7 @@ typedef struct PartitionPruneInfo
  * it is -1 if the partition is a leaf or has been pruned.  Note that subplan
  * indexes, as stored in 'subplan_map', are global across the parent plan
  * node, but partition indexes are valid only within a particular hierarchy.
+ * relid_map[p] contains the partition's OID, or 0 if the partition was pruned.
  */
 typedef struct PartitionedRelPruneInfo
 {
@@ -1108,7 +1116,7 @@ typedef struct PartitionedRelPruneInfo
 	int			nexprs;			/* Length of hasexecparam[] */
 	int		   *subplan_map;	/* subplan index by partition index, or -1 */
 	int		   *subpart_map;	/* subpart index by partition index, or -1 */
-	Oid		   *relid_map;		/* relation OID by partition index, or -1 */
+	Oid		   *relid_map;		/* relation OID by partition index, or 0 */
 	bool	   *hasexecparam;	/* true if corresponding pruning_step contains
 								 * any PARAM_EXEC Params. */
 	bool		do_initial_prune;	/* true if pruning should be performed

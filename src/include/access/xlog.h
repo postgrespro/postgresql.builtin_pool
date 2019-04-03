@@ -116,6 +116,8 @@ extern bool EnableHotStandby;
 extern bool fullPageWrites;
 extern bool wal_log_hints;
 extern bool wal_compression;
+extern bool wal_init_zero;
+extern bool wal_recycle;
 extern bool *wal_consistency_checking;
 extern char *wal_consistency_checking_string;
 extern bool log_checkpoints;
@@ -215,9 +217,10 @@ extern bool XLOG_DEBUG;
 										 * belonging to unlogged tables */
 /* These are important to RequestCheckpoint */
 #define CHECKPOINT_WAIT			0x0020	/* Wait for completion */
+#define CHECKPOINT_REQUESTED	0x0040	/* Checkpoint request has been made */
 /* These indicate the cause of a checkpoint request */
-#define CHECKPOINT_CAUSE_XLOG	0x0040	/* XLOG consumption */
-#define CHECKPOINT_CAUSE_TIME	0x0080	/* Elapsed time */
+#define CHECKPOINT_CAUSE_XLOG	0x0080	/* XLOG consumption */
+#define CHECKPOINT_CAUSE_TIME	0x0100	/* Elapsed time */
 
 /*
  * Flag bits for the record being inserted, set using XLogSetRecordFlags().
@@ -309,7 +312,6 @@ extern XLogRecPtr GetRedoRecPtr(void);
 extern XLogRecPtr GetInsertRecPtr(void);
 extern XLogRecPtr GetFlushRecPtr(void);
 extern XLogRecPtr GetLastImportantRecPtr(void);
-extern void GetNextXidAndEpoch(TransactionId *xid, uint32 *epoch);
 extern void RemovePromoteSignalFiles(void);
 
 extern bool CheckPromoteSignal(void);

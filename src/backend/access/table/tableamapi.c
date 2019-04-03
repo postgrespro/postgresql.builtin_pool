@@ -62,7 +62,38 @@ GetTableAmRoutine(Oid amhandler)
 	Assert(routine->index_fetch_end != NULL);
 	Assert(routine->index_fetch_tuple != NULL);
 
+	Assert(routine->tuple_fetch_row_version != NULL);
 	Assert(routine->tuple_satisfies_snapshot != NULL);
+
+	Assert(routine->tuple_insert != NULL);
+
+	/*
+	 * Could be made optional, but would require throwing error during
+	 * parse-analysis.
+	 */
+	Assert(routine->tuple_insert_speculative != NULL);
+	Assert(routine->tuple_complete_speculative != NULL);
+
+	Assert(routine->tuple_delete != NULL);
+	Assert(routine->tuple_update != NULL);
+	Assert(routine->tuple_lock != NULL);
+
+	Assert(routine->relation_set_new_filenode != NULL);
+	Assert(routine->relation_nontransactional_truncate != NULL);
+	Assert(routine->relation_copy_data != NULL);
+	Assert(routine->relation_copy_for_cluster != NULL);
+	Assert(routine->relation_vacuum != NULL);
+	Assert(routine->scan_analyze_next_block != NULL);
+	Assert(routine->scan_analyze_next_tuple != NULL);
+	Assert(routine->index_build_range_scan != NULL);
+	Assert(routine->index_validate_scan != NULL);
+	Assert(routine->relation_estimate_size != NULL);
+
+	/* optional, but one callback implies presence of hte other */
+	Assert((routine->scan_bitmap_next_block == NULL) ==
+		   (routine->scan_bitmap_next_tuple == NULL));
+	Assert(routine->scan_sample_next_block != NULL);
+	Assert(routine->scan_sample_next_tuple != NULL);
 
 	return routine;
 }

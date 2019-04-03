@@ -35,8 +35,6 @@ btree_desc(StringInfo buf, XLogReaderState *record)
 			}
 		case XLOG_BTREE_SPLIT_L:
 		case XLOG_BTREE_SPLIT_R:
-		case XLOG_BTREE_SPLIT_L_HIGHKEY:
-		case XLOG_BTREE_SPLIT_R_HIGHKEY:
 			{
 				xl_btree_split *xlrec = (xl_btree_split *) rec;
 
@@ -56,7 +54,8 @@ btree_desc(StringInfo buf, XLogReaderState *record)
 			{
 				xl_btree_delete *xlrec = (xl_btree_delete *) rec;
 
-				appendStringInfo(buf, "%d items", xlrec->nitems);
+				appendStringInfo(buf, "%d items, latest removed xid %u",
+								 xlrec->nitems, xlrec->latestRemovedXid);
 				break;
 			}
 		case XLOG_BTREE_MARK_PAGE_HALFDEAD:
@@ -129,12 +128,6 @@ btree_identify(uint8 info)
 			break;
 		case XLOG_BTREE_SPLIT_R:
 			id = "SPLIT_R";
-			break;
-		case XLOG_BTREE_SPLIT_L_HIGHKEY:
-			id = "SPLIT_L_HIGHKEY";
-			break;
-		case XLOG_BTREE_SPLIT_R_HIGHKEY:
-			id = "SPLIT_R_HIGHKEY";
 			break;
 		case XLOG_BTREE_VACUUM:
 			id = "VACUUM";

@@ -111,6 +111,7 @@ extern ExprState *execTuplesMatchPrepare(TupleDesc desc,
 					   int numCols,
 					   const AttrNumber *keyColIdx,
 					   const Oid *eqOperators,
+					   const Oid *collations,
 					   PlanState *parent);
 extern void execTuplesHashPrepare(int numCols,
 					  const Oid *eqOperators,
@@ -121,6 +122,7 @@ extern TupleHashTable BuildTupleHashTable(PlanState *parent,
 					int numCols, AttrNumber *keyColIdx,
 					const Oid *eqfuncoids,
 					FmgrInfo *hashfunctions,
+					Oid *collations,
 					long nbuckets, Size additionalsize,
 					MemoryContext tablecxt,
 					MemoryContext tempcxt, bool use_variable_hash_iv);
@@ -129,6 +131,7 @@ extern TupleHashTable BuildTupleHashTableExt(PlanState *parent,
 					int numCols, AttrNumber *keyColIdx,
 					const Oid *eqfuncoids,
 					FmgrInfo *hashfunctions,
+					Oid *collations,
 					long nbuckets, Size additionalsize,
 					MemoryContext metacxt,
 					MemoryContext tablecxt,
@@ -195,12 +198,7 @@ extern LockTupleMode ExecUpdateLockMode(EState *estate, ResultRelInfo *relinfo);
 extern ExecRowMark *ExecFindRowMark(EState *estate, Index rti, bool missing_ok);
 extern ExecAuxRowMark *ExecBuildAuxRowMark(ExecRowMark *erm, List *targetlist);
 extern TupleTableSlot *EvalPlanQual(EState *estate, EPQState *epqstate,
-			 Relation relation, Index rti, LockTupleMode lockmode,
-			 ItemPointer tid, TransactionId priorXmax);
-extern bool EvalPlanQualFetch(EState *estate, Relation relation,
-				  LockTupleMode lockmode, LockWaitPolicy wait_policy,
-				  ItemPointer tid, TransactionId priorXmax,
-				  TupleTableSlot *slot);
+			 Relation relation, Index rti, TupleTableSlot *testslot);
 extern void EvalPlanQualInit(EPQState *epqstate, EState *estate,
 				 Plan *subplan, List *auxrowmarks, int epqParam);
 extern void EvalPlanQualSetPlan(EPQState *epqstate,
@@ -257,6 +255,7 @@ extern ExprState *ExecBuildGroupingEqual(TupleDesc ldesc, TupleDesc rdesc,
 					   int numCols,
 					   const AttrNumber *keyColIdx,
 					   const Oid *eqfunctions,
+					   const Oid *collations,
 					   PlanState *parent);
 extern ProjectionInfo *ExecBuildProjectionInfo(List *targetList,
 						ExprContext *econtext,
@@ -569,9 +568,8 @@ extern TupleTableSlot *ExecGetReturningSlot(EState *estate, ResultRelInfo *relIn
  */
 extern void ExecOpenIndices(ResultRelInfo *resultRelInfo, bool speculative);
 extern void ExecCloseIndices(ResultRelInfo *resultRelInfo);
-extern List *ExecInsertIndexTuples(TupleTableSlot *slot, ItemPointer tupleid,
-					  EState *estate, bool noDupErr, bool *specConflict,
-					  List *arbiterIndexes);
+extern List *ExecInsertIndexTuples(TupleTableSlot *slot, EState *estate, bool noDupErr,
+					  bool *specConflict, List *arbiterIndexes);
 extern bool ExecCheckIndexConstraints(TupleTableSlot *slot, EState *estate,
 						  ItemPointer conflictTid, List *arbiterIndexes);
 extern void check_exclusion_constraint(Relation heap, Relation index,

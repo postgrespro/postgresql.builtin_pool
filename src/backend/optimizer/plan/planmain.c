@@ -42,8 +42,6 @@
  * (grouping_planner) can choose among the surviving paths for the rel.
  *
  * root describes the query to plan
- * tlist is the target list the query should produce
- *		(this is NOT necessarily root->parse->targetList!)
  * qp_callback is a function to compute query_pathkeys once it's safe to do so
  * qp_extra is optional extra data to pass to qp_callback
  *
@@ -54,7 +52,7 @@
  * (We cannot construct canonical pathkeys until that's done.)
  */
 RelOptInfo *
-query_planner(PlannerInfo *root, List *tlist,
+query_planner(PlannerInfo *root,
 			  query_pathkeys_callback qp_callback, void *qp_extra)
 {
 	Query	   *parse = root->parse;
@@ -159,15 +157,13 @@ query_planner(PlannerInfo *root, List *tlist,
 	setup_append_rel_array(root);
 
 	/*
-	 * Construct RelOptInfo nodes for all base relations in query, and
-	 * indirectly for all appendrel member relations ("other rels").  This
-	 * will give us a RelOptInfo for every "simple" (non-join) rel involved in
-	 * the query.
+	 * Construct RelOptInfo nodes for all base relations used in the query.
+	 * Appendrel member relations ("other rels") will be added later.
 	 *
-	 * Note: the reason we find the rels by searching the jointree and
-	 * appendrel list, rather than just scanning the rangetable, is that the
-	 * rangetable may contain RTEs for rels not actively part of the query,
-	 * for example views.  We don't want to make RelOptInfos for them.
+	 * Note: the reason we find the baserels by searching the jointree, rather
+	 * than scanning the rangetable, is that the rangetable may contain RTEs
+	 * for rels not actively part of the query, for example views.  We don't
+	 * want to make RelOptInfos for them.
 	 */
 	add_base_rels_to_query(root, (Node *) parse->jointree);
 
@@ -181,7 +177,7 @@ query_planner(PlannerInfo *root, List *tlist,
 	 * restrictions.  Finally, we form a target joinlist for make_one_rel() to
 	 * work from.
 	 */
-	build_base_rel_tlists(root, tlist);
+	build_base_rel_tlists(root, root->processed_tlist);
 
 	find_placeholders_in_jointree(root);
 
@@ -258,6 +254,16 @@ query_planner(PlannerInfo *root, List *tlist,
 	 * restriction OR clauses from.
 	 */
 	extract_restriction_or_clauses(root);
+
+	/*
+	 * Now expand appendrels by adding "otherrels" for their children.  We
+	 * delay this to the end so that we have as much information as possible
+	 * available for each baserel, including all restriction clauses.  That
+	 * let us prune away partitions that don't satisfy a restriction clause.
+	 * Also note that some information such as lateral_relids is propagated
+	 * from baserels to otherrels here, so we must have computed it already.
+	 */
+	add_other_rels_to_query(root);
 
 	/*
 	 * Ready to do the primary planning.

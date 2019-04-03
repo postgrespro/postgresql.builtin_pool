@@ -96,8 +96,9 @@ table_beginscan_catalog(Relation relation, int nkeys, struct ScanKeyData *key)
 	Oid			relid = RelationGetRelid(relation);
 	Snapshot	snapshot = RegisterSnapshot(GetCatalogSnapshot(relid));
 
-	return relation->rd_tableam->scan_begin(relation, snapshot, nkeys, key, NULL,
-											true, true, true, false, false, true);
+	return relation->rd_tableam->scan_begin(relation, snapshot, nkeys, key,
+											NULL, true, true, true, false,
+											false, true);
 }
 
 void
@@ -171,8 +172,157 @@ table_beginscan_parallel(Relation relation, ParallelTableScanDesc parallel_scan)
 		snapshot = SnapshotAny;
 	}
 
-	return relation->rd_tableam->scan_begin(relation, snapshot, 0, NULL, parallel_scan,
-											true, true, true, false, false, !parallel_scan->phs_snapshot_any);
+	return relation->rd_tableam->scan_begin(relation, snapshot, 0, NULL,
+											parallel_scan, true, true, true,
+											false, false,
+											!parallel_scan->phs_snapshot_any);
+}
+
+
+/* ----------------------------------------------------------------------------
+ * Index scan related functions.
+ * ----------------------------------------------------------------------------
+ */
+
+/*
+ * To perform that check simply start an index scan, create the necessary
+ * slot, do the heap lookup, and shut everything down again. This could be
+ * optimized, but is unlikely to matter from a performance POV. If there
+ * frequently are live index pointers also matching a unique index key, the
+ * CPU overhead of this routine is unlikely to matter.
+ */
+bool
+table_index_fetch_tuple_check(Relation rel,
+							  ItemPointer tid,
+							  Snapshot snapshot,
+							  bool *all_dead)
+{
+	IndexFetchTableData *scan;
+	TupleTableSlot *slot;
+	bool		call_again = false;
+	bool		found;
+
+	slot = table_slot_create(rel, NULL);
+	scan = table_index_fetch_begin(rel);
+	found = table_index_fetch_tuple(scan, tid, snapshot, slot, &call_again,
+									all_dead);
+	table_index_fetch_end(scan);
+	ExecDropSingleTupleTableSlot(slot);
+
+	return found;
+}
+
+
+/* ----------------------------------------------------------------------------
+ * Functions to make modifications a bit simpler.
+ * ----------------------------------------------------------------------------
+ */
+
+/*
+ * simple_table_insert - insert a tuple
+ *
+ * Currently, this routine differs from table_insert only in supplying a
+ * default command ID and not allowing access to the speedup options.
+ */
+void
+simple_table_insert(Relation rel, TupleTableSlot *slot)
+{
+	table_insert(rel, slot, GetCurrentCommandId(true), 0, NULL);
+}
+
+/*
+ * simple_table_delete - delete a tuple
+ *
+ * This routine may be used to delete a tuple when concurrent updates of
+ * the target tuple are not expected (for example, because we have a lock
+ * on the relation associated with the tuple).  Any failure is reported
+ * via ereport().
+ */
+void
+simple_table_delete(Relation rel, ItemPointer tid, Snapshot snapshot)
+{
+	TM_Result	result;
+	TM_FailureData tmfd;
+
+	result = table_delete(rel, tid,
+						  GetCurrentCommandId(true),
+						  snapshot, InvalidSnapshot,
+						  true /* wait for commit */ ,
+						  &tmfd, false /* changingPart */ );
+
+	switch (result)
+	{
+		case TM_SelfModified:
+			/* Tuple was already updated in current command? */
+			elog(ERROR, "tuple already updated by self");
+			break;
+
+		case TM_Ok:
+			/* done successfully */
+			break;
+
+		case TM_Updated:
+			elog(ERROR, "tuple concurrently updated");
+			break;
+
+		case TM_Deleted:
+			elog(ERROR, "tuple concurrently deleted");
+			break;
+
+		default:
+			elog(ERROR, "unrecognized table_delete status: %u", result);
+			break;
+	}
+}
+
+/*
+ * simple_table_update - replace a tuple
+ *
+ * This routine may be used to update a tuple when concurrent updates of
+ * the target tuple are not expected (for example, because we have a lock
+ * on the relation associated with the tuple).  Any failure is reported
+ * via ereport().
+ */
+void
+simple_table_update(Relation rel, ItemPointer otid,
+					TupleTableSlot *slot,
+					Snapshot snapshot,
+					bool *update_indexes)
+{
+	TM_Result	result;
+	TM_FailureData tmfd;
+	LockTupleMode lockmode;
+
+	result = table_update(rel, otid, slot,
+						  GetCurrentCommandId(true),
+						  snapshot, InvalidSnapshot,
+						  true /* wait for commit */ ,
+						  &tmfd, &lockmode, update_indexes);
+
+	switch (result)
+	{
+		case TM_SelfModified:
+			/* Tuple was already updated in current command? */
+			elog(ERROR, "tuple already updated by self");
+			break;
+
+		case TM_Ok:
+			/* done successfully */
+			break;
+
+		case TM_Updated:
+			elog(ERROR, "tuple concurrently updated");
+			break;
+
+		case TM_Deleted:
+			elog(ERROR, "tuple concurrently deleted");
+			break;
+
+		default:
+			elog(ERROR, "unrecognized table_update status: %u", result);
+			break;
+	}
+
 }
 
 

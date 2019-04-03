@@ -21,10 +21,13 @@
 #include "access/hash.h"
 #include "access/hash_xlog.h"
 #include "access/relscan.h"
+#include "access/tableam.h"
 #include "catalog/index.h"
+#include "commands/progress.h"
 #include "commands/vacuum.h"
 #include "miscadmin.h"
 #include "optimizer/plancat.h"
+#include "pgstat.h"
 #include "utils/builtins.h"
 #include "utils/index_selfuncs.h"
 #include "utils/rel.h"
@@ -82,6 +85,7 @@ hashhandler(PG_FUNCTION_ARGS)
 	amroutine->amcostestimate = hashcostestimate;
 	amroutine->amoptions = hashoptions;
 	amroutine->amproperty = NULL;
+	amroutine->ambuildphasename = NULL;
 	amroutine->amvalidate = hashvalidate;
 	amroutine->ambeginscan = hashbeginscan;
 	amroutine->amrescan = hashrescan;
@@ -159,8 +163,11 @@ hashbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 	buildstate.heapRel = heap;
 
 	/* do the heap scan */
-	reltuples = IndexBuildHeapScan(heap, index, indexInfo, true,
-								   hashbuildCallback, (void *) &buildstate, NULL);
+	reltuples = table_index_build_scan(heap, index, indexInfo, true, true,
+									   hashbuildCallback,
+									   (void *) &buildstate, NULL);
+	pgstat_progress_update_param(PROGRESS_CREATEIDX_TUPLES_TOTAL,
+								 buildstate.indtuples);
 
 	if (buildstate.spool)
 	{
@@ -190,7 +197,7 @@ hashbuildempty(Relation index)
 }
 
 /*
- * Per-tuple callback from IndexBuildHeapScan
+ * Per-tuple callback for table_index_build_scan
  */
 static void
 hashbuildCallback(Relation index,

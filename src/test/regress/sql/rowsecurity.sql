@@ -518,9 +518,7 @@ SELECT * FROM rec1;    -- fail, mutual recursion via views
 --
 SET SESSION AUTHORIZATION regress_rls_bob;
 
-\set VERBOSITY terse \\ -- suppress cascade details
 DROP VIEW rec1v, rec2v CASCADE;
-\set VERBOSITY default
 
 CREATE VIEW rec1v WITH (security_barrier) AS SELECT * FROM rec1;
 CREATE VIEW rec2v WITH (security_barrier) AS SELECT * FROM rec2;
@@ -1026,9 +1024,7 @@ DROP TABLE test_qual_pushdown;
 --
 RESET SESSION AUTHORIZATION;
 
-\set VERBOSITY terse \\ -- suppress cascade details
 DROP TABLE t1 CASCADE;
-\set VERBOSITY default
 
 CREATE TABLE t1 (a integer);
 
@@ -1768,14 +1764,38 @@ DROP POLICY p1 ON dob_t2; -- should succeed
 DROP USER regress_rls_dob_role1;
 DROP USER regress_rls_dob_role2;
 
+-- Bug #15708: view + table with RLS should check policies as view owner
+CREATE TABLE ref_tbl (a int);
+INSERT INTO ref_tbl VALUES (1);
+
+CREATE TABLE rls_tbl (a int);
+INSERT INTO rls_tbl VALUES (10);
+ALTER TABLE rls_tbl ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p1 ON rls_tbl USING (EXISTS (SELECT 1 FROM ref_tbl));
+
+GRANT SELECT ON ref_tbl TO regress_rls_bob;
+GRANT SELECT ON rls_tbl TO regress_rls_bob;
+
+CREATE VIEW rls_view AS SELECT * FROM rls_tbl;
+ALTER VIEW rls_view OWNER TO regress_rls_bob;
+GRANT SELECT ON rls_view TO regress_rls_alice;
+
+SET SESSION AUTHORIZATION regress_rls_alice;
+SELECT * FROM ref_tbl; -- Permission denied
+SELECT * FROM rls_tbl; -- Permission denied
+SELECT * FROM rls_view; -- OK
+RESET SESSION AUTHORIZATION;
+
+DROP VIEW rls_view;
+DROP TABLE rls_tbl;
+DROP TABLE ref_tbl;
+
 --
 -- Clean up objects
 --
 RESET SESSION AUTHORIZATION;
 
-\set VERBOSITY terse \\ -- suppress cascade details
 DROP SCHEMA regress_rls_schema CASCADE;
-\set VERBOSITY default
 
 DROP USER regress_rls_alice;
 DROP USER regress_rls_bob;

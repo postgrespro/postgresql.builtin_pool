@@ -796,6 +796,7 @@ FreePageManager
 FreePageSpanLeader
 FromCharDateMode
 FromExpr
+FullTransactionId
 FuncCall
 FuncCallContext
 FuncCandidateList
@@ -866,6 +867,7 @@ GinBtreeEntryInsertData
 GinBtreeStack
 GinBuildState
 GinChkVal
+GinEntries
 GinEntryAccumulator
 GinIndexStat
 GinMetaPageData
@@ -943,7 +945,6 @@ HSParser
 HSpool
 HStore
 HTAB
-HTSU_Result
 HTSV_Result
 HV
 Hash
@@ -982,7 +983,6 @@ HeapTupleData
 HeapTupleFields
 HeapTupleHeader
 HeapTupleHeaderData
-HeapUpdateFailureData
 HistControl
 HotStandbyState
 I32
@@ -1107,6 +1107,13 @@ JsonPath
 JsonPathBool
 JsonPathExecContext
 JsonPathExecResult
+JsonPathGinAddPathItemFunc
+JsonPathGinContext
+JsonPathGinExtractNodesFunc
+JsonPathGinNode
+JsonPathGinNodeType
+JsonPathGinPath
+JsonPathGinPathItem
 JsonPathItem
 JsonPathItemType
 JsonPathParseItem
@@ -1710,6 +1717,7 @@ PgBenchExprType
 PgBenchFunction
 PgBenchValue
 PgBenchValueType
+PgChecksumMode
 PgFdwAnalyzeState
 PgFdwDirectModifyState
 PgFdwModifyState
@@ -2107,6 +2115,7 @@ SeqTableData
 SerCommitSeqNo
 SerializedReindexState
 SerializedSnapshotData
+SerializedTransactionState
 Session
 SessionBackupState
 SetConstraintState
@@ -2282,6 +2291,8 @@ TBMSharedIteratorState
 TBMStatus
 TBlockState
 TIDBitmap
+TM_FailureData
+TM_Result
 TOKEN_DEFAULT_DACL
 TOKEN_INFORMATION_CLASS
 TOKEN_PRIVILEGES
@@ -2488,6 +2499,7 @@ VacAttrStatsP
 VacuumParams
 VacuumRelation
 VacuumStmt
+ValidateIndexState
 Value
 ValuesScan
 ValuesScanState
@@ -2623,6 +2635,7 @@ XactCallback
 XactCallbackItem
 XactEvent
 XactLockTableWaitInfo
+XidHorizonPrefetchState
 XidStatus
 XmlExpr
 XmlExprOp
@@ -3237,7 +3250,6 @@ uuidKEY
 uuid_rc_t
 uuid_sortsupport_state
 uuid_t
-v_i_state
 va_list
 vacuumingOptions
 validate_string_relopt

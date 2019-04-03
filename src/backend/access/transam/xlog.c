@@ -95,6 +95,8 @@ bool		wal_log_hints = false;
 bool		wal_compression = false;
 char	   *wal_consistency_checking_string = NULL;
 bool	   *wal_consistency_checking = NULL;
+bool		wal_init_zero = true;
+bool		wal_recycle = true;
 bool		log_checkpoints = false;
 int			sync_method = DEFAULT_SYNC_METHOD;
 int			wal_level = WAL_LEVEL_MINIMAL;
@@ -590,8 +592,7 @@ typedef struct XLogCtlData
 	/* Protected by info_lck: */
 	XLogwrtRqst LogwrtRqst;
 	XLogRecPtr	RedoRecPtr;		/* a recent copy of Insert->RedoRecPtr */
-	uint32		ckptXidEpoch;	/* nextXID & epoch of latest checkpoint */
-	TransactionId ckptXid;
+	FullTransactionId ckptFullXid;	/* nextFullXid of latest checkpoint */
 	XLogRecPtr	asyncXactLSN;	/* LSN of newest async commit/abort */
 	XLogRecPtr	replicationSlotMinLSN;	/* oldest LSN needed by any slot */
 
@@ -3210,6 +3211,7 @@ XLogFileInit(XLogSegNo logsegno, bool *use_existent, bool use_lock)
 	XLogSegNo	max_segno;
 	int			fd;
 	int			nbytes;
+	int			save_errno;
 
 	XLogFilePath(path, ThisTimeLineID, logsegno, wal_segment_size);
 
@@ -3249,39 +3251,61 @@ XLogFileInit(XLogSegNo logsegno, bool *use_existent, bool use_lock)
 				(errcode_for_file_access(),
 				 errmsg("could not create file \"%s\": %m", tmppath)));
 
-	/*
-	 * Zero-fill the file.  We have to do this the hard way to ensure that all
-	 * the file space has really been allocated --- on platforms that allow
-	 * "holes" in files, just seeking to the end doesn't allocate intermediate
-	 * space.  This way, we know that we have all the space and (after the
-	 * fsync below) that all the indirect blocks are down on disk.  Therefore,
-	 * fdatasync(2) or O_DSYNC will be sufficient to sync future writes to the
-	 * log file.
-	 */
 	memset(zbuffer.data, 0, XLOG_BLCKSZ);
-	for (nbytes = 0; nbytes < wal_segment_size; nbytes += XLOG_BLCKSZ)
+
+	pgstat_report_wait_start(WAIT_EVENT_WAL_INIT_WRITE);
+	save_errno = 0;
+	if (wal_init_zero)
 	{
-		errno = 0;
-		pgstat_report_wait_start(WAIT_EVENT_WAL_INIT_WRITE);
-		if ((int) write(fd, zbuffer.data, XLOG_BLCKSZ) != (int) XLOG_BLCKSZ)
+		/*
+		 * Zero-fill the file.  With this setting, we do this the hard way to
+		 * ensure that all the file space has really been allocated.  On
+		 * platforms that allow "holes" in files, just seeking to the end
+		 * doesn't allocate intermediate space.  This way, we know that we
+		 * have all the space and (after the fsync below) that all the
+		 * indirect blocks are down on disk.  Therefore, fdatasync(2) or
+		 * O_DSYNC will be sufficient to sync future writes to the log file.
+		 */
+		for (nbytes = 0; nbytes < wal_segment_size; nbytes += XLOG_BLCKSZ)
 		{
-			int			save_errno = errno;
-
-			/*
-			 * If we fail to make the file, delete it to release disk space
-			 */
-			unlink(tmppath);
-
-			close(fd);
-
-			/* if write didn't set errno, assume problem is no disk space */
-			errno = save_errno ? save_errno : ENOSPC;
-
-			ereport(ERROR,
-					(errcode_for_file_access(),
-					 errmsg("could not write to file \"%s\": %m", tmppath)));
+			errno = 0;
+			if (write(fd, zbuffer.data, XLOG_BLCKSZ) != XLOG_BLCKSZ)
+			{
+				/* if write didn't set errno, assume no disk space */
+				save_errno = errno ? errno : ENOSPC;
+				break;
+			}
 		}
-		pgstat_report_wait_end();
+	}
+	else
+	{
+		/*
+		 * Otherwise, seeking to the end and writing a solitary byte is
+		 * enough.
+		 */
+		errno = 0;
+		if (pg_pwrite(fd, zbuffer.data, 1, wal_segment_size - 1) != 1)
+		{
+			/* if write didn't set errno, assume no disk space */
+			save_errno = errno ? errno : ENOSPC;
+		}
+	}
+	pgstat_report_wait_end();
+
+	if (save_errno)
+	{
+		/*
+		 * If we fail to make the file, delete it to release disk space
+		 */
+		unlink(tmppath);
+
+		close(fd);
+
+		errno = save_errno;
+
+		ereport(ERROR,
+				(errcode_for_file_access(),
+				 errmsg("could not write to file \"%s\": %m", tmppath)));
 	}
 
 	pgstat_report_wait_start(WAIT_EVENT_WAL_INIT_SYNC);
@@ -4050,14 +4074,19 @@ RemoveXlogFile(const char *segname, XLogRecPtr RedoRecPtr, XLogRecPtr endptr)
 	XLogSegNo	endlogSegNo;
 	XLogSegNo	recycleSegNo;
 
-	/*
-	 * Initialize info about where to try to recycle to.
-	 */
-	XLByteToSeg(endptr, endlogSegNo, wal_segment_size);
-	if (RedoRecPtr == InvalidXLogRecPtr)
-		recycleSegNo = endlogSegNo + 10;
+	if (wal_recycle)
+	{
+		/*
+		 * Initialize info about where to try to recycle to.
+		 */
+		XLByteToSeg(endptr, endlogSegNo, wal_segment_size);
+		if (RedoRecPtr == InvalidXLogRecPtr)
+			recycleSegNo = endlogSegNo + 10;
+		else
+			recycleSegNo = XLOGfileslop(RedoRecPtr);
+	}
 	else
-		recycleSegNo = XLOGfileslop(RedoRecPtr);
+		recycleSegNo = 0;		/* keep compiler quiet */
 
 	snprintf(path, MAXPGPATH, XLOGDIR "/%s", segname);
 
@@ -4066,7 +4095,8 @@ RemoveXlogFile(const char *segname, XLogRecPtr RedoRecPtr, XLogRecPtr endptr)
 	 * segment. Only recycle normal files, pg_standby for example can create
 	 * symbolic links pointing to a separate archive directory.
 	 */
-	if (endlogSegNo <= recycleSegNo &&
+	if (wal_recycle &&
+		endlogSegNo <= recycleSegNo &&
 		lstat(path, &statbuf) == 0 && S_ISREG(statbuf.st_mode) &&
 		InstallXLogFileSegment(&endlogSegNo, path,
 							   true, recycleSegNo, true))
@@ -4762,7 +4792,7 @@ ReadControlFile(void)
 void
 UpdateControlFile(void)
 {
-	update_controlfile(DataDir, NULL, ControlFile, true);
+	update_controlfile(DataDir, ControlFile, true);
 }
 
 /*
@@ -5115,8 +5145,8 @@ BootStrapXLOG(void)
 	checkPoint.ThisTimeLineID = ThisTimeLineID;
 	checkPoint.PrevTimeLineID = ThisTimeLineID;
 	checkPoint.fullPageWrites = fullPageWrites;
-	checkPoint.nextXidEpoch = 0;
-	checkPoint.nextXid = FirstNormalTransactionId;
+	checkPoint.nextFullXid =
+		FullTransactionIdFromEpochAndXid(0, FirstNormalTransactionId);
 	checkPoint.nextOid = FirstBootstrapObjectId;
 	checkPoint.nextMulti = FirstMultiXactId;
 	checkPoint.nextMultiOffset = 0;
@@ -5129,7 +5159,7 @@ BootStrapXLOG(void)
 	checkPoint.time = (pg_time_t) time(NULL);
 	checkPoint.oldestActiveXid = InvalidTransactionId;
 
-	ShmemVariableCache->nextXid = checkPoint.nextXid;
+	ShmemVariableCache->nextFullXid = checkPoint.nextFullXid;
 	ShmemVariableCache->nextOid = checkPoint.nextOid;
 	ShmemVariableCache->oidCount = 0;
 	MultiXactSetNextMXact(checkPoint.nextMulti, checkPoint.nextMultiOffset);
@@ -6365,14 +6395,20 @@ StartupXLOG(void)
 				if (!ReadRecord(xlogreader, checkPoint.redo, LOG, false))
 					ereport(FATAL,
 							(errmsg("could not find redo location referenced by checkpoint record"),
-							 errhint("If you are not restoring from a backup, try removing the file \"%s/backup_label\".", DataDir)));
+							 errhint("If you are restoring from a backup, touch \"%s/recovery.signal\" and add required recovery options.\n"
+							 "If you are not restoring from a backup, try removing the file \"%s/backup_label\".\n"
+							 "Be careful: removing \"%s/backup_label\" will result in a corrupt cluster if restoring from a backup.",
+							 DataDir, DataDir, DataDir)));
 			}
 		}
 		else
 		{
 			ereport(FATAL,
 					(errmsg("could not locate required checkpoint record"),
-					 errhint("If you are not restoring from a backup, try removing the file \"%s/backup_label\".", DataDir)));
+					 errhint("If you are restoring from a backup, touch \"%s/recovery.signal\" and add required recovery options.\n"
+							 "If you are not restoring from a backup, try removing the file \"%s/backup_label\".\n"
+							 "Be careful: removing \"%s/backup_label\" will result in a corrupt cluster if restoring from a backup.",
+							 DataDir, DataDir, DataDir)));
 			wasShutdown = false;	/* keep compiler quiet */
 		}
 
@@ -6557,8 +6593,8 @@ StartupXLOG(void)
 							 (uint32) (checkPoint.redo >> 32), (uint32) checkPoint.redo,
 							 wasShutdown ? "true" : "false")));
 	ereport(DEBUG1,
-			(errmsg_internal("next transaction ID: %u:%u; next OID: %u",
-							 checkPoint.nextXidEpoch, checkPoint.nextXid,
+			(errmsg_internal("next transaction ID: " UINT64_FORMAT "; next OID: %u",
+							 U64FromFullTransactionId(checkPoint.nextFullXid),
 							 checkPoint.nextOid)));
 	ereport(DEBUG1,
 			(errmsg_internal("next MultiXactId: %u; next MultiXactOffset: %u",
@@ -6573,12 +6609,12 @@ StartupXLOG(void)
 			(errmsg_internal("commit timestamp Xid oldest/newest: %u/%u",
 							 checkPoint.oldestCommitTsXid,
 							 checkPoint.newestCommitTsXid)));
-	if (!TransactionIdIsNormal(checkPoint.nextXid))
+	if (!TransactionIdIsNormal(XidFromFullTransactionId(checkPoint.nextFullXid)))
 		ereport(PANIC,
 				(errmsg("invalid next transaction ID")));
 
 	/* initialize shared memory variables from the checkpoint record */
-	ShmemVariableCache->nextXid = checkPoint.nextXid;
+	ShmemVariableCache->nextFullXid = checkPoint.nextFullXid;
 	ShmemVariableCache->nextOid = checkPoint.nextOid;
 	ShmemVariableCache->oidCount = 0;
 	MultiXactSetNextMXact(checkPoint.nextMulti, checkPoint.nextMultiOffset);
@@ -6587,8 +6623,7 @@ StartupXLOG(void)
 	SetMultiXactIdLimit(checkPoint.oldestMulti, checkPoint.oldestMultiDB, true);
 	SetCommitTsLimit(checkPoint.oldestCommitTsXid,
 					 checkPoint.newestCommitTsXid);
-	XLogCtl->ckptXidEpoch = checkPoint.nextXidEpoch;
-	XLogCtl->ckptXid = checkPoint.nextXid;
+	XLogCtl->ckptFullXid = checkPoint.nextFullXid;
 
 	/*
 	 * Initialize replication slots, before there's a chance to remove
@@ -6859,7 +6894,7 @@ StartupXLOG(void)
 			Assert(TransactionIdIsValid(oldestActiveXID));
 
 			/* Tell procarray about the range of xids it has to deal with */
-			ProcArrayInitRecovery(ShmemVariableCache->nextXid);
+			ProcArrayInitRecovery(XidFromFullTransactionId(ShmemVariableCache->nextFullXid));
 
 			/*
 			 * Startup commit log and subtrans only.  MultiXact and commit
@@ -6889,9 +6924,9 @@ StartupXLOG(void)
 				running.xcnt = nxids;
 				running.subxcnt = 0;
 				running.subxid_overflow = false;
-				running.nextXid = checkPoint.nextXid;
+				running.nextXid = XidFromFullTransactionId(checkPoint.nextFullXid);
 				running.oldestRunningXid = oldestActiveXID;
-				latestCompletedXid = checkPoint.nextXid;
+				latestCompletedXid = XidFromFullTransactionId(checkPoint.nextFullXid);
 				TransactionIdRetreat(latestCompletedXid);
 				Assert(TransactionIdIsNormal(latestCompletedXid));
 				running.latestCompletedXid = latestCompletedXid;
@@ -7061,20 +7096,10 @@ StartupXLOG(void)
 				error_context_stack = &errcallback;
 
 				/*
-				 * ShmemVariableCache->nextXid must be beyond record's xid.
-				 *
-				 * We don't expect anyone else to modify nextXid, hence we
-				 * don't need to hold a lock while examining it.  We still
-				 * acquire the lock to modify it, though.
+				 * ShmemVariableCache->nextFullXid must be beyond record's
+				 * xid.
 				 */
-				if (TransactionIdFollowsOrEquals(record->xl_xid,
-												 ShmemVariableCache->nextXid))
-				{
-					LWLockAcquire(XidGenLock, LW_EXCLUSIVE);
-					ShmemVariableCache->nextXid = record->xl_xid;
-					TransactionIdAdvance(ShmemVariableCache->nextXid);
-					LWLockRelease(XidGenLock);
-				}
+				AdvanceNextFullTransactionIdPastXid(record->xl_xid);
 
 				/*
 				 * Before replaying this record, check if this record causes
@@ -7654,7 +7679,7 @@ StartupXLOG(void)
 
 	/* also initialize latestCompletedXid, to nextXid - 1 */
 	LWLockAcquire(ProcArrayLock, LW_EXCLUSIVE);
-	ShmemVariableCache->latestCompletedXid = ShmemVariableCache->nextXid;
+	ShmemVariableCache->latestCompletedXid = XidFromFullTransactionId(ShmemVariableCache->nextFullXid);
 	TransactionIdRetreat(ShmemVariableCache->latestCompletedXid);
 	LWLockRelease(ProcArrayLock);
 
@@ -8248,41 +8273,6 @@ GetLastSegSwitchData(XLogRecPtr *lastSwitchLSN)
 }
 
 /*
- * GetNextXidAndEpoch - get the current nextXid value and associated epoch
- *
- * This is exported for use by code that would like to have 64-bit XIDs.
- * We don't really support such things, but all XIDs within the system
- * can be presumed "close to" the result, and thus the epoch associated
- * with them can be determined.
- */
-void
-GetNextXidAndEpoch(TransactionId *xid, uint32 *epoch)
-{
-	uint32		ckptXidEpoch;
-	TransactionId ckptXid;
-	TransactionId nextXid;
-
-	/* Must read checkpoint info first, else have race condition */
-	SpinLockAcquire(&XLogCtl->info_lck);
-	ckptXidEpoch = XLogCtl->ckptXidEpoch;
-	ckptXid = XLogCtl->ckptXid;
-	SpinLockRelease(&XLogCtl->info_lck);
-
-	/* Now fetch current nextXid */
-	nextXid = ReadNewTransactionId();
-
-	/*
-	 * nextXid is certainly logically later than ckptXid.  So if it's
-	 * numerically less, it must have wrapped into the next epoch.
-	 */
-	if (nextXid < ckptXid)
-		ckptXidEpoch++;
-
-	*xid = nextXid;
-	*epoch = ckptXidEpoch;
-}
-
-/*
  * This must be called ONCE during postmaster or standalone-backend shutdown
  */
 void
@@ -8701,7 +8691,7 @@ CreateCheckPoint(int flags)
 	 * there.
 	 */
 	LWLockAcquire(XidGenLock, LW_SHARED);
-	checkPoint.nextXid = ShmemVariableCache->nextXid;
+	checkPoint.nextFullXid = ShmemVariableCache->nextFullXid;
 	checkPoint.oldestXid = ShmemVariableCache->oldestXid;
 	checkPoint.oldestXidDB = ShmemVariableCache->oldestXidDB;
 	LWLockRelease(XidGenLock);
@@ -8710,11 +8700,6 @@ CreateCheckPoint(int flags)
 	checkPoint.oldestCommitTsXid = ShmemVariableCache->oldestCommitTsXid;
 	checkPoint.newestCommitTsXid = ShmemVariableCache->newestCommitTsXid;
 	LWLockRelease(CommitTsLock);
-
-	/* Increase XID epoch if we've wrapped around since last checkpoint */
-	checkPoint.nextXidEpoch = ControlFile->checkPointCopy.nextXidEpoch;
-	if (checkPoint.nextXid < ControlFile->checkPointCopy.nextXid)
-		checkPoint.nextXidEpoch++;
 
 	LWLockAcquire(OidGenLock, LW_SHARED);
 	checkPoint.nextOid = ShmemVariableCache->nextOid;
@@ -8859,8 +8844,7 @@ CreateCheckPoint(int flags)
 
 	/* Update shared-memory copy of checkpoint XID/epoch */
 	SpinLockAcquire(&XLogCtl->info_lck);
-	XLogCtl->ckptXidEpoch = checkPoint.nextXidEpoch;
-	XLogCtl->ckptXid = checkPoint.nextXid;
+	XLogCtl->ckptFullXid = checkPoint.nextFullXid;
 	SpinLockRelease(&XLogCtl->info_lck);
 
 	/*
@@ -9622,7 +9606,7 @@ xlog_redo(XLogReaderState *record)
 		memcpy(&checkPoint, XLogRecGetData(record), sizeof(CheckPoint));
 		/* In a SHUTDOWN checkpoint, believe the counters exactly */
 		LWLockAcquire(XidGenLock, LW_EXCLUSIVE);
-		ShmemVariableCache->nextXid = checkPoint.nextXid;
+		ShmemVariableCache->nextFullXid = checkPoint.nextFullXid;
 		LWLockRelease(XidGenLock);
 		LWLockAcquire(OidGenLock, LW_EXCLUSIVE);
 		ShmemVariableCache->nextOid = checkPoint.nextOid;
@@ -9676,9 +9660,9 @@ xlog_redo(XLogReaderState *record)
 			running.xcnt = nxids;
 			running.subxcnt = 0;
 			running.subxid_overflow = false;
-			running.nextXid = checkPoint.nextXid;
+			running.nextXid = XidFromFullTransactionId(checkPoint.nextFullXid);
 			running.oldestRunningXid = oldestActiveXID;
-			latestCompletedXid = checkPoint.nextXid;
+			latestCompletedXid = XidFromFullTransactionId(checkPoint.nextFullXid);
 			TransactionIdRetreat(latestCompletedXid);
 			Assert(TransactionIdIsNormal(latestCompletedXid));
 			running.latestCompletedXid = latestCompletedXid;
@@ -9690,13 +9674,11 @@ xlog_redo(XLogReaderState *record)
 		}
 
 		/* ControlFile->checkPointCopy always tracks the latest ckpt XID */
-		ControlFile->checkPointCopy.nextXidEpoch = checkPoint.nextXidEpoch;
-		ControlFile->checkPointCopy.nextXid = checkPoint.nextXid;
+		ControlFile->checkPointCopy.nextFullXid = checkPoint.nextFullXid;
 
 		/* Update shared-memory copy of checkpoint XID/epoch */
 		SpinLockAcquire(&XLogCtl->info_lck);
-		XLogCtl->ckptXidEpoch = checkPoint.nextXidEpoch;
-		XLogCtl->ckptXid = checkPoint.nextXid;
+		XLogCtl->ckptFullXid = checkPoint.nextFullXid;
 		SpinLockRelease(&XLogCtl->info_lck);
 
 		/*
@@ -9717,9 +9699,9 @@ xlog_redo(XLogReaderState *record)
 		memcpy(&checkPoint, XLogRecGetData(record), sizeof(CheckPoint));
 		/* In an ONLINE checkpoint, treat the XID counter as a minimum */
 		LWLockAcquire(XidGenLock, LW_EXCLUSIVE);
-		if (TransactionIdPrecedes(ShmemVariableCache->nextXid,
-								  checkPoint.nextXid))
-			ShmemVariableCache->nextXid = checkPoint.nextXid;
+		if (FullTransactionIdPrecedes(ShmemVariableCache->nextFullXid,
+									  checkPoint.nextFullXid))
+			ShmemVariableCache->nextFullXid = checkPoint.nextFullXid;
 		LWLockRelease(XidGenLock);
 
 		/*
@@ -9749,13 +9731,11 @@ xlog_redo(XLogReaderState *record)
 			SetTransactionIdLimit(checkPoint.oldestXid,
 								  checkPoint.oldestXidDB);
 		/* ControlFile->checkPointCopy always tracks the latest ckpt XID */
-		ControlFile->checkPointCopy.nextXidEpoch = checkPoint.nextXidEpoch;
-		ControlFile->checkPointCopy.nextXid = checkPoint.nextXid;
+		ControlFile->checkPointCopy.nextFullXid = checkPoint.nextFullXid;
 
 		/* Update shared-memory copy of checkpoint XID/epoch */
 		SpinLockAcquire(&XLogCtl->info_lck);
-		XLogCtl->ckptXidEpoch = checkPoint.nextXidEpoch;
-		XLogCtl->ckptXid = checkPoint.nextXid;
+		XLogCtl->ckptFullXid = checkPoint.nextFullXid;
 		SpinLockRelease(&XLogCtl->info_lck);
 
 		/* TLI should not change in an on-line checkpoint */

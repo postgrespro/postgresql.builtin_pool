@@ -64,13 +64,6 @@ typedef struct PsqlScanCallbacks
 	/* This pointer can be NULL if no variable substitution is wanted */
 	char	   *(*get_variable) (const char *varname, PsqlScanQuoteType quote,
 								 void *passthrough);
-	/* Print an error message someplace appropriate */
-	/* (very old gcc versions don't support attributes on function pointers) */
-#if defined(__GNUC__) && __GNUC__ < 4
-	void		(*write_error) (const char *fmt,...);
-#else
-	void		(*write_error) (const char *fmt,...) pg_attribute_printf(1, 2);
-#endif
 } PsqlScanCallbacks;
 
 
@@ -89,8 +82,6 @@ extern PsqlScanResult psql_scan(PsqlScanState state,
 		  promptStatus_t *prompt);
 
 extern void psql_scan_reset(PsqlScanState state);
-
-extern int psql_scan_get_escaped_semicolons(PsqlScanState state);
 
 extern void psql_scan_reselect_sql_lexer(PsqlScanState state);
 

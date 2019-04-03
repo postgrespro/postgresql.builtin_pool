@@ -884,7 +884,7 @@ tuplesort_begin_cluster(TupleDesc tupDesc,
 {
 	Tuplesortstate *state = tuplesort_begin_common(workMem, coordinate,
 												   randomAccess);
-	ScanKey		indexScanKey;
+	BTScanInsert indexScanKey;
 	MemoryContext oldcontext;
 	int			i;
 
@@ -919,7 +919,7 @@ tuplesort_begin_cluster(TupleDesc tupDesc,
 
 	state->tupDesc = tupDesc;	/* assume we need not copy tupDesc */
 
-	indexScanKey = _bt_mkscankey_nodata(indexRel);
+	indexScanKey = _bt_mkscankey(indexRel, NULL);
 
 	if (state->indexInfo->ii_Expressions != NULL)
 	{
@@ -945,7 +945,7 @@ tuplesort_begin_cluster(TupleDesc tupDesc,
 	for (i = 0; i < state->nKeys; i++)
 	{
 		SortSupport sortKey = state->sortKeys + i;
-		ScanKey		scanKey = indexScanKey + i;
+		ScanKey		scanKey = indexScanKey->scankeys + i;
 		int16		strategy;
 
 		sortKey->ssup_cxt = CurrentMemoryContext;
@@ -964,7 +964,7 @@ tuplesort_begin_cluster(TupleDesc tupDesc,
 		PrepareSortSupportFromIndexRel(indexRel, strategy, sortKey);
 	}
 
-	_bt_freeskey(indexScanKey);
+	pfree(indexScanKey);
 
 	MemoryContextSwitchTo(oldcontext);
 
@@ -981,7 +981,7 @@ tuplesort_begin_index_btree(Relation heapRel,
 {
 	Tuplesortstate *state = tuplesort_begin_common(workMem, coordinate,
 												   randomAccess);
-	ScanKey		indexScanKey;
+	BTScanInsert indexScanKey;
 	MemoryContext oldcontext;
 	int			i;
 
@@ -1014,7 +1014,7 @@ tuplesort_begin_index_btree(Relation heapRel,
 	state->indexRel = indexRel;
 	state->enforceUnique = enforceUnique;
 
-	indexScanKey = _bt_mkscankey_nodata(indexRel);
+	indexScanKey = _bt_mkscankey(indexRel, NULL);
 
 	/* Prepare SortSupport data for each column */
 	state->sortKeys = (SortSupport) palloc0(state->nKeys *
@@ -1023,7 +1023,7 @@ tuplesort_begin_index_btree(Relation heapRel,
 	for (i = 0; i < state->nKeys; i++)
 	{
 		SortSupport sortKey = state->sortKeys + i;
-		ScanKey		scanKey = indexScanKey + i;
+		ScanKey		scanKey = indexScanKey->scankeys + i;
 		int16		strategy;
 
 		sortKey->ssup_cxt = CurrentMemoryContext;
@@ -1042,7 +1042,7 @@ tuplesort_begin_index_btree(Relation heapRel,
 		PrepareSortSupportFromIndexRel(indexRel, strategy, sortKey);
 	}
 
-	_bt_freeskey(indexScanKey);
+	pfree(indexScanKey);
 
 	MemoryContextSwitchTo(oldcontext);
 
@@ -4057,9 +4057,10 @@ comparetup_index_btree(const SortTuple *a, const SortTuple *b,
 	}
 
 	/*
-	 * If key values are equal, we sort on ItemPointer.  This does not affect
-	 * validity of the finished index, but it may be useful to have index
-	 * scans in physical order.
+	 * If key values are equal, we sort on ItemPointer.  This is required for
+	 * btree indexes, since heap TID is treated as an implicit last key
+	 * attribute in order to ensure that all keys in the index are physically
+	 * unique.
 	 */
 	{
 		BlockNumber blk1 = ItemPointerGetBlockNumber(&tuple1->t_tid);
@@ -4075,6 +4076,9 @@ comparetup_index_btree(const SortTuple *a, const SortTuple *b,
 		if (pos1 != pos2)
 			return (pos1 < pos2) ? -1 : 1;
 	}
+
+	/* ItemPointer values should never be equal */
+	Assert(false);
 
 	return 0;
 }
@@ -4127,6 +4131,9 @@ comparetup_index_hash(const SortTuple *a, const SortTuple *b,
 		if (pos1 != pos2)
 			return (pos1 < pos2) ? -1 : 1;
 	}
+
+	/* ItemPointer values should never be equal */
+	Assert(false);
 
 	return 0;
 }

@@ -265,6 +265,9 @@ extern LimitPath *create_limit_path(PlannerInfo *root, RelOptInfo *rel,
 				  Path *subpath,
 				  Node *limitOffset, Node *limitCount,
 				  int64 offset_est, int64 count_est);
+extern void adjust_limit_rows_costs(double *rows,
+						Cost *startup_cost, Cost *total_cost,
+						int64 offset_est, int64 count_est);
 
 extern Path *reparameterize_path(PlannerInfo *root, Path *path,
 					Relids required_outer,
@@ -277,6 +280,7 @@ extern Path *reparameterize_path_by_child(PlannerInfo *root, Path *path,
  */
 extern void setup_simple_rel_arrays(PlannerInfo *root);
 extern void setup_append_rel_array(PlannerInfo *root);
+extern void expand_planner_arrays(PlannerInfo *root, int add_size);
 extern RelOptInfo *build_simple_rel(PlannerInfo *root, int relid,
 				 RelOptInfo *parent);
 extern RelOptInfo *find_base_rel(PlannerInfo *root, int relid);

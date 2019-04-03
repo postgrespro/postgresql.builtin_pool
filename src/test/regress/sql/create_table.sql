@@ -304,6 +304,20 @@ CREATE TABLE withoid() WITH (oids = true);
 CREATE TEMP TABLE withoutoid() WITHOUT OIDS; DROP TABLE withoutoid;
 CREATE TEMP TABLE withoutoid() WITH (oids = false); DROP TABLE withoutoid;
 
+-- check restriction with default expressions
+-- invalid use of column reference in default expressions
+CREATE TABLE default_expr_column (id int DEFAULT (id));
+CREATE TABLE default_expr_column (id int DEFAULT (bar.id));
+CREATE TABLE default_expr_agg_column (id int DEFAULT (avg(id)));
+-- invalid column definition
+CREATE TABLE default_expr_non_column (a int DEFAULT (avg(non_existent)));
+-- invalid use of aggregate
+CREATE TABLE default_expr_agg (a int DEFAULT (avg(1)));
+-- invalid use of subquery
+CREATE TABLE default_expr_agg (a int DEFAULT (select 1));
+-- invalid use of set-returning function
+CREATE TABLE default_expr_agg (a int DEFAULT (generate_series(1,3)));
+
 --
 -- Partitioned tables
 --
@@ -450,10 +464,13 @@ CREATE TABLE part_p3 PARTITION OF list_parted FOR VALUES IN ((2+1));
 CREATE TABLE part_null PARTITION OF list_parted FOR VALUES IN (null);
 \d+ list_parted
 
--- forbidden expressions for partition bound
+-- forbidden expressions for partition bound with list partitioned table
 CREATE TABLE part_bogus_expr_fail PARTITION OF list_parted FOR VALUES IN (somename);
+CREATE TABLE part_bogus_expr_fail PARTITION OF list_parted FOR VALUES IN (somename.somename);
 CREATE TABLE part_bogus_expr_fail PARTITION OF list_parted FOR VALUES IN (a);
 CREATE TABLE part_bogus_expr_fail PARTITION OF list_parted FOR VALUES IN (sum(a));
+CREATE TABLE part_bogus_expr_fail PARTITION OF list_parted FOR VALUES IN (sum(somename));
+CREATE TABLE part_bogus_expr_fail PARTITION OF list_parted FOR VALUES IN (sum(1));
 CREATE TABLE part_bogus_expr_fail PARTITION OF list_parted FOR VALUES IN ((select 1));
 CREATE TABLE part_bogus_expr_fail PARTITION OF list_parted FOR VALUES IN (generate_series(4, 6));
 
@@ -496,6 +513,24 @@ DROP TABLE bigintp;
 CREATE TABLE range_parted (
 	a date
 ) PARTITION BY RANGE (a);
+
+-- forbidden expressions for partition bounds with range partitioned table
+CREATE TABLE part_bogus_expr_fail PARTITION OF range_parted
+  FOR VALUES FROM (somename) TO ('2019-01-01');
+CREATE TABLE part_bogus_expr_fail PARTITION OF range_parted
+  FOR VALUES FROM (somename.somename) TO ('2019-01-01');
+CREATE TABLE part_bogus_expr_fail PARTITION OF range_parted
+  FOR VALUES FROM (a) TO ('2019-01-01');
+CREATE TABLE part_bogus_expr_fail PARTITION OF range_parted
+  FOR VALUES FROM (max(a)) TO ('2019-01-01');
+CREATE TABLE part_bogus_expr_fail PARTITION OF range_parted
+  FOR VALUES FROM (max(somename)) TO ('2019-01-01');
+CREATE TABLE part_bogus_expr_fail PARTITION OF range_parted
+  FOR VALUES FROM (max('2019-02-01'::date)) TO ('2019-01-01');
+CREATE TABLE part_bogus_expr_fail PARTITION OF range_parted
+  FOR VALUES FROM ((select 1)) TO ('2019-01-01');
+CREATE TABLE part_bogus_expr_fail PARTITION OF range_parted
+  FOR VALUES FROM (generate_series(1, 3)) TO ('2019-01-01');
 
 -- trying to specify list for range partitioned table
 CREATE TABLE fail_part PARTITION OF range_parted FOR VALUES IN ('a');

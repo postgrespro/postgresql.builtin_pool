@@ -136,6 +136,7 @@ typedef enum ObjectClass
 #define PERFORM_DELETION_QUIETLY			0x0004	/* suppress notices */
 #define PERFORM_DELETION_SKIP_ORIGINAL		0x0008	/* keep original obj */
 #define PERFORM_DELETION_SKIP_EXTENSIONS	0x0010	/* keep extensions */
+#define PERFORM_DELETION_CONCURRENT_LOCK	0x0020	/* normal drop with concurrent lock mode */
 
 
 /* in dependency.c */
@@ -170,6 +171,8 @@ extern void record_object_address_dependencies(const ObjectAddress *depender,
 								   ObjectAddresses *referenced,
 								   DependencyType behavior);
 
+extern void sort_object_addresses(ObjectAddresses *addrs);
+
 extern void free_object_addresses(ObjectAddresses *addrs);
 
 /* in pg_depend.c */
@@ -196,6 +199,9 @@ extern long changeDependencyFor(Oid classId, Oid objectId,
 					Oid refClassId, Oid oldRefObjectId,
 					Oid newRefObjectId);
 
+extern long changeDependenciesOn(Oid refClassId, Oid oldRefObjectId,
+								 Oid newRefObjectId);
+
 extern Oid	getExtensionOfObject(Oid classId, Oid objectId);
 
 extern bool sequenceIsOwned(Oid seqId, char deptype, Oid *tableId, int32 *colId);
@@ -205,6 +211,8 @@ extern Oid	getOwnedSequence(Oid relid, AttrNumber attnum);
 extern Oid	get_constraint_index(Oid constraintId);
 
 extern Oid	get_index_constraint(Oid indexId);
+
+extern List *get_index_ref_constraints(Oid indexId);
 
 /* in pg_shdepend.c */
 

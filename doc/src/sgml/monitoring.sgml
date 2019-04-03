@@ -337,10 +337,26 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
      </row>
 
      <row>
+      <entry><structname>pg_stat_progress_create_index</structname><indexterm><primary>pg_stat_progress_create_index</primary></indexterm></entry>
+      <entry>One row for each backend running <command>CREATE INDEX</command>, showing
+      current progress.
+      See <xref linkend='create-index-progress-reporting'/>.
+     </entry>
+     </row>
+
+     <row>
       <entry><structname>pg_stat_progress_vacuum</structname><indexterm><primary>pg_stat_progress_vacuum</primary></indexterm></entry>
       <entry>One row for each backend (including autovacuum worker processes) running
        <command>VACUUM</command>, showing current progress.
        See <xref linkend='vacuum-progress-reporting'/>.
+      </entry>
+     </row>
+
+     <row>
+      <entry><structname>pg_stat_progress_cluster</structname><indexterm><primary>pg_stat_progress_cluster</primary></indexterm></entry>
+      <entry>One row for each backend running
+       <command>CLUSTER</command> or <command>VACUUM FULL</command>, showing current progress.
+       See <xref linkend='cluster-progress-reporting'/>.
       </entry>
      </row>
 
@@ -3394,10 +3410,224 @@ SELECT pg_stat_get_backend_pid(s.backendid) AS pid,
 
   <para>
    <productname>PostgreSQL</productname> has the ability to report the progress of
-   certain commands during command execution.  Currently, the only command
-   which supports progress reporting is <command>VACUUM</command>.  This may be
-   expanded in the future.
+   certain commands during command execution.  Currently, the only commands
+   which support progress reporting are <command>CREATE INDEX</command>,
+   <command>VACUUM</command> and
+   <command>CLUSTER</command>. This may be expanded in the future.
   </para>
+
+ <sect2 id="create-index-progress-reporting">
+  <title>CREATE INDEX Progress Reporting</title>
+
+  <para>
+   Whenever <command>CREATE INDEX</command> is running, the
+   <structname>pg_stat_progress_create_index</structname> view will contain
+   one row for each backend that is currently creating indexes.  The tables
+   below describe the information that will be reported and provide information
+   about how to interpret it.
+  </para>
+
+  <table id="pg-stat-progress-create-index-view" xreflabel="pg_stat_progress_create_index">
+   <title><structname>pg_stat_progress_create_index</structname> View</title>
+   <tgroup cols="3">
+    <thead>
+     <row>
+      <entry>Column</entry>
+      <entry>Type</entry>
+      <entry>Description</entry>
+     </row>
+    </thead>
+
+    <tbody>
+     <row>
+      <entry><structfield>pid</structfield></entry>
+      <entry><type>integer</type></entry>
+      <entry>Process ID of backend.</entry>
+     </row>
+     <row>
+      <entry><structfield>datid</structfield></entry>
+      <entry><type>oid</type></entry>
+      <entry>OID of the database to which this backend is connected.</entry>
+     </row>
+     <row>
+      <entry><structfield>datname</structfield></entry>
+      <entry><type>name</type></entry>
+      <entry>Name of the database to which this backend is connected.</entry>
+     </row>
+     <row>
+      <entry><structfield>relid</structfield></entry>
+      <entry><type>oid</type></entry>
+      <entry>OID of the table on which the index is being created.</entry>
+     </row>
+     <row>
+      <entry><structfield>phase</structfield></entry>
+      <entry><type>text</type></entry>
+      <entry>
+        Current processing phase of index creation.  See <xref linkend='create-index-phases'/>.
+      </entry>
+     </row>
+     <row>
+      <entry><structfield>lockers_total</structfield></entry>
+      <entry><type>bigint</type></entry>
+      <entry>
+        Total number of lockers to wait for, when applicable.
+      </entry>
+     </row>
+     <row>
+      <entry><structfield>lockers_done</structfield></entry>
+      <entry><type>bigint</type></entry>
+      <entry>
+        Number of lockers already waited for.
+      </entry>
+     </row>
+     <row>
+      <entry><structfield>current_locked_pid</structfield></entry>
+      <entry><type>bigint</type></entry>
+      <entry>
+        Process ID of the locker currently being waited for.
+      </entry>
+     </row>
+     <row>
+      <entry><structfield>blocks_total</structfield></entry>
+      <entry><type>bigint</type></entry>
+      <entry>
+        Total number of blocks to be processed in the current phase.
+      </entry>
+     </row>
+     <row>
+      <entry><structfield>blocks_done</structfield></entry>
+      <entry><type>bigint</type></entry>
+      <entry>
+        Number of blocks already processed in the current phase.
+      </entry>
+     </row>
+     <row>
+      <entry><structfield>tuples_total</structfield></entry>
+      <entry><type>bigint</type></entry>
+      <entry>
+        Total number of tuples to be processed in the current phase.
+      </entry>
+     </row>
+     <row>
+      <entry><structfield>tuples_done</structfield></entry>
+      <entry><type>bigint</type></entry>
+      <entry>
+        Number of tuples already processed in the current phase.
+      </entry>
+     </row>
+     <row>
+      <entry><structfield>partitions_total</structfield></entry>
+      <entry><type>bigint</type></entry>
+      <entry>
+       When creating an index on a partitioned table, this column is set to
+       the total number of partitions on which the index is to be created.
+      </entry>
+     </row>
+     <row>
+      <entry><structfield>partitions_done</structfield></entry>
+      <entry><type>bigint</type></entry>
+      <entry>
+       When creating an index on a partitioned table, this column is set to
+       the number of partitions on which the index has been completed.
+      </entry>
+     </row>
+    </tbody>
+   </tgroup>
+  </table>
+
+  <table id="create-index-phases">
+   <title>CREATE INDEX phases</title>
+   <tgroup cols="2">
+    <thead>
+     <row>
+      <entry>Phase</entry>
+      <entry>Description</entry>
+     </row>
+    </thead>
+    <tbody>
+     <row>
+      <entry><literal>initializing</literal></entry>
+      <entry>
+       <command>CREATE INDEX</command> is preparing to create the index.  This
+       phase is expected to be very brief.
+      </entry>
+     </row>
+     <row>
+      <entry><literal>waiting for old snapshots</literal></entry>
+      <entry>
+       <command>CREATE INDEX CONCURRENTLY</command> is waiting for transactions
+       that can potentially see the table to release their snapshots.
+       This phase is skipped when not in concurrent mode.
+       Columns <structname>lockers_total</structname>, <structname>lockers_done</structname>
+       and <structname>current_locker_pid</structname> contain the progress 
+       information for this phase.
+      </entry>
+     </row>
+     <row>
+      <entry><literal>building index</literal></entry>
+      <entry>
+       The index is being built by the access method-specific code.  In this phase,
+       access methods that support progress reporting fill in their own progress data,
+       and the subphase is indicated in this column.  Typically,
+       <structname>blocks_total</structname> and <structname>blocks_done</structname>
+       will contain progress data, as well as potentially
+       <structname>tuples_total</structname> and <structname>tuples_done</structname>.
+      </entry>
+     </row>
+     <row>
+      <entry><literal>waiting for writer snapshots</literal></entry>
+      <entry>
+       <command>CREATE INDEX CONCURRENTLY</command> is waiting for transactions
+       that can potentially write into the table to release their snapshots.
+       This phase is skipped when not in concurrent mode.
+       Columns <structname>lockers_total</structname>, <structname>lockers_done</structname>
+       and <structname>current_locker_pid</structname> contain the progress 
+       information for this phase.
+      </entry>
+     </row>
+     <row>
+      <entry><literal>index validation: scanning index</literal></entry>
+      <entry>
+       <command>CREATE INDEX CONCURRENTLY</command> is scanning the index searching
+       for tuples that need to be validated.
+       This phase is skipped when not in concurrent mode.
+       Columns <structname>blocks_total</structname> (set to the total size of the index)
+       and <structname>blocks_done</structname> contain the progress information for this phase.
+      </entry>
+     </row>
+     <row>
+      <entry><literal>index validation: sorting tuples</literal></entry>
+      <entry>
+       <command>CREATE INDEX CONCURRENTLY</command> is sorting the output of the
+       index scanning phase.
+      </entry>
+     </row>
+     <row>
+      <entry><literal>index validation: scanning table</literal></entry>
+      <entry>
+       <command>CREATE INDEX CONCURRENTLY</command> is scanning the table
+       to validate the index tuples collected in the previous two phases.
+       This phase is skipped when not in concurrent mode.
+       Columns <structname>blocks_total</structname> (set to the total size of the table)
+       and <structname>blocks_done</structname> contain the progress information for this phase.
+      </entry>
+     </row>
+     <row>
+      <entry><literal>waiting for reader snapshots</literal></entry>
+      <entry>
+       <command>CREATE INDEX CONCURRENTLY</command> is waiting for transactions
+       that can potentially see the table to release their snapshots.  This
+       phase is skipped when not in concurrent mode.
+       Columns <structname>lockers_total</structname>, <structname>lockers_done</structname>
+       and <structname>current_locker_pid</structname> contain the progress 
+       information for this phase.
+      </entry>
+     </row>
+    </tbody>
+   </tgroup>
+  </table>
+
+ </sect2>
 
  <sect2 id="vacuum-progress-reporting">
   <title>VACUUM Progress Reporting</title>
@@ -3408,9 +3638,11 @@ SELECT pg_stat_get_backend_pid(s.backendid) AS pid,
    one row for each backend (including autovacuum worker processes) that is
    currently vacuuming.  The tables below describe the information
    that will be reported and provide information about how to interpret it.
-   Progress reporting is not currently supported for <command>VACUUM FULL</command>
-   and backends running <command>VACUUM FULL</command> will not be listed in this
-   view.
+   Progress for <command>VACUUM FULL</command> commands is reported via
+   <structname>pg_stat_progress_cluster</structname>
+   because both <command>VACUUM FULL</command> and <command>CLUSTER</command> 
+   rewrite the table, while regular <command>VACUUM</command> only modifies it 
+   in place. See <xref linkend='cluster-progress-reporting'/>.
   </para>
 
   <table id="pg-stat-progress-vacuum-view" xreflabel="pg_stat_progress_vacuum">
@@ -3581,6 +3813,183 @@ SELECT pg_stat_get_backend_pid(s.backendid) AS pid,
        <command>VACUUM</command> will vacuum the free space map, update statistics
        in <literal>pg_class</literal>, and report statistics to the statistics
        collector.  When this phase is completed, <command>VACUUM</command> will end.
+     </entry>
+    </row>
+   </tbody>
+   </tgroup>
+  </table>
+
+ </sect2>
+
+ <sect2 id="cluster-progress-reporting">
+  <title>CLUSTER Progress Reporting</title>
+
+  <para>
+   Whenever <command>CLUSTER</command> or <command>VACUUM FULL</command> is
+   running, the <structname>pg_stat_progress_cluster</structname> view will
+   contain a row for each backend that is currently running either command. 
+   The tables below describe the information that will be reported and
+   provide information about how to interpret it.
+  </para>
+
+  <table id="pg-stat-progress-cluster-view" xreflabel="pg_stat_progress_cluster">
+   <title><structname>pg_stat_progress_cluster</structname> View</title>
+   <tgroup cols="3">
+    <thead>
+    <row>
+      <entry>Column</entry>
+      <entry>Type</entry>
+      <entry>Description</entry>
+     </row>
+    </thead>
+
+   <tbody>
+    <row>
+     <entry><structfield>pid</structfield></entry>
+     <entry><type>integer</type></entry>
+     <entry>Process ID of backend.</entry>
+    </row>
+    <row>
+     <entry><structfield>datid</structfield></entry>
+     <entry><type>oid</type></entry>
+     <entry>OID of the database to which this backend is connected.</entry>
+    </row>
+    <row>
+     <entry><structfield>datname</structfield></entry>
+     <entry><type>name</type></entry>
+     <entry>Name of the database to which this backend is connected.</entry>
+    </row>
+    <row>
+     <entry><structfield>relid</structfield></entry>
+     <entry><type>oid</type></entry>
+     <entry>OID of the table being clustered.</entry>
+    </row>
+    <row>
+     <entry><structfield>command</structfield></entry>
+     <entry><type>text</type></entry>
+     <entry>
+       The command that is running. Either CLUSTER or VACUUM FULL.
+     </entry>
+    </row>
+    <row>
+     <entry><structfield>phase</structfield></entry>
+     <entry><type>text</type></entry>
+     <entry>
+       Current processing phase. See <xref linkend='cluster-phases' />.
+     </entry>
+    </row>
+    <row>
+     <entry><structfield>cluster_index_relid</structfield></entry>
+     <entry><type>bigint</type></entry>
+     <entry>
+       If the table is being scanned using an index, this is the OID of the
+       index being used; otherwise, it is zero.
+     </entry>
+    </row>
+    <row>
+     <entry><structfield>heap_tuples_scanned</structfield></entry>
+     <entry><type>bigint</type></entry>
+     <entry>
+       Number of heap tuples scanned.
+       This counter only advances when the phase is
+       <literal>seq scanning heap</literal>,
+       <literal>index scanning heap</literal>
+       or <literal>writing new heap</literal>.
+     </entry>
+    </row>
+    <row>
+     <entry><structfield>heap_tuples_written</structfield></entry>
+     <entry><type>bigint</type></entry>
+     <entry>
+       Number of heap tuples written.
+       This counter only advances when the phase is
+       <literal>seq scanning heap</literal>,
+       <literal>index scanning heap</literal>
+       or <literal>writing new heap</literal>.
+     </entry>
+    </row>
+    <row>
+     <entry><structfield>heap_blks_total</structfield></entry>
+     <entry><type>bigint</type></entry>
+     <entry>
+       Total number of heap blocks in the table.  This number is reported
+       as of the beginning of <literal>seq scanning heap</literal>.
+     </entry>
+    </row>
+    <row>
+     <entry><structfield>heap_blks_scanned</structfield></entry>
+     <entry><type>bigint</type></entry>
+     <entry>
+       Number of heap blocks scanned.  This counter only advances when the
+       phase is <literal>seq scanning heap</literal>.
+     </entry>
+    </row>
+    <row>
+     <entry><structfield>index_rebuild_count</structfield></entry>
+     <entry><type>bigint</type></entry>
+     <entry>
+       Number of indexes rebuilt.  This counter only advances when the phase
+       is <literal>rebuilding index</literal>.
+     </entry>
+    </row>
+   </tbody>
+   </tgroup>
+  </table>
+
+  <table id="cluster-phases">
+   <title>CLUSTER and VACUUM FULL phases</title>
+   <tgroup cols="2">
+    <thead>
+    <row>
+      <entry>Phase</entry>
+      <entry>Description</entry>
+     </row>
+    </thead>
+
+   <tbody>
+    <row>
+     <entry><literal>initializing</literal></entry>
+     <entry>
+       The command is preparing to begin scanning the heap.  This phase is
+       expected to be very brief.
+     </entry>
+    </row>
+    <row>
+     <entry><literal>seq scanning heap</literal></entry>
+     <entry>
+       The command is currently scanning the table using a sequential scan.
+     </entry>
+    </row>
+    <row>
+     <entry><literal>index scanning heap</literal></entry>
+     <entry>
+       <command>CLUSTER</command> is currently scanning the table using an index scan.
+     </entry>
+    </row>
+    <row>
+     <entry><literal>sorting tuples</literal></entry>
+     <entry>
+       <command>CLUSTER</command> is currently sorting tuples. 
+     </entry>
+    </row>
+    <row>
+     <entry><literal>swapping relation files</literal></entry>
+     <entry>
+       The command is currently swapping newly-built files into place.
+     </entry>
+    </row>
+    <row>
+     <entry><literal>rebuilding index</literal></entry>
+     <entry>
+       The command is currently rebuilding an index.
+     </entry>
+    </row>
+    <row>
+     <entry><literal>performing final cleanup</literal></entry>
+     <entry>
+       The command is performing final cleanup.  When this phase is 
+       completed, <command>CLUSTER</command>
+       or <command>VACUUM FULL</command> will end.
      </entry>
     </row>
    </tbody>

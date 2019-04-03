@@ -1684,8 +1684,8 @@ qsort_partition_hbound_cmp(const void *a, const void *b)
 static int32
 qsort_partition_list_value_cmp(const void *a, const void *b, void *arg)
 {
-	Datum		val1 = (*(const PartitionListValue **) a)->value,
-				val2 = (*(const PartitionListValue **) b)->value;
+	Datum		val1 = (*(PartitionListValue *const *) a)->value,
+				val2 = (*(PartitionListValue *const *) b)->value;
 	PartitionKey key = (PartitionKey) arg;
 
 	return DatumGetInt32(FunctionCall2Coll(&key->partsupfunc[0],
@@ -2657,7 +2657,7 @@ get_range_nulltest(PartitionKey key)
  * Compute the hash value for given partition key values.
  */
 uint64
-compute_partition_hash_value(int partnatts, FmgrInfo *partsupfunc,
+compute_partition_hash_value(int partnatts, FmgrInfo *partsupfunc, Oid *partcollation,
 							 Datum *values, bool *isnull)
 {
 	int			i;
@@ -2678,7 +2678,7 @@ compute_partition_hash_value(int partnatts, FmgrInfo *partsupfunc,
 			 * datatype-specific hash functions of each partition key
 			 * attribute.
 			 */
-			hash = FunctionCall2(&partsupfunc[i], values[i], seed);
+			hash = FunctionCall2Coll(&partsupfunc[i], partcollation[i], values[i], seed);
 
 			/* Form a single 64-bit hash value */
 			rowHash = hash_combine64(rowHash, DatumGetUInt64(hash));

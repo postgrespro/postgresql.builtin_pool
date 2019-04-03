@@ -538,22 +538,18 @@ pgbench(
 }
 	});
 
-# working \gset and \cset
+# working \gset
 pgbench(
 	'-t 1', 0,
-	[ qr{type: .*/001_pgbench_gset_and_cset}, qr{processed: 1/1} ],
+	[ qr{type: .*/001_pgbench_gset}, qr{processed: 1/1} ],
 	[   qr{command=3.: int 0\b},
 		qr{command=5.: int 1\b},
 		qr{command=6.: int 2\b},
 		qr{command=8.: int 3\b},
-		qr{command=9.: int 4\b},
-		qr{command=10.: int 5\b},
-		qr{command=12.: int 6\b},
-		qr{command=13.: int 7\b},
-		qr{command=14.: int 8\b},
-		qr{command=16.: int 9\b} ],
-	'pgbench gset and cset commands',
-	{   '001_pgbench_gset_and_cset' => q{-- test gset and cset
+		qr{command=10.: int 4\b},
+		qr{command=12.: int 5\b} ],
+	'pgbench gset command',
+	{   '001_pgbench_gset' => q{-- test gset
 -- no columns
 SELECT \gset
 -- one value
@@ -563,21 +559,15 @@ SELECT 0 AS i0 \gset
 SELECT 1 AS i1, 2 AS i2 \gset
 \set i debug(:i1)
 \set i debug(:i2)
--- cset & gset to follow
-SELECT :i2 + 1 AS i3, :i2 * :i2 AS i4 \cset
-  SELECT 5 AS i5 \gset
-\set i debug(:i3)
-\set i debug(:i4)
-\set i debug(:i5)
 -- with prefix
-SELECT 6 AS i6, 7 AS i7 \cset x_
-  SELECT 8 AS i8 \gset y_
-\set i debug(:x_i6)
-\set i debug(:x_i7)
-\set i debug(:y_i8)
+SELECT 3 AS i3 \gset x_
+\set i debug(:x_i3)
 -- overwrite existing variable
-SELECT 0 AS i9, 9 AS i9 \gset
-\set i debug(:i9)
+SELECT 0 AS i4, 4 AS i4 \gset
+\set i debug(:i4)
+-- work on the last SQL command under \;
+\; \; SELECT 0 AS i5 \; SELECT 5 AS i5 \; \; \gset
+\set i debug(:i5)
 } });
 
 # trigger many expression errors
@@ -676,13 +666,13 @@ SELECT LEAST(}.join(', ', (':i') x 256).q{)}
 	[
 		'set zipfian param to 1',
 		2,
-		[qr{zipfian parameter must be in range \(0, 1\) U \(1, \d+\]}],
+		[qr{zipfian parameter must be in range \[1\.001, 1000\]}],
 		q{\set i random_zipfian(0, 10, 1)}
 	],
 	[
 		'set zipfian param too large',
 		2,
-		[qr{zipfian parameter must be in range \(0, 1\) U \(1, \d+\]}],
+		[qr{zipfian parameter must be in range \[1\.001, 1000\]}],
 		q{\set i random_zipfian(0, 10, 1000000)}
 	],
 	[
@@ -772,20 +762,17 @@ SELECT LEAST(}.join(', ', (':i') x 256).q{)}
 	[   'bad boolean',                     2,
 		[qr{malformed variable.*trueXXX}], q{\set b :badtrue or true} ],
 
-	# GSET & CSET
+	# GSET
 	[   'gset no row',                    2,
 		[qr{expected one row, got 0\b}], q{SELECT WHERE FALSE \gset} ],
-	[   'cset no row',                    2,
-		[qr{expected one row, got 0\b}], q{SELECT WHERE FALSE \cset
-SELECT 1 AS i\gset}, 1 ],
-	[ 'gset alone', 1, [qr{gset/cset cannot start a script}], q{\gset} ],
+	[ 'gset alone', 1, [qr{gset must follow a SQL command}], q{\gset} ],
 	[   'gset no SQL',                        1,
-		[qr{gset/cset must follow a SQL command}], q{\set i +1
+		[qr{gset must follow a SQL command}], q{\set i +1
 \gset} ],
 	[   'gset too many arguments',                   1,
 		[qr{too many arguments}], q{SELECT 1 \gset a b} ],
 	[   'gset after gset',                        1,
-	    [qr{gset/cset cannot follow one another}], q{SELECT 1 AS i \gset
+	    [qr{gset must follow a SQL command}], q{SELECT 1 AS i \gset
 \gset} ],
 	[   'gset non SELECT', 2,
 		[qr{expected one row, got 0}],
@@ -814,33 +801,6 @@ for my $e (@errors)
 		'pgbench script error: ' . $name,
 		{ $n => $script });
 }
-
-# zipfian cache array overflow
-pgbench(
-	'-t 1', 0,
-	[ qr{processed: 1/1}, qr{zipfian cache array overflowed 1 time\(s\)} ],
-	[qr{^}],
-	'pgbench zipfian array overflow on random_zipfian',
-	{
-		'001_pgbench_random_zipfian' => q{
-\set i random_zipfian(1, 100, 0.5)
-\set i random_zipfian(2, 100, 0.5)
-\set i random_zipfian(3, 100, 0.5)
-\set i random_zipfian(4, 100, 0.5)
-\set i random_zipfian(5, 100, 0.5)
-\set i random_zipfian(6, 100, 0.5)
-\set i random_zipfian(7, 100, 0.5)
-\set i random_zipfian(8, 100, 0.5)
-\set i random_zipfian(9, 100, 0.5)
-\set i random_zipfian(10, 100, 0.5)
-\set i random_zipfian(11, 100, 0.5)
-\set i random_zipfian(12, 100, 0.5)
-\set i random_zipfian(13, 100, 0.5)
-\set i random_zipfian(14, 100, 0.5)
-\set i random_zipfian(15, 100, 0.5)
-\set i random_zipfian(16, 100, 0.5)
-}
-	});
 
 # throttling
 pgbench(

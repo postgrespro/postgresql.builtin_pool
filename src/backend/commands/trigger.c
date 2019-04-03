@@ -14,9 +14,11 @@
 #include "postgres.h"
 
 #include "access/genam.h"
-#include "access/heapam.h"
-#include "access/sysattr.h"
 #include "access/htup_details.h"
+#include "access/relation.h"
+#include "access/sysattr.h"
+#include "access/table.h"
+#include "access/tableam.h"
 #include "access/xact.h"
 #include "catalog/catalog.h"
 #include "catalog/dependency.h"
@@ -73,8 +75,9 @@ static int	MyTriggerDepth = 0;
  * they use, so we let them be duplicated.  Be sure to update all if one needs
  * to be changed, however.
  */
-#define GetUpdatedColumns(relinfo, estate) \
-	(exec_rt_fetch((relinfo)->ri_RangeTableIndex, estate)->updatedCols)
+#define GetAllUpdatedColumns(relinfo, estate) \
+	(bms_union(exec_rt_fetch((relinfo)->ri_RangeTableIndex, estate)->updatedCols, \
+			   exec_rt_fetch((relinfo)->ri_RangeTableIndex, estate)->extraUpdatedCols))
 
 /* Local function prototypes */
 static void ConvertTriggerToFK(CreateTrigStmt *stmt, Oid funcoid);
@@ -637,6 +640,24 @@ CreateTrigger(CreateTrigStmt *stmt, const char *queryString,
 						ereport(ERROR,
 								(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 								 errmsg("BEFORE trigger's WHEN condition cannot reference NEW system columns"),
+								 parser_errposition(pstate, var->location)));
+					if (TRIGGER_FOR_BEFORE(tgtype) &&
+						var->varattno == 0 &&
+						RelationGetDescr(rel)->constr &&
+						RelationGetDescr(rel)->constr->has_generated_stored)
+						ereport(ERROR,
+								(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
+								 errmsg("BEFORE trigger's WHEN condition cannot reference NEW generated columns"),
+								 errdetail("A whole-row reference is used and the table contains generated columns."),
+								 parser_errposition(pstate, var->location)));
+					if (TRIGGER_FOR_BEFORE(tgtype) &&
+						var->varattno > 0 &&
+						TupleDescAttr(RelationGetDescr(rel), var->varattno - 1)->attgenerated)
+						ereport(ERROR,
+								(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
+								 errmsg("BEFORE trigger's WHEN condition cannot reference NEW generated columns"),
+								 errdetail("Column \"%s\" is a generated column.",
+										   NameStr(TupleDescAttr(RelationGetDescr(rel), var->varattno - 1)->attname)),
 								 parser_errposition(pstate, var->location)));
 					break;
 				default:
@@ -2929,7 +2950,7 @@ ExecBSUpdateTriggers(EState *estate, ResultRelInfo *relinfo)
 								   CMD_UPDATE))
 		return;
 
-	updatedCols = GetUpdatedColumns(relinfo, estate);
+	updatedCols = GetAllUpdatedColumns(relinfo, estate);
 
 	LocTriggerData.type = T_TriggerData;
 	LocTriggerData.tg_event = TRIGGER_EVENT_UPDATE |
@@ -2978,7 +2999,7 @@ ExecASUpdateTriggers(EState *estate, ResultRelInfo *relinfo,
 	if (trigdesc && trigdesc->trig_update_after_statement)
 		AfterTriggerSaveEvent(estate, relinfo, TRIGGER_EVENT_UPDATE,
 							  false, NULL, NULL, NIL,
-							  GetUpdatedColumns(relinfo, estate),
+							  GetAllUpdatedColumns(relinfo, estate),
 							  transition_capture);
 }
 
@@ -3047,7 +3068,7 @@ ExecBRUpdateTriggers(EState *estate, EPQState *epqstate,
 	LocTriggerData.tg_relation = relinfo->ri_RelationDesc;
 	LocTriggerData.tg_oldtable = NULL;
 	LocTriggerData.tg_newtable = NULL;
-	updatedCols = GetUpdatedColumns(relinfo, estate);
+	updatedCols = GetAllUpdatedColumns(relinfo, estate);
 	for (i = 0; i < trigdesc->numtriggers; i++)
 	{
 		Trigger    *trigger = &trigdesc->triggers[i];
@@ -3138,7 +3159,7 @@ ExecARUpdateTriggers(EState *estate, ResultRelInfo *relinfo,
 
 		AfterTriggerSaveEvent(estate, relinfo, TRIGGER_EVENT_UPDATE,
 							  true, oldslot, newslot, recheckIndexes,
-							  GetUpdatedColumns(relinfo, estate),
+							  GetAllUpdatedColumns(relinfo, estate),
 							  transition_capture);
 	}
 }
@@ -3285,19 +3306,12 @@ GetTupleForTrigger(EState *estate,
 				   TupleTableSlot **newSlot)
 {
 	Relation	relation = relinfo->ri_RelationDesc;
-	HeapTuple	tuple;
-	Buffer		buffer;
-	BufferHeapTupleTableSlot *boldslot;
-
-	Assert(TTS_IS_BUFFERTUPLE(oldslot));
-	ExecClearTuple(oldslot);
-	boldslot = (BufferHeapTupleTableSlot *) oldslot;
-	tuple = &boldslot->base.tupdata;
 
 	if (newSlot != NULL)
 	{
-		HTSU_Result test;
-		HeapUpdateFailureData hufd;
+		TM_Result	test;
+		TM_FailureData tmfd;
+		int			lockflags = 0;
 
 		*newSlot = NULL;
 
@@ -3307,15 +3321,17 @@ GetTupleForTrigger(EState *estate,
 		/*
 		 * lock tuple for update
 		 */
-ltrmark:;
-		tuple->t_self = *tid;
-		test = heap_lock_tuple(relation, tuple,
-							   estate->es_output_cid,
-							   lockmode, LockWaitBlock,
-							   false, &buffer, &hufd);
+		if (!IsolationUsesXactSnapshot())
+			lockflags |= TUPLE_LOCK_FLAG_FIND_LAST_VERSION;
+		test = table_lock_tuple(relation, tid, estate->es_snapshot, oldslot,
+								estate->es_output_cid,
+								lockmode, LockWaitBlock,
+								lockflags,
+								&tmfd);
+
 		switch (test)
 		{
-			case HeapTupleSelfUpdated:
+			case TM_SelfModified:
 
 				/*
 				 * The target tuple was already updated or deleted by the
@@ -3325,106 +3341,70 @@ ltrmark:;
 				 * enumerated in ExecUpdate and ExecDelete in
 				 * nodeModifyTable.c.
 				 */
-				if (hufd.cmax != estate->es_output_cid)
+				if (tmfd.cmax != estate->es_output_cid)
 					ereport(ERROR,
 							(errcode(ERRCODE_TRIGGERED_DATA_CHANGE_VIOLATION),
 							 errmsg("tuple to be updated was already modified by an operation triggered by the current command"),
 							 errhint("Consider using an AFTER trigger instead of a BEFORE trigger to propagate changes to other rows.")));
 
 				/* treat it as deleted; do not process */
-				ReleaseBuffer(buffer);
 				return false;
 
-			case HeapTupleMayBeUpdated:
-				ExecStorePinnedBufferHeapTuple(tuple, oldslot, buffer);
-
-				break;
-
-			case HeapTupleUpdated:
-				ReleaseBuffer(buffer);
-				if (IsolationUsesXactSnapshot())
-					ereport(ERROR,
-							(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
-							 errmsg("could not serialize access due to concurrent update")));
-				if (ItemPointerIndicatesMovedPartitions(&hufd.ctid))
-					ereport(ERROR,
-							(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
-							 errmsg("tuple to be locked was already moved to another partition due to concurrent update")));
-
-				if (!ItemPointerEquals(&hufd.ctid, &tuple->t_self))
+			case TM_Ok:
+				if (tmfd.traversed)
 				{
-					/* it was updated, so look at the updated version */
 					TupleTableSlot *epqslot;
 
 					epqslot = EvalPlanQual(estate,
 										   epqstate,
 										   relation,
 										   relinfo->ri_RangeTableIndex,
-										   lockmode,
-										   &hufd.ctid,
-										   hufd.xmax);
-					if (!TupIsNull(epqslot))
-					{
-						*tid = hufd.ctid;
+										   oldslot);
 
-						*newSlot = epqslot;
+					/*
+					 * If PlanQual failed for updated tuple - we must not
+					 * process this tuple!
+					 */
+					if (TupIsNull(epqslot))
+						return false;
 
-						/*
-						 * EvalPlanQual already locked the tuple, but we
-						 * re-call heap_lock_tuple anyway as an easy way of
-						 * re-fetching the correct tuple.  Speed is hardly a
-						 * criterion in this path anyhow.
-						 */
-						goto ltrmark;
-					}
+					*newSlot = epqslot;
 				}
+				break;
 
-				/*
-				 * if tuple was deleted or PlanQual failed for updated tuple -
-				 * we must not process this tuple!
-				 */
+			case TM_Updated:
+				if (IsolationUsesXactSnapshot())
+					ereport(ERROR,
+							(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
+							 errmsg("could not serialize access due to concurrent update")));
+				elog(ERROR, "unexpected table_lock_tuple status: %u", test);
+				break;
+
+			case TM_Deleted:
+				if (IsolationUsesXactSnapshot())
+					ereport(ERROR,
+							(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
+							 errmsg("could not serialize access due to concurrent delete")));
+				/* tuple was deleted */
 				return false;
 
-			case HeapTupleInvisible:
+			case TM_Invisible:
 				elog(ERROR, "attempted to lock invisible tuple");
 				break;
 
 			default:
-				ReleaseBuffer(buffer);
-				elog(ERROR, "unrecognized heap_lock_tuple status: %u", test);
+				elog(ERROR, "unrecognized table_lock_tuple status: %u", test);
 				return false;	/* keep compiler quiet */
 		}
 	}
 	else
 	{
-		Page		page;
-		ItemId		lp;
-
-		buffer = ReadBuffer(relation, ItemPointerGetBlockNumber(tid));
-
 		/*
-		 * Although we already know this tuple is valid, we must lock the
-		 * buffer to ensure that no one has a buffer cleanup lock; otherwise
-		 * they might move the tuple while we try to copy it.  But we can
-		 * release the lock before actually doing the heap_copytuple call,
-		 * since holding pin is sufficient to prevent anyone from getting a
-		 * cleanup lock they don't already hold.
+		 * We expect the tuple to be present, thus very simple error handling
+		 * suffices.
 		 */
-		LockBuffer(buffer, BUFFER_LOCK_SHARE);
-
-		page = BufferGetPage(buffer);
-		lp = PageGetItemId(page, ItemPointerGetOffsetNumber(tid));
-
-		Assert(ItemIdIsNormal(lp));
-
-		tuple->t_data = (HeapTupleHeader) PageGetItem(page, lp);
-		tuple->t_len = ItemIdGetLength(lp);
-		tuple->t_self = *tid;
-		tuple->t_tableOid = RelationGetRelid(relation);
-
-		LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
-
-		ExecStorePinnedBufferHeapTuple(tuple, oldslot, buffer);
+		if (!table_fetch_row_version(relation, tid, SnapshotAny, oldslot))
+			elog(ERROR, "failed to fetch tuple for trigger");
 	}
 
 	return true;
@@ -4203,8 +4183,6 @@ AfterTriggerExecute(EState *estate,
 	AfterTriggerShared evtshared = GetTriggerSharedData(event);
 	Oid			tgoid = evtshared->ats_tgoid;
 	TriggerData LocTriggerData;
-	HeapTupleData tuple1;
-	HeapTupleData tuple2;
 	HeapTuple	rettuple;
 	int			tgindx;
 	bool		should_free_trig = false;
@@ -4281,19 +4259,12 @@ AfterTriggerExecute(EState *estate,
 		default:
 			if (ItemPointerIsValid(&(event->ate_ctid1)))
 			{
-				Buffer buffer;
-
 				LocTriggerData.tg_trigslot = ExecGetTriggerOldSlot(estate, relInfo);
 
-				ItemPointerCopy(&(event->ate_ctid1), &(tuple1.t_self));
-				if (!heap_fetch(rel, SnapshotAny, &tuple1, &buffer, false, NULL))
+				if (!table_fetch_row_version(rel, &(event->ate_ctid1), SnapshotAny, LocTriggerData.tg_trigslot))
 					elog(ERROR, "failed to fetch tuple1 for AFTER trigger");
-				ExecStorePinnedBufferHeapTuple(&tuple1,
-											   LocTriggerData.tg_trigslot,
-											   buffer);
 				LocTriggerData.tg_trigtuple =
-					ExecFetchSlotHeapTuple(LocTriggerData.tg_trigslot, false,
-										   &should_free_trig);
+					ExecFetchSlotHeapTuple(LocTriggerData.tg_trigslot, false, &should_free_trig);
 			}
 			else
 			{
@@ -4305,19 +4276,12 @@ AfterTriggerExecute(EState *estate,
 				AFTER_TRIGGER_2CTID &&
 				ItemPointerIsValid(&(event->ate_ctid2)))
 			{
-				Buffer buffer;
-
 				LocTriggerData.tg_newslot = ExecGetTriggerNewSlot(estate, relInfo);
 
-				ItemPointerCopy(&(event->ate_ctid2), &(tuple2.t_self));
-				if (!heap_fetch(rel, SnapshotAny, &tuple2, &buffer, false, NULL))
+				if (!table_fetch_row_version(rel, &(event->ate_ctid2), SnapshotAny, LocTriggerData.tg_newslot))
 					elog(ERROR, "failed to fetch tuple2 for AFTER trigger");
-				ExecStorePinnedBufferHeapTuple(&tuple2,
-											   LocTriggerData.tg_newslot,
-											   buffer);
 				LocTriggerData.tg_newtuple =
-					ExecFetchSlotHeapTuple(LocTriggerData.tg_newslot, false,
-										   &should_free_new);
+					ExecFetchSlotHeapTuple(LocTriggerData.tg_newslot, false, &should_free_new);
 			}
 			else
 			{
