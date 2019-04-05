@@ -2040,7 +2040,8 @@ exec_prepared_plan(Portal portal, const char *portal_name, long max_rows, Comman
 	/*
 	 * Report query to various monitoring facilities.
 	 */
-	debug_query_string = sourceText;
+	if (!debug_query_string)
+		debug_query_string = sourceText;
 
 	pgstat_report_activity(STATE_RUNNING, sourceText);
 
@@ -5252,6 +5253,15 @@ exec_cached_query(const char *query_string, List *parsetree_list)
 
 		querytree_list = pg_analyze_and_rewrite(raw_parse_tree, query_string,
 												NULL, 0, NULL);
+		if (querytree_list->length != 1)
+		{
+			if (snapshot_set)
+				PopActiveSnapshot();
+			entry->disable_autoprepare = true;
+			autoprepare_misses += 1;
+			MemoryContextSwitchTo(old_context);
+			return false;
+		}
 		/*
 		 * Replace Const with Param nodes
 		 */
