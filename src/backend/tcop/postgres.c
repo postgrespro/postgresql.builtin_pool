@@ -5064,6 +5064,7 @@ exec_cached_query(const char *query_string, List *parsetree_list)
 	plan_cache_entry  pattern;
 	Oid*			  param_types;
 	RawStmt			 *raw_parse_tree;
+	bool              use_existed_plan;
 
 	raw_parse_tree = castNode(RawStmt, linitial(parsetree_list));
 
@@ -5317,6 +5318,7 @@ exec_cached_query(const char *query_string, List *parsetree_list)
 		MemoryContextSwitchTo(old_context); /* Done with MessageContext memory context */
 
 		entry->plan = psrc;
+		use_existed_plan = false;
 
 		/*
 		 * Determine output format
@@ -5340,6 +5342,7 @@ exec_cached_query(const char *query_string, List *parsetree_list)
 	{
 		/* Plan found */
 		psrc = entry->plan;
+		use_existed_plan = true;
 		Assert(n_params == entry->n_params);
 	}
 
@@ -5445,7 +5448,30 @@ exec_cached_query(const char *query_string, List *parsetree_list)
 	 * will be generated in MessageContext. The plan refcount will be
 	 * assigned to the Portal, so it will be released at portal destruction.
 	 */
-	cplan = GetCachedPlan(psrc, params, false, NULL);
+	PG_TRY();
+	{
+		cplan = GetCachedPlan(psrc, params, false, NULL);
+	}
+	PG_CATCH();
+	{
+		/*
+		 * In case of analyze errors revert back to original query processing
+		 * and disable autoprepare for this query to avoid such problems in future.
+		 */
+		FlushErrorState();
+
+		if (snapshot_set)
+			PopActiveSnapshot();
+
+		if (use_existed_plan)
+			undo_query_plan_changes(binding_list);
+
+		entry->disable_autoprepare = true;
+		autoprepare_misses += 1;
+		PortalDrop(portal, false);
+		return false;
+	}
+	PG_END_TRY();
 
 	/*
 	 * Now we can define the portal.
