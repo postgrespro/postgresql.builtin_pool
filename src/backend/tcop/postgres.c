@@ -5455,7 +5455,7 @@ exec_cached_query(const char *query_string, List *parsetree_list)
 	PG_CATCH();
 	{
 		/*
-		 * In case of analyze errors revert back to original query processing
+		 * In case of planner errors revert back to original query processing
 		 * and disable autoprepare for this query to avoid such problems in future.
 		 */
 		FlushErrorState();
