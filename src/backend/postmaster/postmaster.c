@@ -524,7 +524,7 @@ typedef struct
 	InheritableSocket portsocket;
 	InheritableSocket sessionsocket;
 	char		DataDir[MAXPGPATH];
-	pgsocket	ListenSocket[MAXLISTEN];
+	pgsocket	ListenSocket[MAXLISTEN + MAX_CONNPOOL_WORKERS];
 	int32		MyCancelKey;
 	int			MyPMChildSlot;
 #ifndef WIN32
