@@ -1046,7 +1046,7 @@ PostmasterMain(int argc, char *argv[])
 	 * First, mark them all closed, and set up an on_proc_exit function that's
 	 * charged with closing the sockets again at postmaster shutdown.
 	 */
-	for (i = 0; i < MAXLISTEN; i++)
+	for (i = 0; i < MAXLISTEN + MAX_CONNPOOL_WORKERS; i++)
 		ListenSocket[i] = PGINVALID_SOCKET;
 
 	on_proc_exit(CloseServerPorts, 0);
@@ -1443,7 +1443,7 @@ CloseServerPorts(int status, Datum arg)
 	 * before we remove the postmaster.pid lockfile; otherwise there's a race
 	 * condition if a new postmaster wants to re-use the TCP port number.
 	 */
-	for (i = 0; i < MAXLISTEN; i++)
+	for (i = 0; i < MAXLISTEN + MAX_CONNPOOL_WORKERS; i++)
 	{
 		if (ListenSocket[i] != PGINVALID_SOCKET)
 		{
@@ -2692,7 +2692,7 @@ PoolConnCreate(pgsocket poolFd, int workerId)
 	worker->state = CPW_FREE;
 
 	/* get size of data */
-	while ((rc = read(poolFd, &recv_len, sizeof recv_len)) < 0 && errno == EINTR);
+	while ((rc = recv(poolFd, &recv_len, sizeof recv_len, 0)) < 0 && errno == EINTR);
 
 	if (rc != (int) sizeof(recv_len))
 		goto io_error;
@@ -2700,7 +2700,7 @@ PoolConnCreate(pgsocket poolFd, int workerId)
 	/* get the data */
 	for (offs = 0; offs < recv_len; offs += rc)
 	{
-		while ((rc = read(poolFd, recv_buf + offs, CONN_BUF_SIZE - offs)) < 0 && errno == EINTR);
+		while ((rc = recv(poolFd, recv_buf + offs, CONN_BUF_SIZE - offs, 0)) < 0 && errno == EINTR);
 		if (rc <= 0)
 			goto io_error;
 	}
@@ -2784,7 +2784,7 @@ ClosePostmasterPorts(bool am_syslogger)
 #endif
 
 	/* Close the listen sockets */
-	for (i = 0; i < MAXLISTEN; i++)
+	for (i = 0; i < MAXLISTEN + MAX_CONNPOOL_WORKERS; i++)
 	{
 		if (ListenSocket[i] != PGINVALID_SOCKET)
 		{
