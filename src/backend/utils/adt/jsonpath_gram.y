@@ -359,7 +359,9 @@ makeItemNumeric(JsonPathString *s)
 	v = makeItemType(jpiNumeric);
 	v->value.numeric =
 		DatumGetNumeric(DirectFunctionCall3(numeric_in,
-											CStringGetDatum(s->val), 0, -1));
+											CStringGetDatum(s->val),
+											ObjectIdGetDatum(InvalidOid),
+											Int32GetDatum(-1)));
 
 	return v;
 }
@@ -508,8 +510,20 @@ makeItemLikeRegex(JsonPathParseItem *expr, JsonPathString *pattern,
 				v->value.like_regex.flags |= JSP_REGEX_WSPACE;
 				cflags |= REG_EXPANDED;
 				break;
+			case 'q':
+				v->value.like_regex.flags |= JSP_REGEX_QUOTE;
+				if (!(v->value.like_regex.flags & (JSP_REGEX_MLINE | JSP_REGEX_SLINE | JSP_REGEX_WSPACE)))
+				{
+					cflags &= ~REG_ADVANCED;
+					cflags |= REG_QUOTE;
+				}
+				break;
 			default:
-				yyerror(NULL, "unrecognized flag of LIKE_REGEX predicate");
+				ereport(ERROR,
+						(errcode(ERRCODE_SYNTAX_ERROR),
+						 errmsg("invalid input syntax for type %s", "jsonpath"),
+						 errdetail("unrecognized flag character \"%c\" in LIKE_REGEX predicate",
+								   flags->val[i])));
 				break;
 		}
 	}

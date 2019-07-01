@@ -14,7 +14,7 @@
 
 #include "getopt_long.h"
 #include "access/xlogdefs.h"
-#include "fe_utils/logging.h"
+#include "common/logging.h"
 
 
 /*
@@ -170,7 +170,7 @@ handle_args(int argc, char *argv[])
 		switch (option)
 		{
 			case 'f':
-				filename = strdup(optarg);
+				filename = pg_strdup(optarg);
 				break;
 
 			case 's':

@@ -23,6 +23,8 @@
 #include "catalog/indexing.h"
 #include "catalog/pg_collation.h"
 #include "catalog/pg_statistic_ext.h"
+#include "catalog/pg_statistic_ext_data.h"
+#include "miscadmin.h"
 #include "nodes/nodeFuncs.h"
 #include "optimizer/clauses.h"
 #include "optimizer/optimizer.h"
@@ -64,10 +66,10 @@ typedef struct StatExtEntry
 
 static List *fetch_statentries_for_relation(Relation pg_statext, Oid relid);
 static VacAttrStats **lookup_var_attr_stats(Relation rel, Bitmapset *attrs,
-					  int nvacatts, VacAttrStats **vacatts);
-static void statext_store(Relation pg_stext, Oid relid,
-			  MVNDistinct *ndistinct, MVDependencies *dependencies,
-			  MCVList * mcvlist, VacAttrStats **stats);
+											int nvacatts, VacAttrStats **vacatts);
+static void statext_store(Oid relid,
+						  MVNDistinct *ndistinct, MVDependencies *dependencies,
+						  MCVList *mcv, VacAttrStats **stats);
 
 
 /*
@@ -145,7 +147,7 @@ BuildRelationExtStatistics(Relation onerel, double totalrows,
 		}
 
 		/* store the statistics in the catalog */
-		statext_store(pg_stext, stat->statOid, ndistinct, dependencies, mcv, stats);
+		statext_store(stat->statOid, ndistinct, dependencies, mcv, stats);
 	}
 
 	table_close(pg_stext, RowExclusiveLock);
@@ -156,7 +158,7 @@ BuildRelationExtStatistics(Relation onerel, double totalrows,
 
 /*
  * statext_is_kind_built
- *		Is this stat kind built in the given pg_statistic_ext tuple?
+ *		Is this stat kind built in the given pg_statistic_ext_data tuple?
  */
 bool
 statext_is_kind_built(HeapTuple htup, char type)
@@ -166,15 +168,15 @@ statext_is_kind_built(HeapTuple htup, char type)
 	switch (type)
 	{
 		case STATS_EXT_NDISTINCT:
-			attnum = Anum_pg_statistic_ext_stxndistinct;
+			attnum = Anum_pg_statistic_ext_data_stxdndistinct;
 			break;
 
 		case STATS_EXT_DEPENDENCIES:
-			attnum = Anum_pg_statistic_ext_stxdependencies;
+			attnum = Anum_pg_statistic_ext_data_stxddependencies;
 			break;
 
 		case STATS_EXT_MCV:
-			attnum = Anum_pg_statistic_ext_stxmcv;
+			attnum = Anum_pg_statistic_ext_data_stxdmcv;
 			break;
 
 		default:
@@ -312,70 +314,76 @@ lookup_var_attr_stats(Relation rel, Bitmapset *attrs,
 
 /*
  * statext_store
- *	Serializes the statistics and stores them into the pg_statistic_ext tuple.
+ *	Serializes the statistics and stores them into the pg_statistic_ext_data
+ *	tuple.
  */
 static void
-statext_store(Relation pg_stext, Oid statOid,
+statext_store(Oid statOid,
 			  MVNDistinct *ndistinct, MVDependencies *dependencies,
-			  MCVList * mcv, VacAttrStats **stats)
+			  MCVList *mcv, VacAttrStats **stats)
 {
 	HeapTuple	stup,
 				oldtup;
-	Datum		values[Natts_pg_statistic_ext];
-	bool		nulls[Natts_pg_statistic_ext];
-	bool		replaces[Natts_pg_statistic_ext];
+	Datum		values[Natts_pg_statistic_ext_data];
+	bool		nulls[Natts_pg_statistic_ext_data];
+	bool		replaces[Natts_pg_statistic_ext_data];
+	Relation	pg_stextdata;
 
 	memset(nulls, true, sizeof(nulls));
 	memset(replaces, false, sizeof(replaces));
 	memset(values, 0, sizeof(values));
 
 	/*
-	 * Construct a new pg_statistic_ext tuple, replacing the calculated stats.
+	 * Construct a new pg_statistic_ext_data tuple, replacing the calculated
+	 * stats.
 	 */
 	if (ndistinct != NULL)
 	{
 		bytea	   *data = statext_ndistinct_serialize(ndistinct);
 
-		nulls[Anum_pg_statistic_ext_stxndistinct - 1] = (data == NULL);
-		values[Anum_pg_statistic_ext_stxndistinct - 1] = PointerGetDatum(data);
+		nulls[Anum_pg_statistic_ext_data_stxdndistinct - 1] = (data == NULL);
+		values[Anum_pg_statistic_ext_data_stxdndistinct - 1] = PointerGetDatum(data);
 	}
 
 	if (dependencies != NULL)
 	{
 		bytea	   *data = statext_dependencies_serialize(dependencies);
 
-		nulls[Anum_pg_statistic_ext_stxdependencies - 1] = (data == NULL);
-		values[Anum_pg_statistic_ext_stxdependencies - 1] = PointerGetDatum(data);
+		nulls[Anum_pg_statistic_ext_data_stxddependencies - 1] = (data == NULL);
+		values[Anum_pg_statistic_ext_data_stxddependencies - 1] = PointerGetDatum(data);
 	}
-
 	if (mcv != NULL)
 	{
 		bytea	   *data = statext_mcv_serialize(mcv, stats);
 
-		nulls[Anum_pg_statistic_ext_stxmcv - 1] = (data == NULL);
-		values[Anum_pg_statistic_ext_stxmcv - 1] = PointerGetDatum(data);
+		nulls[Anum_pg_statistic_ext_data_stxdmcv - 1] = (data == NULL);
+		values[Anum_pg_statistic_ext_data_stxdmcv - 1] = PointerGetDatum(data);
 	}
 
 	/* always replace the value (either by bytea or NULL) */
-	replaces[Anum_pg_statistic_ext_stxndistinct - 1] = true;
-	replaces[Anum_pg_statistic_ext_stxdependencies - 1] = true;
-	replaces[Anum_pg_statistic_ext_stxmcv - 1] = true;
+	replaces[Anum_pg_statistic_ext_data_stxdndistinct - 1] = true;
+	replaces[Anum_pg_statistic_ext_data_stxddependencies - 1] = true;
+	replaces[Anum_pg_statistic_ext_data_stxdmcv - 1] = true;
 
-	/* there should already be a pg_statistic_ext tuple */
-	oldtup = SearchSysCache1(STATEXTOID, ObjectIdGetDatum(statOid));
+	/* there should already be a pg_statistic_ext_data tuple */
+	oldtup = SearchSysCache1(STATEXTDATASTXOID, ObjectIdGetDatum(statOid));
 	if (!HeapTupleIsValid(oldtup))
 		elog(ERROR, "cache lookup failed for statistics object %u", statOid);
 
 	/* replace it */
+	pg_stextdata = table_open(StatisticExtDataRelationId, RowExclusiveLock);
+
 	stup = heap_modify_tuple(oldtup,
-							 RelationGetDescr(pg_stext),
+							 RelationGetDescr(pg_stextdata),
 							 values,
 							 nulls,
 							 replaces);
 	ReleaseSysCache(oldtup);
-	CatalogTupleUpdate(pg_stext, &stup->t_self, stup);
+	CatalogTupleUpdate(pg_stextdata, &stup->t_self, stup);
 
 	heap_freetuple(stup);
+
+	table_close(pg_stextdata, RowExclusiveLock);
 }
 
 /* initialize multi-dimensional sort */
@@ -538,9 +546,9 @@ build_attnums_array(Bitmapset *attrs, int *numattrs)
 	{
 		/*
 		 * Make sure the bitmap contains only user-defined attributes. As
-		 * bitmaps can't contain negative values, this can be violated in
-		 * two ways. Firstly, the bitmap might contain 0 as a member, and
-		 * secondly the integer value might be larger than MaxAttrNumber.
+		 * bitmaps can't contain negative values, this can be violated in two
+		 * ways. Firstly, the bitmap might contain 0 as a member, and secondly
+		 * the integer value might be larger than MaxAttrNumber.
 		 */
 		Assert(AttrNumberIsForUserDefinedAttr(j));
 		Assert(j <= MaxAttrNumber);
@@ -600,7 +608,7 @@ build_sorted_items(int numrows, int *nitems, HeapTuple *rows, TupleDesc tdesc,
 	idx = 0;
 	for (i = 0; i < numrows; i++)
 	{
-		bool	toowide = false;
+		bool		toowide = false;
 
 		items[idx].values = &values[idx * numattrs];
 		items[idx].isnull = &isnull[idx * numattrs];
@@ -608,8 +616,8 @@ build_sorted_items(int numrows, int *nitems, HeapTuple *rows, TupleDesc tdesc,
 		/* load the values/null flags from sample rows */
 		for (j = 0; j < numattrs; j++)
 		{
-			Datum	value;
-			bool	isnull;
+			Datum		value;
+			bool		isnull;
 
 			value = heap_getattr(rows[i], attnums[j], tdesc, &isnull);
 
@@ -753,7 +761,8 @@ choose_best_statistics(List *stats, Bitmapset *attnums, char requiredkind)
  * attribute numbers from all compatible clauses (recursively).
  */
 static bool
-statext_is_compatible_clause_internal(Node *clause, Index relid, Bitmapset **attnums)
+statext_is_compatible_clause_internal(PlannerInfo *root, Node *clause,
+									  Index relid, Bitmapset **attnums)
 {
 	/* Look inside any binary-compatible relabeling (as in examine_variable) */
 	if (IsA(clause, RelabelType))
@@ -784,6 +793,7 @@ statext_is_compatible_clause_internal(Node *clause, Index relid, Bitmapset **att
 	/* (Var op Const) or (Const op Var) */
 	if (is_opclause(clause))
 	{
+		RangeTblEntry *rte = root->simple_rte_array[relid];
 		OpExpr	   *expr = (OpExpr *) clause;
 		Var		   *var;
 		bool		varonleft = true;
@@ -826,9 +836,24 @@ statext_is_compatible_clause_internal(Node *clause, Index relid, Bitmapset **att
 				return false;
 		}
 
+		/*
+		 * If there are any securityQuals on the RTE from security barrier
+		 * views or RLS policies, then the user may not have access to all the
+		 * table's data, and we must check that the operator is leak-proof.
+		 *
+		 * If the operator is leaky, then we must ignore this clause for the
+		 * purposes of estimating with MCV lists, otherwise the operator might
+		 * reveal values from the MCV list that the user doesn't have
+		 * permission to see.
+		 */
+		if (rte->securityQuals != NIL &&
+			!get_func_leakproof(get_opcode(expr->opno)))
+			return false;
+
 		var = (varonleft) ? linitial(expr->args) : lsecond(expr->args);
 
-		return statext_is_compatible_clause_internal((Node *) var, relid, attnums);
+		return statext_is_compatible_clause_internal(root, (Node *) var,
+													 relid, attnums);
 	}
 
 	/* AND/OR/NOT clause */
@@ -859,7 +884,8 @@ statext_is_compatible_clause_internal(Node *clause, Index relid, Bitmapset **att
 			 * Had we found incompatible clause in the arguments, treat the
 			 * whole clause as incompatible.
 			 */
-			if (!statext_is_compatible_clause_internal((Node *) lfirst(lc),
+			if (!statext_is_compatible_clause_internal(root,
+													   (Node *) lfirst(lc),
 													   relid, attnums))
 				return false;
 		}
@@ -879,7 +905,8 @@ statext_is_compatible_clause_internal(Node *clause, Index relid, Bitmapset **att
 		if (!IsA(nt->arg, Var))
 			return false;
 
-		return statext_is_compatible_clause_internal((Node *) (nt->arg), relid, attnums);
+		return statext_is_compatible_clause_internal(root, (Node *) (nt->arg),
+													 relid, attnums);
 	}
 
 	return false;
@@ -902,9 +929,12 @@ statext_is_compatible_clause_internal(Node *clause, Index relid, Bitmapset **att
  * complex cases, for example (Var op Var).
  */
 static bool
-statext_is_compatible_clause(Node *clause, Index relid, Bitmapset **attnums)
+statext_is_compatible_clause(PlannerInfo *root, Node *clause, Index relid,
+							 Bitmapset **attnums)
 {
+	RangeTblEntry *rte = root->simple_rte_array[relid];
 	RestrictInfo *rinfo = (RestrictInfo *) clause;
+	Oid			userid;
 
 	if (!IsA(rinfo, RestrictInfo))
 		return false;
@@ -917,8 +947,43 @@ statext_is_compatible_clause(Node *clause, Index relid, Bitmapset **attnums)
 	if (bms_membership(rinfo->clause_relids) != BMS_SINGLETON)
 		return false;
 
-	return statext_is_compatible_clause_internal((Node *) rinfo->clause,
-												 relid, attnums);
+	/* Check the clause and determine what attributes it references. */
+	if (!statext_is_compatible_clause_internal(root, (Node *) rinfo->clause,
+											   relid, attnums))
+		return false;
+
+	/*
+	 * Check that the user has permission to read all these attributes.  Use
+	 * checkAsUser if it's set, in case we're accessing the table via a view.
+	 */
+	userid = rte->checkAsUser ? rte->checkAsUser : GetUserId();
+
+	if (pg_class_aclcheck(rte->relid, userid, ACL_SELECT) != ACLCHECK_OK)
+	{
+		/* Don't have table privilege, must check individual columns */
+		if (bms_is_member(InvalidAttrNumber, *attnums))
+		{
+			/* Have a whole-row reference, must have access to all columns */
+			if (pg_attribute_aclcheck_all(rte->relid, userid, ACL_SELECT,
+										  ACLMASK_ALL) != ACLCHECK_OK)
+				return false;
+		}
+		else
+		{
+			/* Check the columns referenced by the clause */
+			int			attnum = -1;
+
+			while ((attnum = bms_next_member(*attnums, attnum)) >= 0)
+			{
+				if (pg_attribute_aclcheck(rte->relid, attnum, userid,
+										  ACL_SELECT) != ACLCHECK_OK)
+					return false;
+			}
+		}
+	}
+
+	/* If we reach here, the clause is OK */
+	return true;
 }
 
 /*
@@ -988,7 +1053,7 @@ statext_mcv_clauselist_selectivity(PlannerInfo *root, List *clauses, int varReli
 	int			listidx;
 	StatisticExtInfo *stat;
 	List	   *stat_clauses;
-	Selectivity	simple_sel,
+	Selectivity simple_sel,
 				mcv_sel,
 				mcv_basesel,
 				mcv_totalsel,
@@ -1006,9 +1071,9 @@ statext_mcv_clauselist_selectivity(PlannerInfo *root, List *clauses, int varReli
 	 * Pre-process the clauses list to extract the attnums seen in each item.
 	 * We need to determine if there's any clauses which will be useful for
 	 * selectivity estimations with extended stats. Along the way we'll record
-	 * all of the attnums for each clause in a list which we'll reference later
-	 * so we don't need to repeat the same work again. We'll also keep track of
-	 * all attnums seen.
+	 * all of the attnums for each clause in a list which we'll reference
+	 * later so we don't need to repeat the same work again. We'll also keep
+	 * track of all attnums seen.
 	 *
 	 * We also skip clauses that we already estimated using different types of
 	 * statistics (we treat them as incompatible).
@@ -1020,7 +1085,7 @@ statext_mcv_clauselist_selectivity(PlannerInfo *root, List *clauses, int varReli
 		Bitmapset  *attnums = NULL;
 
 		if (!bms_is_member(listidx, *estimatedclauses) &&
-			statext_is_compatible_clause(clause, rel->relid, &attnums))
+			statext_is_compatible_clause(root, clause, rel->relid, &attnums))
 		{
 			list_attnums[listidx] = attnums;
 			clauses_attnums = bms_add_members(clauses_attnums, attnums);
@@ -1066,9 +1131,10 @@ statext_mcv_clauselist_selectivity(PlannerInfo *root, List *clauses, int varReli
 	}
 
 	/*
-	 * First compute "simple" selectivity, i.e. without the extended statistics,
-	 * and essentially assuming independence of the columns/clauses. We'll then
-	 * use the various selectivities computed from MCV list to improve it.
+	 * First compute "simple" selectivity, i.e. without the extended
+	 * statistics, and essentially assuming independence of the
+	 * columns/clauses. We'll then use the various selectivities computed from
+	 * MCV list to improve it.
 	 */
 	simple_sel = clauselist_selectivity_simple(root, stat_clauses, varRelid,
 											   jointype, sjinfo, NULL);
@@ -1105,16 +1171,16 @@ statext_clauselist_selectivity(PlannerInfo *root, List *clauses, int varRelid,
 							   JoinType jointype, SpecialJoinInfo *sjinfo,
 							   RelOptInfo *rel, Bitmapset **estimatedclauses)
 {
-	Selectivity	sel;
+	Selectivity sel;
 
 	/* First, try estimating clauses using a multivariate MCV list. */
 	sel = statext_mcv_clauselist_selectivity(root, clauses, varRelid, jointype,
 											 sjinfo, rel, estimatedclauses);
 
 	/*
-	 * Then, apply functional dependencies on the remaining clauses by
-	 * calling dependencies_clauselist_selectivity.  Pass 'estimatedclauses'
-	 * so the function can properly skip clauses already estimated above.
+	 * Then, apply functional dependencies on the remaining clauses by calling
+	 * dependencies_clauselist_selectivity.  Pass 'estimatedclauses' so the
+	 * function can properly skip clauses already estimated above.
 	 *
 	 * The reasoning for applying dependencies last is that the more complex
 	 * stats can track more complex correlations between the attributes, and

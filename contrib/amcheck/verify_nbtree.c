@@ -126,42 +126,45 @@ PG_FUNCTION_INFO_V1(bt_index_check);
 PG_FUNCTION_INFO_V1(bt_index_parent_check);
 
 static void bt_index_check_internal(Oid indrelid, bool parentcheck,
-						bool heapallindexed, bool rootdescend);
+									bool heapallindexed, bool rootdescend);
 static inline void btree_index_checkable(Relation rel);
 static void bt_check_every_level(Relation rel, Relation heaprel,
-					 bool heapkeyspace, bool readonly, bool heapallindexed,
-					 bool rootdescend);
+								 bool heapkeyspace, bool readonly, bool heapallindexed,
+								 bool rootdescend);
 static BtreeLevel bt_check_level_from_leftmost(BtreeCheckState *state,
-							 BtreeLevel level);
+											   BtreeLevel level);
 static void bt_target_page_check(BtreeCheckState *state);
 static BTScanInsert bt_right_page_check_scankey(BtreeCheckState *state);
 static void bt_downlink_check(BtreeCheckState *state, BTScanInsert targetkey,
-				  BlockNumber childblock);
+							  BlockNumber childblock);
 static void bt_downlink_missing_check(BtreeCheckState *state);
 static void bt_tuple_present_callback(Relation index, HeapTuple htup,
-						  Datum *values, bool *isnull,
-						  bool tupleIsAlive, void *checkstate);
+									  Datum *values, bool *isnull,
+									  bool tupleIsAlive, void *checkstate);
 static IndexTuple bt_normalize_tuple(BtreeCheckState *state,
-				   IndexTuple itup);
+									 IndexTuple itup);
 static bool bt_rootdescend(BtreeCheckState *state, IndexTuple itup);
 static inline bool offset_is_negative_infinity(BTPageOpaque opaque,
-							OffsetNumber offset);
+											   OffsetNumber offset);
 static inline bool invariant_l_offset(BtreeCheckState *state, BTScanInsert key,
-				   OffsetNumber upperbound);
+									  OffsetNumber upperbound);
 static inline bool invariant_leq_offset(BtreeCheckState *state,
-					 BTScanInsert key,
-					 OffsetNumber upperbound);
+										BTScanInsert key,
+										OffsetNumber upperbound);
 static inline bool invariant_g_offset(BtreeCheckState *state, BTScanInsert key,
-				   OffsetNumber lowerbound);
+									  OffsetNumber lowerbound);
 static inline bool invariant_l_nontarget_offset(BtreeCheckState *state,
-							 BTScanInsert key,
-							 Page nontarget,
-							 OffsetNumber upperbound);
+												BTScanInsert key,
+												BlockNumber nontargetblock,
+												Page nontarget,
+												OffsetNumber upperbound);
 static Page palloc_btree_page(BtreeCheckState *state, BlockNumber blocknum);
 static inline BTScanInsert bt_mkscankey_pivotsearch(Relation rel,
 													IndexTuple itup);
+static ItemId PageGetItemIdCareful(BtreeCheckState *state, BlockNumber block,
+								   Page page, OffsetNumber offset);
 static inline ItemPointer BTreeTupleGetHeapTIDCareful(BtreeCheckState *state,
-							IndexTuple itup, bool nonpivot);
+													  IndexTuple itup, bool nonpivot);
 
 /*
  * bt_index_check(index regclass, heapallindexed boolean)
@@ -710,7 +713,9 @@ bt_check_level_from_leftmost(BtreeCheckState *state, BtreeLevel level)
 				ItemId		itemid;
 
 				/* Internal page -- downlink gets leftmost on next level */
-				itemid = PageGetItemId(state->target, P_FIRSTDATAKEY(opaque));
+				itemid = PageGetItemIdCareful(state, state->targetblock,
+											  state->target,
+											  P_FIRSTDATAKEY(opaque));
 				itup = (IndexTuple) PageGetItem(state->target, itemid);
 				nextleveldown.leftmost = BTreeInnerTupleGetDownLink(itup);
 				nextleveldown.level = opaque->btpo.level - 1;
@@ -793,23 +798,25 @@ nextpage:
  * target page:
  *
  * - That every "real" data item is less than or equal to the high key, which
- *	 is an upper bound on the items on the pages (where there is a high key at
- *	 all -- pages that are rightmost lack one).
+ *	 is an upper bound on the items on the page.  Data items should be
+ *	 strictly less than the high key when the page is an internal page.
  *
- * - That within the page, every "real" item is less than or equal to the item
- *	 immediately to its right, if any (i.e., that the items are in order within
- *	 the page, so that the binary searches performed by index scans are sane).
+ * - That within the page, every data item is strictly less than the item
+ *	 immediately to its right, if any (i.e., that the items are in order
+ *	 within the page, so that the binary searches performed by index scans are
+ *	 sane).
  *
- * - That the last item stored on the page is less than or equal to the first
- *	 "real" data item on the page to the right (if such a first item is
+ * - That the last data item stored on the page is strictly less than the
+ *	 first data item on the page to the right (when such a first item is
  *	 available).
  *
- * - That tuples report that they have the expected number of attributes.
- *	 INCLUDE index pivot tuples should not contain non-key attributes.
+ * - Various checks on the structure of tuples themselves.  For example, check
+ *	 that non-pivot tuples have no truncated attributes.
  *
  * Furthermore, when state passed shows ShareLock held, function also checks:
  *
- * - That all child pages respect downlinks lower bound.
+ * - That all child pages respect strict lower bound from parent's pivot
+ *	 tuple.
  *
  * - That downlink to block was encountered in parent where that's expected.
  *   (Limited to heapallindexed readonly callers.)
@@ -837,26 +844,29 @@ bt_target_page_check(BtreeCheckState *state)
 	 * Check the number of attributes in high key. Note, rightmost page
 	 * doesn't contain a high key, so nothing to check
 	 */
-	if (!P_RIGHTMOST(topaque) &&
-		!_bt_check_natts(state->rel, state->heapkeyspace, state->target,
-						 P_HIKEY))
+	if (!P_RIGHTMOST(topaque))
 	{
 		ItemId		itemid;
 		IndexTuple	itup;
 
-		itemid = PageGetItemId(state->target, P_HIKEY);
-		itup = (IndexTuple) PageGetItem(state->target, itemid);
-
-		ereport(ERROR,
-				(errcode(ERRCODE_INDEX_CORRUPTED),
-				 errmsg("wrong number of high key index tuple attributes in index \"%s\"",
-						RelationGetRelationName(state->rel)),
-				 errdetail_internal("Index block=%u natts=%u block type=%s page lsn=%X/%X.",
-									state->targetblock,
-									BTreeTupleGetNAtts(itup, state->rel),
-									P_ISLEAF(topaque) ? "heap" : "index",
-									(uint32) (state->targetlsn >> 32),
-									(uint32) state->targetlsn)));
+		/* Verify line pointer before checking tuple */
+		itemid = PageGetItemIdCareful(state, state->targetblock,
+									  state->target, P_HIKEY);
+		if (!_bt_check_natts(state->rel, state->heapkeyspace, state->target,
+							 P_HIKEY))
+		{
+			itup = (IndexTuple) PageGetItem(state->target, itemid);
+			ereport(ERROR,
+					(errcode(ERRCODE_INDEX_CORRUPTED),
+					 errmsg("wrong number of high key index tuple attributes in index \"%s\"",
+							RelationGetRelationName(state->rel)),
+					 errdetail_internal("Index block=%u natts=%u block type=%s page lsn=%X/%X.",
+										state->targetblock,
+										BTreeTupleGetNAtts(itup, state->rel),
+										P_ISLEAF(topaque) ? "heap" : "index",
+										(uint32) (state->targetlsn >> 32),
+										(uint32) state->targetlsn)));
+		}
 	}
 
 	/*
@@ -876,7 +886,8 @@ bt_target_page_check(BtreeCheckState *state)
 
 		CHECK_FOR_INTERRUPTS();
 
-		itemid = PageGetItemId(state->target, offset);
+		itemid = PageGetItemIdCareful(state, state->targetblock,
+									  state->target, offset);
 		itup = (IndexTuple) PageGetItem(state->target, itemid);
 		tupsize = IndexTupleSize(itup);
 
@@ -1020,7 +1031,7 @@ bt_target_page_check(BtreeCheckState *state)
 		/* Fingerprint leaf page tuples (those that point to the heap) */
 		if (state->heapallindexed && P_ISLEAF(topaque) && !ItemIdIsDead(itemid))
 		{
-			IndexTuple		norm;
+			IndexTuple	norm;
 
 			norm = bt_normalize_tuple(state, itup);
 			bloom_add_element(state->filter, (unsigned char *) norm,
@@ -1121,7 +1132,9 @@ bt_target_page_check(BtreeCheckState *state)
 							 OffsetNumberNext(offset));
 
 			/* Reuse itup to get pointed-to heap location of second item */
-			itemid = PageGetItemId(state->target, OffsetNumberNext(offset));
+			itemid = PageGetItemIdCareful(state, state->targetblock,
+										  state->target,
+										  OffsetNumberNext(offset));
 			itup = (IndexTuple) PageGetItem(state->target, itemid);
 			nhtid = psprintf("(%u,%u)",
 							 ItemPointerGetBlockNumberNoCheck(&(itup->t_tid)),
@@ -1163,7 +1176,7 @@ bt_target_page_check(BtreeCheckState *state)
 		 */
 		else if (offset == max)
 		{
-			BTScanInsert	rightkey;
+			BTScanInsert rightkey;
 
 			/* Get item in next/right page */
 			rightkey = bt_right_page_check_scankey(state);
@@ -1406,7 +1419,8 @@ bt_right_page_check_scankey(BtreeCheckState *state)
 	if (P_ISLEAF(opaque) && nline >= P_FIRSTDATAKEY(opaque))
 	{
 		/* Return first data item (if any) */
-		rightitem = PageGetItemId(rightpage, P_FIRSTDATAKEY(opaque));
+		rightitem = PageGetItemIdCareful(state, targetnext, rightpage,
+										 P_FIRSTDATAKEY(opaque));
 	}
 	else if (!P_ISLEAF(opaque) &&
 			 nline >= OffsetNumberNext(P_FIRSTDATAKEY(opaque)))
@@ -1415,8 +1429,8 @@ bt_right_page_check_scankey(BtreeCheckState *state)
 		 * Return first item after the internal page's "negative infinity"
 		 * item
 		 */
-		rightitem = PageGetItemId(rightpage,
-								  OffsetNumberNext(P_FIRSTDATAKEY(opaque)));
+		rightitem = PageGetItemIdCareful(state, targetnext, rightpage,
+										 OffsetNumberNext(P_FIRSTDATAKEY(opaque)));
 	}
 	else
 	{
@@ -1576,7 +1590,8 @@ bt_downlink_check(BtreeCheckState *state, BTScanInsert targetkey,
 		if (offset_is_negative_infinity(copaque, offset))
 			continue;
 
-		if (!invariant_l_nontarget_offset(state, targetkey, child, offset))
+		if (!invariant_l_nontarget_offset(state, targetkey, childblock, child,
+										  offset))
 			ereport(ERROR,
 					(errcode(ERRCODE_INDEX_CORRUPTED),
 					 errmsg("down-link lower bound invariant violated for index \"%s\"",
@@ -1687,7 +1702,8 @@ bt_downlink_missing_check(BtreeCheckState *state)
 		 RelationGetRelationName(state->rel));
 
 	level = topaque->btpo.level;
-	itemid = PageGetItemId(state->target, P_FIRSTDATAKEY(topaque));
+	itemid = PageGetItemIdCareful(state, state->targetblock, state->target,
+								  P_FIRSTDATAKEY(topaque));
 	itup = (IndexTuple) PageGetItem(state->target, itemid);
 	childblk = BTreeInnerTupleGetDownLink(itup);
 	for (;;)
@@ -1711,7 +1727,8 @@ bt_downlink_missing_check(BtreeCheckState *state)
 										level - 1, copaque->btpo.level)));
 
 		level = copaque->btpo.level;
-		itemid = PageGetItemId(child, P_FIRSTDATAKEY(copaque));
+		itemid = PageGetItemIdCareful(state, childblk, child,
+									  P_FIRSTDATAKEY(copaque));
 		itup = (IndexTuple) PageGetItem(child, itemid);
 		childblk = BTreeInnerTupleGetDownLink(itup);
 		/* Be slightly more pro-active in freeing this memory, just in case */
@@ -1760,7 +1777,7 @@ bt_downlink_missing_check(BtreeCheckState *state)
 	 */
 	if (P_ISHALFDEAD(copaque) && !P_RIGHTMOST(copaque))
 	{
-		itemid = PageGetItemId(child, P_HIKEY);
+		itemid = PageGetItemIdCareful(state, childblk, child, P_HIKEY);
 		itup = (IndexTuple) PageGetItem(child, itemid);
 		if (BTreeTupleGetTopParent(itup) == state->targetblock)
 			return;
@@ -1836,7 +1853,8 @@ bt_tuple_present_callback(Relation index, HeapTuple htup, Datum *values,
 						  bool *isnull, bool tupleIsAlive, void *checkstate)
 {
 	BtreeCheckState *state = (BtreeCheckState *) checkstate;
-	IndexTuple	itup, norm;
+	IndexTuple	itup,
+				norm;
 
 	Assert(state->heapallindexed);
 
@@ -1916,7 +1934,7 @@ bt_normalize_tuple(BtreeCheckState *state, IndexTuple itup)
 
 	for (i = 0; i < tupleDescriptor->natts; i++)
 	{
-		Form_pg_attribute	att;
+		Form_pg_attribute att;
 
 		att = TupleDescAttr(tupleDescriptor, i);
 
@@ -2087,6 +2105,8 @@ offset_is_negative_infinity(BTPageOpaque opaque, OffsetNumber offset)
  * Does the invariant hold that the key is strictly less than a given upper
  * bound offset item?
  *
+ * Verifies line pointer on behalf of caller.
+ *
  * If this function returns false, convention is that caller throws error due
  * to corruption.
  */
@@ -2094,10 +2114,14 @@ static inline bool
 invariant_l_offset(BtreeCheckState *state, BTScanInsert key,
 				   OffsetNumber upperbound)
 {
+	ItemId		itemid;
 	int32		cmp;
 
 	Assert(key->pivotsearch);
 
+	/* Verify line pointer before checking tuple */
+	itemid = PageGetItemIdCareful(state, state->targetblock, state->target,
+								  upperbound);
 	/* pg_upgrade'd indexes may legally have equal sibling tuples */
 	if (!key->heapkeyspace)
 		return invariant_leq_offset(state, key, upperbound);
@@ -2116,13 +2140,11 @@ invariant_l_offset(BtreeCheckState *state, BTScanInsert key,
 	if (cmp == 0)
 	{
 		BTPageOpaque topaque;
-		ItemId		itemid;
 		IndexTuple	ritup;
 		int			uppnkeyatts;
 		ItemPointer rheaptid;
 		bool		nonpivot;
 
-		itemid = PageGetItemId(state->target, upperbound);
 		ritup = (IndexTuple) PageGetItem(state->target, itemid);
 		topaque = (BTPageOpaque) PageGetSpecialPointer(state->target);
 		nonpivot = P_ISLEAF(topaque) && upperbound >= P_FIRSTDATAKEY(topaque);
@@ -2145,6 +2167,9 @@ invariant_l_offset(BtreeCheckState *state, BTScanInsert key,
  * Does the invariant hold that the key is less than or equal to a given upper
  * bound offset item?
  *
+ * Caller should have verified that upperbound's line pointer is consistent
+ * using PageGetItemIdCareful() call.
+ *
  * If this function returns false, convention is that caller throws error due
  * to corruption.
  */
@@ -2164,6 +2189,9 @@ invariant_leq_offset(BtreeCheckState *state, BTScanInsert key,
 /*
  * Does the invariant hold that the key is strictly greater than a given lower
  * bound offset item?
+ *
+ * Caller should have verified that lowerbound's line pointer is consistent
+ * using PageGetItemIdCareful() call.
  *
  * If this function returns false, convention is that caller throws error due
  * to corruption.
@@ -2199,19 +2227,24 @@ invariant_g_offset(BtreeCheckState *state, BTScanInsert key,
  *
  * Caller's non-target page is a child page of the target, checked as part of
  * checking a property of the target page (i.e. the key comes from the
- * target).
+ * target).  Verifies line pointer on behalf of caller.
  *
  * If this function returns false, convention is that caller throws error due
  * to corruption.
  */
 static inline bool
 invariant_l_nontarget_offset(BtreeCheckState *state, BTScanInsert key,
-							 Page nontarget, OffsetNumber upperbound)
+							 BlockNumber nontargetblock, Page nontarget,
+							 OffsetNumber upperbound)
 {
+	ItemId		itemid;
 	int32		cmp;
 
 	Assert(key->pivotsearch);
 
+	/* Verify line pointer before checking tuple */
+	itemid = PageGetItemIdCareful(state, nontargetblock, nontarget,
+								  upperbound);
 	cmp = _bt_compare(state->rel, key, nontarget, upperbound);
 
 	/* pg_upgrade'd indexes may legally have equal sibling tuples */
@@ -2221,14 +2254,12 @@ invariant_l_nontarget_offset(BtreeCheckState *state, BTScanInsert key,
 	/* See invariant_l_offset() for an explanation of this extra step */
 	if (cmp == 0)
 	{
-		ItemId		itemid;
 		IndexTuple	child;
 		int			uppnkeyatts;
 		ItemPointer childheaptid;
 		BTPageOpaque copaque;
 		bool		nonpivot;
 
-		itemid = PageGetItemId(nontarget, upperbound);
 		child = (IndexTuple) PageGetItem(nontarget, itemid);
 		copaque = (BTPageOpaque) PageGetSpecialPointer(nontarget);
 		nonpivot = P_ISLEAF(copaque) && upperbound >= P_FIRSTDATAKEY(copaque);
@@ -2424,6 +2455,55 @@ bt_mkscankey_pivotsearch(Relation rel, IndexTuple itup)
 	skey->pivotsearch = true;
 
 	return skey;
+}
+
+/*
+ * PageGetItemId() wrapper that validates returned line pointer.
+ *
+ * Buffer page/page item access macros generally trust that line pointers are
+ * not corrupt, which might cause problems for verification itself.  For
+ * example, there is no bounds checking in PageGetItem().  Passing it a
+ * corrupt line pointer can cause it to return a tuple/pointer that is unsafe
+ * to dereference.
+ *
+ * Validating line pointers before tuples avoids undefined behavior and
+ * assertion failures with corrupt indexes, making the verification process
+ * more robust and predictable.
+ */
+static ItemId
+PageGetItemIdCareful(BtreeCheckState *state, BlockNumber block, Page page,
+					 OffsetNumber offset)
+{
+	ItemId		itemid = PageGetItemId(page, offset);
+
+	if (ItemIdGetOffset(itemid) + ItemIdGetLength(itemid) >
+		BLCKSZ - sizeof(BTPageOpaqueData))
+		ereport(ERROR,
+				(errcode(ERRCODE_INDEX_CORRUPTED),
+				 errmsg("line pointer points past end of tuple space in index \"%s\"",
+						RelationGetRelationName(state->rel)),
+				 errdetail_internal("Index tid=(%u,%u) lp_off=%u, lp_len=%u lp_flags=%u.",
+									block, offset, ItemIdGetOffset(itemid),
+									ItemIdGetLength(itemid),
+									ItemIdGetFlags(itemid))));
+
+	/*
+	 * Verify that line pointer isn't LP_REDIRECT or LP_UNUSED, since nbtree
+	 * never uses either.  Verify that line pointer has storage, too, since
+	 * even LP_DEAD items should within nbtree.
+	 */
+	if (ItemIdIsRedirected(itemid) || !ItemIdIsUsed(itemid) ||
+		ItemIdGetLength(itemid) == 0)
+		ereport(ERROR,
+				(errcode(ERRCODE_INDEX_CORRUPTED),
+				 errmsg("invalid line pointer storage in index \"%s\"",
+						RelationGetRelationName(state->rel)),
+				 errdetail_internal("Index tid=(%u,%u) lp_off=%u, lp_len=%u lp_flags=%u.",
+									block, offset, ItemIdGetOffset(itemid),
+									ItemIdGetLength(itemid),
+									ItemIdGetFlags(itemid))));
+
+	return itemid;
 }
 
 /*

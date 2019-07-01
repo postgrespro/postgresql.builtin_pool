@@ -26,7 +26,7 @@
  *		index_beginscan_parallel - join parallel index scan
  *		index_getnext_tid	- get the next TID from a scan
  *		index_fetch_heap		- get the scan's next heap tuple
- *		index_getnext	- get the next heap tuple from a scan
+ *		index_getnext_slot	- get the next tuple from a scan
  *		index_getbitmap - get all tuples from a scan
  *		index_bulk_delete	- bulk deletion of index tuples
  *		index_vacuum_cleanup	- post-deletion cleanup of an index
@@ -37,32 +37,6 @@
  * NOTES
  *		This file contains the index_ routines which used
  *		to be a scattered collection of stuff in access/genam.
- *
- *
- * old comments
- *		Scans are implemented as follows:
- *
- *		`0' represents an invalid item pointer.
- *		`-' represents an unknown item pointer.
- *		`X' represents a known item pointers.
- *		`+' represents known or invalid item pointers.
- *		`*' represents any item pointers.
- *
- *		State is represented by a triple of these symbols in the order of
- *		previous, current, next.  Note that the case of reverse scans works
- *		identically.
- *
- *				State	Result
- *		(1)		+ + -	+ 0 0			(if the next item pointer is invalid)
- *		(2)				+ X -			(otherwise)
- *		(3)		* 0 0	* 0 0			(no change)
- *		(4)		+ X 0	X 0 0			(shift)
- *		(5)		* + X	+ X -			(shift, add unknown)
- *
- *		All other states cannot occur.
- *
- *		Note: It would be possible to cache the status of the previous and
- *			  next item pointer using the flags.
  *
  *-------------------------------------------------------------------------
  */
@@ -125,8 +99,8 @@ do { \
 } while(0)
 
 static IndexScanDesc index_beginscan_internal(Relation indexRelation,
-						 int nkeys, int norderbys, Snapshot snapshot,
-						 ParallelIndexScanDesc pscan, bool temp_snap);
+											  int nkeys, int norderbys, Snapshot snapshot,
+											  ParallelIndexScanDesc pscan, bool temp_snap);
 
 
 /* ----------------------------------------------------------------

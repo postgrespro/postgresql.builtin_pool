@@ -22,6 +22,10 @@ Therefore, any tool used needs to be able to produce SVG.
 This directory contains makefile rules to build SVG from common input
 formats, using some common styling.
 
+fixup-svg.xsl applies some postprocessing to the SVG files produced by
+those external tools to address assorted issues.  See comments in
+there, and adjust and expand as necessary.
+
 Both the source and the SVG output file are committed in this
 directory.  That way, we don't need all developers to have all the
 tools installed.  While we accept that there could be some gratuitous

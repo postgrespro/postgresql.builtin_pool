@@ -38,7 +38,6 @@ d_star|f
 date_tbl|f
 default_tbl|f
 defaultexpr_tbl|f
-delete_test_table|t
 dept|f
 dupindexcols|t
 e_star|f
@@ -150,6 +149,7 @@ pg_shdescription|t
 pg_shseclabel|t
 pg_statistic|t
 pg_statistic_ext|t
+pg_statistic_ext_data|t
 pg_subscription|t
 pg_subscription_rel|t
 pg_tablespace|t
@@ -167,8 +167,6 @@ polygon_tbl|t
 quad_box_tbl|t
 quad_point_tbl|t
 quad_poly_tbl|t
-quad_poly_tbl_ord_seq1|f
-quad_poly_tbl_ord_seq2|f
 radix_text_tbl|t
 ramp|f
 real_city|f
@@ -209,6 +207,7 @@ time_tbl|f
 timestamp_tbl|f
 timestamptz_tbl|f
 timetz_tbl|f
+tmp|f
 varchar_tbl|f
 view_base_table|t
 -- restore normal output mode

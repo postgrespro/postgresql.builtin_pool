@@ -414,15 +414,15 @@ typedef unsigned long long int uint64;
 
 typedef PG_INT128_TYPE int128
 #if defined(pg_attribute_aligned)
-pg_attribute_aligned(MAXIMUM_ALIGNOF)
+			pg_attribute_aligned(MAXIMUM_ALIGNOF)
 #endif
-;
+		   ;
 
 typedef unsigned PG_INT128_TYPE uint128
 #if defined(pg_attribute_aligned)
-pg_attribute_aligned(MAXIMUM_ALIGNOF)
+			pg_attribute_aligned(MAXIMUM_ALIGNOF)
 #endif
-;
+		   ;
 
 #endif
 #endif
@@ -800,8 +800,8 @@ typedef NameData *Name;
  */
 #ifndef FRONTEND
 extern void ExceptionalCondition(const char *conditionName,
-					 const char *errorType,
-					 const char *fileName, int lineNumber) pg_attribute_noreturn();
+								 const char *errorType,
+								 const char *fileName, int lineNumber) pg_attribute_noreturn();
 #endif
 
 /*
@@ -1129,7 +1129,7 @@ typedef union PGAlignedXLogBlock
  * Please note IT IS NOT SAFE to cast constness away if the result will ever
  * be modified (it would be undefined behaviour). Doing so anyway can cause
  * compiler misoptimizations or runtime crashes (modifying readonly memory).
- * It is only safe to use when the the result will not be modified, but API
+ * It is only safe to use when the result will not be modified, but API
  * design or language restrictions prevent you from declaring that
  * (e.g. because a function returns both const and non-const variables).
  *

@@ -17,6 +17,7 @@
 #include "access/sysattr.h"
 #include "catalog/pg_operator.h"
 #include "catalog/pg_statistic_ext.h"
+#include "catalog/pg_statistic_ext_data.h"
 #include "lib/stringinfo.h"
 #include "nodes/nodeFuncs.h"
 #include "optimizer/clauses.h"
@@ -31,6 +32,20 @@
 #include "utils/lsyscache.h"
 #include "utils/syscache.h"
 #include "utils/typcache.h"
+
+/* size of the struct header fields (magic, type, ndeps) */
+#define SizeOfHeader		(3 * sizeof(uint32))
+
+/* size of a serialized dependency (degree, natts, atts) */
+#define SizeOfItem(natts) \
+	(sizeof(double) + sizeof(AttrNumber) * (1 + (natts)))
+
+/* minimal size of a dependency (with two attributes) */
+#define MinSizeOfItem	SizeOfItem(2)
+
+/* minimal size of dependencies, when all deps are minimal */
+#define MinSizeOfItems(ndeps) \
+	(SizeOfHeader + (ndeps) * MinSizeOfItem)
 
 /*
  * Internal state for DependencyGenerator of dependencies. Dependencies are similar to
@@ -49,22 +64,22 @@ typedef struct DependencyGeneratorData
 typedef DependencyGeneratorData *DependencyGenerator;
 
 static void generate_dependencies_recurse(DependencyGenerator state,
-							  int index, AttrNumber start, AttrNumber *current);
+										  int index, AttrNumber start, AttrNumber *current);
 static void generate_dependencies(DependencyGenerator state);
 static DependencyGenerator DependencyGenerator_init(int n, int k);
 static void DependencyGenerator_free(DependencyGenerator state);
 static AttrNumber *DependencyGenerator_next(DependencyGenerator state);
 static double dependency_degree(int numrows, HeapTuple *rows, int k,
-				  AttrNumber *dependency, VacAttrStats **stats, Bitmapset *attrs);
+								AttrNumber *dependency, VacAttrStats **stats, Bitmapset *attrs);
 static bool dependency_is_fully_matched(MVDependency *dependency,
-							Bitmapset *attnums);
+										Bitmapset *attnums);
 static bool dependency_implies_attribute(MVDependency *dependency,
-							 AttrNumber attnum);
+										 AttrNumber attnum);
 static bool dependency_is_compatible_clause(Node *clause, Index relid,
-								AttrNumber *attnum);
+											AttrNumber *attnum);
 static MVDependency *find_strongest_dependency(StatisticExtInfo *stats,
-						  MVDependencies *dependencies,
-						  Bitmapset *attnums);
+											   MVDependencies *dependencies,
+											   Bitmapset *attnums);
 
 static void
 generate_dependencies_recurse(DependencyGenerator state, int index,
@@ -265,8 +280,8 @@ dependency_degree(int numrows, HeapTuple *rows, int k, AttrNumber *dependency,
 	 * build an array of SortItem(s) sorted using the multi-sort support
 	 *
 	 * XXX This relies on all stats entries pointing to the same tuple
-	 * descriptor.  For now that assumption holds, but it might change in
-	 * the future for example if we support statistics on multiple tables.
+	 * descriptor.  For now that assumption holds, but it might change in the
+	 * future for example if we support statistics on multiple tables.
 	 */
 	items = build_sorted_items(numrows, &nitems, rows, stats[0]->tupDesc,
 							   mss, k, attnums_dep);
@@ -286,8 +301,8 @@ dependency_degree(int numrows, HeapTuple *rows, int k, AttrNumber *dependency,
 	{
 		/*
 		 * Check if the group ended, which may be either because we processed
-		 * all the items (i==nitems), or because the i-th item is not equal
-		 * to the preceding one.
+		 * all the items (i==nitems), or because the i-th item is not equal to
+		 * the preceding one.
 		 */
 		if (i == nitems ||
 			multi_sort_compare_dims(0, k - 2, &items[i - 1], &items[i], mss) != 0)
@@ -408,7 +423,7 @@ statext_dependencies_build(int numrows, HeapTuple *rows, Bitmapset *attrs,
 			dependencies->ndeps++;
 			dependencies = (MVDependencies *) repalloc(dependencies,
 													   offsetof(MVDependencies, deps)
-													   + dependencies->ndeps * sizeof(MVDependency));
+													   + dependencies->ndeps * sizeof(MVDependency *));
 
 			dependencies->deps[dependencies->ndeps - 1] = d;
 		}
@@ -436,12 +451,11 @@ statext_dependencies_serialize(MVDependencies *dependencies)
 	Size		len;
 
 	/* we need to store ndeps, with a number of attributes for each one */
-	len = VARHDRSZ + SizeOfDependencies
-		+ dependencies->ndeps * SizeOfDependency;
+	len = VARHDRSZ + SizeOfHeader;
 
 	/* and also include space for the actual attribute numbers and degrees */
 	for (i = 0; i < dependencies->ndeps; i++)
-		len += (sizeof(AttrNumber) * dependencies->deps[i]->nattributes);
+		len += SizeOfItem(dependencies->deps[i]->nattributes);
 
 	output = (bytea *) palloc0(len);
 	SET_VARSIZE(output, len);
@@ -461,14 +475,21 @@ statext_dependencies_serialize(MVDependencies *dependencies)
 	{
 		MVDependency *d = dependencies->deps[i];
 
-		memcpy(tmp, d, SizeOfDependency);
-		tmp += SizeOfDependency;
+		memcpy(tmp, &d->degree, sizeof(double));
+		tmp += sizeof(double);
+
+		memcpy(tmp, &d->nattributes, sizeof(AttrNumber));
+		tmp += sizeof(AttrNumber);
 
 		memcpy(tmp, d->attributes, sizeof(AttrNumber) * d->nattributes);
 		tmp += sizeof(AttrNumber) * d->nattributes;
 
+		/* protect against overflow */
 		Assert(tmp <= ((char *) output + len));
 	}
+
+	/* make sure we've produced exactly the right amount of data */
+	Assert(tmp == ((char *) output + len));
 
 	return output;
 }
@@ -487,9 +508,9 @@ statext_dependencies_deserialize(bytea *data)
 	if (data == NULL)
 		return NULL;
 
-	if (VARSIZE_ANY_EXHDR(data) < SizeOfDependencies)
+	if (VARSIZE_ANY_EXHDR(data) < SizeOfHeader)
 		elog(ERROR, "invalid MVDependencies size %zd (expected at least %zd)",
-			 VARSIZE_ANY_EXHDR(data), SizeOfDependencies);
+			 VARSIZE_ANY_EXHDR(data), SizeOfHeader);
 
 	/* read the MVDependencies header */
 	dependencies = (MVDependencies *) palloc0(sizeof(MVDependencies));
@@ -514,14 +535,10 @@ statext_dependencies_deserialize(bytea *data)
 			 dependencies->type, STATS_DEPS_TYPE_BASIC);
 
 	if (dependencies->ndeps == 0)
-		ereport(ERROR,
-				(errcode(ERRCODE_DATA_CORRUPTED),
-				 errmsg("invalid zero-length item array in MVDependencies")));
+		elog(ERROR, "invalid zero-length item array in MVDependencies");
 
 	/* what minimum bytea size do we expect for those parameters */
-	min_expected_size = SizeOfDependencies +
-		dependencies->ndeps * (SizeOfDependency +
-							   sizeof(AttrNumber) * 2);
+	min_expected_size = SizeOfItem(dependencies->ndeps);
 
 	if (VARSIZE_ANY_EXHDR(data) < min_expected_size)
 		elog(ERROR, "invalid dependencies size %zd (expected at least %zd)",
@@ -621,12 +638,12 @@ statext_dependencies_load(Oid mvoid)
 	Datum		deps;
 	HeapTuple	htup;
 
-	htup = SearchSysCache1(STATEXTOID, ObjectIdGetDatum(mvoid));
+	htup = SearchSysCache1(STATEXTDATASTXOID, ObjectIdGetDatum(mvoid));
 	if (!HeapTupleIsValid(htup))
 		elog(ERROR, "cache lookup failed for statistics object %u", mvoid);
 
-	deps = SysCacheGetAttr(STATEXTOID, htup,
-						   Anum_pg_statistic_ext_stxdependencies, &isnull);
+	deps = SysCacheGetAttr(STATEXTDATASTXOID, htup,
+						   Anum_pg_statistic_ext_data_stxddependencies, &isnull);
 	if (isnull)
 		elog(ERROR,
 			 "requested statistic kind \"%c\" is not yet built for statistics object %u",

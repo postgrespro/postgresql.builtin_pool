@@ -34,37 +34,37 @@
 
 
 static void markTargetListOrigin(ParseState *pstate, TargetEntry *tle,
-					 Var *var, int levelsup);
+								 Var *var, int levelsup);
 static Node *transformAssignmentIndirection(ParseState *pstate,
-							   Node *basenode,
-							   const char *targetName,
-							   bool targetIsArray,
-							   Oid targetTypeId,
-							   int32 targetTypMod,
-							   Oid targetCollation,
-							   ListCell *indirection,
-							   Node *rhs,
-							   int location);
+											Node *basenode,
+											const char *targetName,
+											bool targetIsSubscripting,
+											Oid targetTypeId,
+											int32 targetTypMod,
+											Oid targetCollation,
+											ListCell *indirection,
+											Node *rhs,
+											int location);
 static Node *transformAssignmentSubscripts(ParseState *pstate,
-							  Node *basenode,
-							  const char *targetName,
-							  Oid targetTypeId,
-							  int32 targetTypMod,
-							  Oid targetCollation,
-							  List *subscripts,
-							  bool isSlice,
-							  ListCell *next_indirection,
-							  Node *rhs,
-							  int location);
+										   Node *basenode,
+										   const char *targetName,
+										   Oid targetTypeId,
+										   int32 targetTypMod,
+										   Oid targetCollation,
+										   List *subscripts,
+										   bool isSlice,
+										   ListCell *next_indirection,
+										   Node *rhs,
+										   int location);
 static List *ExpandColumnRefStar(ParseState *pstate, ColumnRef *cref,
-					bool make_target_entry);
+								 bool make_target_entry);
 static List *ExpandAllTables(ParseState *pstate, int location);
 static List *ExpandIndirectionStar(ParseState *pstate, A_Indirection *ind,
-					  bool make_target_entry, ParseExprKind exprKind);
+								   bool make_target_entry, ParseExprKind exprKind);
 static List *ExpandSingleTable(ParseState *pstate, RangeTblEntry *rte,
-				  int location, bool make_target_entry);
+							   int location, bool make_target_entry);
 static List *ExpandRowReference(ParseState *pstate, Node *expr,
-				   bool make_target_entry);
+								bool make_target_entry);
 static int	FigureColnameInternal(Node *node, char **name);
 
 
@@ -695,9 +695,9 @@ transformAssignmentIndirection(ParseState *pstate,
 		/*
 		 * Set up a substitution.  We abuse CaseTestExpr for this.  It's safe
 		 * to do so because the only nodes that will be above the CaseTestExpr
-		 * in the finished expression will be FieldStore and ArrayRef nodes.
-		 * (There could be other stuff in the tree, but it will be within
-		 * other child fields of those node types.)
+		 * in the finished expression will be FieldStore and SubscriptingRef
+		 * nodes. (There could be other stuff in the tree, but it will be
+		 * within other child fields of those node types.)
 		 */
 		CaseTestExpr *ctest = makeNode(CaseTestExpr);
 

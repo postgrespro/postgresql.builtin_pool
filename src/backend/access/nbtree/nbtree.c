@@ -93,10 +93,10 @@ typedef struct BTParallelScanDescData *BTParallelScanDesc;
 
 
 static void btvacuumscan(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
-			 IndexBulkDeleteCallback callback, void *callback_state,
-			 BTCycleId cycleid, TransactionId *oldestBtpoXact);
+						 IndexBulkDeleteCallback callback, void *callback_state,
+						 BTCycleId cycleid, TransactionId *oldestBtpoXact);
 static void btvacuumpage(BTVacState *vstate, BlockNumber blkno,
-			 BlockNumber orig_blkno);
+						 BlockNumber orig_blkno);
 
 
 /*
@@ -621,8 +621,8 @@ btparallelrescan(IndexScanDesc scan)
 
 /*
  * _bt_parallel_seize() -- Begin the process of advancing the scan to a new
- *		page.  Other scans must wait until we call bt_parallel_release() or
- *		bt_parallel_done().
+ *		page.  Other scans must wait until we call _bt_parallel_release()
+ *		or _bt_parallel_done().
  *
  * The return value is true if we successfully seized the scan and false
  * if we did not.  The latter case occurs if no pages remain for the current
@@ -835,7 +835,7 @@ _bt_vacuum_needs_cleanup(IndexVacuumInfo *info)
 		prev_num_heap_tuples = metad->btm_last_cleanup_num_heap_tuples;
 
 		if (cleanup_scale_factor <= 0 ||
-			prev_num_heap_tuples < 0 ||
+			prev_num_heap_tuples <= 0 ||
 			(info->num_heap_tuples - prev_num_heap_tuples) /
 			prev_num_heap_tuples >= cleanup_scale_factor)
 			result = true;

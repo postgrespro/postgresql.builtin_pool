@@ -32,13 +32,13 @@ typedef struct
 } adjust_appendrel_attrs_context;
 
 static void make_inh_translation_list(Relation oldrelation,
-						  Relation newrelation,
-						  Index newvarno,
-						  List **translated_vars);
+									  Relation newrelation,
+									  Index newvarno,
+									  List **translated_vars);
 static Node *adjust_appendrel_attrs_mutator(Node *node,
-							   adjust_appendrel_attrs_context *context);
+											adjust_appendrel_attrs_context *context);
 static List *adjust_inherited_tlist(List *tlist,
-					   AppendRelInfo *context);
+									AppendRelInfo *context);
 
 
 /*
@@ -134,7 +134,7 @@ make_inh_translation_list(Relation oldrelation, Relation newrelation,
 			HeapTuple	newtup;
 
 			newtup = SearchSysCacheAttName(new_relid, attname);
-			if (!newtup)
+			if (!HeapTupleIsValid(newtup))
 				elog(ERROR, "could not find inherited attribute \"%s\" of relation \"%s\"",
 					 attname, RelationGetRelationName(newrelation));
 			new_attno = ((Form_pg_attribute) GETSTRUCT(newtup))->attnum - 1;

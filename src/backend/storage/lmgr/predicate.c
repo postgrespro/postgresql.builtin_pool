@@ -451,39 +451,39 @@ static uint32 predicatelock_hash(const void *key, Size keysize);
 static void SummarizeOldestCommittedSxact(void);
 static Snapshot GetSafeSnapshot(Snapshot snapshot);
 static Snapshot GetSerializableTransactionSnapshotInt(Snapshot snapshot,
-									  VirtualTransactionId *sourcevxid,
-									  int sourcepid);
+													  VirtualTransactionId *sourcevxid,
+													  int sourcepid);
 static bool PredicateLockExists(const PREDICATELOCKTARGETTAG *targettag);
 static bool GetParentPredicateLockTag(const PREDICATELOCKTARGETTAG *tag,
-						  PREDICATELOCKTARGETTAG *parent);
+									  PREDICATELOCKTARGETTAG *parent);
 static bool CoarserLockCovers(const PREDICATELOCKTARGETTAG *newtargettag);
 static void RemoveScratchTarget(bool lockheld);
 static void RestoreScratchTarget(bool lockheld);
 static void RemoveTargetIfNoLongerUsed(PREDICATELOCKTARGET *target,
-						   uint32 targettaghash);
+									   uint32 targettaghash);
 static void DeleteChildTargetLocks(const PREDICATELOCKTARGETTAG *newtargettag);
 static int	MaxPredicateChildLocks(const PREDICATELOCKTARGETTAG *tag);
 static bool CheckAndPromotePredicateLockRequest(const PREDICATELOCKTARGETTAG *reqtag);
 static void DecrementParentLocks(const PREDICATELOCKTARGETTAG *targettag);
 static void CreatePredicateLock(const PREDICATELOCKTARGETTAG *targettag,
-					uint32 targettaghash,
-					SERIALIZABLEXACT *sxact);
+								uint32 targettaghash,
+								SERIALIZABLEXACT *sxact);
 static void DeleteLockTarget(PREDICATELOCKTARGET *target, uint32 targettaghash);
 static bool TransferPredicateLocksToNewTarget(PREDICATELOCKTARGETTAG oldtargettag,
-								  PREDICATELOCKTARGETTAG newtargettag,
-								  bool removeOld);
+											  PREDICATELOCKTARGETTAG newtargettag,
+											  bool removeOld);
 static void PredicateLockAcquire(const PREDICATELOCKTARGETTAG *targettag);
 static void DropAllPredicateLocksFromTable(Relation relation,
-							   bool transfer);
+										   bool transfer);
 static void SetNewSxactGlobalXmin(void);
 static void ClearOldPredicateLocks(void);
 static void ReleaseOneSerializableXact(SERIALIZABLEXACT *sxact, bool partial,
-						   bool summarize);
+									   bool summarize);
 static bool XidIsConcurrent(TransactionId xid);
 static void CheckTargetForConflictsIn(PREDICATELOCKTARGETTAG *targettag);
 static void FlagRWConflict(SERIALIZABLEXACT *reader, SERIALIZABLEXACT *writer);
 static void OnConflict_CheckForSerializationFailure(const SERIALIZABLEXACT *reader,
-										SERIALIZABLEXACT *writer);
+													SERIALIZABLEXACT *writer);
 static void CreateLocalPredicateLockHash(void);
 static void ReleasePredicateLocksLocal(void);
 
@@ -3438,8 +3438,7 @@ ReleasePredicateLocks(bool isCommit, bool isReadOnlySafe)
 		 * cleanup. This means it should not be considered when calculating
 		 * SxactGlobalXmin.
 		 */
-		if (!isReadOnlySafe)
-			MySerializableXact->flags |= SXACT_FLAG_DOOMED;
+		MySerializableXact->flags |= SXACT_FLAG_DOOMED;
 		MySerializableXact->flags |= SXACT_FLAG_ROLLED_BACK;
 
 		/*
@@ -3635,8 +3634,7 @@ ReleasePredicateLocks(bool isCommit, bool isReadOnlySafe)
 	 * was launched.
 	 */
 	needToClear = false;
-	if (!isReadOnlySafe &&
-		TransactionIdEquals(MySerializableXact->xmin, PredXact->SxactGlobalXmin))
+	if (TransactionIdEquals(MySerializableXact->xmin, PredXact->SxactGlobalXmin))
 	{
 		Assert(PredXact->SxactGlobalXminCount > 0);
 		if (--(PredXact->SxactGlobalXminCount) == 0)

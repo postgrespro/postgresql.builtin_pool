@@ -16,14 +16,15 @@
 
 #include "getopt_long.h"
 
+#include "common/logging.h"
+#include "fe_utils/print.h"
+
 #include "command.h"
 #include "common.h"
 #include "describe.h"
 #include "help.h"
 #include "input.h"
 #include "mainloop.h"
-#include "fe_utils/logging.h"
-#include "fe_utils/print.h"
 #include "settings.h"
 
 
@@ -80,9 +81,9 @@ struct adhoc_opts
 };
 
 static void parse_psql_options(int argc, char *argv[],
-				   struct adhoc_opts *options);
+							   struct adhoc_opts *options);
 static void simple_action_list_append(SimpleActionList *list,
-						  enum _actions action, const char *val);
+									  enum _actions action, const char *val);
 static void process_psqlrc(char *argv0);
 static void process_psqlrc_file(char *filename);
 static void showVersion(void);
@@ -103,7 +104,7 @@ log_locus_callback(const char **filename, uint64 *lineno)
 	if (pset.inputfile)
 	{
 		*filename = pset.inputfile;
-		*lineno =  pset.lineno;
+		*lineno = pset.lineno;
 	}
 	else
 	{
@@ -1110,13 +1111,15 @@ verbosity_hook(const char *newval)
 	Assert(newval != NULL);		/* else substitute hook messed up */
 	if (pg_strcasecmp(newval, "default") == 0)
 		pset.verbosity = PQERRORS_DEFAULT;
-	else if (pg_strcasecmp(newval, "terse") == 0)
-		pset.verbosity = PQERRORS_TERSE;
 	else if (pg_strcasecmp(newval, "verbose") == 0)
 		pset.verbosity = PQERRORS_VERBOSE;
+	else if (pg_strcasecmp(newval, "terse") == 0)
+		pset.verbosity = PQERRORS_TERSE;
+	else if (pg_strcasecmp(newval, "sqlstate") == 0)
+		pset.verbosity = PQERRORS_SQLSTATE;
 	else
 	{
-		PsqlVarEnumError("VERBOSITY", newval, "default, terse, verbose");
+		PsqlVarEnumError("VERBOSITY", newval, "default, verbose, terse, sqlstate");
 		return false;
 	}
 

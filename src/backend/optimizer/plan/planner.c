@@ -118,7 +118,7 @@ typedef struct
 
 /*
  * Temporary structure for use during WindowClause reordering in order to be
- * be able to sort WindowClauses on partitioning/ordering prefix.
+ * able to sort WindowClauses on partitioning/ordering prefix.
  */
 typedef struct
 {
@@ -132,122 +132,122 @@ static Node *preprocess_expression(PlannerInfo *root, Node *expr, int kind);
 static void preprocess_qual_conditions(PlannerInfo *root, Node *jtnode);
 static void inheritance_planner(PlannerInfo *root);
 static void grouping_planner(PlannerInfo *root, bool inheritance_update,
-				 double tuple_fraction);
+							 double tuple_fraction);
 static grouping_sets_data *preprocess_grouping_sets(PlannerInfo *root);
 static List *remap_to_groupclause_idx(List *groupClause, List *gsets,
-						 int *tleref_to_colnum_map);
+									  int *tleref_to_colnum_map);
 static void preprocess_rowmarks(PlannerInfo *root);
 static double preprocess_limit(PlannerInfo *root,
-				 double tuple_fraction,
-				 int64 *offset_est, int64 *count_est);
+							   double tuple_fraction,
+							   int64 *offset_est, int64 *count_est);
 static void remove_useless_groupby_columns(PlannerInfo *root);
 static List *preprocess_groupclause(PlannerInfo *root, List *force);
 static List *extract_rollup_sets(List *groupingSets);
 static List *reorder_grouping_sets(List *groupingSets, List *sortclause);
 static void standard_qp_callback(PlannerInfo *root, void *extra);
 static double get_number_of_groups(PlannerInfo *root,
-					 double path_rows,
-					 grouping_sets_data *gd,
-					 List *target_list);
+								   double path_rows,
+								   grouping_sets_data *gd,
+								   List *target_list);
 static RelOptInfo *create_grouping_paths(PlannerInfo *root,
-					  RelOptInfo *input_rel,
-					  PathTarget *target,
-					  bool target_parallel_safe,
-					  const AggClauseCosts *agg_costs,
-					  grouping_sets_data *gd);
+										 RelOptInfo *input_rel,
+										 PathTarget *target,
+										 bool target_parallel_safe,
+										 const AggClauseCosts *agg_costs,
+										 grouping_sets_data *gd);
 static bool is_degenerate_grouping(PlannerInfo *root);
 static void create_degenerate_grouping_paths(PlannerInfo *root,
-								 RelOptInfo *input_rel,
-								 RelOptInfo *grouped_rel);
+											 RelOptInfo *input_rel,
+											 RelOptInfo *grouped_rel);
 static RelOptInfo *make_grouping_rel(PlannerInfo *root, RelOptInfo *input_rel,
-				  PathTarget *target, bool target_parallel_safe,
-				  Node *havingQual);
+									 PathTarget *target, bool target_parallel_safe,
+									 Node *havingQual);
 static void create_ordinary_grouping_paths(PlannerInfo *root,
-							   RelOptInfo *input_rel,
-							   RelOptInfo *grouped_rel,
-							   const AggClauseCosts *agg_costs,
-							   grouping_sets_data *gd,
-							   GroupPathExtraData *extra,
-							   RelOptInfo **partially_grouped_rel_p);
+										   RelOptInfo *input_rel,
+										   RelOptInfo *grouped_rel,
+										   const AggClauseCosts *agg_costs,
+										   grouping_sets_data *gd,
+										   GroupPathExtraData *extra,
+										   RelOptInfo **partially_grouped_rel_p);
 static void consider_groupingsets_paths(PlannerInfo *root,
-							RelOptInfo *grouped_rel,
-							Path *path,
-							bool is_sorted,
-							bool can_hash,
-							grouping_sets_data *gd,
-							const AggClauseCosts *agg_costs,
-							double dNumGroups);
+										RelOptInfo *grouped_rel,
+										Path *path,
+										bool is_sorted,
+										bool can_hash,
+										grouping_sets_data *gd,
+										const AggClauseCosts *agg_costs,
+										double dNumGroups);
 static RelOptInfo *create_window_paths(PlannerInfo *root,
-					RelOptInfo *input_rel,
-					PathTarget *input_target,
-					PathTarget *output_target,
-					bool output_target_parallel_safe,
-					WindowFuncLists *wflists,
-					List *activeWindows);
+									   RelOptInfo *input_rel,
+									   PathTarget *input_target,
+									   PathTarget *output_target,
+									   bool output_target_parallel_safe,
+									   WindowFuncLists *wflists,
+									   List *activeWindows);
 static void create_one_window_path(PlannerInfo *root,
-					   RelOptInfo *window_rel,
-					   Path *path,
-					   PathTarget *input_target,
-					   PathTarget *output_target,
-					   WindowFuncLists *wflists,
-					   List *activeWindows);
+								   RelOptInfo *window_rel,
+								   Path *path,
+								   PathTarget *input_target,
+								   PathTarget *output_target,
+								   WindowFuncLists *wflists,
+								   List *activeWindows);
 static RelOptInfo *create_distinct_paths(PlannerInfo *root,
-					  RelOptInfo *input_rel);
+										 RelOptInfo *input_rel);
 static RelOptInfo *create_ordered_paths(PlannerInfo *root,
-					 RelOptInfo *input_rel,
-					 PathTarget *target,
-					 bool target_parallel_safe,
-					 double limit_tuples);
+										RelOptInfo *input_rel,
+										PathTarget *target,
+										bool target_parallel_safe,
+										double limit_tuples);
 static PathTarget *make_group_input_target(PlannerInfo *root,
-						PathTarget *final_target);
+										   PathTarget *final_target);
 static PathTarget *make_partial_grouping_target(PlannerInfo *root,
-							 PathTarget *grouping_target,
-							 Node *havingQual);
+												PathTarget *grouping_target,
+												Node *havingQual);
 static List *postprocess_setop_tlist(List *new_tlist, List *orig_tlist);
 static List *select_active_windows(PlannerInfo *root, WindowFuncLists *wflists);
 static PathTarget *make_window_input_target(PlannerInfo *root,
-						 PathTarget *final_target,
-						 List *activeWindows);
+											PathTarget *final_target,
+											List *activeWindows);
 static List *make_pathkeys_for_window(PlannerInfo *root, WindowClause *wc,
-						 List *tlist);
+									  List *tlist);
 static PathTarget *make_sort_input_target(PlannerInfo *root,
-					   PathTarget *final_target,
-					   bool *have_postponed_srfs);
+										  PathTarget *final_target,
+										  bool *have_postponed_srfs);
 static void adjust_paths_for_srfs(PlannerInfo *root, RelOptInfo *rel,
-					  List *targets, List *targets_contain_srfs);
+								  List *targets, List *targets_contain_srfs);
 static void add_paths_to_grouping_rel(PlannerInfo *root, RelOptInfo *input_rel,
-						  RelOptInfo *grouped_rel,
-						  RelOptInfo *partially_grouped_rel,
-						  const AggClauseCosts *agg_costs,
-						  grouping_sets_data *gd,
-						  double dNumGroups,
-						  GroupPathExtraData *extra);
+									  RelOptInfo *grouped_rel,
+									  RelOptInfo *partially_grouped_rel,
+									  const AggClauseCosts *agg_costs,
+									  grouping_sets_data *gd,
+									  double dNumGroups,
+									  GroupPathExtraData *extra);
 static RelOptInfo *create_partial_grouping_paths(PlannerInfo *root,
-							  RelOptInfo *grouped_rel,
-							  RelOptInfo *input_rel,
-							  grouping_sets_data *gd,
-							  GroupPathExtraData *extra,
-							  bool force_rel_creation);
+												 RelOptInfo *grouped_rel,
+												 RelOptInfo *input_rel,
+												 grouping_sets_data *gd,
+												 GroupPathExtraData *extra,
+												 bool force_rel_creation);
 static void gather_grouping_paths(PlannerInfo *root, RelOptInfo *rel);
 static bool can_partial_agg(PlannerInfo *root,
-				const AggClauseCosts *agg_costs);
+							const AggClauseCosts *agg_costs);
 static void apply_scanjoin_target_to_paths(PlannerInfo *root,
-							   RelOptInfo *rel,
-							   List *scanjoin_targets,
-							   List *scanjoin_targets_contain_srfs,
-							   bool scanjoin_target_parallel_safe,
-							   bool tlist_same_exprs);
+										   RelOptInfo *rel,
+										   List *scanjoin_targets,
+										   List *scanjoin_targets_contain_srfs,
+										   bool scanjoin_target_parallel_safe,
+										   bool tlist_same_exprs);
 static void create_partitionwise_grouping_paths(PlannerInfo *root,
-									RelOptInfo *input_rel,
-									RelOptInfo *grouped_rel,
-									RelOptInfo *partially_grouped_rel,
-									const AggClauseCosts *agg_costs,
-									grouping_sets_data *gd,
-									PartitionwiseAggregateType patype,
-									GroupPathExtraData *extra);
+												RelOptInfo *input_rel,
+												RelOptInfo *grouped_rel,
+												RelOptInfo *partially_grouped_rel,
+												const AggClauseCosts *agg_costs,
+												grouping_sets_data *gd,
+												PartitionwiseAggregateType patype,
+												GroupPathExtraData *extra);
 static bool group_by_has_partkey(RelOptInfo *input_rel,
-					 List *targetList,
-					 List *groupClause);
+								 List *targetList,
+								 List *groupClause);
 static int	common_prefix_cmp(const void *a, const void *b);
 
 
@@ -1513,8 +1513,9 @@ inheritance_planner(PlannerInfo *root)
 		parent_rte->securityQuals = NIL;
 
 		/*
-		 * Mark whether we're planning a query to a partitioned table or an
-		 * inheritance parent.
+		 * HACK: setting this to a value other than INHKIND_NONE signals to
+		 * relation_excluded_by_constraints() to treat the result relation as
+		 * being an appendrel member.
 		 */
 		subroot->inhTargetKind =
 			(rootRelation != 0) ? INHKIND_PARTITIONED : INHKIND_INHERITED;
@@ -1721,7 +1722,8 @@ inheritance_planner(PlannerInfo *root)
 
 		/* Make a dummy path, cf set_dummy_rel_pathlist() */
 		dummy_path = (Path *) create_append_path(NULL, final_rel, NIL, NIL,
-												 NULL, 0, false, NIL, -1);
+												 NIL, NULL, 0, false,
+												 NIL, -1);
 
 		/* These lists must be nonempty to make a valid ModifyTable node */
 		subpaths = list_make1(dummy_path);
@@ -1731,6 +1733,8 @@ inheritance_planner(PlannerInfo *root)
 			withCheckOptionLists = list_make1(parse->withCheckOptions);
 		if (parse->returningList)
 			returningLists = list_make1(parse->returningList);
+		/* Disable tuple routing, too, just to be safe */
+		root->partColsUpdated = false;
 	}
 	else
 	{
@@ -3526,7 +3530,6 @@ static List *
 reorder_grouping_sets(List *groupingsets, List *sortclause)
 {
 	ListCell   *lc;
-	ListCell   *lc2;
 	List	   *previous = NIL;
 	List	   *result = NIL;
 
@@ -3536,35 +3539,33 @@ reorder_grouping_sets(List *groupingsets, List *sortclause)
 		List	   *new_elems = list_difference_int(candidate, previous);
 		GroupingSetData *gs = makeNode(GroupingSetData);
 
-		if (list_length(new_elems) > 0)
+		while (list_length(sortclause) > list_length(previous) &&
+			   list_length(new_elems) > 0)
 		{
-			while (list_length(sortclause) > list_length(previous))
-			{
-				SortGroupClause *sc = list_nth(sortclause, list_length(previous));
-				int			ref = sc->tleSortGroupRef;
+			SortGroupClause *sc = list_nth(sortclause, list_length(previous));
+			int			ref = sc->tleSortGroupRef;
 
-				if (list_member_int(new_elems, ref))
-				{
-					previous = lappend_int(previous, ref);
-					new_elems = list_delete_int(new_elems, ref);
-				}
-				else
-				{
-					/* diverged from the sortclause; give up on it */
-					sortclause = NIL;
-					break;
-				}
+			if (list_member_int(new_elems, ref))
+			{
+				previous = lappend_int(previous, ref);
+				new_elems = list_delete_int(new_elems, ref);
 			}
-
-			foreach(lc2, new_elems)
+			else
 			{
-				previous = lappend_int(previous, lfirst_int(lc2));
+				/* diverged from the sortclause; give up on it */
+				sortclause = NIL;
+				break;
 			}
 		}
 
+		/*
+		 * Safe to use list_concat (which shares cells of the second arg)
+		 * because we know that new_elems does not share cells with anything.
+		 */
+		previous = list_concat(previous, new_elems);
+
 		gs->set = list_copy(previous);
 		result = lcons(gs, result);
-		list_free(new_elems);
 	}
 
 	list_free(previous);
@@ -4002,6 +4003,7 @@ create_degenerate_grouping_paths(PlannerInfo *root, RelOptInfo *input_rel,
 			create_append_path(root,
 							   grouped_rel,
 							   paths,
+							   NIL,
 							   NIL,
 							   NULL,
 							   0,
@@ -6285,6 +6287,7 @@ plan_create_index_workers(Oid tableOid, Oid indexOid)
 	/* Build RelOptInfo */
 	rel = build_simple_rel(root, 1, NULL);
 
+	/* Rels are assumed already locked by the caller */
 	heap = table_open(tableOid, NoLock);
 	index = index_open(indexOid, NoLock);
 
@@ -7107,6 +7110,10 @@ apply_scanjoin_target_to_paths(PlannerInfo *root,
 	 * confused in createplan.c if they don't agree.  We must do this now so
 	 * that any append paths made in the next part will use the correct
 	 * pathtarget (cf. create_append_path).
+	 *
+	 * Note that this is also necessary if GetForeignUpperPaths() gets called
+	 * on the final scan/join relation or on any of its children, since the
+	 * FDW might look at the rel's target to create ForeignPaths.
 	 */
 	rel->reltarget = llast_node(PathTarget, scanjoin_targets);
 

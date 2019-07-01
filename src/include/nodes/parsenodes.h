@@ -1764,6 +1764,7 @@ typedef enum AlterTableType
 	AT_ColumnDefault,			/* alter column default */
 	AT_DropNotNull,				/* alter column drop not null */
 	AT_SetNotNull,				/* alter column set not null */
+	AT_CheckNotNull,			/* check column is already marked not null */
 	AT_SetStatistics,			/* alter column set statistics */
 	AT_SetOptions,				/* alter column set ( options ) */
 	AT_ResetOptions,			/* alter column reset ( options ) */
@@ -2137,8 +2138,7 @@ typedef struct Constraint
 	bool		is_no_inherit;	/* is constraint non-inheritable? */
 	Node	   *raw_expr;		/* expr, as untransformed parse tree */
 	char	   *cooked_expr;	/* expr, as nodeToString representation */
-	char		generated_when;	/* ALWAYS or BY DEFAULT */
-	char		generated_kind; /* currently always STORED */
+	char		generated_when; /* ALWAYS or BY DEFAULT */
 
 	/* Fields used for unique constraints (UNIQUE and PRIMARY KEY): */
 	List	   *keys;			/* String nodes naming referenced key
@@ -2153,6 +2153,8 @@ typedef struct Constraint
 	List	   *options;		/* options from WITH clause */
 	char	   *indexname;		/* existing index to use; otherwise NULL */
 	char	   *indexspace;		/* index tablespace; NULL for default */
+	bool		reset_default_tblspc;	/* reset default_tablespace prior to
+										 * creating the index */
 	/* These could be, but currently are not, used for UNIQUE/PKEY: */
 	char	   *access_method;	/* index access method; NULL for default */
 	Node	   *where_clause;	/* partial index predicate */
@@ -2742,10 +2744,6 @@ typedef struct FetchStmt
  * index, just a UNIQUE/PKEY constraint using an existing index.  isconstraint
  * must always be true in this case, and the fields describing the index
  * properties are empty.
- *
- * The relation to build the index on can be represented either by name
- * (in which case the RangeVar indicates whether to recurse or not) or by OID
- * (in which case the command is always recursive).
  * ----------------------
  */
 typedef struct IndexStmt
@@ -2772,6 +2770,8 @@ typedef struct IndexStmt
 	bool		transformed;	/* true when transformIndexStmt is finished */
 	bool		concurrent;		/* should this be a concurrent index build? */
 	bool		if_not_exists;	/* just do nothing if index already exists? */
+	bool		reset_default_tblspc;	/* reset default_tablespace prior to
+										 * executing */
 } IndexStmt;
 
 /* ----------------------
@@ -3173,7 +3173,7 @@ typedef struct ClusterStmt
 typedef struct VacuumStmt
 {
 	NodeTag		type;
-	List		*options;		/* list of DefElem nodes */
+	List	   *options;		/* list of DefElem nodes */
 	List	   *rels;			/* list of VacuumRelation, or NIL for all */
 	bool		is_vacuumcmd;	/* true for VACUUM, false for ANALYZE */
 } VacuumStmt;

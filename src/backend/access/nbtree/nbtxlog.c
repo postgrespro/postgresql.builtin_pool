@@ -181,7 +181,7 @@ btree_xlog_insert(bool isleaf, bool ismeta, XLogReaderState *record)
 
 		if (PageAddItem(page, (Item) datapos, datalen, xlrec->offnum,
 						false, false) == InvalidOffsetNumber)
-			elog(PANIC, "btree_insert_redo: failed to add item");
+			elog(PANIC, "btree_xlog_insert: failed to add item");
 
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(buffer);
@@ -248,8 +248,6 @@ btree_xlog_split(bool onleft, XLogReaderState *record)
 	PageSetLSN(rpage, lsn);
 	MarkBufferDirty(rbuf);
 
-	/* don't release the buffer yet; we touch right page's first item below */
-
 	/* Now reconstruct left (original) sibling page */
 	if (XLogReadBufferForRedo(record, 0, &lbuf) == BLK_NEEDS_REDO)
 	{
@@ -257,10 +255,9 @@ btree_xlog_split(bool onleft, XLogReaderState *record)
 		 * To retain the same physical order of the tuples that they had, we
 		 * initialize a temporary empty page for the left page and add all the
 		 * items to that in item number order.  This mirrors how _bt_split()
-		 * works.  It's not strictly required to retain the same physical
-		 * order, as long as the items are in the correct item number order,
-		 * but it helps debugging.  See also _bt_restore_page(), which does
-		 * the same for the right page.
+		 * works.  Retaining the same physical order makes WAL consistency
+		 * checking possible.  See also _bt_restore_page(), which does the
+		 * same for the right page.
 		 */
 		Page		lpage = (Page) BufferGetPage(lbuf);
 		BTPageOpaque lopaque = (BTPageOpaque) PageGetSpecialPointer(lpage);
@@ -345,7 +342,10 @@ btree_xlog_split(bool onleft, XLogReaderState *record)
 		MarkBufferDirty(lbuf);
 	}
 
-	/* We no longer need the buffers */
+	/*
+	 * We no longer need the buffers.  They must be released together, so that
+	 * readers cannot observe two inconsistent halves.
+	 */
 	if (BufferIsValid(lbuf))
 		UnlockReleaseBuffer(lbuf);
 	UnlockReleaseBuffer(rbuf);

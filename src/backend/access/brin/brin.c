@@ -67,13 +67,13 @@ typedef struct BrinOpaque
 #define BRIN_ALL_BLOCKRANGES	InvalidBlockNumber
 
 static BrinBuildState *initialize_brin_buildstate(Relation idxRel,
-						   BrinRevmap *revmap, BlockNumber pagesPerRange);
+												  BrinRevmap *revmap, BlockNumber pagesPerRange);
 static void terminate_brin_buildstate(BrinBuildState *state);
 static void brinsummarize(Relation index, Relation heapRel, BlockNumber pageRange,
-			  bool include_partial, double *numSummarized, double *numExisting);
+						  bool include_partial, double *numSummarized, double *numExisting);
 static void form_and_insert_tuple(BrinBuildState *state);
 static void union_tuples(BrinDesc *bdesc, BrinMemTuple *a,
-			 BrinTuple *b);
+						 BrinTuple *b);
 static void brin_vacuum_scan(Relation idxrel, BufferAccessStrategy strategy);
 
 
@@ -1152,7 +1152,7 @@ terminate_brin_buildstate(BrinBuildState *state)
 		freespace = PageGetFreeSpace(page);
 		blk = BufferGetBlockNumber(state->bs_currentInsertBuf);
 		ReleaseBuffer(state->bs_currentInsertBuf);
-		RecordPageWithFreeSpace(state->bs_irel, blk, freespace, InvalidBlockNumber);
+		RecordPageWithFreeSpace(state->bs_irel, blk, freespace);
 		FreeSpaceMapVacuumRange(state->bs_irel, blk, blk + 1);
 	}
 

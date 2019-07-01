@@ -91,12 +91,13 @@ typedef enum JsonPathItemType
 #define JSP_REGEX_SLINE		0x02	/* s flag, single-line mode */
 #define JSP_REGEX_MLINE		0x04	/* m flag, multi-line mode */
 #define JSP_REGEX_WSPACE	0x08	/* x flag, expanded syntax */
+#define JSP_REGEX_QUOTE		0x10	/* q flag, no special characters */
 
 /*
  * Support functions to parse/construct binary value.
  * Unlike many other representation of expression the first/main
  * node is not an operation but left operand of expression. That
- * allows to implement cheep follow-path descending in jsonb
+ * allows to implement cheap follow-path descending in jsonb
  * structure and then execute operator with right operand
  */
 
@@ -171,7 +172,7 @@ extern Numeric jspGetNumeric(JsonPathItem *v);
 extern bool jspGetBool(JsonPathItem *v);
 extern char *jspGetString(JsonPathItem *v, int32 *len);
 extern bool jspGetArraySubscript(JsonPathItem *v, JsonPathItem *from,
-					 JsonPathItem *to, int i);
+								 JsonPathItem *to, int i);
 
 extern const char *jspOperationName(JsonPathItemType type);
 

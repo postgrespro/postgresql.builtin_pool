@@ -85,24 +85,24 @@ static BufferAccessStrategy vac_strategy;
 
 
 static void do_analyze_rel(Relation onerel,
-			   VacuumParams *params, List *va_cols,
-			   AcquireSampleRowsFunc acquirefunc, BlockNumber relpages,
-			   bool inh, bool in_outer_xact, int elevel);
+						   VacuumParams *params, List *va_cols,
+						   AcquireSampleRowsFunc acquirefunc, BlockNumber relpages,
+						   bool inh, bool in_outer_xact, int elevel);
 static void compute_index_stats(Relation onerel, double totalrows,
-					AnlIndexData *indexdata, int nindexes,
-					HeapTuple *rows, int numrows,
-					MemoryContext col_context);
+								AnlIndexData *indexdata, int nindexes,
+								HeapTuple *rows, int numrows,
+								MemoryContext col_context);
 static VacAttrStats *examine_attribute(Relation onerel, int attnum,
-				  Node *index_expr);
-static int acquire_sample_rows(Relation onerel, int elevel,
-					HeapTuple *rows, int targrows,
-					double *totalrows, double *totaldeadrows);
+									   Node *index_expr);
+static int	acquire_sample_rows(Relation onerel, int elevel,
+								HeapTuple *rows, int targrows,
+								double *totalrows, double *totaldeadrows);
 static int	compare_rows(const void *a, const void *b);
-static int acquire_inherited_sample_rows(Relation onerel, int elevel,
-							  HeapTuple *rows, int targrows,
-							  double *totalrows, double *totaldeadrows);
+static int	acquire_inherited_sample_rows(Relation onerel, int elevel,
+										  HeapTuple *rows, int targrows,
+										  double *totalrows, double *totaldeadrows);
 static void update_attstats(Oid relid, bool inh,
-				int natts, VacAttrStats **vacattrstats);
+							int natts, VacAttrStats **vacattrstats);
 static Datum std_fetch_func(VacAttrStatsP stats, int rownum, bool *isNull);
 static Datum ind_fetch_func(VacAttrStatsP stats, int rownum, bool *isNull);
 
@@ -1048,13 +1048,13 @@ acquire_sample_rows(Relation onerel, int elevel,
 			 * The first targrows sample rows are simply copied into the
 			 * reservoir. Then we start replacing tuples in the sample until
 			 * we reach the end of the relation.  This algorithm is from Jeff
-			 * Vitter's paper (see full citation below). It works by
-			 * repeatedly computing the number of tuples to skip before
-			 * selecting a tuple, which replaces a randomly chosen element of
-			 * the reservoir (current set of tuples).  At all times the
-			 * reservoir is a true random sample of the tuples we've passed
-			 * over so far, so when we fall off the end of the relation we're
-			 * done.
+			 * Vitter's paper (see full citation in utils/misc/sampling.c). It
+			 * works by repeatedly computing the number of tuples to skip
+			 * before selecting a tuple, which replaces a randomly chosen
+			 * element of the reservoir (current set of tuples).  At all times
+			 * the reservoir is a true random sample of the tuples we've
+			 * passed over so far, so when we fall off the end of the relation
+			 * we're done.
 			 */
 			if (numrows < targrows)
 				rows[numrows++] = ExecCopySlotHeapTuple(slot);
@@ -1615,25 +1615,25 @@ typedef struct
 
 
 static void compute_trivial_stats(VacAttrStatsP stats,
-					  AnalyzeAttrFetchFunc fetchfunc,
-					  int samplerows,
-					  double totalrows);
+								  AnalyzeAttrFetchFunc fetchfunc,
+								  int samplerows,
+								  double totalrows);
 static void compute_distinct_stats(VacAttrStatsP stats,
-					   AnalyzeAttrFetchFunc fetchfunc,
-					   int samplerows,
-					   double totalrows);
+								   AnalyzeAttrFetchFunc fetchfunc,
+								   int samplerows,
+								   double totalrows);
 static void compute_scalar_stats(VacAttrStatsP stats,
-					 AnalyzeAttrFetchFunc fetchfunc,
-					 int samplerows,
-					 double totalrows);
+								 AnalyzeAttrFetchFunc fetchfunc,
+								 int samplerows,
+								 double totalrows);
 static int	compare_scalars(const void *a, const void *b, void *arg);
 static int	compare_mcvs(const void *a, const void *b);
-static int analyze_mcv_list(int *mcv_counts,
-				 int num_mcv,
-				 double stadistinct,
-				 double stanullfrac,
-				 int samplerows,
-				 double totalrows);
+static int	analyze_mcv_list(int *mcv_counts,
+							 int num_mcv,
+							 double stadistinct,
+							 double stanullfrac,
+							 int samplerows,
+							 double totalrows);
 
 
 /*

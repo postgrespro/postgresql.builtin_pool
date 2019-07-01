@@ -33,8 +33,8 @@
 
 #include "postgres_fe.h"
 #include "common/int.h"
+#include "common/logging.h"
 #include "fe_utils/conditional.h"
-#include "fe_utils/logging.h"
 #include "getopt_long.h"
 #include "libpq-fe.h"
 #include "portability/instr_time.h"
@@ -217,7 +217,7 @@ bool		progress_timestamp = false; /* progress report with Unix time */
 int			nclients = 1;		/* number of clients */
 int			nthreads = 1;		/* number of threads */
 bool		is_connect;			/* establish connection for each transaction */
-bool		report_per_command;	/* report per-command latencies */
+bool		report_per_command; /* report per-command latencies */
 int			main_pid;			/* main process id used in log filename */
 
 char	   *pghost = "";
@@ -422,11 +422,11 @@ typedef struct
 
 	/*
 	 * Separate randomness for each thread. Each thread option uses its own
-	 * random state to make all of them independent of each other and therefore
-	 * deterministic at the thread level.
+	 * random state to make all of them independent of each other and
+	 * therefore deterministic at the thread level.
 	 */
 	RandomState ts_choose_rs;	/* random state for selecting a script */
-	RandomState ts_throttle_rs;	/* random state for transaction throttling */
+	RandomState ts_throttle_rs; /* random state for transaction throttling */
 	RandomState ts_sample_rs;	/* random state for log sampling */
 
 	int64		throttle_trigger;	/* previous/next throttling (us) */
@@ -575,14 +575,13 @@ static void setNullValue(PgBenchValue *pv);
 static void setBoolValue(PgBenchValue *pv, bool bval);
 static void setIntValue(PgBenchValue *pv, int64 ival);
 static void setDoubleValue(PgBenchValue *pv, double dval);
-static bool evaluateExpr(TState *thread, CState *st, PgBenchExpr *expr,
-			 PgBenchValue *retval);
-static ConnectionStateEnum executeMetaCommand(TState *thread, CState *st,
-				   instr_time *now);
+static bool evaluateExpr(CState *st, PgBenchExpr *expr,
+						 PgBenchValue *retval);
+static ConnectionStateEnum executeMetaCommand(CState *st, instr_time *now);
 static void doLog(TState *thread, CState *st,
-	  StatsData *agg, bool skipped, double latency, double lag);
+				  StatsData *agg, bool skipped, double latency, double lag);
 static void processXactStats(TState *thread, CState *st, instr_time *now,
-				 bool skipped, StatsData *agg);
+							 bool skipped, StatsData *agg);
 static void addScript(ParsedScript script);
 static void *threadRun(void *arg);
 static void finishCon(CState *st);
@@ -778,7 +777,7 @@ invalid_syntax:
 bool
 strtodouble(const char *str, bool errorOK, double *dv)
 {
-	char *end;
+	char	   *end;
 
 	errno = 0;
 	*dv = strtod(str, &end);
@@ -1215,20 +1214,6 @@ doConnect(void)
 	return conn;
 }
 
-/* throw away response from backend */
-static void
-discard_response(CState *state)
-{
-	PGresult   *res;
-
-	do
-	{
-		res = PQgetResult(state->con);
-		if (res)
-			PQclear(res);
-	} while (res);
-}
-
 /* qsort comparator for Variable array */
 static int
 compareVariableNames(const void *v1, const void *v2)
@@ -1337,7 +1322,7 @@ makeVariableValue(Variable *var)
 	else if (is_an_int(var->svalue))
 	{
 		/* if it looks like an int, it must be an int without overflow */
-		int64 iv;
+		int64		iv;
 
 		if (!strtoint64(var->svalue, false, &iv))
 			return false;
@@ -1744,7 +1729,7 @@ isLazyFunc(PgBenchFunction func)
 
 /* lazy evaluation of some functions */
 static bool
-evalLazyFunc(TState *thread, CState *st,
+evalLazyFunc(CState *st,
 			 PgBenchFunction func, PgBenchExprLink *args, PgBenchValue *retval)
 {
 	PgBenchValue a1,
@@ -1755,7 +1740,7 @@ evalLazyFunc(TState *thread, CState *st,
 	Assert(isLazyFunc(func) && args != NULL && args->next != NULL);
 
 	/* args points to first condition */
-	if (!evaluateExpr(thread, st, args->expr, &a1))
+	if (!evaluateExpr(st, args->expr, &a1))
 		return false;
 
 	/* second condition for AND/OR and corresponding branch for CASE */
@@ -1779,7 +1764,7 @@ evalLazyFunc(TState *thread, CState *st,
 				return true;
 			}
 
-			if (!evaluateExpr(thread, st, args->expr, &a2))
+			if (!evaluateExpr(st, args->expr, &a2))
 				return false;
 
 			if (a2.type == PGBT_NULL)
@@ -1814,7 +1799,7 @@ evalLazyFunc(TState *thread, CState *st,
 				return true;
 			}
 
-			if (!evaluateExpr(thread, st, args->expr, &a2))
+			if (!evaluateExpr(st, args->expr, &a2))
 				return false;
 
 			if (a2.type == PGBT_NULL)
@@ -1833,17 +1818,17 @@ evalLazyFunc(TState *thread, CState *st,
 		case PGBENCH_CASE:
 			/* when true, execute branch */
 			if (valueTruth(&a1))
-				return evaluateExpr(thread, st, args->expr, retval);
+				return evaluateExpr(st, args->expr, retval);
 
 			/* now args contains next condition or final else expression */
 			args = args->next;
 
 			/* final else case? */
 			if (args->next == NULL)
-				return evaluateExpr(thread, st, args->expr, retval);
+				return evaluateExpr(st, args->expr, retval);
 
 			/* no, another when, proceed */
-			return evalLazyFunc(thread, st, PGBENCH_CASE, args, retval);
+			return evalLazyFunc(st, PGBENCH_CASE, args, retval);
 
 		default:
 			/* internal error, cannot get here */
@@ -1861,7 +1846,7 @@ evalLazyFunc(TState *thread, CState *st,
  * which do not require lazy evaluation.
  */
 static bool
-evalStandardFunc(TState *thread, CState *st,
+evalStandardFunc(CState *st,
 				 PgBenchFunction func, PgBenchExprLink *args,
 				 PgBenchValue *retval)
 {
@@ -1873,7 +1858,7 @@ evalStandardFunc(TState *thread, CState *st,
 
 	for (nargs = 0; nargs < MAX_FARGS && l != NULL; nargs++, l = l->next)
 	{
-		if (!evaluateExpr(thread, st, l->expr, &vargs[nargs]))
+		if (!evaluateExpr(st, l->expr, &vargs[nargs]))
 			return false;
 		has_null |= vargs[nargs].type == PGBT_NULL;
 	}
@@ -2408,13 +2393,13 @@ evalStandardFunc(TState *thread, CState *st,
 
 /* evaluate some function */
 static bool
-evalFunc(TState *thread, CState *st,
+evalFunc(CState *st,
 		 PgBenchFunction func, PgBenchExprLink *args, PgBenchValue *retval)
 {
 	if (isLazyFunc(func))
-		return evalLazyFunc(thread, st, func, args, retval);
+		return evalLazyFunc(st, func, args, retval);
 	else
-		return evalStandardFunc(thread, st, func, args, retval);
+		return evalStandardFunc(st, func, args, retval);
 }
 
 /*
@@ -2424,7 +2409,7 @@ evalFunc(TState *thread, CState *st,
  * the value itself is returned through the retval pointer.
  */
 static bool
-evaluateExpr(TState *thread, CState *st, PgBenchExpr *expr, PgBenchValue *retval)
+evaluateExpr(CState *st, PgBenchExpr *expr, PgBenchValue *retval)
 {
 	switch (expr->etype)
 	{
@@ -2453,7 +2438,7 @@ evaluateExpr(TState *thread, CState *st, PgBenchExpr *expr, PgBenchValue *retval
 			}
 
 		case ENODE_FUNCTION:
-			return evalFunc(thread, st,
+			return evalFunc(st,
 							expr->u.function.function,
 							expr->u.function.args,
 							retval);
@@ -2733,15 +2718,18 @@ static bool
 readCommandResponse(CState *st, char *varprefix)
 {
 	PGresult   *res;
+	PGresult   *next_res;
 	int			qrynum = 0;
 
 	res = PQgetResult(st->con);
 
 	while (res != NULL)
 	{
-		/* look now at the next result to know whether it is the last */
-		PGresult	*next_res = PQgetResult(st->con);
-		bool is_last = (next_res == NULL);
+		bool		is_last;
+
+		/* peek at the next result to know whether the current is last */
+		next_res = PQgetResult(st->con);
+		is_last = (next_res == NULL);
 
 		switch (PQresultStatus(res))
 		{
@@ -2752,8 +2740,7 @@ readCommandResponse(CState *st, char *varprefix)
 					fprintf(stderr,
 							"client %d script %d command %d query %d: expected one row, got %d\n",
 							st->id, st->use_file, st->command, qrynum, 0);
-					st->ecnt++;
-					return false;
+					goto error;
 				}
 				break;
 
@@ -2765,10 +2752,7 @@ readCommandResponse(CState *st, char *varprefix)
 						fprintf(stderr,
 								"client %d script %d command %d query %d: expected one row, got %d\n",
 								st->id, st->use_file, st->command, qrynum, PQntuples(res));
-						st->ecnt++;
-						PQclear(res);
-						discard_response(st);
-						return false;
+						goto error;
 					}
 
 					/* store results into variables */
@@ -2789,10 +2773,7 @@ readCommandResponse(CState *st, char *varprefix)
 									"client %d script %d command %d query %d: error storing into variable %s\n",
 									st->id, st->use_file, st->command, qrynum,
 									varname);
-							st->ecnt++;
-							PQclear(res);
-							discard_response(st);
-							return false;
+							goto error;
 						}
 
 						if (*varprefix != '\0')
@@ -2808,10 +2789,7 @@ readCommandResponse(CState *st, char *varprefix)
 						"client %d script %d aborted in command %d query %d: %s",
 						st->id, st->use_file, st->command, qrynum,
 						PQerrorMessage(st->con));
-				st->ecnt++;
-				PQclear(res);
-				discard_response(st);
-				return false;
+				goto error;
 		}
 
 		PQclear(res);
@@ -2827,8 +2805,19 @@ readCommandResponse(CState *st, char *varprefix)
 	}
 
 	return true;
-}
 
+error:
+	st->ecnt++;
+	PQclear(res);
+	PQclear(next_res);
+	do
+	{
+		res = PQgetResult(st->con);
+		PQclear(res);
+	} while (res);
+
+	return false;
+}
 
 /*
  * Parse the argument to a \sleep command, and return the requested amount
@@ -3072,7 +3061,7 @@ advanceConnectionState(TState *thread, CState *st, StatsData *agg)
 					 * - on sleep CSTATE_SLEEP
 					 * - else CSTATE_END_COMMAND
 					 */
-					st->state = executeMetaCommand(thread, st, &now);
+					st->state = executeMetaCommand(st, &now);
 				}
 
 				/*
@@ -3304,7 +3293,7 @@ advanceConnectionState(TState *thread, CState *st, StatsData *agg)
  * take no time to execute.
  */
 static ConnectionStateEnum
-executeMetaCommand(TState *thread, CState *st, instr_time *now)
+executeMetaCommand(CState *st, instr_time *now)
 {
 	Command    *command = sql_script[st->use_file].commands[st->command];
 	int			argc;
@@ -3348,7 +3337,7 @@ executeMetaCommand(TState *thread, CState *st, instr_time *now)
 		PgBenchExpr *expr = command->expr;
 		PgBenchValue result;
 
-		if (!evaluateExpr(thread, st, expr, &result))
+		if (!evaluateExpr(st, expr, &result))
 		{
 			commandFailed(st, argv[0], "evaluation of meta-command failed");
 			return CSTATE_ABORTED;
@@ -3367,7 +3356,7 @@ executeMetaCommand(TState *thread, CState *st, instr_time *now)
 		PgBenchValue result;
 		bool		cond;
 
-		if (!evaluateExpr(thread, st, expr, &result))
+		if (!evaluateExpr(st, expr, &result))
 		{
 			commandFailed(st, argv[0], "evaluation of meta-command failed");
 			return CSTATE_ABORTED;
@@ -3390,7 +3379,7 @@ executeMetaCommand(TState *thread, CState *st, instr_time *now)
 			return CSTATE_END_COMMAND;
 		}
 
-		if (!evaluateExpr(thread, st, expr, &result))
+		if (!evaluateExpr(st, expr, &result))
 		{
 			commandFailed(st, argv[0], "evaluation of meta-command failed");
 			return CSTATE_ABORTED;
@@ -4773,7 +4762,7 @@ addScript(ParsedScript script)
  * progress report.  On exit, they are updated with the new stats.
  */
 static void
-printProgressReport(TState *thread, int64 test_start, int64 now,
+printProgressReport(TState *threads, int64 test_start, int64 now,
 					StatsData *last, int64 *last_report)
 {
 	/* generate and show report */
@@ -4801,10 +4790,10 @@ printProgressReport(TState *thread, int64 test_start, int64 now,
 	initStats(&cur, 0);
 	for (int i = 0; i < nthreads; i++)
 	{
-		mergeSimpleStats(&cur.latency, &thread[i].stats.latency);
-		mergeSimpleStats(&cur.lag, &thread[i].stats.lag);
-		cur.cnt += thread[i].stats.cnt;
-		cur.skipped += thread[i].stats.skipped;
+		mergeSimpleStats(&cur.latency, &threads[i].stats.latency);
+		mergeSimpleStats(&cur.lag, &threads[i].stats.lag);
+		cur.cnt += threads[i].stats.cnt;
+		cur.skipped += threads[i].stats.skipped;
 	}
 
 	/* we count only actually executed transactions */
@@ -4874,7 +4863,7 @@ printSimpleStats(const char *prefix, SimpleStats *ss)
 
 /* print out results */
 static void
-printResults(TState *threads, StatsData *total, instr_time total_time,
+printResults(StatsData *total, instr_time total_time,
 			 instr_time conn_total_time, int64 latency_late)
 {
 	double		time_include,
@@ -5030,16 +5019,19 @@ set_random_seed(const char *seed)
 	}
 	else
 	{
-		/* parse seed unsigned int value */
+		/* parse unsigned-int seed value */
+		unsigned long ulseed;
 		char		garbage;
 
-		if (sscanf(seed, UINT64_FORMAT "%c", &iseed, &garbage) != 1)
+		/* Don't try to use UINT64_FORMAT here; it might not work for sscanf */
+		if (sscanf(seed, "%lu%c", &ulseed, &garbage) != 1)
 		{
 			fprintf(stderr,
 					"unrecognized random seed option \"%s\": expecting an unsigned integer, \"time\" or \"rand\"\n",
 					seed);
 			return false;
 		}
+		iseed = (uint64) ulseed;
 	}
 
 	if (seed != NULL)
@@ -5887,7 +5879,7 @@ main(int argc, char **argv)
 	 */
 	INSTR_TIME_SET_CURRENT(total_time);
 	INSTR_TIME_SUBTRACT(total_time, start_time);
-	printResults(threads, &stats, total_time, conn_total_time, latency_late);
+	printResults(&stats, total_time, conn_total_time, latency_late);
 
 	if (exit_code != 0)
 		fprintf(stderr, "Run was aborted; the above results are incomplete.\n");
@@ -6146,7 +6138,14 @@ threadRun(void *arg)
 			now = INSTR_TIME_GET_MICROSEC(now_time);
 			if (now >= next_report)
 			{
-				printProgressReport(thread, thread_start, now, &last, &last_report);
+				/*
+				 * Horrible hack: this relies on the thread pointer we are
+				 * passed to be equivalent to threads[0], that is the first
+				 * entry of the threads array.  That is why this MUST be done
+				 * by thread 0 and not any other.
+				 */
+				printProgressReport(thread, thread_start, now,
+									&last, &last_report);
 
 				/*
 				 * Ensure that the next report is in the future, in case

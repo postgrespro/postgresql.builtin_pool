@@ -430,13 +430,13 @@ ifeq ($(enable_tap_tests),yes)
 define prove_installcheck
 rm -rf '$(CURDIR)'/tmp_check
 $(MKDIR_P) '$(CURDIR)'/tmp_check
-cd $(srcdir) && TESTDIR='$(CURDIR)' PATH="$(bindir):$$PATH" PGPORT='6$(DEF_PGPORT)' top_builddir='$(CURDIR)/$(top_builddir)' PG_REGRESS='$(CURDIR)/$(top_builddir)/src/test/regress/pg_regress' $(PROVE) $(PG_PROVE_FLAGS) $(PROVE_FLAGS) $(if $(PROVE_TESTS),$(PROVE_TESTS),t/*.pl)
+cd $(srcdir) && TESTDIR='$(CURDIR)' PATH="$(bindir):$$PATH" PGPORT='6$(DEF_PGPORT)' top_builddir='$(CURDIR)/$(top_builddir)' PG_REGRESS='$(CURDIR)/$(top_builddir)/src/test/regress/pg_regress' REGRESS_SHLIB='$(abs_top_builddir)/src/test/regress/regress$(DLSUFFIX)' $(PROVE) $(PG_PROVE_FLAGS) $(PROVE_FLAGS) $(if $(PROVE_TESTS),$(PROVE_TESTS),t/*.pl)
 endef
 
 define prove_check
 rm -rf '$(CURDIR)'/tmp_check
 $(MKDIR_P) '$(CURDIR)'/tmp_check
-cd $(srcdir) && TESTDIR='$(CURDIR)' $(with_temp_install) PGPORT='6$(DEF_PGPORT)' PG_REGRESS='$(CURDIR)/$(top_builddir)/src/test/regress/pg_regress' $(PROVE) $(PG_PROVE_FLAGS) $(PROVE_FLAGS) $(if $(PROVE_TESTS),$(PROVE_TESTS),t/*.pl)
+cd $(srcdir) && TESTDIR='$(CURDIR)' $(with_temp_install) PGPORT='6$(DEF_PGPORT)' PG_REGRESS='$(CURDIR)/$(top_builddir)/src/test/regress/pg_regress' REGRESS_SHLIB='$(abs_top_builddir)/src/test/regress/regress$(DLSUFFIX)' $(PROVE) $(PG_PROVE_FLAGS) $(PROVE_FLAGS) $(if $(PROVE_TESTS),$(PROVE_TESTS),t/*.pl)
 endef
 
 else
@@ -597,16 +597,25 @@ submake-libpgfeutils: | submake-generated-headers
 #
 # Testing support
 
-PL_TESTDB = pl_regression
-CONTRIB_TESTDB = contrib_regression
-ifneq ($(MODULE_big),)
-  CONTRIB_TESTDB_MODULE = contrib_regression_$(MODULE_big)
-else
-  ifneq ($(MODULES),)
-    CONTRIB_TESTDB_MODULE = contrib_regression_$(MODULES)
+ifneq ($(USE_MODULE_DB),)
+  PL_TESTDB = pl_regression_$(NAME)
+  # Replace this with $(or ...) if we ever require GNU make 3.81.
+  ifneq ($(MODULE_big),)
+    CONTRIB_TESTDB=contrib_regression_$(MODULE_big)
+    ISOLATION_TESTDB=isolation_regression_$(MODULE_big)
   else
-    CONTRIB_TESTDB_MODULE = contrib_regression
+    ifneq ($(MODULES),)
+      CONTRIB_TESTDB=contrib_regression_$(word 1,$(MODULES))
+      ISOLATION_TESTDB=isolation_regression_$(word 1,$(MODULES))
+    else
+      CONTRIB_TESTDB=contrib_regression_$(word 1,$(REGRESS))
+      ISOLATION_TESTDB=isolation_regression_$(word 1,$(ISOLATION))
+    endif
   endif
+else
+  PL_TESTDB = pl_regression
+  CONTRIB_TESTDB = contrib_regression
+  ISOLATION_TESTDB = isolation_regression
 endif
 
 ifdef NO_LOCALE

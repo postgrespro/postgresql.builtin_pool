@@ -151,6 +151,7 @@ ALTER SERVER testserver1 OPTIONS (
 	keepalives 'value',
 	keepalives_idle 'value',
 	keepalives_interval 'value',
+	tcp_user_timeout 'value',
 	-- requiressl 'value',
 	sslcompression 'value',
 	sslmode 'value',
@@ -664,7 +665,7 @@ EXPLAIN (VERBOSE, COSTS OFF) SELECT * FROM ft1 t1 WHERE c1 = ANY(ARRAY[c2, 1, c1
    Remote SQL: SELECT "C 1", c2, c3, c4, c5, c6, c7, c8 FROM "S 1"."T 1" WHERE (("C 1" = ANY (ARRAY[c2, 1, ("C 1" + 0)])))
 (3 rows)
 
-EXPLAIN (VERBOSE, COSTS OFF) SELECT * FROM ft1 t1 WHERE c1 = (ARRAY[c1,c2,3])[1]; -- ArrayRef
+EXPLAIN (VERBOSE, COSTS OFF) SELECT * FROM ft1 t1 WHERE c1 = (ARRAY[c1,c2,3])[1]; -- SubscriptingRef
                                                       QUERY PLAN                                                      
 ----------------------------------------------------------------------------------------------------------------------
  Foreign Scan on public.ft1 t1
@@ -2705,6 +2706,46 @@ select sum(c1) from ft1 group by c2 having avg(c1 * (random() <= 1)::int) > 100 
                Output: c1, c2
                Remote SQL: SELECT "C 1", c2 FROM "S 1"."T 1"
 (10 rows)
+
+-- Remote aggregate in combination with a local Param (for the output
+-- of an initplan) can be trouble, per bug #15781
+explain (verbose, costs off)
+select exists(select 1 from pg_enum), sum(c1) from ft1;
+                    QUERY PLAN                    
+--------------------------------------------------
+ Foreign Scan
+   Output: $0, (sum(ft1.c1))
+   Relations: Aggregate on (public.ft1)
+   Remote SQL: SELECT sum("C 1") FROM "S 1"."T 1"
+   InitPlan 1 (returns $0)
+     ->  Seq Scan on pg_catalog.pg_enum
+(6 rows)
+
+select exists(select 1 from pg_enum), sum(c1) from ft1;
+ exists |  sum   
+--------+--------
+ t      | 500500
+(1 row)
+
+explain (verbose, costs off)
+select exists(select 1 from pg_enum), sum(c1) from ft1 group by 1;
+                    QUERY PLAN                     
+---------------------------------------------------
+ GroupAggregate
+   Output: ($0), sum(ft1.c1)
+   Group Key: $0
+   InitPlan 1 (returns $0)
+     ->  Seq Scan on pg_catalog.pg_enum
+   ->  Foreign Scan on public.ft1
+         Output: $0, ft1.c1
+         Remote SQL: SELECT "C 1" FROM "S 1"."T 1"
+(8 rows)
+
+select exists(select 1 from pg_enum), sum(c1) from ft1 group by 1;
+ exists |  sum   
+--------+--------
+ t      | 500500
+(1 row)
 
 -- Testing ORDER BY, DISTINCT, FILTER, Ordered-sets and VARIADIC within aggregates
 -- ORDER BY within aggregate, same column used to order
@@ -6517,6 +6558,25 @@ SELECT * from loc1;
   2 | skidoo triggered !
 (2 rows)
 
+EXPLAIN (verbose, costs off)
+UPDATE rem1 set f1 = 10;          -- all columns should be transmitted
+                              QUERY PLAN                               
+-----------------------------------------------------------------------
+ Update on public.rem1
+   Remote SQL: UPDATE public.loc1 SET f1 = $2, f2 = $3 WHERE ctid = $1
+   ->  Foreign Scan on public.rem1
+         Output: 10, f2, ctid, rem1.*
+         Remote SQL: SELECT f1, f2, ctid FROM public.loc1 FOR UPDATE
+(5 rows)
+
+UPDATE rem1 set f1 = 10;
+SELECT * from loc1;
+ f1 |               f2               
+----+--------------------------------
+ 10 | skidoo triggered ! triggered !
+ 10 | skidoo triggered ! triggered !
+(2 rows)
+
 DELETE FROM rem1;
 -- Add a second trigger, to check that the changes are propagated correctly
 -- from trigger to trigger
@@ -6629,7 +6689,7 @@ NOTICE:  trig_row_after(23, skidoo) AFTER ROW INSERT ON rem1
 NOTICE:  NEW: (13,"test triggered !")
   ctid  
 --------
- (0,27)
+ (0,29)
 (1 row)
 
 -- cleanup
@@ -6733,10 +6793,10 @@ BEFORE UPDATE ON rem1
 FOR EACH ROW EXECUTE PROCEDURE trigger_data(23,'skidoo');
 EXPLAIN (verbose, costs off)
 UPDATE rem1 set f2 = '';          -- can't be pushed down
-                             QUERY PLAN                              
----------------------------------------------------------------------
+                              QUERY PLAN                               
+-----------------------------------------------------------------------
  Update on public.rem1
-   Remote SQL: UPDATE public.loc1 SET f2 = $2 WHERE ctid = $1
+   Remote SQL: UPDATE public.loc1 SET f1 = $2, f2 = $3 WHERE ctid = $1
    ->  Foreign Scan on public.rem1
          Output: f1, ''::text, ctid, rem1.*
          Remote SQL: SELECT f1, f2, ctid FROM public.loc1 FOR UPDATE
@@ -7363,12 +7423,12 @@ AFTER UPDATE OR DELETE ON bar2
 FOR EACH ROW EXECUTE PROCEDURE trigger_data(23,'skidoo');
 explain (verbose, costs off)
 update bar set f2 = f2 + 100;
-                                      QUERY PLAN                                      
---------------------------------------------------------------------------------------
+                                               QUERY PLAN                                               
+--------------------------------------------------------------------------------------------------------
  Update on public.bar
    Update on public.bar
    Foreign Update on public.bar2
-     Remote SQL: UPDATE public.loct2 SET f2 = $2 WHERE ctid = $1 RETURNING f1, f2, f3
+     Remote SQL: UPDATE public.loct2 SET f1 = $2, f2 = $3, f3 = $4 WHERE ctid = $1 RETURNING f1, f2, f3
    ->  Seq Scan on public.bar
          Output: bar.f1, (bar.f2 + 100), bar.ctid
    ->  Foreign Scan on public.bar2
@@ -7733,6 +7793,137 @@ update utrtest set a = 1 where a = 2 returning *;
 (1 row)
 
 drop trigger loct_br_insert_trigger on loct;
+-- We can move rows to a foreign partition that has been updated already,
+-- but can't move rows to a foreign partition that hasn't been updated yet
+delete from utrtest;
+insert into utrtest values (1, 'foo');
+insert into utrtest values (2, 'qux');
+-- Test the former case:
+-- with a direct modification plan
+explain (verbose, costs off)
+update utrtest set a = 1 returning *;
+                           QUERY PLAN                            
+-----------------------------------------------------------------
+ Update on public.utrtest
+   Output: remp.a, remp.b
+   Foreign Update on public.remp
+   Update on public.locp
+   ->  Foreign Update on public.remp
+         Remote SQL: UPDATE public.loct SET a = 1 RETURNING a, b
+   ->  Seq Scan on public.locp
+         Output: 1, locp.b, locp.ctid
+(8 rows)
+
+update utrtest set a = 1 returning *;
+ a |  b  
+---+-----
+ 1 | foo
+ 1 | qux
+(2 rows)
+
+delete from utrtest;
+insert into utrtest values (1, 'foo');
+insert into utrtest values (2, 'qux');
+-- with a non-direct modification plan
+explain (verbose, costs off)
+update utrtest set a = 1 from (values (1), (2)) s(x) where a = s.x returning *;
+                                  QUERY PLAN                                  
+------------------------------------------------------------------------------
+ Update on public.utrtest
+   Output: remp.a, remp.b, "*VALUES*".column1
+   Foreign Update on public.remp
+     Remote SQL: UPDATE public.loct SET a = $2 WHERE ctid = $1 RETURNING a, b
+   Update on public.locp
+   ->  Hash Join
+         Output: 1, remp.b, remp.ctid, "*VALUES*".*, "*VALUES*".column1
+         Hash Cond: (remp.a = "*VALUES*".column1)
+         ->  Foreign Scan on public.remp
+               Output: remp.b, remp.ctid, remp.a
+               Remote SQL: SELECT a, b, ctid FROM public.loct FOR UPDATE
+         ->  Hash
+               Output: "*VALUES*".*, "*VALUES*".column1
+               ->  Values Scan on "*VALUES*"
+                     Output: "*VALUES*".*, "*VALUES*".column1
+   ->  Hash Join
+         Output: 1, locp.b, locp.ctid, "*VALUES*".*, "*VALUES*".column1
+         Hash Cond: (locp.a = "*VALUES*".column1)
+         ->  Seq Scan on public.locp
+               Output: locp.b, locp.ctid, locp.a
+         ->  Hash
+               Output: "*VALUES*".*, "*VALUES*".column1
+               ->  Values Scan on "*VALUES*"
+                     Output: "*VALUES*".*, "*VALUES*".column1
+(24 rows)
+
+update utrtest set a = 1 from (values (1), (2)) s(x) where a = s.x returning *;
+ a |  b  | x 
+---+-----+---
+ 1 | foo | 1
+ 1 | qux | 2
+(2 rows)
+
+-- Change the definition of utrtest so that the foreign partition get updated
+-- after the local partition
+delete from utrtest;
+alter table utrtest detach partition remp;
+drop foreign table remp;
+alter table loct drop constraint loct_a_check;
+alter table loct add check (a in (3));
+create foreign table remp (a int check (a in (3)), b text) server loopback options (table_name 'loct');
+alter table utrtest attach partition remp for values in (3);
+insert into utrtest values (2, 'qux');
+insert into utrtest values (3, 'xyzzy');
+-- Test the latter case:
+-- with a direct modification plan
+explain (verbose, costs off)
+update utrtest set a = 3 returning *;
+                           QUERY PLAN                            
+-----------------------------------------------------------------
+ Update on public.utrtest
+   Output: locp.a, locp.b
+   Update on public.locp
+   Foreign Update on public.remp
+   ->  Seq Scan on public.locp
+         Output: 3, locp.b, locp.ctid
+   ->  Foreign Update on public.remp
+         Remote SQL: UPDATE public.loct SET a = 3 RETURNING a, b
+(8 rows)
+
+update utrtest set a = 3 returning *; -- ERROR
+ERROR:  cannot route tuples into foreign table to be updated "remp"
+-- with a non-direct modification plan
+explain (verbose, costs off)
+update utrtest set a = 3 from (values (2), (3)) s(x) where a = s.x returning *;
+                                  QUERY PLAN                                  
+------------------------------------------------------------------------------
+ Update on public.utrtest
+   Output: locp.a, locp.b, "*VALUES*".column1
+   Update on public.locp
+   Foreign Update on public.remp
+     Remote SQL: UPDATE public.loct SET a = $2 WHERE ctid = $1 RETURNING a, b
+   ->  Hash Join
+         Output: 3, locp.b, locp.ctid, "*VALUES*".*, "*VALUES*".column1
+         Hash Cond: (locp.a = "*VALUES*".column1)
+         ->  Seq Scan on public.locp
+               Output: locp.b, locp.ctid, locp.a
+         ->  Hash
+               Output: "*VALUES*".*, "*VALUES*".column1
+               ->  Values Scan on "*VALUES*"
+                     Output: "*VALUES*".*, "*VALUES*".column1
+   ->  Hash Join
+         Output: 3, remp.b, remp.ctid, "*VALUES*".*, "*VALUES*".column1
+         Hash Cond: (remp.a = "*VALUES*".column1)
+         ->  Foreign Scan on public.remp
+               Output: remp.b, remp.ctid, remp.a
+               Remote SQL: SELECT a, b, ctid FROM public.loct FOR UPDATE
+         ->  Hash
+               Output: "*VALUES*".*, "*VALUES*".column1
+               ->  Values Scan on "*VALUES*"
+                     Output: "*VALUES*".*, "*VALUES*".column1
+(24 rows)
+
+update utrtest set a = 3 from (values (2), (3)) s(x) where a = s.x returning *; -- ERROR
+ERROR:  cannot route tuples into foreign table to be updated "remp"
 drop table utrtest;
 drop table loct;
 -- Test copy tuple routing

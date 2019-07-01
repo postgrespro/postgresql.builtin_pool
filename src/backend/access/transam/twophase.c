@@ -98,6 +98,7 @@
 #include "replication/walsender.h"
 #include "storage/fd.h"
 #include "storage/ipc.h"
+#include "storage/md.h"
 #include "storage/predicate.h"
 #include "storage/proc.h"
 #include "storage/procarray.h"
@@ -201,31 +202,31 @@ static GlobalTransaction MyLockedGxact = NULL;
 static bool twophaseExitRegistered = false;
 
 static void RecordTransactionCommitPrepared(TransactionId xid,
-								int nchildren,
-								TransactionId *children,
-								int nrels,
-								RelFileNode *rels,
-								int ninvalmsgs,
-								SharedInvalidationMessage *invalmsgs,
-								bool initfileinval,
-								const char *gid);
+											int nchildren,
+											TransactionId *children,
+											int nrels,
+											RelFileNode *rels,
+											int ninvalmsgs,
+											SharedInvalidationMessage *invalmsgs,
+											bool initfileinval,
+											const char *gid);
 static void RecordTransactionAbortPrepared(TransactionId xid,
-							   int nchildren,
-							   TransactionId *children,
-							   int nrels,
-							   RelFileNode *rels,
-							   const char *gid);
+										   int nchildren,
+										   TransactionId *children,
+										   int nrels,
+										   RelFileNode *rels,
+										   const char *gid);
 static void ProcessRecords(char *bufptr, TransactionId xid,
-			   const TwoPhaseCallback callbacks[]);
+						   const TwoPhaseCallback callbacks[]);
 static void RemoveGXact(GlobalTransaction gxact);
 
 static void XlogReadTwoPhaseData(XLogRecPtr lsn, char **buf, int *len);
 static char *ProcessTwoPhaseBuffer(TransactionId xid,
-					  XLogRecPtr prepare_start_lsn,
-					  bool fromdisk, bool setParent, bool setNextXid);
+								   XLogRecPtr prepare_start_lsn,
+								   bool fromdisk, bool setParent, bool setNextXid);
 static void MarkAsPreparingGuts(GlobalTransaction gxact, TransactionId xid,
-					const char *gid, TimestampTz prepared_at, Oid owner,
-					Oid databaseid);
+								const char *gid, TimestampTz prepared_at, Oid owner,
+								Oid databaseid);
 static void RemoveTwoPhaseFile(TransactionId xid, bool giveWarning);
 static void RecreateTwoPhaseFile(TransactionId xid, void *content, int len);
 
@@ -1601,7 +1602,7 @@ FinishPreparedTransaction(const char *gid, bool isCommit)
 	LWLockRelease(TwoPhaseStateLock);
 
 	/* Count the prepared xact as committed or aborted */
-	AtEOXact_PgStat(isCommit);
+	AtEOXact_PgStat(isCommit, false);
 
 	/*
 	 * And now we can clean up any files we may have left.
@@ -1692,26 +1693,18 @@ RecreateTwoPhaseFile(TransactionId xid, void *content, int len)
 	pgstat_report_wait_start(WAIT_EVENT_TWOPHASE_FILE_WRITE);
 	if (write(fd, content, len) != len)
 	{
-		int			save_errno = errno;
-
-		pgstat_report_wait_end();
-		CloseTransientFile(fd);
-
 		/* if write didn't set errno, assume problem is no disk space */
-		errno = save_errno ? save_errno : ENOSPC;
+		if (errno == 0)
+			errno = ENOSPC;
 		ereport(ERROR,
 				(errcode_for_file_access(),
 				 errmsg("could not write file \"%s\": %m", path)));
 	}
 	if (write(fd, &statefile_crc, sizeof(pg_crc32c)) != sizeof(pg_crc32c))
 	{
-		int			save_errno = errno;
-
-		pgstat_report_wait_end();
-		CloseTransientFile(fd);
-
 		/* if write didn't set errno, assume problem is no disk space */
-		errno = save_errno ? save_errno : ENOSPC;
+		if (errno == 0)
+			errno = ENOSPC;
 		ereport(ERROR,
 				(errcode_for_file_access(),
 				 errmsg("could not write file \"%s\": %m", path)));
@@ -1724,15 +1717,9 @@ RecreateTwoPhaseFile(TransactionId xid, void *content, int len)
 	 */
 	pgstat_report_wait_start(WAIT_EVENT_TWOPHASE_FILE_SYNC);
 	if (pg_fsync(fd) != 0)
-	{
-		int			save_errno = errno;
-
-		CloseTransientFile(fd);
-		errno = save_errno;
 		ereport(ERROR,
 				(errcode_for_file_access(),
 				 errmsg("could not fsync file \"%s\": %m", path)));
-	}
 	pgstat_report_wait_end();
 
 	if (CloseTransientFile(fd) != 0)
@@ -2203,12 +2190,12 @@ ProcessTwoPhaseBuffer(TransactionId xid,
 		if (fromdisk)
 			ereport(ERROR,
 					(errcode(ERRCODE_DATA_CORRUPTED),
-					 errmsg("corrupted two-phase state file for transaction \"%u\"",
+					 errmsg("corrupted two-phase state file for transaction %u",
 							xid)));
 		else
 			ereport(ERROR,
 					(errcode(ERRCODE_DATA_CORRUPTED),
-					 errmsg("corrupted two-phase state in memory for transaction \"%u\"",
+					 errmsg("corrupted two-phase state in memory for transaction %u",
 							xid)));
 	}
 

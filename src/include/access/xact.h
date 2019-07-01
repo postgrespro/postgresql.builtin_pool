@@ -55,6 +55,9 @@ extern PGDLLIMPORT int XactIsoLevel;
 extern bool DefaultXactReadOnly;
 extern bool XactReadOnly;
 
+/* flag for logging statements in this transaction */
+extern bool xact_is_sampled;
+
 /*
  * Xact is deferrable -- only meaningful (currently) for read only
  * SERIALIZABLE transactions
@@ -410,19 +413,19 @@ extern void UnregisterSubXactCallback(SubXactCallback callback, void *arg);
 extern int	xactGetCommittedChildren(TransactionId **ptr);
 
 extern XLogRecPtr XactLogCommitRecord(TimestampTz commit_time,
-					int nsubxacts, TransactionId *subxacts,
-					int nrels, RelFileNode *rels,
-					int nmsgs, SharedInvalidationMessage *msgs,
-					bool relcacheInval, bool forceSync,
-					int xactflags,
-					TransactionId twophase_xid,
-					const char *twophase_gid);
+									  int nsubxacts, TransactionId *subxacts,
+									  int nrels, RelFileNode *rels,
+									  int nmsgs, SharedInvalidationMessage *msgs,
+									  bool relcacheInval, bool forceSync,
+									  int xactflags,
+									  TransactionId twophase_xid,
+									  const char *twophase_gid);
 
 extern XLogRecPtr XactLogAbortRecord(TimestampTz abort_time,
-				   int nsubxacts, TransactionId *subxacts,
-				   int nrels, RelFileNode *rels,
-				   int xactflags, TransactionId twophase_xid,
-				   const char *twophase_gid);
+									 int nsubxacts, TransactionId *subxacts,
+									 int nrels, RelFileNode *rels,
+									 int xactflags, TransactionId twophase_xid,
+									 const char *twophase_gid);
 extern void xact_redo(XLogReaderState *record);
 
 /* xactdesc.c */

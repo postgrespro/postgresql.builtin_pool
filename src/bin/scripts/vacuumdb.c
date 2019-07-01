@@ -19,8 +19,8 @@
 #include "catalog/pg_class_d.h"
 
 #include "common.h"
+#include "common/logging.h"
 #include "fe_utils/connect.h"
-#include "fe_utils/logging.h"
 #include "fe_utils/simple_list.h"
 #include "fe_utils/string_utils.h"
 
@@ -50,32 +50,32 @@ typedef struct vacuumingOptions
 
 
 static void vacuum_one_database(const char *dbname, vacuumingOptions *vacopts,
-					int stage,
-					SimpleStringList *tables,
-					const char *host, const char *port,
-					const char *username, enum trivalue prompt_password,
-					int concurrentCons,
-					const char *progname, bool echo, bool quiet);
+								int stage,
+								SimpleStringList *tables,
+								const char *host, const char *port,
+								const char *username, enum trivalue prompt_password,
+								int concurrentCons,
+								const char *progname, bool echo, bool quiet);
 
 static void vacuum_all_databases(vacuumingOptions *vacopts,
-					 bool analyze_in_stages,
-					 const char *maintenance_db,
-					 const char *host, const char *port,
-					 const char *username, enum trivalue prompt_password,
-					 int concurrentCons,
-					 const char *progname, bool echo, bool quiet);
+								 bool analyze_in_stages,
+								 const char *maintenance_db,
+								 const char *host, const char *port,
+								 const char *username, enum trivalue prompt_password,
+								 int concurrentCons,
+								 const char *progname, bool echo, bool quiet);
 
 static void prepare_vacuum_command(PQExpBuffer sql, int serverVersion,
-					   vacuumingOptions *vacopts, const char *table);
+								   vacuumingOptions *vacopts, const char *table);
 
 static void run_vacuum_command(PGconn *conn, const char *sql, bool echo,
-				   const char *table, const char *progname, bool async);
+							   const char *table, const char *progname, bool async);
 
 static ParallelSlot *GetIdleSlot(ParallelSlot slots[], int numslots,
-			const char *progname);
+								 const char *progname);
 
 static bool ProcessQueryResult(PGconn *conn, PGresult *result,
-				   const char *progname);
+							   const char *progname);
 
 static bool GetQueryResult(PGconn *conn, const char *progname);
 
@@ -409,30 +409,30 @@ vacuum_one_database(const char *dbname, vacuumingOptions *vacopts,
 	if (vacopts->disable_page_skipping && PQserverVersion(conn) < 90600)
 	{
 		PQfinish(conn);
-		pg_log_error("cannot use the \"%s\" option on server versions older than PostgreSQL 9.6",
-					 "disable-page-skipping");
+		pg_log_error("cannot use the \"%s\" option on server versions older than PostgreSQL %s",
+					 "disable-page-skipping", "9.6");
 		exit(1);
 	}
 
 	if (vacopts->skip_locked && PQserverVersion(conn) < 120000)
 	{
 		PQfinish(conn);
-		pg_log_error("cannot use the \"%s\" option on server versions older than PostgreSQL 12",
-					 "skip-locked");
+		pg_log_error("cannot use the \"%s\" option on server versions older than PostgreSQL %s",
+					 "skip-locked", "12");
 		exit(1);
 	}
 
 	if (vacopts->min_xid_age != 0 && PQserverVersion(conn) < 90600)
 	{
-		pg_log_error("cannot use the \"%s\" option on server versions older than PostgreSQL 9.6",
-					 "--min-xid-age");
+		pg_log_error("cannot use the \"%s\" option on server versions older than PostgreSQL %s",
+					 "--min-xid-age", "9.6");
 		exit(1);
 	}
 
 	if (vacopts->min_mxid_age != 0 && PQserverVersion(conn) < 90600)
 	{
-		pg_log_error("cannot use the \"%s\" option on server versions older than PostgreSQL 9.6",
-					 "--min-mxid-age");
+		pg_log_error("cannot use the \"%s\" option on server versions older than PostgreSQL %s",
+					 "--min-mxid-age", "9.6");
 		exit(1);
 	}
 
@@ -712,7 +712,10 @@ vacuum_one_database(const char *dbname, vacuumingOptions *vacopts,
 		for (j = 0; j < concurrentCons; j++)
 		{
 			if (!GetQueryResult((slots + j)->connection, progname))
+			{
+				failed = true;
 				goto finish;
+			}
 		}
 	}
 

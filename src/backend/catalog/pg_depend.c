@@ -396,6 +396,62 @@ changeDependencyFor(Oid classId, Oid objectId,
 }
 
 /*
+ * Adjust all dependency records to come from a different object of the same type
+ *
+ * classId/oldObjectId specify the old referencing object.
+ * newObjectId is the new referencing object (must be of class classId).
+ *
+ * Returns the number of records updated.
+ */
+long
+changeDependenciesOf(Oid classId, Oid oldObjectId,
+					 Oid newObjectId)
+{
+	long		count = 0;
+	Relation	depRel;
+	ScanKeyData key[2];
+	SysScanDesc scan;
+	HeapTuple	tup;
+
+	depRel = table_open(DependRelationId, RowExclusiveLock);
+
+	ScanKeyInit(&key[0],
+				Anum_pg_depend_classid,
+				BTEqualStrategyNumber, F_OIDEQ,
+				ObjectIdGetDatum(classId));
+	ScanKeyInit(&key[1],
+				Anum_pg_depend_objid,
+				BTEqualStrategyNumber, F_OIDEQ,
+				ObjectIdGetDatum(oldObjectId));
+
+	scan = systable_beginscan(depRel, DependDependerIndexId, true,
+							  NULL, 2, key);
+
+	while (HeapTupleIsValid((tup = systable_getnext(scan))))
+	{
+		Form_pg_depend depform = (Form_pg_depend) GETSTRUCT(tup);
+
+		/* make a modifiable copy */
+		tup = heap_copytuple(tup);
+		depform = (Form_pg_depend) GETSTRUCT(tup);
+
+		depform->objid = newObjectId;
+
+		CatalogTupleUpdate(depRel, &tup->t_self, tup);
+
+		heap_freetuple(tup);
+
+		count++;
+	}
+
+	systable_endscan(scan);
+
+	table_close(depRel, RowExclusiveLock);
+
+	return count;
+}
+
+/*
  * Adjust all dependency records to point to a different object of the same type
  *
  * refClassId/oldRefObjectId specify the old referenced object.
@@ -723,8 +779,8 @@ getOwnedSequence(Oid relid, AttrNumber attnum)
 
 /*
  * get_constraint_index
- *		Given the OID of a unique or primary-key constraint, return the
- *		OID of the underlying unique index.
+ *		Given the OID of a unique, primary-key, or exclusion constraint,
+ *		return the OID of the underlying index.
  *
  * Return InvalidOid if the index couldn't be found; this suggests the
  * given OID is bogus, but we leave it to caller to decide what to do.
@@ -771,10 +827,13 @@ get_constraint_index(Oid constraintId)
 		{
 			char		relkind = get_rel_relkind(deprec->objid);
 
-			/* This is pure paranoia; there shouldn't be any such */
+			/*
+			 * This is pure paranoia; there shouldn't be any other relkinds
+			 * dependent on a constraint.
+			 */
 			if (relkind != RELKIND_INDEX &&
 				relkind != RELKIND_PARTITIONED_INDEX)
-				break;
+				continue;
 
 			indexId = deprec->objid;
 			break;
@@ -789,8 +848,9 @@ get_constraint_index(Oid constraintId)
 
 /*
  * get_index_constraint
- *		Given the OID of an index, return the OID of the owning unique or
- *		primary-key constraint, or InvalidOid if no such constraint.
+ *		Given the OID of an index, return the OID of the owning unique,
+ *		primary-key, or exclusion constraint, or InvalidOid if there
+ *		is no owning constraint.
  */
 Oid
 get_index_constraint(Oid indexId)

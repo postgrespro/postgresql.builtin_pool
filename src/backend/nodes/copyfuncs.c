@@ -1198,16 +1198,13 @@ _copyPartitionedRelPruneInfo(const PartitionedRelPruneInfo *from)
 	PartitionedRelPruneInfo *newnode = makeNode(PartitionedRelPruneInfo);
 
 	COPY_SCALAR_FIELD(rtindex);
-	COPY_NODE_FIELD(pruning_steps);
 	COPY_BITMAPSET_FIELD(present_parts);
 	COPY_SCALAR_FIELD(nparts);
-	COPY_SCALAR_FIELD(nexprs);
 	COPY_POINTER_FIELD(subplan_map, from->nparts * sizeof(int));
 	COPY_POINTER_FIELD(subpart_map, from->nparts * sizeof(int));
 	COPY_POINTER_FIELD(relid_map, from->nparts * sizeof(Oid));
-	COPY_POINTER_FIELD(hasexecparam, from->nexprs * sizeof(bool));
-	COPY_SCALAR_FIELD(do_initial_prune);
-	COPY_SCALAR_FIELD(do_exec_prune);
+	COPY_NODE_FIELD(initial_pruning_steps);
+	COPY_NODE_FIELD(exec_pruning_steps);
 	COPY_BITMAPSET_FIELD(execparamids);
 
 	return newnode;
@@ -2919,6 +2916,7 @@ _copyConstraint(const Constraint *from)
 	COPY_NODE_FIELD(options);
 	COPY_STRING_FIELD(indexname);
 	COPY_STRING_FIELD(indexspace);
+	COPY_SCALAR_FIELD(reset_default_tblspc);
 	COPY_STRING_FIELD(access_method);
 	COPY_NODE_FIELD(where_clause);
 	COPY_NODE_FIELD(pktable);
@@ -3475,6 +3473,7 @@ _copyIndexStmt(const IndexStmt *from)
 	COPY_SCALAR_FIELD(transformed);
 	COPY_SCALAR_FIELD(concurrent);
 	COPY_SCALAR_FIELD(if_not_exists);
+	COPY_SCALAR_FIELD(reset_default_tblspc);
 
 	return newnode;
 }

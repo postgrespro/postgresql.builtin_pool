@@ -184,8 +184,8 @@ typedef struct SortSupportData
 	/*
 	 * Full, authoritative comparator for key that an abbreviated
 	 * representation was generated for, used when an abbreviated comparison
-	 * was inconclusive (by calling ApplySortComparatorFull()), or used to
-	 * replace "comparator" when core system ultimately decides against
+	 * was inconclusive (by calling ApplySortAbbrevFullComparator()), or used
+	 * to replace "comparator" when core system ultimately decides against
 	 * abbreviation.
 	 */
 	int			(*abbrev_full_comparator) (Datum x, Datum y, SortSupport ssup);
@@ -271,6 +271,6 @@ ApplySortAbbrevFullComparator(Datum datum1, bool isNull1,
 extern void PrepareSortSupportComparisonShim(Oid cmpFunc, SortSupport ssup);
 extern void PrepareSortSupportFromOrderingOp(Oid orderingOp, SortSupport ssup);
 extern void PrepareSortSupportFromIndexRel(Relation indexRel, int16 strategy,
-							   SortSupport ssup);
+										   SortSupport ssup);
 
 #endif							/* SORTSUPPORT_H */

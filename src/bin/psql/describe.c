@@ -18,31 +18,32 @@
 #include "catalog/pg_cast_d.h"
 #include "catalog/pg_class_d.h"
 #include "catalog/pg_default_acl_d.h"
-#include "fe_utils/logging.h"
+
+#include "common/logging.h"
+#include "fe_utils/mbprint.h"
+#include "fe_utils/print.h"
 #include "fe_utils/string_utils.h"
 
 #include "common.h"
 #include "describe.h"
-#include "fe_utils/mbprint.h"
-#include "fe_utils/print.h"
 #include "settings.h"
 #include "variables.h"
 
 
 static bool describeOneTableDetails(const char *schemaname,
-						const char *relationname,
-						const char *oid,
-						bool verbose);
+									const char *relationname,
+									const char *oid,
+									bool verbose);
 static void add_tablespace_footer(printTableContent *const cont, char relkind,
-					  Oid tablespace, const bool newline);
+								  Oid tablespace, const bool newline);
 static void add_role_attribute(PQExpBuffer buf, const char *const str);
 static bool listTSParsersVerbose(const char *pattern);
 static bool describeOneTSParser(const char *oid, const char *nspname,
-					const char *prsname);
+								const char *prsname);
 static bool listTSConfigsVerbose(const char *pattern);
 static bool describeOneTSConfig(const char *oid, const char *nspname,
-					const char *cfgname,
-					const char *pnspname, const char *prsname);
+								const char *cfgname,
+								const char *pnspname, const char *prsname);
 static void printACLColumn(PQExpBuffer buf, const char *colname);
 static bool listOneExtensionContents(const char *extname, const char *oid);
 
@@ -159,8 +160,8 @@ describeAccessMethods(const char *pattern, bool verbose)
 		char		sverbuf[32];
 
 		pg_log_error("The server (version %s) does not support access methods.",
-				   formatPGVersionNumber(pset.sversion, false,
-										 sverbuf, sizeof(sverbuf)));
+					 formatPGVersionNumber(pset.sversion, false,
+										   sverbuf, sizeof(sverbuf)));
 		return true;
 	}
 
@@ -228,8 +229,8 @@ describeTablespaces(const char *pattern, bool verbose)
 		char		sverbuf[32];
 
 		pg_log_info("The server (version %s) does not support tablespaces.",
-				   formatPGVersionNumber(pset.sversion, false,
-										 sverbuf, sizeof(sverbuf)));
+					formatPGVersionNumber(pset.sversion, false,
+										  sverbuf, sizeof(sverbuf)));
 		return true;
 	}
 
@@ -339,9 +340,9 @@ describeFunctions(const char *functypes, const char *pattern, bool verbose, bool
 		char		sverbuf[32];
 
 		pg_log_error("\\df does not take a \"%c\" option with server version %s",
-				   'p',
-				   formatPGVersionNumber(pset.sversion, false,
-										 sverbuf, sizeof(sverbuf)));
+					 'p',
+					 formatPGVersionNumber(pset.sversion, false,
+										   sverbuf, sizeof(sverbuf)));
 		return true;
 	}
 
@@ -350,9 +351,9 @@ describeFunctions(const char *functypes, const char *pattern, bool verbose, bool
 		char		sverbuf[32];
 
 		pg_log_error("\\df does not take a \"%c\" option with server version %s",
-				   'w',
-				   formatPGVersionNumber(pset.sversion, false,
-										 sverbuf, sizeof(sverbuf)));
+					 'w',
+					 formatPGVersionNumber(pset.sversion, false,
+										   sverbuf, sizeof(sverbuf)));
 		return true;
 	}
 
@@ -1099,8 +1100,8 @@ listDefaultACLs(const char *pattern)
 		char		sverbuf[32];
 
 		pg_log_error("The server (version %s) does not support altering default privileges.",
-				   formatPGVersionNumber(pset.sversion, false,
-										 sverbuf, sizeof(sverbuf)));
+					 formatPGVersionNumber(pset.sversion, false,
+										   sverbuf, sizeof(sverbuf)));
 		return true;
 	}
 
@@ -1400,7 +1401,7 @@ describeTableDetails(const char *pattern, bool verbose, bool showSystem)
 		{
 			if (pattern)
 				pg_log_error("Did not find any relation named \"%s\".",
-						   pattern);
+							 pattern);
 			else
 				pg_log_error("Did not find any relations.");
 		}
@@ -2452,9 +2453,12 @@ describeOneTableDetails(const char *schemaname,
 								  "  pg_catalog.pg_get_constraintdef(r.oid, true) as condef,\n"
 								  "  conrelid::pg_catalog.regclass AS ontable\n"
 								  "FROM pg_catalog.pg_constraint r\n"
-								  "WHERE r.conrelid = '%s' AND r.contype = 'f'\n"
-								  "ORDER BY conname;",
+								  "WHERE r.conrelid = '%s' AND r.contype = 'f'\n",
 								  oid);
+
+				if (pset.sversion >= 120000)
+					appendPQExpBuffer(&buf, "     AND conparentid = 0\n");
+				appendPQExpBuffer(&buf, "ORDER BY conname");
 			}
 
 			result = PSQLexec(buf.data);
@@ -3303,7 +3307,8 @@ add_tablespace_footer(printTableContent *const cont, char relkind,
 	if (relkind == RELKIND_RELATION ||
 		relkind == RELKIND_MATVIEW ||
 		relkind == RELKIND_INDEX ||
-		relkind == RELKIND_PARTITIONED_TABLE)
+		relkind == RELKIND_PARTITIONED_TABLE ||
+		relkind == RELKIND_PARTITIONED_INDEX)
 	{
 		/*
 		 * We ignore the database default tablespace so that users not using
@@ -3543,8 +3548,8 @@ listDbRoleSettings(const char *pattern, const char *pattern2)
 		char		sverbuf[32];
 
 		pg_log_error("The server (version %s) does not support per-database role settings.",
-				   formatPGVersionNumber(pset.sversion, false,
-										 sverbuf, sizeof(sverbuf)));
+					 formatPGVersionNumber(pset.sversion, false,
+										   sverbuf, sizeof(sverbuf)));
 		return true;
 	}
 
@@ -3579,10 +3584,10 @@ listDbRoleSettings(const char *pattern, const char *pattern2)
 	{
 		if (pattern && pattern2)
 			pg_log_error("Did not find any settings for role \"%s\" and database \"%s\".",
-					   pattern, pattern2);
+						 pattern, pattern2);
 		else if (pattern)
 			pg_log_error("Did not find any settings for role \"%s\".",
-					   pattern);
+						 pattern);
 		else
 			pg_log_error("Did not find any settings.");
 	}
@@ -3755,7 +3760,7 @@ listTables(const char *tabtypes, const char *pattern, bool verbose, bool showSys
 	{
 		if (pattern)
 			pg_log_error("Did not find any relation named \"%s\".",
-					   pattern);
+						 pattern);
 		else
 			pg_log_error("Did not find any relations.");
 	}
@@ -3774,6 +3779,219 @@ listTables(const char *tabtypes, const char *pattern, bool verbose, bool showSys
 	return true;
 }
 
+/*
+ * \dP
+ * Takes an optional regexp to select particular relations
+ *
+ * As with \d, you can specify the kinds of relations you want:
+ *
+ * t for tables
+ * i for indexes
+ *
+ * And there's additional flags:
+ *
+ * n to list non-leaf partitioned tables
+ *
+ * and you can mix and match these in any order.
+ */
+bool
+listPartitionedTables(const char *reltypes, const char *pattern, bool verbose)
+{
+	bool		showTables = strchr(reltypes, 't') != NULL;
+	bool		showIndexes = strchr(reltypes, 'i') != NULL;
+	bool		showNested = strchr(reltypes, 'n') != NULL;
+	PQExpBufferData buf;
+	PQExpBufferData title;
+	PGresult   *res;
+	printQueryOpt myopt = pset.popt;
+	bool		translate_columns[] = {false, false, false, false, false, false, false, false, false};
+	const char *tabletitle;
+	bool		mixed_output = false;
+
+	/*
+	 * Note: Declarative table partitioning is only supported as of Pg 10.0.
+	 */
+	if (pset.sversion < 100000)
+	{
+		char		sverbuf[32];
+
+		pg_log_error("The server (version %s) does not support declarative table partitioning.",
+					 formatPGVersionNumber(pset.sversion, false,
+										   sverbuf, sizeof(sverbuf)));
+		return true;
+	}
+
+	/* If no relation kind was selected, show them all */
+	if (!showTables && !showIndexes)
+		showTables = showIndexes = true;
+
+	if (showIndexes && !showTables)
+		tabletitle = _("List of partitioned indexes");	/* \dPi */
+	else if (showTables && !showIndexes)
+		tabletitle = _("List of partitioned tables");	/* \dPt */
+	else
+	{
+		/* show all kinds */
+		tabletitle = _("List of partitioned relations");
+		mixed_output = true;
+	}
+
+	initPQExpBuffer(&buf);
+
+	printfPQExpBuffer(&buf,
+					  "SELECT n.nspname as \"%s\",\n"
+					  "  c.relname as \"%s\",\n"
+					  "  pg_catalog.pg_get_userbyid(c.relowner) as \"%s\"",
+					  gettext_noop("Schema"),
+					  gettext_noop("Name"),
+					  gettext_noop("Owner"));
+
+	if (mixed_output)
+	{
+		appendPQExpBuffer(&buf,
+						  ",\n  CASE c.relkind"
+						  " WHEN " CppAsString2(RELKIND_PARTITIONED_TABLE) " THEN '%s'"
+						  " WHEN " CppAsString2(RELKIND_PARTITIONED_INDEX) " THEN '%s'"
+						  " END as \"%s\"",
+						  gettext_noop("partitioned table"),
+						  gettext_noop("partitioned index"),
+						  gettext_noop("Type"));
+
+		translate_columns[3] = true;
+	}
+
+	if (showNested || pattern)
+		appendPQExpBuffer(&buf,
+						  ",\n  inh.inhparent::regclass as \"%s\"",
+						  gettext_noop("Parent name"));
+
+	if (showIndexes)
+		appendPQExpBuffer(&buf,
+						  ",\n c2.oid::regclass as \"%s\"",
+						  gettext_noop("Table"));
+
+	if (verbose)
+	{
+		if (showNested)
+		{
+			appendPQExpBuffer(&buf,
+							  ",\n  s.dps as \"%s\"",
+							  gettext_noop("Leaf partition size"));
+			appendPQExpBuffer(&buf,
+							  ",\n  s.tps as \"%s\"",
+							  gettext_noop("Total size"));
+		}
+		else
+			/* Sizes of all partitions are considered in this case. */
+			appendPQExpBuffer(&buf,
+							  ",\n  s.tps as \"%s\"",
+							  gettext_noop("Total size"));
+
+		appendPQExpBuffer(&buf,
+						  ",\n  pg_catalog.obj_description(c.oid, 'pg_class') as \"%s\"",
+						  gettext_noop("Description"));
+	}
+
+	appendPQExpBufferStr(&buf,
+						 "\nFROM pg_catalog.pg_class c"
+						 "\n     LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace");
+
+	if (showIndexes)
+		appendPQExpBufferStr(&buf,
+							 "\n     LEFT JOIN pg_catalog.pg_index i ON i.indexrelid = c.oid"
+							 "\n     LEFT JOIN pg_catalog.pg_class c2 ON i.indrelid = c2.oid");
+
+	if (showNested || pattern)
+		appendPQExpBufferStr(&buf,
+							 "\n     LEFT JOIN pg_catalog.pg_inherits inh ON c.oid = inh.inhrelid");
+
+	if (verbose)
+	{
+		if (pset.sversion < 120000)
+		{
+			appendPQExpBuffer(&buf,
+							  ",\n     LATERAL (WITH RECURSIVE d\n"
+							  "                AS (SELECT inhrelid AS oid, 1 AS level\n"
+							  "                      FROM pg_catalog.pg_inherits\n"
+							  "                     WHERE inhparent = c.oid\n"
+							  "                    UNION ALL\n"
+							  "                    SELECT inhrelid, level + 1\n"
+							  "                      FROM pg_catalog.pg_inherits i\n"
+							  "                           JOIN d ON i.inhparent = d.oid)\n"
+							  "                SELECT pg_catalog.pg_size_pretty(sum(pg_catalog.pg_table_size("
+							  "d.oid))) AS tps,\n"
+							  "                       pg_catalog.pg_size_pretty(sum("
+							  "\n             CASE WHEN d.level = 1"
+							  " THEN pg_catalog.pg_table_size(d.oid) ELSE 0 END)) AS dps\n"
+							  "               FROM d) s");
+		}
+		else
+		{
+			/* PostgreSQL 12 has pg_partition_tree function */
+			appendPQExpBuffer(&buf,
+							  ",\n     LATERAL (SELECT pg_catalog.pg_size_pretty(sum("
+							  "\n                 CASE WHEN ppt.isleaf AND ppt.level = 1"
+							  "\n                      THEN pg_catalog.pg_table_size(ppt.relid)"
+							  " ELSE 0 END)) AS dps"
+							  ",\n                     pg_catalog.pg_size_pretty(sum("
+							  "pg_catalog.pg_table_size(ppt.relid))) AS tps"
+							  "\n              FROM pg_catalog.pg_partition_tree(c.oid) ppt) s");
+		}
+	}
+
+	appendPQExpBufferStr(&buf, "\nWHERE c.relkind IN (");
+	if (showTables)
+		appendPQExpBufferStr(&buf, CppAsString2(RELKIND_PARTITIONED_TABLE) ",");
+	if (showIndexes)
+		appendPQExpBufferStr(&buf, CppAsString2(RELKIND_PARTITIONED_INDEX) ",");
+	appendPQExpBufferStr(&buf, "''");	/* dummy */
+	appendPQExpBufferStr(&buf, ")\n");
+
+	appendPQExpBufferStr(&buf, !showNested && !pattern ?
+						 " AND NOT c.relispartition\n" : "");
+
+	if (!pattern)
+		appendPQExpBufferStr(&buf, "      AND n.nspname <> 'pg_catalog'\n"
+							 "      AND n.nspname <> 'information_schema'\n");
+
+	/*
+	 * TOAST objects are suppressed unconditionally.  Since we don't provide
+	 * any way to select RELKIND_TOASTVALUE above, we would never show toast
+	 * tables in any case; it seems a bit confusing to allow their indexes to
+	 * be shown.  Use plain \d if you really need to look at a TOAST
+	 * table/index.
+	 */
+	appendPQExpBufferStr(&buf, "      AND n.nspname !~ '^pg_toast'\n");
+
+	processSQLNamePattern(pset.db, &buf, pattern, true, false,
+						  "n.nspname", "c.relname", NULL,
+						  "pg_catalog.pg_table_is_visible(c.oid)");
+
+	appendPQExpBuffer(&buf, "ORDER BY \"Schema\", %s%s\"Name\";",
+					  mixed_output ? "\"Type\" DESC, " : "",
+					  showNested || pattern ? "\"Parent name\" NULLS FIRST, " : "");
+
+	res = PSQLexec(buf.data);
+	termPQExpBuffer(&buf);
+	if (!res)
+		return false;
+
+	initPQExpBuffer(&title);
+	appendPQExpBuffer(&title, "%s", tabletitle);
+
+	myopt.nullPrint = NULL;
+	myopt.title = title.data;
+	myopt.translate_header = true;
+	myopt.translate_columns = translate_columns;
+	myopt.n_translate_columns = lengthof(translate_columns);
+
+	printQuery(res, &myopt, pset.queryFout, false, pset.logfile);
+
+	termPQExpBuffer(&title);
+
+	PQclear(res);
+	return true;
+}
 
 /*
  * \dL
@@ -4214,8 +4432,8 @@ listCollations(const char *pattern, bool verbose, bool showSystem)
 		char		sverbuf[32];
 
 		pg_log_error("The server (version %s) does not support collations.",
-				   formatPGVersionNumber(pset.sversion, false,
-										 sverbuf, sizeof(sverbuf)));
+					 formatPGVersionNumber(pset.sversion, false,
+										   sverbuf, sizeof(sverbuf)));
 		return true;
 	}
 
@@ -4369,8 +4587,8 @@ listTSParsers(const char *pattern, bool verbose)
 		char		sverbuf[32];
 
 		pg_log_error("The server (version %s) does not support full text search.",
-				   formatPGVersionNumber(pset.sversion, false,
-										 sverbuf, sizeof(sverbuf)));
+					 formatPGVersionNumber(pset.sversion, false,
+										   sverbuf, sizeof(sverbuf)));
 		return true;
 	}
 
@@ -4449,7 +4667,7 @@ listTSParsersVerbose(const char *pattern)
 		{
 			if (pattern)
 				pg_log_error("Did not find any text search parser named \"%s\".",
-						   pattern);
+							 pattern);
 			else
 				pg_log_error("Did not find any text search parsers.");
 		}
@@ -4616,8 +4834,8 @@ listTSDictionaries(const char *pattern, bool verbose)
 		char		sverbuf[32];
 
 		pg_log_error("The server (version %s) does not support full text search.",
-				   formatPGVersionNumber(pset.sversion, false,
-										 sverbuf, sizeof(sverbuf)));
+					 formatPGVersionNumber(pset.sversion, false,
+										   sverbuf, sizeof(sverbuf)));
 		return true;
 	}
 
@@ -4687,8 +4905,8 @@ listTSTemplates(const char *pattern, bool verbose)
 		char		sverbuf[32];
 
 		pg_log_error("The server (version %s) does not support full text search.",
-				   formatPGVersionNumber(pset.sversion, false,
-										 sverbuf, sizeof(sverbuf)));
+					 formatPGVersionNumber(pset.sversion, false,
+										   sverbuf, sizeof(sverbuf)));
 		return true;
 	}
 
@@ -4758,8 +4976,8 @@ listTSConfigs(const char *pattern, bool verbose)
 		char		sverbuf[32];
 
 		pg_log_error("The server (version %s) does not support full text search.",
-				   formatPGVersionNumber(pset.sversion, false,
-										 sverbuf, sizeof(sverbuf)));
+					 formatPGVersionNumber(pset.sversion, false,
+										   sverbuf, sizeof(sverbuf)));
 		return true;
 	}
 
@@ -4839,7 +5057,7 @@ listTSConfigsVerbose(const char *pattern)
 		{
 			if (pattern)
 				pg_log_error("Did not find any text search configuration named \"%s\".",
-						   pattern);
+							 pattern);
 			else
 				pg_log_error("Did not find any text search configurations.");
 		}
@@ -4964,8 +5182,8 @@ listForeignDataWrappers(const char *pattern, bool verbose)
 		char		sverbuf[32];
 
 		pg_log_error("The server (version %s) does not support foreign-data wrappers.",
-				   formatPGVersionNumber(pset.sversion, false,
-										 sverbuf, sizeof(sverbuf)));
+					 formatPGVersionNumber(pset.sversion, false,
+										   sverbuf, sizeof(sverbuf)));
 		return true;
 	}
 
@@ -5047,8 +5265,8 @@ listForeignServers(const char *pattern, bool verbose)
 		char		sverbuf[32];
 
 		pg_log_error("The server (version %s) does not support foreign servers.",
-				   formatPGVersionNumber(pset.sversion, false,
-										 sverbuf, sizeof(sverbuf)));
+					 formatPGVersionNumber(pset.sversion, false,
+										   sverbuf, sizeof(sverbuf)));
 		return true;
 	}
 
@@ -5129,8 +5347,8 @@ listUserMappings(const char *pattern, bool verbose)
 		char		sverbuf[32];
 
 		pg_log_error("The server (version %s) does not support user mappings.",
-				   formatPGVersionNumber(pset.sversion, false,
-										 sverbuf, sizeof(sverbuf)));
+					 formatPGVersionNumber(pset.sversion, false,
+										   sverbuf, sizeof(sverbuf)));
 		return true;
 	}
 
@@ -5190,8 +5408,8 @@ listForeignTables(const char *pattern, bool verbose)
 		char		sverbuf[32];
 
 		pg_log_error("The server (version %s) does not support foreign tables.",
-				   formatPGVersionNumber(pset.sversion, false,
-										 sverbuf, sizeof(sverbuf)));
+					 formatPGVersionNumber(pset.sversion, false,
+										   sverbuf, sizeof(sverbuf)));
 		return true;
 	}
 
@@ -5268,8 +5486,8 @@ listExtensions(const char *pattern)
 		char		sverbuf[32];
 
 		pg_log_error("The server (version %s) does not support extensions.",
-				   formatPGVersionNumber(pset.sversion, false,
-										 sverbuf, sizeof(sverbuf)));
+					 formatPGVersionNumber(pset.sversion, false,
+										   sverbuf, sizeof(sverbuf)));
 		return true;
 	}
 
@@ -5325,8 +5543,8 @@ listExtensionContents(const char *pattern)
 		char		sverbuf[32];
 
 		pg_log_error("The server (version %s) does not support extensions.",
-				   formatPGVersionNumber(pset.sversion, false,
-										 sverbuf, sizeof(sverbuf)));
+					 formatPGVersionNumber(pset.sversion, false,
+										   sverbuf, sizeof(sverbuf)));
 		return true;
 	}
 
@@ -5353,7 +5571,7 @@ listExtensionContents(const char *pattern)
 		{
 			if (pattern)
 				pg_log_error("Did not find any extension named \"%s\".",
-						   pattern);
+							 pattern);
 			else
 				pg_log_error("Did not find any extensions.");
 		}
@@ -5439,8 +5657,8 @@ listPublications(const char *pattern)
 		char		sverbuf[32];
 
 		pg_log_error("The server (version %s) does not support publications.",
-				   formatPGVersionNumber(pset.sversion, false,
-										 sverbuf, sizeof(sverbuf)));
+					 formatPGVersionNumber(pset.sversion, false,
+										   sverbuf, sizeof(sverbuf)));
 		return true;
 	}
 
@@ -5510,8 +5728,8 @@ describePublications(const char *pattern)
 		char		sverbuf[32];
 
 		pg_log_error("The server (version %s) does not support publications.",
-				   formatPGVersionNumber(pset.sversion, false,
-										 sverbuf, sizeof(sverbuf)));
+					 formatPGVersionNumber(pset.sversion, false,
+										   sverbuf, sizeof(sverbuf)));
 		return true;
 	}
 
@@ -5548,7 +5766,7 @@ describePublications(const char *pattern)
 		{
 			if (pattern)
 				pg_log_error("Did not find any publication named \"%s\".",
-						   pattern);
+							 pattern);
 			else
 				pg_log_error("Did not find any publications.");
 		}
@@ -5666,8 +5884,8 @@ describeSubscriptions(const char *pattern, bool verbose)
 		char		sverbuf[32];
 
 		pg_log_error("The server (version %s) does not support subscriptions.",
-				   formatPGVersionNumber(pset.sversion, false,
-										 sverbuf, sizeof(sverbuf)));
+					 formatPGVersionNumber(pset.sversion, false,
+										   sverbuf, sizeof(sverbuf)));
 		return true;
 	}
 

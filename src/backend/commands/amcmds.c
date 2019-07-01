@@ -61,7 +61,7 @@ CreateAccessMethod(CreateAmStmt *stmt)
 				 errhint("Must be superuser to create an access method.")));
 
 	/* Check if name is used */
-	amoid = GetSysCacheOid1(AMNAME,  Anum_pg_am_oid,
+	amoid = GetSysCacheOid1(AMNAME, Anum_pg_am_oid,
 							CStringGetDatum(stmt->amname));
 	if (OidIsValid(amoid))
 	{
@@ -187,6 +187,16 @@ Oid
 get_index_am_oid(const char *amname, bool missing_ok)
 {
 	return get_am_type_oid(amname, AMTYPE_INDEX, missing_ok);
+}
+
+/*
+ * get_table_am_oid - given an access method name, look up its OID
+ *		and verify it corresponds to an table AM.
+ */
+Oid
+get_table_am_oid(const char *amname, bool missing_ok)
+{
+	return get_am_type_oid(amname, AMTYPE_TABLE, missing_ok);
 }
 
 /*

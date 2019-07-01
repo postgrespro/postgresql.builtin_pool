@@ -74,13 +74,13 @@
 
 static Datum jsonPathFromCstring(char *in, int len);
 static char *jsonPathToCstring(StringInfo out, JsonPath *in,
-				  int estimated_len);
-static int flattenJsonPathParseItem(StringInfo buf, JsonPathParseItem *item,
-						 int nestingLevel, bool insideArraySubscript);
+							   int estimated_len);
+static int	flattenJsonPathParseItem(StringInfo buf, JsonPathParseItem *item,
+									 int nestingLevel, bool insideArraySubscript);
 static void alignStringInfoInt(StringInfo buf);
 static int32 reserveSpaceForItemPointer(StringInfo buf);
 static void printJsonPathItem(StringInfo buf, JsonPathItem *v, bool inKey,
-				  bool printBracketes);
+							  bool printBracketes);
 static int	operationPriority(JsonPathItemType op);
 
 
@@ -179,7 +179,8 @@ jsonPathFromCstring(char *in, int len)
 	if (!jsonpath)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
-				 errmsg("invalid input syntax for jsonpath: \"%s\"", in)));
+				 errmsg("invalid input syntax for type %s: \"%s\"", "jsonpath",
+						in)));
 
 	flattenJsonPathParseItem(&buf, jsonpath->expr, 0, false);
 
@@ -228,7 +229,7 @@ static int
 flattenJsonPathParseItem(StringInfo buf, JsonPathParseItem *item,
 						 int nestingLevel, bool insideArraySubscript)
 {
-	/* position from begining of jsonpath data */
+	/* position from beginning of jsonpath data */
 	int32		pos = buf->len - JSONPATH_HDRSZ;
 	int32		chld;
 	int32		next;
@@ -499,7 +500,7 @@ printJsonPathItem(StringInfo buf, JsonPathItem *v, bool inKey,
 		case jpiNumeric:
 			appendStringInfoString(buf,
 								   DatumGetCString(DirectFunctionCall1(numeric_out,
-																	   PointerGetDatum(jspGetNumeric(v)))));
+																	   NumericGetDatum(jspGetNumeric(v)))));
 			break;
 		case jpiBool:
 			if (jspGetBool(v))
@@ -562,6 +563,8 @@ printJsonPathItem(StringInfo buf, JsonPathItem *v, bool inKey,
 					appendStringInfoChar(buf, 'm');
 				if (v->content.like_regex.flags & JSP_REGEX_WSPACE)
 					appendStringInfoChar(buf, 'x');
+				if (v->content.like_regex.flags & JSP_REGEX_QUOTE)
+					appendStringInfoChar(buf, 'q');
 
 				appendStringInfoChar(buf, '"');
 			}

@@ -41,6 +41,7 @@
 
 #include <ctype.h>
 
+#include "catalog/pg_am_d.h"
 #include "catalog/pg_class_d.h"
 
 #include "libpq-fe.h"
@@ -464,9 +465,28 @@ static const SchemaQuery Query_for_list_of_indexes = {
 	.result = "pg_catalog.quote_ident(c.relname)",
 };
 
+static const SchemaQuery Query_for_list_of_partitioned_indexes = {
+	.catname = "pg_catalog.pg_class c",
+	.selcondition = "c.relkind = " CppAsString2(RELKIND_PARTITIONED_INDEX),
+	.viscondition = "pg_catalog.pg_table_is_visible(c.oid)",
+	.namespace = "c.relnamespace",
+	.result = "pg_catalog.quote_ident(c.relname)",
+};
+
+
 /* All relations */
 static const SchemaQuery Query_for_list_of_relations = {
 	.catname = "pg_catalog.pg_class c",
+	.viscondition = "pg_catalog.pg_table_is_visible(c.oid)",
+	.namespace = "c.relnamespace",
+	.result = "pg_catalog.quote_ident(c.relname)",
+};
+
+/* partitioned relations */
+static const SchemaQuery Query_for_list_of_partitioned_relations = {
+	.catname = "pg_catalog.pg_class c",
+	.selcondition = "c.relkind IN (" CppAsString2(RELKIND_PARTITIONED_TABLE)
+	", " CppAsString2(RELKIND_PARTITIONED_INDEX) ")",
 	.viscondition = "pg_catalog.pg_table_is_visible(c.oid)",
 	.namespace = "c.relnamespace",
 	.result = "pg_catalog.quote_ident(c.relname)",
@@ -805,6 +825,18 @@ static const SchemaQuery Query_for_list_of_statistics = {
 "   FROM pg_catalog.pg_am "\
 "  WHERE substring(pg_catalog.quote_ident(amname),1,%d)='%s'"
 
+#define Query_for_list_of_index_access_methods \
+" SELECT pg_catalog.quote_ident(amname) "\
+"   FROM pg_catalog.pg_am "\
+"  WHERE substring(pg_catalog.quote_ident(amname),1,%d)='%s' AND "\
+"   amtype=" CppAsString2(AMTYPE_INDEX)
+
+#define Query_for_list_of_table_access_methods \
+" SELECT pg_catalog.quote_ident(amname) "\
+"   FROM pg_catalog.pg_am "\
+"  WHERE substring(pg_catalog.quote_ident(amname),1,%d)='%s' AND "\
+"   amtype=" CppAsString2(AMTYPE_TABLE)
+
 /* the silly-looking length condition is just to eat up the current word */
 #define Query_for_list_of_arguments \
 "SELECT pg_catalog.oidvectortypes(proargtypes)||')' "\
@@ -1037,8 +1069,12 @@ static const char *const table_storage_parameters[] = {
 	"toast.autovacuum_vacuum_scale_factor",
 	"toast.autovacuum_vacuum_threshold",
 	"toast.log_autovacuum_min_duration",
+	"toast.vacuum_index_cleanup",
+	"toast.vacuum_truncate",
 	"toast_tuple_target",
 	"user_catalog_table",
+	"vacuum_index_cleanup",
+	"vacuum_truncate",
 	NULL
 };
 
@@ -1053,15 +1089,15 @@ static char *complete_from_versioned_query(const char *text, int state);
 static char *complete_from_schema_query(const char *text, int state);
 static char *complete_from_versioned_schema_query(const char *text, int state);
 static char *_complete_from_query(const char *simple_query,
-					 const SchemaQuery *schema_query,
-					 const char *text, int state);
+								  const SchemaQuery *schema_query,
+								  const char *text, int state);
 static char *complete_from_list(const char *text, int state);
 static char *complete_from_const(const char *text, int state);
 static void append_variable_names(char ***varnames, int *nvars,
-					  int *maxvars, const char *varname,
-					  const char *prefix, const char *suffix);
+								  int *maxvars, const char *varname,
+								  const char *prefix, const char *suffix);
 static char **complete_from_variables(const char *text,
-						const char *prefix, const char *suffix, bool need_value);
+									  const char *prefix, const char *suffix, bool need_value);
 static char *complete_from_files(const char *text, int state);
 
 static char *pg_strdup_keyword_case(const char *s, const char *ref);
@@ -1381,7 +1417,7 @@ psql_completion(const char *text, int start, int end)
 		"\\d", "\\da", "\\dA", "\\db", "\\dc", "\\dC", "\\dd", "\\ddp", "\\dD",
 		"\\des", "\\det", "\\deu", "\\dew", "\\dE", "\\df",
 		"\\dF", "\\dFd", "\\dFp", "\\dFt", "\\dg", "\\di", "\\dl", "\\dL",
-		"\\dm", "\\dn", "\\do", "\\dO", "\\dp",
+		"\\dm", "\\dn", "\\do", "\\dO", "\\dp", "\\dP", "\\dPi", "\\dPt",
 		"\\drds", "\\dRs", "\\dRp", "\\ds", "\\dS",
 		"\\dt", "\\dT", "\\dv", "\\du", "\\dx", "\\dy",
 		"\\e", "\\echo", "\\ef", "\\elif", "\\else", "\\encoding",
@@ -2079,6 +2115,8 @@ psql_completion(const char *text, int start, int end)
 		 */
 		if (ends_with(prev_wd, '(') || ends_with(prev_wd, ','))
 			COMPLETE_WITH("VERBOSE", "SKIP_LOCKED");
+		else if (TailMatches("VERBOSE|SKIP_LOCKED"))
+			COMPLETE_WITH("ON", "OFF");
 	}
 	else if (HeadMatches("ANALYZE") && TailMatches("("))
 		/* "ANALYZE (" should be caught above, so assume we want columns */
@@ -2210,7 +2248,7 @@ psql_completion(const char *text, int start, int end)
 		COMPLETE_WITH("TYPE");
 	/* Complete "CREATE ACCESS METHOD <name> TYPE" */
 	else if (Matches("CREATE", "ACCESS", "METHOD", MatchAny, "TYPE"))
-		COMPLETE_WITH("INDEX");
+		COMPLETE_WITH("INDEX", "TABLE");
 	/* Complete "CREATE ACCESS METHOD <name> TYPE <type>" */
 	else if (Matches("CREATE", "ACCESS", "METHOD", MatchAny, "TYPE", MatchAny))
 		COMPLETE_WITH("HANDLER");
@@ -2298,7 +2336,7 @@ psql_completion(const char *text, int start, int end)
 	else if (TailMatches("INDEX", MatchAny, MatchAny, "ON", MatchAny, "USING") ||
 			 TailMatches("INDEX", MatchAny, "ON", MatchAny, "USING") ||
 			 TailMatches("INDEX", "ON", MatchAny, "USING"))
-		COMPLETE_WITH_QUERY(Query_for_list_of_access_methods);
+		COMPLETE_WITH_QUERY(Query_for_list_of_index_access_methods);
 	else if (TailMatches("ON", MatchAny, "USING", MatchAny) &&
 			 !TailMatches("POLICY", MatchAny, MatchAny, MatchAny, MatchAny, MatchAny) &&
 			 !TailMatches("FOR", MatchAny, MatchAny, MatchAny))
@@ -2466,10 +2504,14 @@ psql_completion(const char *text, int start, int end)
 	/* Complete CREATE TABLE name (...) with supported options */
 	else if (TailMatches("CREATE", "TABLE", MatchAny, "(*)") ||
 			 TailMatches("CREATE", "UNLOGGED", "TABLE", MatchAny, "(*)"))
-		COMPLETE_WITH("INHERITS (", "PARTITION BY", "TABLESPACE", "WITH (");
+		COMPLETE_WITH("INHERITS (", "PARTITION BY", "USING", "TABLESPACE", "WITH (");
 	else if (TailMatches("CREATE", "TEMP|TEMPORARY", "TABLE", MatchAny, "(*)"))
 		COMPLETE_WITH("INHERITS (", "ON COMMIT", "PARTITION BY",
 					  "TABLESPACE", "WITH (");
+	/* Complete CREATE TABLE (...) USING with table access methods */
+	else if (TailMatches("CREATE", "TABLE", MatchAny, "(*)", "USING") ||
+			 TailMatches("CREATE", "TEMP|TEMPORARY|UNLOGGED", "TABLE", MatchAny, "(*)", "USING"))
+		COMPLETE_WITH_QUERY(Query_for_list_of_table_access_methods);
 	/* Complete CREATE TABLE (...) WITH with storage parameters */
 	else if (TailMatches("CREATE", "TABLE", MatchAny, "(*)", "WITH", "(") ||
 			 TailMatches("CREATE", "TEMP|TEMPORARY|UNLOGGED", "TABLE", MatchAny, "(*)", "WITH", "("))
@@ -3443,8 +3485,9 @@ psql_completion(const char *text, int start, int end)
 		 */
 		if (ends_with(prev_wd, '(') || ends_with(prev_wd, ','))
 			COMPLETE_WITH("FULL", "FREEZE", "ANALYZE", "VERBOSE",
-						  "DISABLE_PAGE_SKIPPING", "SKIP_LOCKED");
-		else if (TailMatches("FULL|FREEZE|ANALYZE|VERBOSE|DISABLE_PAGE_SKIPPING|SKIP_LOCKED"))
+						  "DISABLE_PAGE_SKIPPING", "SKIP_LOCKED",
+						  "INDEX_CLEANUP", "TRUNCATE");
+		else if (TailMatches("FULL|FREEZE|ANALYZE|VERBOSE|DISABLE_PAGE_SKIPPING|SKIP_LOCKED|INDEX_CLEANUP|TRUNCATE"))
 			COMPLETE_WITH("ON", "OFF");
 	}
 	else if (HeadMatches("VACUUM") && TailMatches("("))
@@ -3525,6 +3568,12 @@ psql_completion(const char *text, int start, int end)
 		COMPLETE_WITH_QUERY(Query_for_list_of_schemas);
 	else if (TailMatchesCS("\\dp") || TailMatchesCS("\\z"))
 		COMPLETE_WITH_SCHEMA_QUERY(Query_for_list_of_grantables, NULL);
+	else if (TailMatchesCS("\\dPi*"))
+		COMPLETE_WITH_SCHEMA_QUERY(Query_for_list_of_partitioned_indexes, NULL);
+	else if (TailMatchesCS("\\dPt*"))
+		COMPLETE_WITH_SCHEMA_QUERY(Query_for_list_of_partitioned_tables, NULL);
+	else if (TailMatchesCS("\\dP*"))
+		COMPLETE_WITH_SCHEMA_QUERY(Query_for_list_of_partitioned_relations, NULL);
 	else if (TailMatchesCS("\\ds*"))
 		COMPLETE_WITH_SCHEMA_QUERY(Query_for_list_of_sequences, NULL);
 	else if (TailMatchesCS("\\dt*"))
@@ -3650,7 +3699,7 @@ psql_completion(const char *text, int start, int end)
 		else if (TailMatchesCS("SHOW_CONTEXT"))
 			COMPLETE_WITH_CS("never", "errors", "always");
 		else if (TailMatchesCS("VERBOSITY"))
-			COMPLETE_WITH_CS("default", "verbose", "terse");
+			COMPLETE_WITH_CS("default", "verbose", "terse", "sqlstate");
 	}
 	else if (TailMatchesCS("\\sf*"))
 		COMPLETE_WITH_SCHEMA_QUERY(Query_for_list_of_routines, NULL);
@@ -4330,7 +4379,7 @@ exec_query(const char *query)
 	{
 #ifdef NOT_USED
 		pg_log_error("tab completion query failed: %s\nQuery was:\n%s",
-				   PQerrorMessage(pset.db), query);
+					 PQerrorMessage(pset.db), query);
 #endif
 		PQclear(result);
 		result = NULL;

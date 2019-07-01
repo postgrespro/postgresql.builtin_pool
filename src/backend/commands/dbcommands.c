@@ -54,6 +54,7 @@
 #include "storage/fd.h"
 #include "storage/lmgr.h"
 #include "storage/ipc.h"
+#include "storage/md.h"
 #include "storage/procarray.h"
 #include "storage/smgr.h"
 #include "utils/acl.h"
@@ -81,11 +82,11 @@ static void createdb_failure_callback(int code, Datum arg);
 static void movedb(const char *dbname, const char *tblspcname);
 static void movedb_failure_callback(int code, Datum arg);
 static bool get_db_info(const char *name, LOCKMODE lockmode,
-			Oid *dbIdP, Oid *ownerIdP,
-			int *encodingP, bool *dbIsTemplateP, bool *dbAllowConnP,
-			Oid *dbLastSysOidP, TransactionId *dbFrozenXidP,
-			MultiXactId *dbMinMultiP,
-			Oid *dbTablespace, char **dbCollate, char **dbCtype);
+						Oid *dbIdP, Oid *ownerIdP,
+						int *encodingP, bool *dbIsTemplateP, bool *dbAllowConnP,
+						Oid *dbLastSysOidP, TransactionId *dbFrozenXidP,
+						MultiXactId *dbMinMultiP,
+						Oid *dbTablespace, char **dbCollate, char **dbCtype);
 static bool have_createdb_privilege(void);
 static void remove_dbtablespaces(Oid db_id);
 static bool check_db_file_conflict(Oid db_id);
@@ -468,6 +469,16 @@ createdb(ParseState *pstate, const CreatedbStmt *stmt)
 		dst_deftablespace = src_deftablespace;
 		/* Note there is no additional permission check in this path */
 	}
+
+	/*
+	 * If built with appropriate switch, whine when regression-testing
+	 * conventions for database names are violated.  But don't complain during
+	 * initdb.
+	 */
+#ifdef ENFORCE_REGRESSION_TEST_NAME_RESTRICTIONS
+	if (IsUnderPostmaster && strstr(dbname, "regression") == NULL)
+		elog(WARNING, "databases created by regression test cases should have names including \"regression\"");
+#endif
 
 	/*
 	 * Check for db name conflict.  This is just to give a more friendly error
@@ -941,11 +952,11 @@ dropdb(const char *dbname, bool missing_ok)
 	 * worse, it will delete files that belong to a newly created database
 	 * with the same OID.
 	 */
-	ForgetDatabaseFsyncRequests(db_id);
+	ForgetDatabaseSyncRequests(db_id);
 
 	/*
 	 * Force a checkpoint to make sure the checkpointer has received the
-	 * message sent by ForgetDatabaseFsyncRequests. On Windows, this also
+	 * message sent by ForgetDatabaseSyncRequests. On Windows, this also
 	 * ensures that background procs don't hold any open files, which would
 	 * cause rmdir() to fail.
 	 */
@@ -1006,6 +1017,15 @@ RenameDatabase(const char *oldname, const char *newname)
 		ereport(ERROR,
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
 				 errmsg("permission denied to rename database")));
+
+	/*
+	 * If built with appropriate switch, whine when regression-testing
+	 * conventions for database names are violated.
+	 */
+#ifdef ENFORCE_REGRESSION_TEST_NAME_RESTRICTIONS
+	if (strstr(newname, "regression") == NULL)
+		elog(WARNING, "databases created by regression test cases should have names including \"regression\"");
+#endif
 
 	/*
 	 * Make sure the new name doesn't exist.  See notes for same error in
@@ -2032,7 +2052,7 @@ get_database_oid(const char *dbname, bool missing_ok)
 
 	/* We assume that there can be at most one matching tuple */
 	if (HeapTupleIsValid(dbtuple))
-		oid = ((Form_pg_database)GETSTRUCT(dbtuple))->oid;
+		oid = ((Form_pg_database) GETSTRUCT(dbtuple))->oid;
 	else
 		oid = InvalidOid;
 
@@ -2150,7 +2170,7 @@ dbase_redo(XLogReaderState *record)
 		DropDatabaseBuffers(xlrec->db_id);
 
 		/* Also, clean out any fsync requests that might be pending in md.c */
-		ForgetDatabaseFsyncRequests(xlrec->db_id);
+		ForgetDatabaseSyncRequests(xlrec->db_id);
 
 		/* Clean out the xlog relcache too */
 		XLogDropDatabase(xlrec->db_id);

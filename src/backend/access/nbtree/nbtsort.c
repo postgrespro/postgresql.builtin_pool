@@ -273,34 +273,34 @@ typedef struct BTWriteState
 
 
 static double _bt_spools_heapscan(Relation heap, Relation index,
-					BTBuildState *buildstate, IndexInfo *indexInfo);
+								  BTBuildState *buildstate, IndexInfo *indexInfo);
 static void _bt_spooldestroy(BTSpool *btspool);
 static void _bt_spool(BTSpool *btspool, ItemPointer self,
-		  Datum *values, bool *isnull);
+					  Datum *values, bool *isnull);
 static void _bt_leafbuild(BTSpool *btspool, BTSpool *btspool2);
 static void _bt_build_callback(Relation index, HeapTuple htup, Datum *values,
-				   bool *isnull, bool tupleIsAlive, void *state);
+							   bool *isnull, bool tupleIsAlive, void *state);
 static Page _bt_blnewpage(uint32 level);
 static BTPageState *_bt_pagestate(BTWriteState *wstate, uint32 level);
 static void _bt_slideleft(Page page);
 static void _bt_sortaddtup(Page page, Size itemsize,
-			   IndexTuple itup, OffsetNumber itup_off);
+						   IndexTuple itup, OffsetNumber itup_off);
 static void _bt_buildadd(BTWriteState *wstate, BTPageState *state,
-			 IndexTuple itup);
+						 IndexTuple itup);
 static void _bt_uppershutdown(BTWriteState *wstate, BTPageState *state);
 static void _bt_load(BTWriteState *wstate,
-		 BTSpool *btspool, BTSpool *btspool2);
+					 BTSpool *btspool, BTSpool *btspool2);
 static void _bt_begin_parallel(BTBuildState *buildstate, bool isconcurrent,
-				   int request);
+							   int request);
 static void _bt_end_parallel(BTLeader *btleader);
 static Size _bt_parallel_estimate_shared(Relation heap, Snapshot snapshot);
 static double _bt_parallel_heapscan(BTBuildState *buildstate,
-					  bool *brokenhotchain);
+									bool *brokenhotchain);
 static void _bt_leader_participate_as_worker(BTBuildState *buildstate);
 static void _bt_parallel_scan_and_sort(BTSpool *btspool, BTSpool *btspool2,
-						   BTShared *btshared, Sharedsort *sharedsort,
-						   Sharedsort *sharedsort2, int sortmem,
-						   bool progress);
+									   BTShared *btshared, Sharedsort *sharedsort,
+									   Sharedsort *sharedsort2, int sortmem,
+									   bool progress);
 
 
 /*
@@ -841,6 +841,7 @@ _bt_buildadd(BTWriteState *wstate, BTPageState *state, IndexTuple itup)
 	OffsetNumber last_off;
 	Size		pgspc;
 	Size		itupsz;
+	bool		isleaf;
 
 	/*
 	 * This is a handy place to check for cancel interrupts during the btree
@@ -855,9 +856,12 @@ _bt_buildadd(BTWriteState *wstate, BTPageState *state, IndexTuple itup)
 	pgspc = PageGetFreeSpace(npage);
 	itupsz = IndexTupleSize(itup);
 	itupsz = MAXALIGN(itupsz);
+	/* Leaf case has slightly different rules due to suffix truncation */
+	isleaf = (state->btps_level == 0);
 
 	/*
-	 * Check whether the item can fit on a btree page at all.
+	 * Check whether the new item can fit on a btree page on current level at
+	 * all.
 	 *
 	 * Every newly built index will treat heap TID as part of the keyspace,
 	 * which imposes the requirement that new high keys must occasionally have
@@ -870,16 +874,29 @@ _bt_buildadd(BTWriteState *wstate, BTPageState *state, IndexTuple itup)
 	 * the reserved space.  This should never fail on internal pages.
 	 */
 	if (unlikely(itupsz > BTMaxItemSize(npage)))
-		_bt_check_third_page(wstate->index, wstate->heap,
-							 state->btps_level == 0, npage, itup);
+		_bt_check_third_page(wstate->index, wstate->heap, isleaf, npage,
+							 itup);
 
 	/*
-	 * Check to see if page is "full".  It's definitely full if the item won't
-	 * fit.  Otherwise, compare to the target freespace derived from the
-	 * fillfactor.  However, we must put at least two items on each page, so
-	 * disregard fillfactor if we don't have that many.
+	 * Check to see if current page will fit new item, with space left over to
+	 * append a heap TID during suffix truncation when page is a leaf page.
+	 *
+	 * It is guaranteed that we can fit at least 2 non-pivot tuples plus a
+	 * high key with heap TID when finishing off a leaf page, since we rely on
+	 * _bt_check_third_page() rejecting oversized non-pivot tuples.  On
+	 * internal pages we can always fit 3 pivot tuples with larger internal
+	 * page tuple limit (includes page high key).
+	 *
+	 * Most of the time, a page is only "full" in the sense that the soft
+	 * fillfactor-wise limit has been exceeded.  However, we must always leave
+	 * at least two items plus a high key on each page before starting a new
+	 * page.  Disregard fillfactor and insert on "full" current page if we
+	 * don't have the minimum number of items yet.  (Note that we deliberately
+	 * assume that suffix truncation neither enlarges nor shrinks new high key
+	 * when applying soft limit.)
 	 */
-	if (pgspc < itupsz || (pgspc < state->btps_full && last_off > P_FIRSTKEY))
+	if (pgspc < itupsz + (isleaf ? MAXALIGN(sizeof(ItemPointerData)) : 0) ||
+		(pgspc < state->btps_full && last_off > P_FIRSTKEY))
 	{
 		/*
 		 * Finish off the page and write it out.
@@ -889,7 +906,6 @@ _bt_buildadd(BTWriteState *wstate, BTPageState *state, IndexTuple itup)
 		ItemId		ii;
 		ItemId		hii;
 		IndexTuple	oitup;
-		BTPageOpaque opageop = (BTPageOpaque) PageGetSpecialPointer(opage);
 
 		/* Create new page of same level */
 		npage = _bt_blnewpage(state->btps_level);
@@ -910,14 +926,20 @@ _bt_buildadd(BTWriteState *wstate, BTPageState *state, IndexTuple itup)
 		_bt_sortaddtup(npage, ItemIdGetLength(ii), oitup, P_FIRSTKEY);
 
 		/*
-		 * Move 'last' into the high key position on opage
+		 * Move 'last' into the high key position on opage.  _bt_blnewpage()
+		 * allocated empty space for a line pointer when opage was first
+		 * created, so this is a matter of rearranging already-allocated space
+		 * on page, and initializing high key line pointer. (Actually, leaf
+		 * pages must also swap oitup with a truncated version of oitup, which
+		 * is sometimes larger than oitup, though never by more than the space
+		 * needed to append a heap TID.)
 		 */
 		hii = PageGetItemId(opage, P_HIKEY);
 		*hii = *ii;
 		ItemIdSetUnused(ii);	/* redundant */
 		((PageHeader) opage)->pd_lower -= sizeof(ItemIdData);
 
-		if (P_ISLEAF(opageop))
+		if (isleaf)
 		{
 			IndexTuple	lastleft;
 			IndexTuple	truncated;
@@ -940,18 +962,16 @@ _bt_buildadd(BTWriteState *wstate, BTPageState *state, IndexTuple itup)
 			 * much smaller.
 			 *
 			 * Since the truncated tuple is often smaller than the original
-			 * tuple, it cannot just be copied in place (besides, we want
-			 * to actually save space on the leaf page).  We delete the
-			 * original high key, and add our own truncated high key at the
-			 * same offset.  It's okay if the truncated tuple is slightly
-			 * larger due to containing a heap TID value, since this case is
-			 * known to _bt_check_third_page(), which reserves space.
+			 * tuple, it cannot just be copied in place (besides, we want to
+			 * actually save space on the leaf page).  We delete the original
+			 * high key, and add our own truncated high key at the same
+			 * offset.
 			 *
 			 * Note that the page layout won't be changed very much.  oitup is
 			 * already located at the physical beginning of tuple space, so we
 			 * only shift the line pointer array back and forth, and overwrite
-			 * the latter portion of the space occupied by the original tuple.
-			 * This is fairly cheap.
+			 * the tuple space previously occupied by oitup.  This is fairly
+			 * cheap.
 			 */
 			ii = PageGetItemId(opage, OffsetNumberPrev(last_off));
 			lastleft = (IndexTuple) PageGetItem(opage, ii);
@@ -979,17 +999,16 @@ _bt_buildadd(BTWriteState *wstate, BTPageState *state, IndexTuple itup)
 		Assert((BTreeTupleGetNAtts(state->btps_minkey, wstate->index) <=
 				IndexRelationGetNumberOfKeyAttributes(wstate->index) &&
 				BTreeTupleGetNAtts(state->btps_minkey, wstate->index) > 0) ||
-			   P_LEFTMOST(opageop));
+			   P_LEFTMOST((BTPageOpaque) PageGetSpecialPointer(opage)));
 		Assert(BTreeTupleGetNAtts(state->btps_minkey, wstate->index) == 0 ||
-			   !P_LEFTMOST(opageop));
+			   !P_LEFTMOST((BTPageOpaque) PageGetSpecialPointer(opage)));
 		BTreeInnerTupleSetDownLink(state->btps_minkey, oblkno);
 		_bt_buildadd(wstate, state->btps_next, state->btps_minkey);
 		pfree(state->btps_minkey);
 
 		/*
-		 * Save a copy of the minimum key for the new page.  We have to copy
-		 * it off the old page, not the new one, in case we are not at leaf
-		 * level.
+		 * Save a copy of the high key from the old page.  It is also used as
+		 * the minimum key for the new page.
 		 */
 		state->btps_minkey = CopyIndexTuple(oitup);
 
@@ -1018,12 +1037,15 @@ _bt_buildadd(BTWriteState *wstate, BTPageState *state, IndexTuple itup)
 	}
 
 	/*
+	 * By here, either original page is still the current page, or a new page
+	 * was created that became the current page.  Either way, the current page
+	 * definitely has space for new item.
+	 *
 	 * If the new item is the first for its page, stash a copy for later. Note
 	 * this will only happen for the first item on a level; on later pages,
 	 * the first item for a page is copied from the prior page in the code
-	 * above.  Since the minimum key for an entire level is only used as a
-	 * minus infinity downlink, and never as a high key, there is no need to
-	 * truncate away suffix attributes at this point.
+	 * above.  The minimum key for an entire level is nothing more than a
+	 * minus infinity (downlink only) pivot tuple placeholder.
 	 */
 	if (last_off == P_HIKEY)
 	{
@@ -1130,7 +1152,7 @@ _bt_load(BTWriteState *wstate, BTSpool *btspool, BTSpool *btspool2)
 	int			i,
 				keysz = IndexRelationGetNumberOfKeyAttributes(wstate->index);
 	SortSupport sortKeys;
-	long		tuples_done = 0;
+	int64		tuples_done = 0;
 
 	if (merge)
 	{

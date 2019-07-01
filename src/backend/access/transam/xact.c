@@ -48,8 +48,8 @@
 #include "replication/walsender.h"
 #include "storage/condition_variable.h"
 #include "storage/fd.h"
-#include "storage/freespace.h"
 #include "storage/lmgr.h"
+#include "storage/md.h"
 #include "storage/predicate.h"
 #include "storage/proc.h"
 #include "storage/procarray.h"
@@ -91,8 +91,8 @@ int			synchronous_commit = SYNCHRONOUS_COMMIT_ON;
  * need to return the same answers in the parallel worker as they would have
  * in the user backend, so we need some additional bookkeeping.
  *
- * XactTopTransactionId stores the XID of our toplevel transaction, which
- * will be the same as TopTransactionState.transactionId in an ordinary
+ * XactTopFullTransactionId stores the XID of our toplevel transaction, which
+ * will be the same as TopTransactionState.fullTransactionId in an ordinary
  * backend; but in a parallel backend, which does not have the entire
  * transaction state, it will instead be copied from the backend that started
  * the parallel operation.
@@ -264,6 +264,9 @@ static char *prepareGID;
  */
 static bool forceSyncCommit = false;
 
+/* Flag for logging statements in a transaction. */
+bool		xact_is_sampled = false;
+
 /*
  * Private context for transaction-abort work --- we reserve space for this
  * at startup to ensure that AbortTransaction and AbortSubTransaction can work
@@ -309,11 +312,11 @@ static void AtStart_Memory(void);
 static void AtStart_ResourceOwner(void);
 static void CallXactCallbacks(XactEvent event);
 static void CallSubXactCallbacks(SubXactEvent event,
-					 SubTransactionId mySubid,
-					 SubTransactionId parentSubid);
+								 SubTransactionId mySubid,
+								 SubTransactionId parentSubid);
 static void CleanupTransaction(void);
 static void CheckTransactionBlock(bool isTopLevel, bool throwError,
-					  const char *stmtType);
+								  const char *stmtType);
 static void CommitTransaction(void);
 static TransactionId RecordTransactionAbort(bool isSubXact);
 static void StartTransaction(void);
@@ -567,9 +570,9 @@ AssignTransactionId(TransactionState s)
 
 	/*
 	 * Ensure parent(s) have XIDs, so that a child always has an XID later
-	 * than its parent.  Mustn't recurse here, or we might get a stack overflow
-	 * if we're at the bottom of a huge stack of subtransactions none of which
-	 * have XIDs yet.
+	 * than its parent.  Mustn't recurse here, or we might get a stack
+	 * overflow if we're at the bottom of a huge stack of subtransactions none
+	 * of which have XIDs yet.
 	 */
 	if (isSubXact && !FullTransactionIdIsValid(s->parent->fullTransactionId))
 	{
@@ -1903,6 +1906,11 @@ StartTransaction(void)
 	s->state = TRANS_START;
 	s->fullTransactionId = InvalidFullTransactionId;	/* until assigned */
 
+	/* Determine if statements are logged in this transaction */
+	xact_is_sampled = log_xact_sample_rate != 0 &&
+		(log_xact_sample_rate == 1 ||
+		 random() <= log_xact_sample_rate * MAX_RANDOM_VALUE);
+
 	/*
 	 * initialize current transaction state fields
 	 *
@@ -2232,7 +2240,7 @@ CommitTransaction(void)
 	AtEOXact_Files(true);
 	AtEOXact_ComboCid();
 	AtEOXact_HashTables(true);
-	AtEOXact_PgStat(true);
+	AtEOXact_PgStat(true, is_parallel_worker);
 	AtEOXact_Snapshot(true, false);
 	AtEOXact_ApplyLauncher(true);
 	pgstat_report_xact_timestamp(0);
@@ -2578,12 +2586,6 @@ AbortTransaction(void)
 	pgstat_report_wait_end();
 	pgstat_progress_end_command();
 
-	/*
-	 * In case we aborted during RelationGetBufferForTuple(), clear the local
-	 * map of heap pages.
-	 */
-	FSMClearLocalMap();
-
 	/* Clean up buffer I/O and buffer context locks, too */
 	AbortBufferIO();
 	UnlockBuffers();
@@ -2725,7 +2727,7 @@ AbortTransaction(void)
 		AtEOXact_Files(false);
 		AtEOXact_ComboCid();
 		AtEOXact_HashTables(false);
-		AtEOXact_PgStat(false);
+		AtEOXact_PgStat(false, is_parallel_worker);
 		AtEOXact_ApplyLauncher(false);
 		pgstat_report_xact_timestamp(0);
 	}
@@ -2866,8 +2868,8 @@ StartTransactionCommand(void)
  * just skipping the reset in StartTransaction() won't work.)
  */
 static int	save_XactIsoLevel;
-static bool	save_XactReadOnly;
-static bool	save_XactDeferrable;
+static bool save_XactReadOnly;
+static bool save_XactDeferrable;
 
 void
 SaveTransactionCharacteristics(void)
@@ -3362,7 +3364,7 @@ PreventInTransactionBlock(bool isTopLevel, const char *stmtType)
 }
 
 /*
- *	WarnNoTranactionBlock
+ *	WarnNoTransactionBlock
  *	RequireTransactionBlock
  *
  *	These two functions allow for warnings or errors if a command is executed
@@ -4871,13 +4873,6 @@ AbortSubTransaction(void)
 
 	pgstat_report_wait_end();
 	pgstat_progress_end_command();
-
-	/*
-	 * In case we aborted during RelationGetBufferForTuple(), clear the local
-	 * map of heap pages.
-	 */
-	FSMClearLocalMap();
-
 	AbortBufferIO();
 	UnlockBuffers();
 
@@ -5142,7 +5137,7 @@ EstimateTransactionStateSpace(void)
 		nxids = add_size(nxids, s->nChildXids);
 	}
 
-	return add_size(size, sizeof(SerializedTransactionState) * nxids);
+	return add_size(size, mul_size(sizeof(TransactionId), nxids));
 }
 
 /*
@@ -5198,7 +5193,7 @@ SerializeTransactionState(Size maxsize, char *start_address)
 		nxids = add_size(nxids, s->nChildXids);
 	}
 	Assert(SerializedTransactionStateHeaderSize + nxids * sizeof(TransactionId)
-		<= maxsize);
+		   <= maxsize);
 
 	/* Copy them to our scratch space. */
 	workspace = palloc(nxids * sizeof(TransactionId));
@@ -5892,8 +5887,7 @@ xact_redo_abort(xl_xact_parsed_abort *parsed, TransactionId xid)
 											  xid, parsed->nsubxacts, parsed->subxacts, max_xid);
 
 		/*
-		 * There are no flat files that need updating, nor invalidation
-		 * messages to send or undo.
+		 * There are no invalidation messages to send or undo.
 		 */
 
 		/*

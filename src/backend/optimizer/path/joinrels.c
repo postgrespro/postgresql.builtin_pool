@@ -25,28 +25,28 @@
 
 
 static void make_rels_by_clause_joins(PlannerInfo *root,
-						  RelOptInfo *old_rel,
-						  ListCell *other_rels);
+									  RelOptInfo *old_rel,
+									  ListCell *other_rels);
 static void make_rels_by_clauseless_joins(PlannerInfo *root,
-							  RelOptInfo *old_rel,
-							  ListCell *other_rels);
+										  RelOptInfo *old_rel,
+										  ListCell *other_rels);
 static bool has_join_restriction(PlannerInfo *root, RelOptInfo *rel);
 static bool has_legal_joinclause(PlannerInfo *root, RelOptInfo *rel);
 static bool restriction_is_constant_false(List *restrictlist,
-							  RelOptInfo *joinrel,
-							  bool only_pushed_down);
+										  RelOptInfo *joinrel,
+										  bool only_pushed_down);
 static void populate_joinrel_with_paths(PlannerInfo *root, RelOptInfo *rel1,
-							RelOptInfo *rel2, RelOptInfo *joinrel,
-							SpecialJoinInfo *sjinfo, List *restrictlist);
+										RelOptInfo *rel2, RelOptInfo *joinrel,
+										SpecialJoinInfo *sjinfo, List *restrictlist);
 static void try_partitionwise_join(PlannerInfo *root, RelOptInfo *rel1,
-					   RelOptInfo *rel2, RelOptInfo *joinrel,
-					   SpecialJoinInfo *parent_sjinfo,
-					   List *parent_restrictlist);
+								   RelOptInfo *rel2, RelOptInfo *joinrel,
+								   SpecialJoinInfo *parent_sjinfo,
+								   List *parent_restrictlist);
 static SpecialJoinInfo *build_child_join_sjinfo(PlannerInfo *root,
-						SpecialJoinInfo *parent_sjinfo,
-						Relids left_relids, Relids right_relids);
-static int match_expr_to_partition_keys(Expr *expr, RelOptInfo *rel,
-							 bool strict_op);
+												SpecialJoinInfo *parent_sjinfo,
+												Relids left_relids, Relids right_relids);
+static int	match_expr_to_partition_keys(Expr *expr, RelOptInfo *rel,
+										 bool strict_op);
 
 
 /*
@@ -623,20 +623,15 @@ join_is_legal(PlannerInfo *root, RelOptInfo *rel1, RelOptInfo *rel2,
 				{
 					SpecialJoinInfo *sjinfo = (SpecialJoinInfo *) lfirst(l);
 
+					/* ignore full joins --- their ordering is predetermined */
+					if (sjinfo->jointype == JOIN_FULL)
+						continue;
+
 					if (bms_overlap(sjinfo->min_lefthand, join_plus_rhs) &&
 						!bms_is_subset(sjinfo->min_righthand, join_plus_rhs))
 					{
 						join_plus_rhs = bms_add_members(join_plus_rhs,
 														sjinfo->min_righthand);
-						more = true;
-					}
-					/* full joins constrain both sides symmetrically */
-					if (sjinfo->jointype == JOIN_FULL &&
-						bms_overlap(sjinfo->min_righthand, join_plus_rhs) &&
-						!bms_is_subset(sjinfo->min_lefthand, join_plus_rhs))
-					{
-						join_plus_rhs = bms_add_members(join_plus_rhs,
-														sjinfo->min_lefthand);
 						more = true;
 					}
 				}
@@ -1261,7 +1256,7 @@ mark_dummy_rel(RelOptInfo *rel)
 
 	/* Set up the dummy path */
 	add_path(rel, (Path *) create_append_path(NULL, rel, NIL, NIL,
-											  rel->lateral_relids,
+											  NIL, rel->lateral_relids,
 											  0, false, NIL, -1));
 
 	/* Set or update cheapest_total_path and related fields */

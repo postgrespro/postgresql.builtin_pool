@@ -91,7 +91,7 @@ char	   *temp_tablespaces = NULL;
 
 
 static void create_tablespace_directories(const char *location,
-							  const Oid tablespaceoid);
+										  const Oid tablespaceoid);
 static bool destroy_tablespace_directories(Oid tablespaceoid, bool redo);
 
 
@@ -306,6 +306,15 @@ CreateTableSpace(CreateTableSpaceStmt *stmt)
 				 errmsg("unacceptable tablespace name \"%s\"",
 						stmt->tablespacename),
 				 errdetail("The prefix \"pg_\" is reserved for system tablespaces.")));
+
+	/*
+	 * If built with appropriate switch, whine when regression-testing
+	 * conventions for tablespace names are violated.
+	 */
+#ifdef ENFORCE_REGRESSION_TEST_NAME_RESTRICTIONS
+	if (strncmp(stmt->tablespacename, "regress_", 8) != 0)
+		elog(WARNING, "tablespaces created by regression test cases should have names starting with \"regress_\"");
+#endif
 
 	/*
 	 * Check that there is no other tablespace by this name.  (The unique
@@ -957,6 +966,15 @@ RenameTableSpace(const char *oldname, const char *newname)
 				 errmsg("unacceptable tablespace name \"%s\"", newname),
 				 errdetail("The prefix \"pg_\" is reserved for system tablespaces.")));
 
+	/*
+	 * If built with appropriate switch, whine when regression-testing
+	 * conventions for tablespace names are violated.
+	 */
+#ifdef ENFORCE_REGRESSION_TEST_NAME_RESTRICTIONS
+	if (strncmp(newname, "regress_", 8) != 0)
+		elog(WARNING, "tablespaces created by regression test cases should have names starting with \"regress_\"");
+#endif
+
 	/* Make sure the new name doesn't exist */
 	ScanKeyInit(&entry[0],
 				Anum_pg_tablespace_spcname,
@@ -1069,10 +1087,11 @@ bool
 check_default_tablespace(char **newval, void **extra, GucSource source)
 {
 	/*
-	 * If we aren't inside a transaction, we cannot do database access so
-	 * cannot verify the name.  Must accept the value on faith.
+	 * If we aren't inside a transaction, or connected to a database, we
+	 * cannot do the catalog accesses necessary to verify the name.  Must
+	 * accept the value on faith.
 	 */
-	if (IsTransactionState())
+	if (IsTransactionState() && MyDatabaseId != InvalidOid)
 	{
 		if (**newval != '\0' &&
 			!OidIsValid(get_tablespace_oid(*newval, true)))
@@ -1104,7 +1123,9 @@ check_default_tablespace(char **newval, void **extra, GucSource source)
  * GetDefaultTablespace -- get the OID of the current default tablespace
  *
  * Temporary objects have different default tablespaces, hence the
- * relpersistence parameter must be specified.
+ * relpersistence parameter must be specified.  Also, for partitioned tables,
+ * we disallow specifying the database default, so that needs to be specified
+ * too.
  *
  * May return InvalidOid to indicate "use the database's default tablespace".
  *
@@ -1115,7 +1136,7 @@ check_default_tablespace(char **newval, void **extra, GucSource source)
  * default_tablespace GUC variable.
  */
 Oid
-GetDefaultTablespace(char relpersistence)
+GetDefaultTablespace(char relpersistence, bool partitioned)
 {
 	Oid			result;
 
@@ -1141,10 +1162,18 @@ GetDefaultTablespace(char relpersistence)
 
 	/*
 	 * Allow explicit specification of database's default tablespace in
-	 * default_tablespace without triggering permissions checks.
+	 * default_tablespace without triggering permissions checks.  Don't allow
+	 * specifying that when creating a partitioned table, however, since the
+	 * result is confusing.
 	 */
 	if (result == MyDatabaseTableSpace)
+	{
+		if (partitioned)
+			ereport(ERROR,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg("cannot specify default tablespace for partitioned relations")));
 		result = InvalidOid;
+	}
 	return result;
 }
 
@@ -1180,11 +1209,12 @@ check_temp_tablespaces(char **newval, void **extra, GucSource source)
 	}
 
 	/*
-	 * If we aren't inside a transaction, we cannot do database access so
-	 * cannot verify the individual names.  Must accept the list on faith.
+	 * If we aren't inside a transaction, or connected to a database, we
+	 * cannot do the catalog accesses necessary to verify the name.  Must
+	 * accept the value on faith.
 	 * Fortunately, there's then also no need to pass the data to fd.c.
 	 */
-	if (IsTransactionState())
+	if (IsTransactionState() && MyDatabaseId != InvalidOid)
 	{
 		temp_tablespaces_extra *myextra;
 		Oid		   *tblSpcs;

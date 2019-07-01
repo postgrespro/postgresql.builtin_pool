@@ -387,7 +387,9 @@ GetForeignUpperPaths(PlannerInfo *root,
      step.  The <literal>extra</literal> parameter provides additional details,
      currently, it is set only for <literal>UPPERREL_PARTIAL_GROUP_AGG</literal>
      or <literal>UPPERREL_GROUP_AGG</literal>, in which case it points to a
-     <literal>GroupPathExtraData</literal> structure.
+     <literal>GroupPathExtraData</literal> structure;
+     or for <literal>UPPERREL_FINAL</literal>, in which case it points to a
+     <literal>FinalPathExtraData</literal> structure.
      (Note that <structname>ForeignPath</structname> paths added
      to <literal>output_rel</literal> would typically not have any direct dependency
      on paths of the <literal>input_rel</literal>, since their processing is expected
@@ -594,6 +596,14 @@ ExecForeignInsert(EState *estate,
     </para>
 
     <para>
+     Note that this function is also called when inserting routed tuples into
+     a foreign-table partition or executing <command>COPY FROM</command> on
+     a foreign table, in which case it is called in a different way than it
+     is in the <command>INSERT</command> case.  See the callback functions
+     described below that allow the FDW to support that.
+    </para>
+
+    <para>
 <programlisting>
 TupleTableSlot *
 ExecForeignUpdate(EState *estate,
@@ -749,6 +759,13 @@ BeginForeignInsert(ModifyTableState *mtstate,
     <para>
      If the <function>BeginForeignInsert</function> pointer is set to
      <literal>NULL</literal>, no action is taken for the initialization.
+    </para>
+
+    <para>
+     Note that if the FDW does not support routable foreign-table partitions
+     and/or executing <command>COPY FROM</command> on foreign tables, this
+     function or <function>ExecForeignInsert</function> subsequently called
+     must throw error as needed.
     </para>
 
     <para>

@@ -47,7 +47,7 @@ static HTAB *prepared_queries = NULL;
 
 static void InitQueryHashTable(void);
 static ParamListInfo EvaluateParams(PreparedStatement *pstmt, List *params,
-			   const char *queryString, EState *estate);
+									const char *queryString, EState *estate);
 
 /*
  * Implements the 'PREPARE' utility statement.

@@ -836,22 +836,19 @@ char
 get_attgenerated(Oid relid, AttrNumber attnum)
 {
 	HeapTuple	tp;
+	Form_pg_attribute att_tup;
+	char		result;
 
 	tp = SearchSysCache2(ATTNUM,
 						 ObjectIdGetDatum(relid),
 						 Int16GetDatum(attnum));
-	if (HeapTupleIsValid(tp))
-	{
-		Form_pg_attribute att_tup = (Form_pg_attribute) GETSTRUCT(tp);
-		char		result;
-
-		result = att_tup->attgenerated;
-		ReleaseSysCache(tp);
-		return result;
-	}
-	else
+	if (!HeapTupleIsValid(tp))
 		elog(ERROR, "cache lookup failed for attribute %d of relation %u",
 			 attnum, relid);
+	att_tup = (Form_pg_attribute) GETSTRUCT(tp);
+	result = att_tup->attgenerated;
+	ReleaseSysCache(tp);
+	return result;
 }
 
 /*
@@ -1058,7 +1055,7 @@ get_opclass_input_type(Oid opclass)
 }
 
 /*
- * get_opclass_family_and_input_type
+ * get_opclass_opfamily_and_input_type
  *
  *		Returns the OID of the operator family the opclass belongs to,
  *				the OID of the datatype the opclass indexes
