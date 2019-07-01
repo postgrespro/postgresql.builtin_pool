@@ -23,6 +23,7 @@
 #include "access/reloptions.h"
 #include "access/relscan.h"
 #include "access/table.h"
+#include "access/tableam.h"
 #include "access/xloginsert.h"
 #include "catalog/index.h"
 #include "catalog/pg_am.h"
@@ -66,13 +67,13 @@ typedef struct BrinOpaque
 #define BRIN_ALL_BLOCKRANGES	InvalidBlockNumber
 
 static BrinBuildState *initialize_brin_buildstate(Relation idxRel,
-						   BrinRevmap *revmap, BlockNumber pagesPerRange);
+												  BrinRevmap *revmap, BlockNumber pagesPerRange);
 static void terminate_brin_buildstate(BrinBuildState *state);
 static void brinsummarize(Relation index, Relation heapRel, BlockNumber pageRange,
-			  bool include_partial, double *numSummarized, double *numExisting);
+						  bool include_partial, double *numSummarized, double *numExisting);
 static void form_and_insert_tuple(BrinBuildState *state);
 static void union_tuples(BrinDesc *bdesc, BrinMemTuple *a,
-			 BrinTuple *b);
+						 BrinTuple *b);
 static void brin_vacuum_scan(Relation idxrel, BufferAccessStrategy strategy);
 
 
@@ -111,6 +112,7 @@ brinhandler(PG_FUNCTION_ARGS)
 	amroutine->amcostestimate = brincostestimate;
 	amroutine->amoptions = brinoptions;
 	amroutine->amproperty = NULL;
+	amroutine->ambuildphasename = NULL;
 	amroutine->amvalidate = brinvalidate;
 	amroutine->ambeginscan = brinbeginscan;
 	amroutine->amrescan = brinrescan;
@@ -587,7 +589,7 @@ brinendscan(IndexScanDesc scan)
 }
 
 /*
- * Per-heap-tuple callback for IndexBuildHeapScan.
+ * Per-heap-tuple callback for table_index_build_scan.
  *
  * Note we don't worry about the page range at the end of the table here; it is
  * present in the build state struct after we're called the last time, but not
@@ -718,8 +720,8 @@ brinbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 	 * Now scan the relation.  No syncscan allowed here because we want the
 	 * heap blocks in physical order.
 	 */
-	reltuples = IndexBuildHeapScan(heap, index, indexInfo, false,
-								   brinbuildCallback, (void *) state, NULL);
+	reltuples = table_index_build_scan(heap, index, indexInfo, false, true,
+									   brinbuildCallback, (void *) state, NULL);
 
 	/* process the final batch */
 	form_and_insert_tuple(state);
@@ -1150,7 +1152,7 @@ terminate_brin_buildstate(BrinBuildState *state)
 		freespace = PageGetFreeSpace(page);
 		blk = BufferGetBlockNumber(state->bs_currentInsertBuf);
 		ReleaseBuffer(state->bs_currentInsertBuf);
-		RecordPageWithFreeSpace(state->bs_irel, blk, freespace, InvalidBlockNumber);
+		RecordPageWithFreeSpace(state->bs_irel, blk, freespace);
 		FreeSpaceMapVacuumRange(state->bs_irel, blk, blk + 1);
 	}
 
@@ -1230,13 +1232,14 @@ summarize_range(IndexInfo *indexInfo, BrinBuildState *state, Relation heapRel,
 	 * short of brinbuildCallback creating the new index entry.
 	 *
 	 * Note that it is critical we use the "any visible" mode of
-	 * IndexBuildHeapRangeScan here: otherwise, we would miss tuples inserted
-	 * by transactions that are still in progress, among other corner cases.
+	 * table_index_build_range_scan here: otherwise, we would miss tuples
+	 * inserted by transactions that are still in progress, among other corner
+	 * cases.
 	 */
 	state->bs_currRangeStart = heapBlk;
-	IndexBuildHeapRangeScan(heapRel, state->bs_irel, indexInfo, false, true,
-							heapBlk, scanNumBlks,
-							brinbuildCallback, (void *) state, NULL);
+	table_index_build_range_scan(heapRel, state->bs_irel, indexInfo, false, true, false,
+								 heapBlk, scanNumBlks,
+								 brinbuildCallback, (void *) state, NULL);
 
 	/*
 	 * Now we update the values obtained by the scan with the placeholder

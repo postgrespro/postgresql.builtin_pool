@@ -41,36 +41,6 @@ ginRedoClearIncompleteSplit(XLogReaderState *record, uint8 block_id)
 }
 
 static void
-ginRedoCreateIndex(XLogReaderState *record)
-{
-	XLogRecPtr	lsn = record->EndRecPtr;
-	Buffer		RootBuffer,
-				MetaBuffer;
-	Page		page;
-
-	MetaBuffer = XLogInitBufferForRedo(record, 0);
-	Assert(BufferGetBlockNumber(MetaBuffer) == GIN_METAPAGE_BLKNO);
-	page = (Page) BufferGetPage(MetaBuffer);
-
-	GinInitMetabuffer(MetaBuffer);
-
-	PageSetLSN(page, lsn);
-	MarkBufferDirty(MetaBuffer);
-
-	RootBuffer = XLogInitBufferForRedo(record, 1);
-	Assert(BufferGetBlockNumber(RootBuffer) == GIN_ROOT_BLKNO);
-	page = (Page) BufferGetPage(RootBuffer);
-
-	GinInitBuffer(RootBuffer, GIN_LEAF);
-
-	PageSetLSN(page, lsn);
-	MarkBufferDirty(RootBuffer);
-
-	UnlockReleaseBuffer(RootBuffer);
-	UnlockReleaseBuffer(MetaBuffer);
-}
-
-static void
 ginRedoCreatePTree(XLogReaderState *record)
 {
 	XLogRecPtr	lsn = record->EndRecPtr;
@@ -235,8 +205,8 @@ ginRedoRecompress(Page page, ginxlogRecompressDataLeaf *data)
 		while (segno < a_segno)
 		{
 			/*
-			 * Once modification is started and page tail is copied, we've
-			 * to copy unmodified segments.
+			 * Once modification is started and page tail is copied, we've to
+			 * copy unmodified segments.
 			 */
 			segsize = SizeOfGinPostingList(oldseg);
 			if (tailCopy)
@@ -287,12 +257,12 @@ ginRedoRecompress(Page page, ginxlogRecompressDataLeaf *data)
 		}
 
 		/*
-		 * We're about to start modification of the page.  So, copy tail of the
-		 * page if it's not done already.
+		 * We're about to start modification of the page.  So, copy tail of
+		 * the page if it's not done already.
 		 */
 		if (!tailCopy && segptr != segmentend)
 		{
-			int tailSize = segmentend - segptr;
+			int			tailSize = segmentend - segptr;
 
 			tailCopy = (Pointer) palloc(tailSize);
 			memcpy(tailCopy, segptr, tailSize);
@@ -334,7 +304,7 @@ ginRedoRecompress(Page page, ginxlogRecompressDataLeaf *data)
 	segptr = (Pointer) oldseg;
 	if (segptr != segmentend && tailCopy)
 	{
-		int restSize = segmentend - segptr;
+		int			restSize = segmentend - segptr;
 
 		Assert(writePtr + restSize <= PageGetSpecialPointer(page));
 		memcpy(writePtr, segptr, restSize);
@@ -767,9 +737,6 @@ gin_redo(XLogReaderState *record)
 	oldCtx = MemoryContextSwitchTo(opCtx);
 	switch (info)
 	{
-		case XLOG_GIN_CREATE_INDEX:
-			ginRedoCreateIndex(record);
-			break;
 		case XLOG_GIN_CREATE_PTREE:
 			ginRedoCreatePTree(record);
 			break;

@@ -280,6 +280,11 @@ struct PlannerInfo
 
 	List	   *join_info_list; /* list of SpecialJoinInfos */
 
+	/*
+	 * Note: for AppendRelInfos describing partitions of a partitioned table,
+	 * we guarantee that partitions that come earlier in the partitioned
+	 * table's PartitionDesc will appear earlier in append_rel_list.
+	 */
 	List	   *append_rel_list;	/* list of AppendRelInfos */
 
 	List	   *rowMarks;		/* list of PlanRowMarks */
@@ -307,8 +312,13 @@ struct PlannerInfo
 	struct PathTarget *upper_targets[UPPERREL_FINAL + 1];
 
 	/*
-	 * grouping_planner passes back its final processed targetlist here, for
-	 * use in relabeling the topmost tlist of the finished Plan.
+	 * The fully-processed targetlist is kept here.  It differs from
+	 * parse->targetList in that (for INSERT and UPDATE) it's been reordered
+	 * to match the target table, and defaults have been filled in.  Also,
+	 * additional resjunk targets may be present.  preprocess_targetlist()
+	 * does most of this work, but note that more resjunk targets can get
+	 * added during appendrel expansion.  (Hence, upper_targets mustn't get
+	 * set up till after that.)
 	 */
 	List	   *processed_tlist;
 
@@ -1358,9 +1368,9 @@ typedef struct AppendPath
 	/* RT indexes of non-leaf tables in a partition tree */
 	List	   *partitioned_rels;
 	List	   *subpaths;		/* list of component Paths */
-
-	/* Index of first partial path in subpaths */
+	/* Index of first partial path in subpaths; list_length(subpaths) if none */
 	int			first_partial_path;
+	double		limit_tuples;	/* hard limit on output tuples, or -1 */
 } AppendPath;
 
 #define IS_DUMMY_APPEND(p) \
@@ -1455,8 +1465,7 @@ typedef struct GatherPath
 
 /*
  * GatherMergePath runs several copies of a plan in parallel and collects
- * the results, preserving their common sort order.  For gather merge, the
- * parallel leader always executes the plan too, so we don't need single_copy.
+ * the results, preserving their common sort order.
  */
 typedef struct GatherMergePath
 {
@@ -2433,6 +2442,24 @@ typedef struct
 	List	   *targetList;
 	PartitionwiseAggregateType patype;
 } GroupPathExtraData;
+
+/*
+ * Struct for extra information passed to subroutines of grouping_planner
+ *
+ * limit_needed is true if we actually need a Limit plan node.
+ * limit_tuples is an estimated bound on the number of output tuples,
+ *		or -1 if no LIMIT or couldn't estimate.
+ * count_est and offset_est are the estimated values of the LIMIT and OFFSET
+ * 		expressions computed by preprocess_limit() (see comments for
+ * 		preprocess_limit() for more information).
+ */
+typedef struct
+{
+	bool		limit_needed;
+	double		limit_tuples;
+	int64		count_est;
+	int64		offset_est;
+} FinalPathExtraData;
 
 /*
  * For speed reasons, cost estimation for join paths is performed in two

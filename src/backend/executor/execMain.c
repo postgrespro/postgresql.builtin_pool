@@ -81,28 +81,28 @@ static void CheckValidRowMarkRel(Relation rel, RowMarkType markType);
 static void ExecPostprocessPlan(EState *estate);
 static void ExecEndPlan(PlanState *planstate, EState *estate);
 static void ExecutePlan(EState *estate, PlanState *planstate,
-			bool use_parallel_mode,
-			CmdType operation,
-			bool sendTuples,
-			uint64 numberTuples,
-			ScanDirection direction,
-			DestReceiver *dest,
-			bool execute_once);
+						bool use_parallel_mode,
+						CmdType operation,
+						bool sendTuples,
+						uint64 numberTuples,
+						ScanDirection direction,
+						DestReceiver *dest,
+						bool execute_once);
 static bool ExecCheckRTEPerms(RangeTblEntry *rte);
 static bool ExecCheckRTEPermsModified(Oid relOid, Oid userid,
-						  Bitmapset *modifiedCols,
-						  AclMode requiredPerms);
+									  Bitmapset *modifiedCols,
+									  AclMode requiredPerms);
 static void ExecCheckXactReadOnly(PlannedStmt *plannedstmt);
 static char *ExecBuildSlotValueDescription(Oid reloid,
-							  TupleTableSlot *slot,
-							  TupleDesc tupdesc,
-							  Bitmapset *modifiedCols,
-							  int maxfieldlen);
+										   TupleTableSlot *slot,
+										   TupleDesc tupdesc,
+										   Bitmapset *modifiedCols,
+										   int maxfieldlen);
 static void EvalPlanQualStart(EPQState *epqstate, EState *parentestate,
-				  Plan *planTree);
+							  Plan *planTree);
 
 /*
- * Note that GetUpdatedColumns() also exists in commands/trigger.c.  There does
+ * Note that GetAllUpdatedColumns() also exists in commands/trigger.c.  There does
  * not appear to be any good header to put it into, given the structures that
  * it uses, so we let them be duplicated.  Be sure to update both if one needs
  * to be changed, however.
@@ -111,6 +111,9 @@ static void EvalPlanQualStart(EPQState *epqstate, EState *parentestate,
 	(exec_rt_fetch((relinfo)->ri_RangeTableIndex, estate)->insertedCols)
 #define GetUpdatedColumns(relinfo, estate) \
 	(exec_rt_fetch((relinfo)->ri_RangeTableIndex, estate)->updatedCols)
+#define GetAllUpdatedColumns(relinfo, estate) \
+	(bms_union(exec_rt_fetch((relinfo)->ri_RangeTableIndex, estate)->updatedCols, \
+			   exec_rt_fetch((relinfo)->ri_RangeTableIndex, estate)->extraUpdatedCols))
 
 /* end of local decls */
 
@@ -1316,6 +1319,7 @@ InitResultRelInfo(ResultRelInfo *resultRelInfo,
 	resultRelInfo->ri_FdwState = NULL;
 	resultRelInfo->ri_usesFdwDirectModify = false;
 	resultRelInfo->ri_ConstraintExprs = NULL;
+	resultRelInfo->ri_GeneratedExprs = NULL;
 	resultRelInfo->ri_junkFilter = NULL;
 	resultRelInfo->ri_projectReturning = NULL;
 	resultRelInfo->ri_onConflictArbiterIndexes = NIL;
@@ -1342,6 +1346,7 @@ InitResultRelInfo(ResultRelInfo *resultRelInfo,
 	resultRelInfo->ri_PartitionCheck = partition_check;
 	resultRelInfo->ri_PartitionRoot = partition_root;
 	resultRelInfo->ri_PartitionInfo = NULL; /* may be set later */
+	resultRelInfo->ri_CopyMultiInsertBuffer = NULL;
 }
 
 /*
@@ -2328,7 +2333,7 @@ ExecUpdateLockMode(EState *estate, ResultRelInfo *relinfo)
 	 * been modified, then we can use a weaker lock, allowing for better
 	 * concurrency.
 	 */
-	updatedCols = GetUpdatedColumns(relinfo, estate);
+	updatedCols = GetAllUpdatedColumns(relinfo, estate);
 	keyCols = RelationGetIndexAttrBitmap(relinfo->ri_RelationDesc,
 										 INDEX_ATTR_BITMAP_KEY);
 
@@ -2417,27 +2422,29 @@ ExecBuildAuxRowMark(ExecRowMark *erm, List *targetlist)
 
 
 /*
- * Check a modified tuple to see if we want to process its updated version
- * under READ COMMITTED rules.
+ * Check the updated version of a tuple to see if we want to process it under
+ * READ COMMITTED rules.
  *
  *	estate - outer executor state data
  *	epqstate - state for EvalPlanQual rechecking
  *	relation - table containing tuple
  *	rti - rangetable index of table containing tuple
- *	lockmode - requested tuple lock mode
- *	*tid - t_ctid from the outdated tuple (ie, next updated version)
- *	priorXmax - t_xmax from the outdated tuple
+ *	inputslot - tuple for processing - this can be the slot from
+ *		EvalPlanQualSlot(), for the increased efficiency.
  *
- * *tid is also an output parameter: it's modified to hold the TID of the
- * latest version of the tuple (note this may be changed even on failure)
+ * This tests whether the tuple in inputslot still matches the relevant
+ * quals. For that result to be useful, typically the input tuple has to be
+ * last row version (otherwise the result isn't particularly useful) and
+ * locked (otherwise the result might be out of date). That's typically
+ * achieved by using table_tuple_lock() with the
+ * TUPLE_LOCK_FLAG_FIND_LAST_VERSION flag.
  *
  * Returns a slot containing the new candidate update/delete tuple, or
  * NULL if we determine we shouldn't process the row.
  */
 TupleTableSlot *
 EvalPlanQual(EState *estate, EPQState *epqstate,
-			 Relation relation, Index rti, LockTupleMode lockmode,
-			 ItemPointer tid, TransactionId priorXmax)
+			 Relation relation, Index rti, TupleTableSlot *inputslot)
 {
 	TupleTableSlot *slot;
 	TupleTableSlot *testslot;
@@ -2450,19 +2457,12 @@ EvalPlanQual(EState *estate, EPQState *epqstate,
 	EvalPlanQualBegin(epqstate, estate);
 
 	/*
-	 * Get and lock the updated version of the row; if fail, return NULL.
+	 * Callers will often use the EvalPlanQualSlot to store the tuple to avoid
+	 * an unnecessary copy.
 	 */
 	testslot = EvalPlanQualSlot(epqstate, relation, rti);
-	if (!EvalPlanQualFetch(estate, relation, lockmode, LockWaitBlock,
-						   tid, priorXmax,
-						   testslot))
-		return NULL;
-
-	/*
-	 * For UPDATE/DELETE we have to return tid of actual row we're executing
-	 * PQ for.
-	 */
-	*tid = testslot->tts_tid;
+	if (testslot != inputslot)
+		ExecCopySlot(testslot, inputslot);
 
 	/*
 	 * Fetch any non-locked source rows
@@ -2492,258 +2492,6 @@ EvalPlanQual(EState *estate, EPQState *epqstate,
 	ExecClearTuple(testslot);
 
 	return slot;
-}
-
-/*
- * Fetch a copy of the newest version of an outdated tuple
- *
- *	estate - executor state data
- *	relation - table containing tuple
- *	lockmode - requested tuple lock mode
- *	wait_policy - requested lock wait policy
- *	*tid - t_ctid from the outdated tuple (ie, next updated version)
- *	priorXmax - t_xmax from the outdated tuple
- *	slot - slot to store newest tuple version
- *
- * Returns true, with slot containing the newest tuple version, or false if we
- * find that there is no newest version (ie, the row was deleted not updated).
- * We also return false if the tuple is locked and the wait policy is to skip
- * such tuples.
- *
- * If successful, we have locked the newest tuple version, so caller does not
- * need to worry about it changing anymore.
- */
-bool
-EvalPlanQualFetch(EState *estate, Relation relation, LockTupleMode lockmode,
-				  LockWaitPolicy wait_policy,
-				  ItemPointer tid, TransactionId priorXmax,
-				  TupleTableSlot *slot)
-{
-	HeapTupleData tuple;
-	SnapshotData SnapshotDirty;
-
-	/*
-	 * fetch target tuple
-	 *
-	 * Loop here to deal with updated or busy tuples
-	 */
-	InitDirtySnapshot(SnapshotDirty);
-	tuple.t_self = *tid;
-	for (;;)
-	{
-		Buffer		buffer;
-
-		if (heap_fetch(relation, &SnapshotDirty, &tuple, &buffer, true, NULL))
-		{
-			HTSU_Result test;
-			HeapUpdateFailureData hufd;
-
-			/*
-			 * If xmin isn't what we're expecting, the slot must have been
-			 * recycled and reused for an unrelated tuple.  This implies that
-			 * the latest version of the row was deleted, so we need do
-			 * nothing.  (Should be safe to examine xmin without getting
-			 * buffer's content lock.  We assume reading a TransactionId to be
-			 * atomic, and Xmin never changes in an existing tuple, except to
-			 * invalid or frozen, and neither of those can match priorXmax.)
-			 */
-			if (!TransactionIdEquals(HeapTupleHeaderGetXmin(tuple.t_data),
-									 priorXmax))
-			{
-				ReleaseBuffer(buffer);
-				return false;
-			}
-
-			/* otherwise xmin should not be dirty... */
-			if (TransactionIdIsValid(SnapshotDirty.xmin))
-				elog(ERROR, "t_xmin is uncommitted in tuple to be updated");
-
-			/*
-			 * If tuple is being updated by other transaction then we have to
-			 * wait for its commit/abort, or die trying.
-			 */
-			if (TransactionIdIsValid(SnapshotDirty.xmax))
-			{
-				ReleaseBuffer(buffer);
-				switch (wait_policy)
-				{
-					case LockWaitBlock:
-						XactLockTableWait(SnapshotDirty.xmax,
-										  relation, &tuple.t_self,
-										  XLTW_FetchUpdated);
-						break;
-					case LockWaitSkip:
-						if (!ConditionalXactLockTableWait(SnapshotDirty.xmax))
-							return false;	/* skip instead of waiting */
-						break;
-					case LockWaitError:
-						if (!ConditionalXactLockTableWait(SnapshotDirty.xmax))
-							ereport(ERROR,
-									(errcode(ERRCODE_LOCK_NOT_AVAILABLE),
-									 errmsg("could not obtain lock on row in relation \"%s\"",
-											RelationGetRelationName(relation))));
-						break;
-				}
-				continue;		/* loop back to repeat heap_fetch */
-			}
-
-			/*
-			 * If tuple was inserted by our own transaction, we have to check
-			 * cmin against es_output_cid: cmin >= current CID means our
-			 * command cannot see the tuple, so we should ignore it. Otherwise
-			 * heap_lock_tuple() will throw an error, and so would any later
-			 * attempt to update or delete the tuple.  (We need not check cmax
-			 * because HeapTupleSatisfiesDirty will consider a tuple deleted
-			 * by our transaction dead, regardless of cmax.) We just checked
-			 * that priorXmax == xmin, so we can test that variable instead of
-			 * doing HeapTupleHeaderGetXmin again.
-			 */
-			if (TransactionIdIsCurrentTransactionId(priorXmax) &&
-				HeapTupleHeaderGetCmin(tuple.t_data) >= estate->es_output_cid)
-			{
-				ReleaseBuffer(buffer);
-				return false;
-			}
-
-			/*
-			 * This is a live tuple, so now try to lock it.
-			 */
-			test = heap_lock_tuple(relation, &tuple,
-								   estate->es_output_cid,
-								   lockmode, wait_policy,
-								   false, &buffer, &hufd);
-			/* We now have two pins on the buffer, get rid of one */
-			ReleaseBuffer(buffer);
-
-			switch (test)
-			{
-				case HeapTupleSelfUpdated:
-
-					/*
-					 * The target tuple was already updated or deleted by the
-					 * current command, or by a later command in the current
-					 * transaction.  We *must* ignore the tuple in the former
-					 * case, so as to avoid the "Halloween problem" of
-					 * repeated update attempts.  In the latter case it might
-					 * be sensible to fetch the updated tuple instead, but
-					 * doing so would require changing heap_update and
-					 * heap_delete to not complain about updating "invisible"
-					 * tuples, which seems pretty scary (heap_lock_tuple will
-					 * not complain, but few callers expect
-					 * HeapTupleInvisible, and we're not one of them).  So for
-					 * now, treat the tuple as deleted and do not process.
-					 */
-					ReleaseBuffer(buffer);
-					return false;
-
-				case HeapTupleMayBeUpdated:
-					/* successfully locked */
-					break;
-
-				case HeapTupleUpdated:
-					ReleaseBuffer(buffer);
-					if (IsolationUsesXactSnapshot())
-						ereport(ERROR,
-								(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
-								 errmsg("could not serialize access due to concurrent update")));
-					if (ItemPointerIndicatesMovedPartitions(&hufd.ctid))
-						ereport(ERROR,
-								(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
-								 errmsg("tuple to be locked was already moved to another partition due to concurrent update")));
-
-					/* Should not encounter speculative tuple on recheck */
-					Assert(!HeapTupleHeaderIsSpeculative(tuple.t_data));
-					if (!ItemPointerEquals(&hufd.ctid, &tuple.t_self))
-					{
-						/* it was updated, so look at the updated version */
-						tuple.t_self = hufd.ctid;
-						/* updated row should have xmin matching this xmax */
-						priorXmax = hufd.xmax;
-						continue;
-					}
-					/* tuple was deleted, so give up */
-					return false;
-
-				case HeapTupleWouldBlock:
-					ReleaseBuffer(buffer);
-					return false;
-
-				case HeapTupleInvisible:
-					elog(ERROR, "attempted to lock invisible tuple");
-					break;
-
-				default:
-					ReleaseBuffer(buffer);
-					elog(ERROR, "unrecognized heap_lock_tuple status: %u",
-						 test);
-					return false;	/* keep compiler quiet */
-			}
-
-			/*
-			 * We got tuple - store it for use by the recheck query.
-			 */
-			ExecStorePinnedBufferHeapTuple(&tuple, slot, buffer);
-			ExecMaterializeSlot(slot);
-			break;
-		}
-
-		/*
-		 * If the referenced slot was actually empty, the latest version of
-		 * the row must have been deleted, so we need do nothing.
-		 */
-		if (tuple.t_data == NULL)
-		{
-			ReleaseBuffer(buffer);
-			return false;
-		}
-
-		/*
-		 * As above, if xmin isn't what we're expecting, do nothing.
-		 */
-		if (!TransactionIdEquals(HeapTupleHeaderGetXmin(tuple.t_data),
-								 priorXmax))
-		{
-			ReleaseBuffer(buffer);
-			return false;
-		}
-
-		/*
-		 * If we get here, the tuple was found but failed SnapshotDirty.
-		 * Assuming the xmin is either a committed xact or our own xact (as it
-		 * certainly should be if we're trying to modify the tuple), this must
-		 * mean that the row was updated or deleted by either a committed xact
-		 * or our own xact.  If it was deleted, we can ignore it; if it was
-		 * updated then chain up to the next version and repeat the whole
-		 * process.
-		 *
-		 * As above, it should be safe to examine xmax and t_ctid without the
-		 * buffer content lock, because they can't be changing.
-		 */
-
-		/* check whether next version would be in a different partition */
-		if (HeapTupleHeaderIndicatesMovedPartitions(tuple.t_data))
-			ereport(ERROR,
-					(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
-					 errmsg("tuple to be locked was already moved to another partition due to concurrent update")));
-
-		/* check whether tuple has been deleted */
-		if (ItemPointerEquals(&tuple.t_self, &tuple.t_data->t_ctid))
-		{
-			/* deleted, so forget about it */
-			ReleaseBuffer(buffer);
-			return false;
-		}
-
-		/* updated, so look at the updated row */
-		tuple.t_self = tuple.t_data->t_ctid;
-		/* updated row should have xmin matching this xmax */
-		priorXmax = HeapTupleHeaderGetUpdateXid(tuple.t_data);
-		ReleaseBuffer(buffer);
-		/* loop back to fetch next in chain */
-	}
-
-	/* signal success */
-	return true;
 }
 
 /*
@@ -2803,7 +2551,7 @@ EvalPlanQualSlot(EPQState *epqstate,
 
 		if (relation)
 			*slot = table_slot_create(relation,
-										 &epqstate->estate->es_tupleTable);
+									  &epqstate->estate->es_tupleTable);
 		else
 			*slot = ExecAllocTableSlot(&epqstate->estate->es_tupleTable,
 									   epqstate->origslot->tts_tupleDescriptor,
@@ -2906,17 +2654,10 @@ EvalPlanQualFetchRowMarks(EPQState *epqstate)
 			else
 			{
 				/* ordinary table, fetch the tuple */
-				HeapTupleData tuple;
-				Buffer		buffer;
-
-				tuple.t_self = *((ItemPointer) DatumGetPointer(datum));
-				if (!heap_fetch(erm->relation, SnapshotAny, &tuple, &buffer,
-								false, NULL))
+				if (!table_tuple_fetch_row_version(erm->relation,
+												   (ItemPointer) DatumGetPointer(datum),
+												   SnapshotAny, slot))
 					elog(ERROR, "failed to fetch tuple for EvalPlanQual recheck");
-
-				/* successful, store tuple */
-				ExecStorePinnedBufferHeapTuple(&tuple, slot, buffer);
-				ExecMaterializeSlot(slot);
 			}
 		}
 		else
@@ -3038,7 +2779,7 @@ EvalPlanQualStart(EPQState *epqstate, EState *parentestate, Plan *planTree)
 	 * es_param_exec_vals, etc.
 	 *
 	 * The ResultRelInfo array management is trickier than it looks.  We
-	 * create a fresh array for the child but copy all the content from the
+	 * create fresh arrays for the child but copy all the content from the
 	 * parent.  This is because it's okay for the child to share any
 	 * per-relation state the parent has already created --- but if the child
 	 * sets up any ResultRelInfo fields, such as its own junkfilter, that
@@ -3059,6 +2800,7 @@ EvalPlanQualStart(EPQState *epqstate, EState *parentestate, Plan *planTree)
 	if (parentestate->es_num_result_relations > 0)
 	{
 		int			numResultRelations = parentestate->es_num_result_relations;
+		int			numRootResultRels = parentestate->es_num_root_result_relations;
 		ResultRelInfo *resultRelInfos;
 
 		resultRelInfos = (ResultRelInfo *)
@@ -3067,6 +2809,17 @@ EvalPlanQualStart(EPQState *epqstate, EState *parentestate, Plan *planTree)
 			   numResultRelations * sizeof(ResultRelInfo));
 		estate->es_result_relations = resultRelInfos;
 		estate->es_num_result_relations = numResultRelations;
+
+		/* Also transfer partitioned root result relations. */
+		if (numRootResultRels > 0)
+		{
+			resultRelInfos = (ResultRelInfo *)
+				palloc(numRootResultRels * sizeof(ResultRelInfo));
+			memcpy(resultRelInfos, parentestate->es_root_result_relations,
+				   numRootResultRels * sizeof(ResultRelInfo));
+			estate->es_root_result_relations = resultRelInfos;
+			estate->es_num_root_result_relations = numRootResultRels;
+		}
 	}
 	/* es_result_relation_info must NOT be copied */
 	/* es_trig_target_relations must NOT be copied */
@@ -3123,8 +2876,9 @@ EvalPlanQualStart(EPQState *epqstate, EState *parentestate, Plan *planTree)
 
 	/*
 	 * Each EState must have its own es_epqScanDone state, but if we have
-	 * nested EPQ checks they should share es_epqTuple arrays.  This allows
-	 * sub-rechecks to inherit the values being examined by an outer recheck.
+	 * nested EPQ checks they should share es_epqTupleSlot arrays.  This
+	 * allows sub-rechecks to inherit the values being examined by an outer
+	 * recheck.
 	 */
 	estate->es_epqScanDone = (bool *) palloc0(rtsize * sizeof(bool));
 	if (parentestate->es_epqTupleSlot != NULL)

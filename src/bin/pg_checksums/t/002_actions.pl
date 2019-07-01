@@ -5,7 +5,7 @@ use strict;
 use warnings;
 use PostgresNode;
 use TestLib;
-use Test::More tests => 45;
+use Test::More tests => 62;
 
 
 # Utility routine to create and check a table with corrupted checksums
@@ -14,21 +14,22 @@ use Test::More tests => 45;
 # at the end.
 sub check_relation_corruption
 {
-	my $node = shift;
-	my $table = shift;
+	my $node       = shift;
+	my $table      = shift;
 	my $tablespace = shift;
-	my $pgdata = $node->data_dir;
+	my $pgdata     = $node->data_dir;
 
-	$node->safe_psql('postgres',
+	$node->safe_psql(
+		'postgres',
 		"SELECT a INTO $table FROM generate_series(1,10000) AS a;
 		ALTER TABLE $table SET (autovacuum_enabled=false);");
 
 	$node->safe_psql('postgres',
-		"ALTER TABLE ".$table." SET TABLESPACE ".$tablespace.";");
+		"ALTER TABLE " . $table . " SET TABLESPACE " . $tablespace . ";");
 
-	my $file_corrupted = $node->safe_psql('postgres',
-		"SELECT pg_relation_filepath('$table');");
-	my $relfilenode_corrupted =  $node->safe_psql('postgres',
+	my $file_corrupted =
+	  $node->safe_psql('postgres', "SELECT pg_relation_filepath('$table');");
+	my $relfilenode_corrupted = $node->safe_psql('postgres',
 		"SELECT relfilenode FROM pg_class WHERE relname = '$table';");
 
 	# Set page header and block size
@@ -38,9 +39,14 @@ sub check_relation_corruption
 
 	# Checksums are correct for single relfilenode as the table is not
 	# corrupted yet.
-	command_ok(['pg_checksums',  '-D', $pgdata,
-		'-r', $relfilenode_corrupted],
-		"succeeds for single relfilenode on tablespace $tablespace with offline cluster");
+	command_ok(
+		[
+			'pg_checksums', '--check',
+			'-D',           $pgdata,
+			'--filenode',   $relfilenode_corrupted
+		],
+		"succeeds for single relfilenode on tablespace $tablespace with offline cluster"
+	);
 
 	# Time to create some corruption
 	open my $file, '+<', "$pgdata/$file_corrupted";
@@ -49,50 +55,57 @@ sub check_relation_corruption
 	close $file;
 
 	# Checksum checks on single relfilenode fail
-	$node->command_checks_all([ 'pg_checksums', '-D', $pgdata, '-r',
-								$relfilenode_corrupted],
-							  1,
-							  [qr/Bad checksums:.*1/],
-							  [qr/checksum verification failed/],
-							  "fails with corrupted data for single relfilenode on tablespace $tablespace");
+	$node->command_checks_all(
+		[
+			'pg_checksums', '--check',
+			'-D',           $pgdata,
+			'--filenode',   $relfilenode_corrupted
+		],
+		1,
+		[qr/Bad checksums:.*1/],
+		[qr/checksum verification failed/],
+		"fails with corrupted data for single relfilenode on tablespace $tablespace"
+	);
 
 	# Global checksum checks fail as well
-	$node->command_checks_all([ 'pg_checksums', '-D', $pgdata],
-							  1,
-							  [qr/Bad checksums:.*1/],
-							  [qr/checksum verification failed/],
-							  "fails with corrupted data on tablespace $tablespace");
+	$node->command_checks_all(
+		[ 'pg_checksums', '--check', '-D', $pgdata ],
+		1,
+		[qr/Bad checksums:.*1/],
+		[qr/checksum verification failed/],
+		"fails with corrupted data on tablespace $tablespace");
 
 	# Drop corrupted table again and make sure there is no more corruption.
 	$node->start;
 	$node->safe_psql('postgres', "DROP TABLE $table;");
 	$node->stop;
-	$node->command_ok(['pg_checksums', '-D', $pgdata],
-	        "succeeds again after table drop on tablespace $tablespace");
+	$node->command_ok([ 'pg_checksums', '--check', '-D', $pgdata ],
+		"succeeds again after table drop on tablespace $tablespace");
 
 	$node->start;
 	return;
 }
 
-# Initialize node with checksums enabled.
+# Initialize node with checksums disabled.
 my $node = get_new_node('node_checksum');
-$node->init(extra => ['--data-checksums']);
+$node->init();
 my $pgdata = $node->data_dir;
 
-# Control file should know that checksums are enabled.
-command_like(['pg_controldata', $pgdata],
-	     qr/Data page checksum version:.*1/,
-		 'checksums enabled in control file');
+# Control file should know that checksums are disabled.
+command_like(
+	[ 'pg_controldata', $pgdata ],
+	qr/Data page checksum version:.*0/,
+	'checksums disabled in control file');
 
 # These are correct but empty files, so they should pass through.
-append_to_file "$pgdata/global/99999", "";
-append_to_file "$pgdata/global/99999.123", "";
-append_to_file "$pgdata/global/99999_fsm", "";
-append_to_file "$pgdata/global/99999_init", "";
-append_to_file "$pgdata/global/99999_vm", "";
+append_to_file "$pgdata/global/99999",          "";
+append_to_file "$pgdata/global/99999.123",      "";
+append_to_file "$pgdata/global/99999_fsm",      "";
+append_to_file "$pgdata/global/99999_init",     "";
+append_to_file "$pgdata/global/99999_vm",       "";
 append_to_file "$pgdata/global/99999_init.123", "";
-append_to_file "$pgdata/global/99999_fsm.123", "";
-append_to_file "$pgdata/global/99999_vm.123", "";
+append_to_file "$pgdata/global/99999_fsm.123",  "";
+append_to_file "$pgdata/global/99999_vm.123",   "";
 
 # These are temporary files and folders with dummy contents, which
 # should be ignored by the scan.
@@ -100,23 +113,77 @@ append_to_file "$pgdata/global/pgsql_tmp_123", "foo";
 mkdir "$pgdata/global/pgsql_tmp";
 append_to_file "$pgdata/global/pgsql_tmp/1.1", "foo";
 
+# Enable checksums.
+command_ok([ 'pg_checksums', '--enable', '--no-sync', '-D', $pgdata ],
+	"checksums successfully enabled in cluster");
+
+# Successive attempt to enable checksums fails.
+command_fails([ 'pg_checksums', '--enable', '--no-sync', '-D', $pgdata ],
+	"enabling checksums fails if already enabled");
+
+# Control file should know that checksums are enabled.
+command_like(
+	[ 'pg_controldata', $pgdata ],
+	qr/Data page checksum version:.*1/,
+	'checksums enabled in control file');
+
+# Disable checksums again.  Flush result here as that should be cheap.
+command_ok(
+	[ 'pg_checksums', '--disable', '-D', $pgdata ],
+	"checksums successfully disabled in cluster");
+
+# Successive attempt to disable checksums fails.
+command_fails(
+	[ 'pg_checksums', '--disable', '--no-sync', '-D', $pgdata ],
+	"disabling checksums fails if already disabled");
+
+# Control file should know that checksums are disabled.
+command_like(
+	[ 'pg_controldata', $pgdata ],
+	qr/Data page checksum version:.*0/,
+	'checksums disabled in control file');
+
+# Enable checksums again for follow-up tests.
+command_ok([ 'pg_checksums', '--enable', '--no-sync', '-D', $pgdata ],
+	"checksums successfully enabled in cluster");
+
+# Control file should know that checksums are enabled.
+command_like(
+	[ 'pg_controldata', $pgdata ],
+	qr/Data page checksum version:.*1/,
+	'checksums enabled in control file');
+
 # Checksums pass on a newly-created cluster
-command_ok(['pg_checksums',  '-D', $pgdata],
-		   "succeeds with offline cluster");
+command_ok([ 'pg_checksums', '--check', '-D', $pgdata ],
+	"succeeds with offline cluster");
+
+# Checksums are verified if no other arguments are specified
+command_ok(
+	[ 'pg_checksums', '-D', $pgdata ],
+	"verifies checksums as default action");
+
+# Specific relation files cannot be requested when action is --disable
+# or --enable.
+command_fails(
+	[ 'pg_checksums', '--disable', '--filenode', '1234', '-D', $pgdata ],
+	"fails when relfilenodes are requested and action is --disable");
+command_fails(
+	[ 'pg_checksums', '--enable', '--filenode', '1234', '-D', $pgdata ],
+	"fails when relfilenodes are requested and action is --enable");
 
 # Checks cannot happen with an online cluster
 $node->start;
-command_fails(['pg_checksums',  '-D', $pgdata],
-			  "fails with online cluster");
+command_fails([ 'pg_checksums', '--check', '-D', $pgdata ],
+	"fails with online cluster");
 
 # Check corruption of table on default tablespace.
 check_relation_corruption($node, 'corrupt1', 'pg_default');
 
 # Create tablespace to check corruptions in a non-default tablespace.
-my $basedir = $node->basedir;
+my $basedir        = $node->basedir;
 my $tablespace_dir = "$basedir/ts_corrupt_dir";
-mkdir ($tablespace_dir);
-$tablespace_dir = TestLib::real_dir($tablespace_dir);
+mkdir($tablespace_dir);
+$tablespace_dir = TestLib::perl2host($tablespace_dir);
 $node->safe_psql('postgres',
 	"CREATE TABLESPACE ts_corrupt LOCATION '$tablespace_dir';");
 check_relation_corruption($node, 'corrupt2', 'ts_corrupt');
@@ -125,19 +192,20 @@ check_relation_corruption($node, 'corrupt2', 'ts_corrupt');
 # correctly-named relation files filled with some corrupted data.
 sub fail_corrupt
 {
-	my $node = shift;
-	my $file = shift;
+	my $node   = shift;
+	my $file   = shift;
 	my $pgdata = $node->data_dir;
 
 	# Create the file with some dummy data in it.
 	my $file_name = "$pgdata/global/$file";
 	append_to_file $file_name, "foo";
 
-	$node->command_checks_all([ 'pg_checksums', '-D', $pgdata],
-						  1,
-						  [qr/^$/],
-						  [qr/could not read block 0 in file.*$file\":/],
-						  "fails for corrupted data in $file");
+	$node->command_checks_all(
+		[ 'pg_checksums', '--check', '-D', $pgdata ],
+		1,
+		[qr/^$/],
+		[qr/could not read block 0 in file.*$file\":/],
+		"fails for corrupted data in $file");
 
 	# Remove file to prevent future lookup errors on conflicts.
 	unlink $file_name;

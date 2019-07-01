@@ -40,11 +40,21 @@ SELECT r.rolname, s.srvname, m.umoptions
  ORDER BY 2;
 $$ LANGUAGE SQL;
 
+--
+-- We test creation and use of these role names to ensure that the server
+-- correctly distinguishes role keywords from quoted names that look like
+-- those keywords.  In a test environment, creation of these roles may
+-- provoke warnings, so hide the warnings by raising client_min_messages.
+--
+SET client_min_messages = ERROR;
+
 CREATE ROLE "Public";
 CREATE ROLE "None";
 CREATE ROLE "current_user";
 CREATE ROLE "session_user";
 CREATE ROLE "user";
+
+RESET client_min_messages;
 
 CREATE ROLE current_user; -- error
 CREATE ROLE current_role; -- error
@@ -177,7 +187,6 @@ ALTER USER NONE SET application_name to 'BOMB'; -- error
 ALTER USER nonexistent SET application_name to 'BOMB'; -- error
 
 -- CREATE SCHEMA
-set client_min_messages to error;
 CREATE SCHEMA newschema1 AUTHORIZATION CURRENT_USER;
 CREATE SCHEMA newschema2 AUTHORIZATION "current_user";
 CREATE SCHEMA newschema3 AUTHORIZATION SESSION_USER;
@@ -215,7 +224,6 @@ SELECT n.nspname, r.rolname FROM pg_namespace n
 -- ALTER TABLE OWNER TO
 \c -
 SET SESSION AUTHORIZATION regress_testrol0;
-set client_min_messages to error;
 CREATE TABLE testtab1 (a int);
 CREATE TABLE testtab2 (a int);
 CREATE TABLE testtab3 (a int);

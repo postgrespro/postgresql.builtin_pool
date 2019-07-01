@@ -55,30 +55,30 @@ typedef struct acquireLocksOnSubLinks_context
 } acquireLocksOnSubLinks_context;
 
 static bool acquireLocksOnSubLinks(Node *node,
-					   acquireLocksOnSubLinks_context *context);
+								   acquireLocksOnSubLinks_context *context);
 static Query *rewriteRuleAction(Query *parsetree,
-				  Query *rule_action,
-				  Node *rule_qual,
-				  int rt_index,
-				  CmdType event,
-				  bool *returning_flag);
+								Query *rule_action,
+								Node *rule_qual,
+								int rt_index,
+								CmdType event,
+								bool *returning_flag);
 static List *adjustJoinTreeList(Query *parsetree, bool removert, int rt_index);
 static List *rewriteTargetListIU(List *targetList,
-					CmdType commandType,
-					OverridingKind override,
-					Relation target_relation,
-					int result_rti);
+								 CmdType commandType,
+								 OverridingKind override,
+								 Relation target_relation,
+								 int result_rti);
 static TargetEntry *process_matched_tle(TargetEntry *src_tle,
-					TargetEntry *prior_tle,
-					const char *attrName);
+										TargetEntry *prior_tle,
+										const char *attrName);
 static Node *get_assignment_input(Node *node);
 static bool rewriteValuesRTE(Query *parsetree, RangeTblEntry *rte, int rti,
-				 Relation target_relation, bool force_nulls);
+							 Relation target_relation, bool force_nulls);
 static void markQueryForLocking(Query *qry, Node *jtnode,
-					LockClauseStrength strength, LockWaitPolicy waitPolicy,
-					bool pushedDown);
+								LockClauseStrength strength, LockWaitPolicy waitPolicy,
+								bool pushedDown);
 static List *matchLocks(CmdType event, RuleLock *rulelocks,
-		   int varno, Query *parsetree, bool *hasUpdate);
+						int varno, Query *parsetree, bool *hasUpdate);
 static Query *fireRIRrules(Query *parsetree, List *activeRIRs);
 static bool view_has_instead_trigger(Relation view, CmdType event);
 static Bitmapset *adjust_view_column_set(Bitmapset *cols, List *targetlist);
@@ -818,6 +818,13 @@ rewriteTargetListIU(List *targetList,
 
 			if (att_tup->attidentity == ATTRIBUTE_IDENTITY_BY_DEFAULT && override == OVERRIDING_USER_VALUE)
 				apply_default = true;
+
+			if (att_tup->attgenerated && !apply_default)
+				ereport(ERROR,
+						(errcode(ERRCODE_SYNTAX_ERROR),
+						 errmsg("cannot insert into column \"%s\"", NameStr(att_tup->attname)),
+						 errdetail("Column \"%s\" is a generated column.",
+								   NameStr(att_tup->attname))));
 		}
 
 		if (commandType == CMD_UPDATE)
@@ -828,9 +835,23 @@ rewriteTargetListIU(List *targetList,
 						 errmsg("column \"%s\" can only be updated to DEFAULT", NameStr(att_tup->attname)),
 						 errdetail("Column \"%s\" is an identity column defined as GENERATED ALWAYS.",
 								   NameStr(att_tup->attname))));
+
+			if (att_tup->attgenerated && new_tle && !apply_default)
+				ereport(ERROR,
+						(errcode(ERRCODE_SYNTAX_ERROR),
+						 errmsg("column \"%s\" can only be updated to DEFAULT", NameStr(att_tup->attname)),
+						 errdetail("Column \"%s\" is a generated column.",
+								   NameStr(att_tup->attname))));
 		}
 
-		if (apply_default)
+		if (att_tup->attgenerated)
+		{
+			/*
+			 * stored generated column will be fixed in executor
+			 */
+			new_tle = NULL;
+		}
+		else if (apply_default)
 		{
 			Node	   *new_expr;
 
@@ -959,11 +980,11 @@ process_matched_tle(TargetEntry *src_tle,
 	 *
 	 * As a further complication, the destination column might be a domain,
 	 * resulting in each assignment containing a CoerceToDomain node over a
-	 * FieldStore or ArrayRef.  These should have matching target domains,
-	 * so we strip them and reconstitute a single CoerceToDomain over the
-	 * combined FieldStore/ArrayRef nodes.  (Notice that this has the result
-	 * that the domain's checks are applied only after we do all the field or
-	 * element updates, not after each one.  This is arguably desirable.)
+	 * FieldStore or SubscriptingRef.  These should have matching target
+	 * domains, so we strip them and reconstitute a single CoerceToDomain over
+	 * the combined FieldStore/SubscriptingRef nodes.  (Notice that this has the
+	 * result that the domain's checks are applied only after we do all the
+	 * field or element updates, not after each one.  This is arguably desirable.)
 	 *----------
 	 */
 	src_expr = (Node *) src_tle->expr;
@@ -1137,13 +1158,12 @@ build_column_default(Relation rel, int attrno)
 		}
 	}
 
-	if (expr == NULL)
-	{
-		/*
-		 * No per-column default, so look for a default for the type itself.
-		 */
+	/*
+	 * No per-column default, so look for a default for the type itself.  But
+	 * not for generated columns.
+	 */
+	if (expr == NULL && !att_tup->attgenerated)
 		expr = get_typdefault(atttype);
-	}
 
 	if (expr == NULL)
 		return NULL;			/* No default anywhere */
@@ -1720,12 +1740,14 @@ ApplyRetrieveRule(Query *parsetree,
 	subrte->selectedCols = rte->selectedCols;
 	subrte->insertedCols = rte->insertedCols;
 	subrte->updatedCols = rte->updatedCols;
+	subrte->extraUpdatedCols = rte->extraUpdatedCols;
 
 	rte->requiredPerms = 0;		/* no permission check on subquery itself */
 	rte->checkAsUser = InvalidOid;
 	rte->selectedCols = NULL;
 	rte->insertedCols = NULL;
 	rte->updatedCols = NULL;
+	rte->extraUpdatedCols = NULL;
 
 	return parsetree;
 }

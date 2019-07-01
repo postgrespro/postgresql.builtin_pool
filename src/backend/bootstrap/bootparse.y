@@ -209,6 +209,9 @@ Boot_CreateStmt:
 
 					if ($4)
 					{
+						TransactionId relfrozenxid;
+						MultiXactId relminmxid;
+
 						if (boot_reldesc)
 						{
 							elog(DEBUG4, "create bootstrap: warning, open relation exists, closing first");
@@ -226,7 +229,9 @@ Boot_CreateStmt:
 												   RELPERSISTENCE_PERMANENT,
 												   shared_relation,
 												   mapped_relation,
-												   true);
+												   true,
+												   &relfrozenxid,
+												   &relminmxid);
 						elog(DEBUG4, "bootstrap relation created");
 					}
 					else
@@ -309,6 +314,7 @@ Boot_DeclareIndexStmt:
 					stmt->transformed = false;
 					stmt->concurrent = false;
 					stmt->if_not_exists = false;
+					stmt->reset_default_tblspc = false;
 
 					/* locks and races need not concern us in bootstrap mode */
 					relationId = RangeVarGetRelid(stmt->relation, NoLock,
@@ -358,6 +364,7 @@ Boot_DeclareUniqueIndexStmt:
 					stmt->transformed = false;
 					stmt->concurrent = false;
 					stmt->if_not_exists = false;
+					stmt->reset_default_tblspc = false;
 
 					/* locks and races need not concern us in bootstrap mode */
 					relationId = RangeVarGetRelid(stmt->relation, NoLock,

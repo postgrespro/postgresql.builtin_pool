@@ -108,10 +108,8 @@
  */
 typedef struct
 {
-	RelFileNode rnode;
-	ForkNumber	forknum;
-	BlockNumber segno;			/* see md.c for special values */
-	/* might add a real request-type field later; not needed yet */
+	SyncRequestType type;		/* request type */
+	FileTag		ftag;			/* file identifier */
 } CheckpointerRequest;
 
 typedef struct
@@ -139,7 +137,7 @@ typedef struct
 
 static CheckpointerShmemStruct *CheckpointerShmem;
 
-/* interval for calling AbsorbFsyncRequests in CheckpointWriteDelay */
+/* interval for calling AbsorbSyncRequests in CheckpointWriteDelay */
 #define WRITES_PER_ABSORB		1000
 
 /*
@@ -153,7 +151,6 @@ double		CheckPointCompletionTarget = 0.5;
  * Flags set by interrupt handlers for later service in the main loop.
  */
 static volatile sig_atomic_t got_SIGHUP = false;
-static volatile sig_atomic_t checkpoint_requested = false;
 static volatile sig_atomic_t shutdown_requested = false;
 
 /*
@@ -282,6 +279,8 @@ CheckpointerMain(void)
 			CheckpointerShmem->ckpt_done = CheckpointerShmem->ckpt_started;
 			SpinLockRelease(&CheckpointerShmem->ckpt_lck);
 
+			ConditionVariableBroadcast(&CheckpointerShmem->done_cv);
+
 			ckpt_active = false;
 		}
 
@@ -350,7 +349,7 @@ CheckpointerMain(void)
 		/*
 		 * Process any requests or signals received recently.
 		 */
-		AbsorbFsyncRequests();
+		AbsorbSyncRequests();
 
 		if (got_SIGHUP)
 		{
@@ -370,12 +369,6 @@ CheckpointerMain(void)
 			 */
 			UpdateSharedMemoryConfig();
 		}
-		if (checkpoint_requested)
-		{
-			checkpoint_requested = false;
-			do_checkpoint = true;
-			BgWriterStats.m_requested_checkpoints++;
-		}
 		if (shutdown_requested)
 		{
 			/*
@@ -387,6 +380,17 @@ CheckpointerMain(void)
 			ShutdownXLOG(0, 0);
 			/* Normal exit from the checkpointer is here */
 			proc_exit(0);		/* done */
+		}
+
+		/*
+		 * Detect a pending checkpoint request by checking whether the flags
+		 * word in shared memory is nonzero.  We shouldn't need to acquire the
+		 * ckpt_lck for this.
+		 */
+		if (((volatile CheckpointerShmemStruct *) CheckpointerShmem)->ckpt_flags)
+		{
+			do_checkpoint = true;
+			BgWriterStats.m_requested_checkpoints++;
 		}
 
 		/*
@@ -630,17 +634,14 @@ CheckArchiveTimeout(void)
 static bool
 ImmediateCheckpointRequested(void)
 {
-	if (checkpoint_requested)
-	{
-		volatile CheckpointerShmemStruct *cps = CheckpointerShmem;
+	volatile CheckpointerShmemStruct *cps = CheckpointerShmem;
 
-		/*
-		 * We don't need to acquire the ckpt_lck in this case because we're
-		 * only looking at a single flag bit.
-		 */
-		if (cps->ckpt_flags & CHECKPOINT_IMMEDIATE)
-			return true;
-	}
+	/*
+	 * We don't need to acquire the ckpt_lck in this case because we're only
+	 * looking at a single flag bit.
+	 */
+	if (cps->ckpt_flags & CHECKPOINT_IMMEDIATE)
+		return true;
 	return false;
 }
 
@@ -683,7 +684,7 @@ CheckpointWriteDelay(int flags, double progress)
 			UpdateSharedMemoryConfig();
 		}
 
-		AbsorbFsyncRequests();
+		AbsorbSyncRequests();
 		absorb_counter = WRITES_PER_ABSORB;
 
 		CheckArchiveTimeout();
@@ -708,7 +709,7 @@ CheckpointWriteDelay(int flags, double progress)
 		 * operations even when we don't sleep, to prevent overflow of the
 		 * fsync request queue.
 		 */
-		AbsorbFsyncRequests();
+		AbsorbSyncRequests();
 		absorb_counter = WRITES_PER_ABSORB;
 	}
 }
@@ -843,7 +844,10 @@ ReqCheckpointHandler(SIGNAL_ARGS)
 {
 	int			save_errno = errno;
 
-	checkpoint_requested = true;
+	/*
+	 * The signalling process should have set ckpt_flags nonzero, so all we
+	 * need do is ensure that our main loop gets kicked out of any wait.
+	 */
 	SetLatch(MyLatch);
 
 	errno = save_errno;
@@ -984,31 +988,35 @@ RequestCheckpoint(int flags)
 
 	old_failed = CheckpointerShmem->ckpt_failed;
 	old_started = CheckpointerShmem->ckpt_started;
-	CheckpointerShmem->ckpt_flags |= flags;
+	CheckpointerShmem->ckpt_flags |= (flags | CHECKPOINT_REQUESTED);
 
 	SpinLockRelease(&CheckpointerShmem->ckpt_lck);
 
 	/*
 	 * Send signal to request checkpoint.  It's possible that the checkpointer
 	 * hasn't started yet, or is in process of restarting, so we will retry a
-	 * few times if needed.  Also, if not told to wait for the checkpoint to
-	 * occur, we consider failure to send the signal to be nonfatal and merely
-	 * LOG it.
+	 * few times if needed.  (Actually, more than a few times, since on slow
+	 * or overloaded buildfarm machines, it's been observed that the
+	 * checkpointer can take several seconds to start.)  However, if not told
+	 * to wait for the checkpoint to occur, we consider failure to send the
+	 * signal to be nonfatal and merely LOG it.  The checkpointer should see
+	 * the request when it does start, with or without getting a signal.
 	 */
+#define MAX_SIGNAL_TRIES 600	/* max wait 60.0 sec */
 	for (ntries = 0;; ntries++)
 	{
 		if (CheckpointerShmem->checkpointer_pid == 0)
 		{
-			if (ntries >= 20)	/* max wait 2.0 sec */
+			if (ntries >= MAX_SIGNAL_TRIES || !(flags & CHECKPOINT_WAIT))
 			{
 				elog((flags & CHECKPOINT_WAIT) ? ERROR : LOG,
-					 "could not request checkpoint because checkpointer not running");
+					 "could not signal for checkpoint: checkpointer is not running");
 				break;
 			}
 		}
 		else if (kill(CheckpointerShmem->checkpointer_pid, SIGINT) != 0)
 		{
-			if (ntries >= 20)	/* max wait 2.0 sec */
+			if (ntries >= MAX_SIGNAL_TRIES || !(flags & CHECKPOINT_WAIT))
 			{
 				elog((flags & CHECKPOINT_WAIT) ? ERROR : LOG,
 					 "could not signal for checkpoint: %m");
@@ -1076,7 +1084,7 @@ RequestCheckpoint(int flags)
 }
 
 /*
- * ForwardFsyncRequest
+ * ForwardSyncRequest
  *		Forward a file-fsync request from a backend to the checkpointer
  *
  * Whenever a backend is compelled to write directly to a relation
@@ -1084,15 +1092,6 @@ RequestCheckpoint(int flags)
  * the backend calls this routine to pass over knowledge that the relation
  * is dirty and must be fsync'd before next checkpoint.  We also use this
  * opportunity to count such writes for statistical purposes.
- *
- * This functionality is only supported for regular (not backend-local)
- * relations, so the rnode argument is intentionally RelFileNode not
- * RelFileNodeBackend.
- *
- * segno specifies which segment (not block!) of the relation needs to be
- * fsync'd.  (Since the valid range is much less than BlockNumber, we can
- * use high values for special flags; that's all internal to md.c, which
- * see for details.)
  *
  * To avoid holding the lock for longer than necessary, we normally write
  * to the requests[] queue without checking for duplicates.  The checkpointer
@@ -1105,7 +1104,7 @@ RequestCheckpoint(int flags)
  * let the backend know by returning false.
  */
 bool
-ForwardFsyncRequest(RelFileNode rnode, ForkNumber forknum, BlockNumber segno)
+ForwardSyncRequest(const FileTag *ftag, SyncRequestType type)
 {
 	CheckpointerRequest *request;
 	bool		too_full;
@@ -1114,7 +1113,7 @@ ForwardFsyncRequest(RelFileNode rnode, ForkNumber forknum, BlockNumber segno)
 		return false;			/* probably shouldn't even get here */
 
 	if (AmCheckpointerProcess())
-		elog(ERROR, "ForwardFsyncRequest must not be called in checkpointer");
+		elog(ERROR, "ForwardSyncRequest must not be called in checkpointer");
 
 	LWLockAcquire(CheckpointerCommLock, LW_EXCLUSIVE);
 
@@ -1143,9 +1142,8 @@ ForwardFsyncRequest(RelFileNode rnode, ForkNumber forknum, BlockNumber segno)
 
 	/* OK, insert request */
 	request = &CheckpointerShmem->requests[CheckpointerShmem->num_requests++];
-	request->rnode = rnode;
-	request->forknum = forknum;
-	request->segno = segno;
+	request->ftag = *ftag;
+	request->type = type;
 
 	/* If queue is more than half full, nudge the checkpointer to empty it */
 	too_full = (CheckpointerShmem->num_requests >=
@@ -1215,12 +1213,11 @@ CompactCheckpointerRequestQueue(void)
 	 * backwards from the end of the queue and check whether a request is
 	 * *preceded* by an earlier, identical request, in the hopes of doing less
 	 * copying.  But that might change the semantics, if there's an
-	 * intervening FORGET_RELATION_FSYNC or FORGET_DATABASE_FSYNC request, so
-	 * we do it this way.  It would be possible to be even smarter if we made
-	 * the code below understand the specific semantics of such requests (it
-	 * could blow away preceding entries that would end up being canceled
-	 * anyhow), but it's not clear that the extra complexity would buy us
-	 * anything.
+	 * intervening SYNC_FORGET_REQUEST or SYNC_FILTER_REQUEST, so we do it
+	 * this way.  It would be possible to be even smarter if we made the code
+	 * below understand the specific semantics of such requests (it could blow
+	 * away preceding entries that would end up being canceled anyhow), but
+	 * it's not clear that the extra complexity would buy us anything.
 	 */
 	for (n = 0; n < CheckpointerShmem->num_requests; n++)
 	{
@@ -1276,8 +1273,8 @@ CompactCheckpointerRequestQueue(void)
 }
 
 /*
- * AbsorbFsyncRequests
- *		Retrieve queued fsync requests and pass them to local smgr.
+ * AbsorbSyncRequests
+ *		Retrieve queued sync requests and pass them to sync mechanism.
  *
  * This is exported because it must be called during CreateCheckPoint;
  * we have to be sure we have accepted all pending requests just before
@@ -1285,7 +1282,7 @@ CompactCheckpointerRequestQueue(void)
  * non-checkpointer processes, do nothing if not checkpointer.
  */
 void
-AbsorbFsyncRequests(void)
+AbsorbSyncRequests(void)
 {
 	CheckpointerRequest *requests = NULL;
 	CheckpointerRequest *request;
@@ -1327,7 +1324,7 @@ AbsorbFsyncRequests(void)
 	LWLockRelease(CheckpointerCommLock);
 
 	for (request = requests; n > 0; request++, n--)
-		RememberFsyncRequest(request->rnode, request->forknum, request->segno);
+		RememberSyncRequest(&request->ftag, request->type);
 
 	END_CRIT_SECTION();
 

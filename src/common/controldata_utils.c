@@ -28,8 +28,13 @@
 #include "catalog/pg_control.h"
 #include "common/controldata_utils.h"
 #include "common/file_perm.h"
+#ifdef FRONTEND
+#include "common/logging.h"
+#endif
 #include "port/pg_crc32c.h"
+
 #ifndef FRONTEND
+#include "pgstat.h"
 #include "storage/fd.h"
 #endif
 
@@ -43,7 +48,7 @@
  * file data is correct.
  */
 ControlFileData *
-get_controlfile(const char *DataDir, const char *progname, bool *crc_ok_p)
+get_controlfile(const char *DataDir, bool *crc_ok_p)
 {
 	ControlFileData *ControlFile;
 	int			fd;
@@ -65,8 +70,8 @@ get_controlfile(const char *DataDir, const char *progname, bool *crc_ok_p)
 #else
 	if ((fd = open(ControlFilePath, O_RDONLY | PG_BINARY, 0)) == -1)
 	{
-		fprintf(stderr, _("%s: could not open file \"%s\" for reading: %s\n"),
-				progname, ControlFilePath, strerror(errno));
+		pg_log_fatal("could not open file \"%s\" for reading: %m",
+					 ControlFilePath);
 		exit(EXIT_FAILURE);
 	}
 #endif
@@ -81,8 +86,7 @@ get_controlfile(const char *DataDir, const char *progname, bool *crc_ok_p)
 					 errmsg("could not read file \"%s\": %m", ControlFilePath)));
 #else
 		{
-			fprintf(stderr, _("%s: could not read file \"%s\": %s\n"),
-					progname, ControlFilePath, strerror(errno));
+			pg_log_fatal("could not read file \"%s\": %m", ControlFilePath);
 			exit(EXIT_FAILURE);
 		}
 #endif
@@ -94,8 +98,8 @@ get_controlfile(const char *DataDir, const char *progname, bool *crc_ok_p)
 							ControlFilePath, r, sizeof(ControlFileData))));
 #else
 		{
-			fprintf(stderr, _("%s: could not read file \"%s\": read %d of %zu\n"),
-					progname, ControlFilePath, r, sizeof(ControlFileData));
+			pg_log_fatal("could not read file \"%s\": read %d of %zu",
+						 ControlFilePath, r, sizeof(ControlFileData));
 			exit(EXIT_FAILURE);
 		}
 #endif
@@ -110,8 +114,7 @@ get_controlfile(const char *DataDir, const char *progname, bool *crc_ok_p)
 #else
 	if (close(fd))
 	{
-		fprintf(stderr, _("%s: could not close file \"%s\": %s\n"),
-				progname, ControlFilePath, strerror(errno));
+		pg_log_fatal("could not close file \"%s\": %m", ControlFilePath);
 		exit(EXIT_FAILURE);
 	}
 #endif
@@ -131,10 +134,10 @@ get_controlfile(const char *DataDir, const char *progname, bool *crc_ok_p)
 #ifndef FRONTEND
 		elog(ERROR, _("byte ordering mismatch"));
 #else
-		printf(_("WARNING: possible byte ordering mismatch\n"
-				 "The byte ordering used to store the pg_control file might not match the one\n"
-				 "used by this program.  In that case the results below would be incorrect, and\n"
-				 "the PostgreSQL installation would be incompatible with this data directory.\n"));
+		pg_log_warning("possible byte ordering mismatch\n"
+					   "The byte ordering used to store the pg_control file might not match the one\n"
+					   "used by this program.  In that case the results below would be incorrect, and\n"
+					   "the PostgreSQL installation would be incompatible with this data directory.");
 #endif
 
 	return ControlFile;
@@ -144,13 +147,14 @@ get_controlfile(const char *DataDir, const char *progname, bool *crc_ok_p)
  * update_controlfile()
  *
  * Update controlfile values with the contents given by caller.  The
- * contents to write are included in "ControlFile".  Note that it is up
- * to the caller to fsync the updated file, and to properly lock
- * ControlFileLock when calling this routine in the backend.
+ * contents to write are included in "ControlFile". "do_sync" can be
+ * optionally used to flush the updated control file.  Note that it is up
+ * to the caller to properly lock ControlFileLock when calling this
+ * routine in the backend.
  */
 void
-update_controlfile(const char *DataDir, const char *progname,
-				   ControlFileData *ControlFile)
+update_controlfile(const char *DataDir,
+				   ControlFileData *ControlFile, bool do_sync)
 {
 	int			fd;
 	char		buffer[PG_CONTROL_FILE_SIZE];
@@ -182,7 +186,12 @@ update_controlfile(const char *DataDir, const char *progname,
 	snprintf(ControlFilePath, sizeof(ControlFilePath), "%s/%s", DataDir, XLOG_CONTROL_FILE);
 
 #ifndef FRONTEND
-	if ((fd = OpenTransientFile(ControlFilePath, O_WRONLY | PG_BINARY)) == -1)
+
+	/*
+	 * All errors issue a PANIC, so no need to use OpenTransientFile() and to
+	 * worry about file descriptor leaks.
+	 */
+	if ((fd = BasicOpenFile(ControlFilePath, O_RDWR | PG_BINARY)) < 0)
 		ereport(PANIC,
 				(errcode_for_file_access(),
 				 errmsg("could not open file \"%s\": %m",
@@ -191,13 +200,15 @@ update_controlfile(const char *DataDir, const char *progname,
 	if ((fd = open(ControlFilePath, O_WRONLY | PG_BINARY,
 				   pg_file_create_mode)) == -1)
 	{
-		fprintf(stderr, _("%s: could not open file \"%s\": %s\n"),
-				progname, ControlFilePath, strerror(errno));
+		pg_log_fatal("could not open file \"%s\": %m", ControlFilePath);
 		exit(EXIT_FAILURE);
 	}
 #endif
 
 	errno = 0;
+#ifndef FRONTEND
+	pgstat_report_wait_start(WAIT_EVENT_CONTROL_FILE_WRITE_UPDATE);
+#endif
 	if (write(fd, buffer, PG_CONTROL_FILE_SIZE) != PG_CONTROL_FILE_SIZE)
 	{
 		/* if write didn't set errno, assume problem is no disk space */
@@ -210,24 +221,43 @@ update_controlfile(const char *DataDir, const char *progname,
 				 errmsg("could not write file \"%s\": %m",
 						ControlFilePath)));
 #else
-		fprintf(stderr, _("%s: could not write \"%s\": %s\n"),
-				progname, ControlFilePath, strerror(errno));
+		pg_log_fatal("could not write file \"%s\": %m", ControlFilePath);
 		exit(EXIT_FAILURE);
 #endif
 	}
-
 #ifndef FRONTEND
-	if (CloseTransientFile(fd))
+	pgstat_report_wait_end();
+#endif
+
+	if (do_sync)
+	{
+#ifndef FRONTEND
+		pgstat_report_wait_start(WAIT_EVENT_CONTROL_FILE_SYNC_UPDATE);
+		if (pg_fsync(fd) != 0)
+			ereport(PANIC,
+					(errcode_for_file_access(),
+					 errmsg("could not fsync file \"%s\": %m",
+							ControlFilePath)));
+		pgstat_report_wait_end();
+#else
+		if (fsync(fd) != 0)
+		{
+			pg_log_fatal("could not fsync file \"%s\": %m", ControlFilePath);
+			exit(EXIT_FAILURE);
+		}
+#endif
+	}
+
+	if (close(fd) < 0)
+	{
+#ifndef FRONTEND
 		ereport(PANIC,
 				(errcode_for_file_access(),
 				 errmsg("could not close file \"%s\": %m",
 						ControlFilePath)));
 #else
-	if (close(fd) < 0)
-	{
-		fprintf(stderr, _("%s: could not close file \"%s\": %s\n"),
-				progname, ControlFilePath, strerror(errno));
+		pg_log_fatal("could not close file \"%s\": %m", ControlFilePath);
 		exit(EXIT_FAILURE);
-	}
 #endif
+	}
 }

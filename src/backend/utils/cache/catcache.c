@@ -64,24 +64,24 @@
 static CatCacheHeader *CacheHdr = NULL;
 
 static inline HeapTuple SearchCatCacheInternal(CatCache *cache,
-					   int nkeys,
-					   Datum v1, Datum v2,
-					   Datum v3, Datum v4);
+											   int nkeys,
+											   Datum v1, Datum v2,
+											   Datum v3, Datum v4);
 
 static pg_noinline HeapTuple SearchCatCacheMiss(CatCache *cache,
-				   int nkeys,
-				   uint32 hashValue,
-				   Index hashIndex,
-				   Datum v1, Datum v2,
-				   Datum v3, Datum v4);
+												int nkeys,
+												uint32 hashValue,
+												Index hashIndex,
+												Datum v1, Datum v2,
+												Datum v3, Datum v4);
 
 static uint32 CatalogCacheComputeHashValue(CatCache *cache, int nkeys,
-							 Datum v1, Datum v2, Datum v3, Datum v4);
+										   Datum v1, Datum v2, Datum v3, Datum v4);
 static uint32 CatalogCacheComputeTupleHashValue(CatCache *cache, int nkeys,
-								  HeapTuple tuple);
+												HeapTuple tuple);
 static inline bool CatalogCacheCompareTuple(const CatCache *cache, int nkeys,
-						 const Datum *cachekeys,
-						 const Datum *searchkeys);
+											const Datum *cachekeys,
+											const Datum *searchkeys);
 
 #ifdef CATCACHE_STATS
 static void CatCachePrintStats(int code, Datum arg);
@@ -90,14 +90,14 @@ static void CatCacheRemoveCTup(CatCache *cache, CatCTup *ct);
 static void CatCacheRemoveCList(CatCache *cache, CatCList *cl);
 static void CatalogCacheInitializeCache(CatCache *cache);
 static CatCTup *CatalogCacheCreateEntry(CatCache *cache, HeapTuple ntp,
-						Datum *arguments,
-						uint32 hashValue, Index hashIndex,
-						bool negative);
+										Datum *arguments,
+										uint32 hashValue, Index hashIndex,
+										bool negative);
 
 static void CatCacheFreeKeys(TupleDesc tupdesc, int nkeys, int *attnos,
-				 Datum *keys);
+							 Datum *keys);
 static void CatCacheCopyKeys(TupleDesc tupdesc, int nkeys, int *attnos,
-				 Datum *srckeys, Datum *dstkeys);
+							 Datum *srckeys, Datum *dstkeys);
 
 
 /*
@@ -170,13 +170,18 @@ int4hashfast(Datum datum)
 static bool
 texteqfast(Datum a, Datum b)
 {
-	return DatumGetBool(DirectFunctionCall2(texteq, a, b));
+	/*
+	 * The use of DEFAULT_COLLATION_OID is fairly arbitrary here.  We just
+	 * want to take the fast "deterministic" path in texteq().
+	 */
+	return DatumGetBool(DirectFunctionCall2Coll(texteq, DEFAULT_COLLATION_OID, a, b));
 }
 
 static uint32
 texthashfast(Datum datum)
 {
-	return DatumGetInt32(DirectFunctionCall1(hashtext, datum));
+	/* analogously here as in texteqfast() */
+	return DatumGetInt32(DirectFunctionCall1Coll(hashtext, DEFAULT_COLLATION_OID, datum));
 }
 
 static bool

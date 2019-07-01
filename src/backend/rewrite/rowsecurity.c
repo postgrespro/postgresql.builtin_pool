@@ -47,6 +47,7 @@
 #include "nodes/pg_list.h"
 #include "nodes/plannodes.h"
 #include "parser/parsetree.h"
+#include "rewrite/rewriteDefine.h"
 #include "rewrite/rewriteHandler.h"
 #include "rewrite/rewriteManip.h"
 #include "rewrite/rowsecurity.h"
@@ -58,28 +59,28 @@
 #include "tcop/utility.h"
 
 static void get_policies_for_relation(Relation relation,
-						  CmdType cmd, Oid user_id,
-						  List **permissive_policies,
-						  List **restrictive_policies);
+									  CmdType cmd, Oid user_id,
+									  List **permissive_policies,
+									  List **restrictive_policies);
 
 static List *sort_policies_by_name(List *policies);
 
 static int	row_security_policy_cmp(const void *a, const void *b);
 
 static void add_security_quals(int rt_index,
-				   List *permissive_policies,
-				   List *restrictive_policies,
-				   List **securityQuals,
-				   bool *hasSubLinks);
+							   List *permissive_policies,
+							   List *restrictive_policies,
+							   List **securityQuals,
+							   bool *hasSubLinks);
 
 static void add_with_check_options(Relation rel,
-					   int rt_index,
-					   WCOKind kind,
-					   List *permissive_policies,
-					   List *restrictive_policies,
-					   List **withCheckOptions,
-					   bool *hasSubLinks,
-					   bool force_using);
+								   int rt_index,
+								   WCOKind kind,
+								   List *permissive_policies,
+								   List *restrictive_policies,
+								   List **withCheckOptions,
+								   bool *hasSubLinks,
+								   bool force_using);
 
 static bool check_role_for_policy(ArrayType *policy_roles, Oid user_id);
 
@@ -380,6 +381,13 @@ get_row_security_policies(Query *root, RangeTblEntry *rte, int rt_index,
 	}
 
 	table_close(rel, NoLock);
+
+	/*
+	 * Copy checkAsUser to the row security quals and WithCheckOption checks,
+	 * in case they contain any subqueries referring to other relations.
+	 */
+	setRuleCheckAsUser((Node *) *securityQuals, rte->checkAsUser);
+	setRuleCheckAsUser((Node *) *withCheckOptions, rte->checkAsUser);
 
 	/*
 	 * Mark this query as having row security, so plancache can invalidate it

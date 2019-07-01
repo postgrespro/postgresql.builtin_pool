@@ -87,7 +87,7 @@ typedef struct
 Oid			binary_upgrade_next_array_pg_type_oid = InvalidOid;
 
 static void makeRangeConstructors(const char *name, Oid namespace,
-					  Oid rangeOid, Oid subtype);
+								  Oid rangeOid, Oid subtype);
 static Oid	findTypeInputFunction(List *procname, Oid typeOid);
 static Oid	findTypeOutputFunction(List *procname, Oid typeOid);
 static Oid	findTypeReceiveFunction(List *procname, Oid typeOid);
@@ -102,11 +102,11 @@ static void validateDomainConstraint(Oid domainoid, char *ccbin);
 static List *get_rels_with_domain(Oid domainOid, LOCKMODE lockmode);
 static void checkEnumOwner(HeapTuple tup);
 static char *domainAddConstraint(Oid domainOid, Oid domainNamespace,
-					Oid baseTypeOid,
-					int typMod, Constraint *constr,
-					const char *domainName, ObjectAddress *constrAddr);
+								 Oid baseTypeOid,
+								 int typMod, Constraint *constr,
+								 const char *domainName, ObjectAddress *constrAddr);
 static Node *replace_domain_constraint_value(ParseState *pstate,
-								ColumnRef *cref);
+											 ColumnRef *cref);
 
 
 /*
@@ -918,7 +918,8 @@ DefineDomain(CreateDomainStmt *stmt)
 					defaultExpr = cookDefault(pstate, constr->raw_expr,
 											  basetypeoid,
 											  basetypeMod,
-											  domainName);
+											  domainName,
+											  0);
 
 					/*
 					 * If the expression is just a NULL constant, we treat it
@@ -2228,7 +2229,8 @@ AlterDomainDefault(List *names, Node *defaultRaw)
 		defaultExpr = cookDefault(pstate, defaultRaw,
 								  typTup->typbasetype,
 								  typTup->typtypmod,
-								  NameStr(typTup->typname));
+								  NameStr(typTup->typname),
+								  0);
 
 		/*
 		 * If the expression is just a NULL constant, we treat the command

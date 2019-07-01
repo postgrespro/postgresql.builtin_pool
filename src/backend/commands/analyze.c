@@ -17,11 +17,11 @@
 #include <math.h>
 
 #include "access/genam.h"
-#include "access/heapam.h"
 #include "access/multixact.h"
 #include "access/relation.h"
 #include "access/sysattr.h"
 #include "access/table.h"
+#include "access/tableam.h"
 #include "access/transam.h"
 #include "access/tupconvert.h"
 #include "access/tuptoaster.h"
@@ -84,25 +84,25 @@ static MemoryContext anl_context = NULL;
 static BufferAccessStrategy vac_strategy;
 
 
-static void do_analyze_rel(Relation onerel, int options,
-			   VacuumParams *params, List *va_cols,
-			   AcquireSampleRowsFunc acquirefunc, BlockNumber relpages,
-			   bool inh, bool in_outer_xact, int elevel);
+static void do_analyze_rel(Relation onerel,
+						   VacuumParams *params, List *va_cols,
+						   AcquireSampleRowsFunc acquirefunc, BlockNumber relpages,
+						   bool inh, bool in_outer_xact, int elevel);
 static void compute_index_stats(Relation onerel, double totalrows,
-					AnlIndexData *indexdata, int nindexes,
-					HeapTuple *rows, int numrows,
-					MemoryContext col_context);
+								AnlIndexData *indexdata, int nindexes,
+								HeapTuple *rows, int numrows,
+								MemoryContext col_context);
 static VacAttrStats *examine_attribute(Relation onerel, int attnum,
-				  Node *index_expr);
-static int acquire_sample_rows(Relation onerel, int elevel,
-					HeapTuple *rows, int targrows,
-					double *totalrows, double *totaldeadrows);
+									   Node *index_expr);
+static int	acquire_sample_rows(Relation onerel, int elevel,
+								HeapTuple *rows, int targrows,
+								double *totalrows, double *totaldeadrows);
 static int	compare_rows(const void *a, const void *b);
-static int acquire_inherited_sample_rows(Relation onerel, int elevel,
-							  HeapTuple *rows, int targrows,
-							  double *totalrows, double *totaldeadrows);
+static int	acquire_inherited_sample_rows(Relation onerel, int elevel,
+										  HeapTuple *rows, int targrows,
+										  double *totalrows, double *totaldeadrows);
 static void update_attstats(Oid relid, bool inh,
-				int natts, VacAttrStats **vacattrstats);
+							int natts, VacAttrStats **vacattrstats);
 static Datum std_fetch_func(VacAttrStatsP stats, int rownum, bool *isNull);
 static Datum ind_fetch_func(VacAttrStatsP stats, int rownum, bool *isNull);
 
@@ -115,7 +115,7 @@ static Datum ind_fetch_func(VacAttrStatsP stats, int rownum, bool *isNull);
  * use it once we've successfully opened the rel, since it might be stale.
  */
 void
-analyze_rel(Oid relid, RangeVar *relation, int options,
+analyze_rel(Oid relid, RangeVar *relation,
 			VacuumParams *params, List *va_cols, bool in_outer_xact,
 			BufferAccessStrategy bstrategy)
 {
@@ -125,7 +125,7 @@ analyze_rel(Oid relid, RangeVar *relation, int options,
 	BlockNumber relpages = 0;
 
 	/* Select logging level */
-	if (options & VACOPT_VERBOSE)
+	if (params->options & VACOPT_VERBOSE)
 		elevel = INFO;
 	else
 		elevel = DEBUG2;
@@ -147,8 +147,8 @@ analyze_rel(Oid relid, RangeVar *relation, int options,
 	 *
 	 * Make sure to generate only logs for ANALYZE in this case.
 	 */
-	onerel = vacuum_open_relation(relid, relation, params,
-								  options & ~(VACOPT_VACUUM),
+	onerel = vacuum_open_relation(relid, relation, params->options & ~(VACOPT_VACUUM),
+								  params->log_min_duration >= 0,
 								  ShareUpdateExclusiveLock);
 
 	/* leave if relation could not be opened or locked */
@@ -165,7 +165,7 @@ analyze_rel(Oid relid, RangeVar *relation, int options,
 	 */
 	if (!vacuum_is_relation_owner(RelationGetRelid(onerel),
 								  onerel->rd_rel,
-								  options & VACOPT_ANALYZE))
+								  params->options & VACOPT_ANALYZE))
 	{
 		relation_close(onerel, ShareUpdateExclusiveLock);
 		return;
@@ -237,7 +237,7 @@ analyze_rel(Oid relid, RangeVar *relation, int options,
 	else
 	{
 		/* No need for a WARNING if we already complained during VACUUM */
-		if (!(options & VACOPT_VACUUM))
+		if (!(params->options & VACOPT_VACUUM))
 			ereport(WARNING,
 					(errmsg("skipping \"%s\" --- cannot analyze non-tables or special system tables",
 							RelationGetRelationName(onerel))));
@@ -257,14 +257,14 @@ analyze_rel(Oid relid, RangeVar *relation, int options,
 	 * tables, which don't contain any rows.
 	 */
 	if (onerel->rd_rel->relkind != RELKIND_PARTITIONED_TABLE)
-		do_analyze_rel(onerel, options, params, va_cols, acquirefunc,
+		do_analyze_rel(onerel, params, va_cols, acquirefunc,
 					   relpages, false, in_outer_xact, elevel);
 
 	/*
 	 * If there are child tables, do recursive ANALYZE.
 	 */
 	if (onerel->rd_rel->relhassubclass)
-		do_analyze_rel(onerel, options, params, va_cols, acquirefunc, relpages,
+		do_analyze_rel(onerel, params, va_cols, acquirefunc, relpages,
 					   true, in_outer_xact, elevel);
 
 	/*
@@ -292,7 +292,7 @@ analyze_rel(Oid relid, RangeVar *relation, int options,
  * appropriate acquirefunc for each child table.
  */
 static void
-do_analyze_rel(Relation onerel, int options, VacuumParams *params,
+do_analyze_rel(Relation onerel, VacuumParams *params,
 			   List *va_cols, AcquireSampleRowsFunc acquirefunc,
 			   BlockNumber relpages, bool inh, bool in_outer_xact,
 			   int elevel)
@@ -603,7 +603,7 @@ do_analyze_rel(Relation onerel, int options, VacuumParams *params,
 	 * VACUUM ANALYZE, don't overwrite the accurate count already inserted by
 	 * VACUUM.
 	 */
-	if (!inh && !(options & VACOPT_VACUUM))
+	if (!inh && !(params->options & VACOPT_VACUUM))
 	{
 		for (ind = 0; ind < nindexes; ind++)
 		{
@@ -634,7 +634,7 @@ do_analyze_rel(Relation onerel, int options, VacuumParams *params,
 							  (va_cols == NIL));
 
 	/* If this isn't part of VACUUM ANALYZE, let index AMs do cleanup */
-	if (!(options & VACOPT_VACUUM))
+	if (!(params->options & VACOPT_VACUUM))
 	{
 		for (ind = 0; ind < nindexes; ind++)
 		{
@@ -1014,6 +1014,8 @@ acquire_sample_rows(Relation onerel, int elevel,
 	TransactionId OldestXmin;
 	BlockSamplerData bs;
 	ReservoirStateData rstate;
+	TupleTableSlot *slot;
+	TableScanDesc scan;
 
 	Assert(targrows > 0);
 
@@ -1027,192 +1029,67 @@ acquire_sample_rows(Relation onerel, int elevel,
 	/* Prepare for sampling rows */
 	reservoir_init_selection_state(&rstate, targrows);
 
+	scan = table_beginscan_analyze(onerel);
+	slot = table_slot_create(onerel, NULL);
+
 	/* Outer loop over blocks to sample */
 	while (BlockSampler_HasMore(&bs))
 	{
 		BlockNumber targblock = BlockSampler_Next(&bs);
-		Buffer		targbuffer;
-		Page		targpage;
-		OffsetNumber targoffset,
-					maxoffset;
 
 		vacuum_delay_point();
 
-		/*
-		 * We must maintain a pin on the target page's buffer to ensure that
-		 * the maxoffset value stays good (else concurrent VACUUM might delete
-		 * tuples out from under us).  Hence, pin the page until we are done
-		 * looking at it.  We also choose to hold sharelock on the buffer
-		 * throughout --- we could release and re-acquire sharelock for each
-		 * tuple, but since we aren't doing much work per tuple, the extra
-		 * lock traffic is probably better avoided.
-		 */
-		targbuffer = ReadBufferExtended(onerel, MAIN_FORKNUM, targblock,
-										RBM_NORMAL, vac_strategy);
-		LockBuffer(targbuffer, BUFFER_LOCK_SHARE);
-		targpage = BufferGetPage(targbuffer);
-		maxoffset = PageGetMaxOffsetNumber(targpage);
+		if (!table_scan_analyze_next_block(scan, targblock, vac_strategy))
+			continue;
 
-		/* Inner loop over all tuples on the selected page */
-		for (targoffset = FirstOffsetNumber; targoffset <= maxoffset; targoffset++)
+		while (table_scan_analyze_next_tuple(scan, OldestXmin, &liverows, &deadrows, slot))
 		{
-			ItemId		itemid;
-			HeapTupleData targtuple;
-			bool		sample_it = false;
-
-			itemid = PageGetItemId(targpage, targoffset);
-
 			/*
-			 * We ignore unused and redirect line pointers.  DEAD line
-			 * pointers should be counted as dead, because we need vacuum to
-			 * run to get rid of them.  Note that this rule agrees with the
-			 * way that heap_page_prune() counts things.
+			 * The first targrows sample rows are simply copied into the
+			 * reservoir. Then we start replacing tuples in the sample until
+			 * we reach the end of the relation.  This algorithm is from Jeff
+			 * Vitter's paper (see full citation in utils/misc/sampling.c). It
+			 * works by repeatedly computing the number of tuples to skip
+			 * before selecting a tuple, which replaces a randomly chosen
+			 * element of the reservoir (current set of tuples).  At all times
+			 * the reservoir is a true random sample of the tuples we've
+			 * passed over so far, so when we fall off the end of the relation
+			 * we're done.
 			 */
-			if (!ItemIdIsNormal(itemid))
-			{
-				if (ItemIdIsDead(itemid))
-					deadrows += 1;
-				continue;
-			}
-
-			ItemPointerSet(&targtuple.t_self, targblock, targoffset);
-
-			targtuple.t_tableOid = RelationGetRelid(onerel);
-			targtuple.t_data = (HeapTupleHeader) PageGetItem(targpage, itemid);
-			targtuple.t_len = ItemIdGetLength(itemid);
-
-			switch (HeapTupleSatisfiesVacuum(&targtuple,
-											 OldestXmin,
-											 targbuffer))
-			{
-				case HEAPTUPLE_LIVE:
-					sample_it = true;
-					liverows += 1;
-					break;
-
-				case HEAPTUPLE_DEAD:
-				case HEAPTUPLE_RECENTLY_DEAD:
-					/* Count dead and recently-dead rows */
-					deadrows += 1;
-					break;
-
-				case HEAPTUPLE_INSERT_IN_PROGRESS:
-
-					/*
-					 * Insert-in-progress rows are not counted.  We assume
-					 * that when the inserting transaction commits or aborts,
-					 * it will send a stats message to increment the proper
-					 * count.  This works right only if that transaction ends
-					 * after we finish analyzing the table; if things happen
-					 * in the other order, its stats update will be
-					 * overwritten by ours.  However, the error will be large
-					 * only if the other transaction runs long enough to
-					 * insert many tuples, so assuming it will finish after us
-					 * is the safer option.
-					 *
-					 * A special case is that the inserting transaction might
-					 * be our own.  In this case we should count and sample
-					 * the row, to accommodate users who load a table and
-					 * analyze it in one transaction.  (pgstat_report_analyze
-					 * has to adjust the numbers we send to the stats
-					 * collector to make this come out right.)
-					 */
-					if (TransactionIdIsCurrentTransactionId(HeapTupleHeaderGetXmin(targtuple.t_data)))
-					{
-						sample_it = true;
-						liverows += 1;
-					}
-					break;
-
-				case HEAPTUPLE_DELETE_IN_PROGRESS:
-
-					/*
-					 * We count and sample delete-in-progress rows the same as
-					 * live ones, so that the stats counters come out right if
-					 * the deleting transaction commits after us, per the same
-					 * reasoning given above.
-					 *
-					 * If the delete was done by our own transaction, however,
-					 * we must count the row as dead to make
-					 * pgstat_report_analyze's stats adjustments come out
-					 * right.  (Note: this works out properly when the row was
-					 * both inserted and deleted in our xact.)
-					 *
-					 * The net effect of these choices is that we act as
-					 * though an IN_PROGRESS transaction hasn't happened yet,
-					 * except if it is our own transaction, which we assume
-					 * has happened.
-					 *
-					 * This approach ensures that we behave sanely if we see
-					 * both the pre-image and post-image rows for a row being
-					 * updated by a concurrent transaction: we will sample the
-					 * pre-image but not the post-image.  We also get sane
-					 * results if the concurrent transaction never commits.
-					 */
-					if (TransactionIdIsCurrentTransactionId(HeapTupleHeaderGetUpdateXid(targtuple.t_data)))
-						deadrows += 1;
-					else
-					{
-						sample_it = true;
-						liverows += 1;
-					}
-					break;
-
-				default:
-					elog(ERROR, "unexpected HeapTupleSatisfiesVacuum result");
-					break;
-			}
-
-			if (sample_it)
+			if (numrows < targrows)
+				rows[numrows++] = ExecCopySlotHeapTuple(slot);
+			else
 			{
 				/*
-				 * The first targrows sample rows are simply copied into the
-				 * reservoir. Then we start replacing tuples in the sample
-				 * until we reach the end of the relation.  This algorithm is
-				 * from Jeff Vitter's paper (see full citation below). It
-				 * works by repeatedly computing the number of tuples to skip
-				 * before selecting a tuple, which replaces a randomly chosen
-				 * element of the reservoir (current set of tuples).  At all
-				 * times the reservoir is a true random sample of the tuples
-				 * we've passed over so far, so when we fall off the end of
-				 * the relation we're done.
+				 * t in Vitter's paper is the number of records already
+				 * processed.  If we need to compute a new S value, we must
+				 * use the not-yet-incremented value of samplerows as t.
 				 */
-				if (numrows < targrows)
-					rows[numrows++] = heap_copytuple(&targtuple);
-				else
+				if (rowstoskip < 0)
+					rowstoskip = reservoir_get_next_S(&rstate, samplerows, targrows);
+
+				if (rowstoskip <= 0)
 				{
 					/*
-					 * t in Vitter's paper is the number of records already
-					 * processed.  If we need to compute a new S value, we
-					 * must use the not-yet-incremented value of samplerows as
-					 * t.
+					 * Found a suitable tuple, so save it, replacing one old
+					 * tuple at random
 					 */
-					if (rowstoskip < 0)
-						rowstoskip = reservoir_get_next_S(&rstate, samplerows, targrows);
+					int			k = (int) (targrows * sampler_random_fract(rstate.randstate));
 
-					if (rowstoskip <= 0)
-					{
-						/*
-						 * Found a suitable tuple, so save it, replacing one
-						 * old tuple at random
-						 */
-						int			k = (int) (targrows * sampler_random_fract(rstate.randstate));
-
-						Assert(k >= 0 && k < targrows);
-						heap_freetuple(rows[k]);
-						rows[k] = heap_copytuple(&targtuple);
-					}
-
-					rowstoskip -= 1;
+					Assert(k >= 0 && k < targrows);
+					heap_freetuple(rows[k]);
+					rows[k] = ExecCopySlotHeapTuple(slot);
 				}
 
-				samplerows += 1;
+				rowstoskip -= 1;
 			}
-		}
 
-		/* Now release the lock and pin on the page */
-		UnlockReleaseBuffer(targbuffer);
+			samplerows += 1;
+		}
 	}
+
+	ExecDropSingleTupleTableSlot(slot);
+	table_endscan(scan);
 
 	/*
 	 * If we didn't find as many tuples as we wanted then we're done. No sort
@@ -1738,25 +1615,25 @@ typedef struct
 
 
 static void compute_trivial_stats(VacAttrStatsP stats,
-					  AnalyzeAttrFetchFunc fetchfunc,
-					  int samplerows,
-					  double totalrows);
+								  AnalyzeAttrFetchFunc fetchfunc,
+								  int samplerows,
+								  double totalrows);
 static void compute_distinct_stats(VacAttrStatsP stats,
-					   AnalyzeAttrFetchFunc fetchfunc,
-					   int samplerows,
-					   double totalrows);
+								   AnalyzeAttrFetchFunc fetchfunc,
+								   int samplerows,
+								   double totalrows);
 static void compute_scalar_stats(VacAttrStatsP stats,
-					 AnalyzeAttrFetchFunc fetchfunc,
-					 int samplerows,
-					 double totalrows);
+								 AnalyzeAttrFetchFunc fetchfunc,
+								 int samplerows,
+								 double totalrows);
 static int	compare_scalars(const void *a, const void *b, void *arg);
 static int	compare_mcvs(const void *a, const void *b);
-static int analyze_mcv_list(int *mcv_counts,
-				 int num_mcv,
-				 double stadistinct,
-				 double stanullfrac,
-				 int samplerows,
-				 double totalrows);
+static int	analyze_mcv_list(int *mcv_counts,
+							 int num_mcv,
+							 double stadistinct,
+							 double stanullfrac,
+							 int samplerows,
+							 double totalrows);
 
 
 /*

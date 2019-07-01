@@ -15,9 +15,9 @@
 #include "postgres.h"
 
 #include "access/heapam.h"
-#include "access/tuptoaster.h"
 #include "access/xact.h"
 #include "catalog/binary_upgrade.h"
+#include "catalog/catalog.h"
 #include "catalog/dependency.h"
 #include "catalog/heap.h"
 #include "catalog/index.h"
@@ -38,9 +38,9 @@
 Oid			binary_upgrade_next_toast_pg_type_oid = InvalidOid;
 
 static void CheckAndCreateToastTable(Oid relOid, Datum reloptions,
-						 LOCKMODE lockmode, bool check);
+									 LOCKMODE lockmode, bool check);
 static bool create_toast_table(Relation rel, Oid toastOid, Oid toastIndexOid,
-				   Datum reloptions, LOCKMODE lockmode, bool check);
+							   Datum reloptions, LOCKMODE lockmode, bool check);
 static bool needs_toast_table(Relation rel);
 
 
@@ -147,21 +147,6 @@ create_toast_table(Relation rel, Oid toastOid, Oid toastIndexOid,
 				toastobject;
 
 	/*
-	 * Toast table is shared if and only if its parent is.
-	 *
-	 * We cannot allow toasting a shared relation after initdb (because
-	 * there's no way to mark it toasted in other databases' pg_class).
-	 */
-	shared_relation = rel->rd_rel->relisshared;
-	if (shared_relation && !IsBootstrapProcessingMode())
-		ereport(ERROR,
-				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-				 errmsg("shared tables cannot be toasted after initdb")));
-
-	/* It's mapped if and only if its parent is, too */
-	mapped_relation = RelationIsMapped(rel);
-
-	/*
 	 * Is it already toasted?
 	 */
 	if (rel->rd_rel->reltoastrelid != InvalidOid)
@@ -259,6 +244,12 @@ create_toast_table(Relation rel, Oid toastOid, Oid toastIndexOid,
 		toast_typid = binary_upgrade_next_toast_pg_type_oid;
 		binary_upgrade_next_toast_pg_type_oid = InvalidOid;
 	}
+
+	/* Toast table is shared if and only if its parent is. */
+	shared_relation = rel->rd_rel->relisshared;
+
+	/* It's mapped if and only if its parent is, too */
+	mapped_relation = RelationIsMapped(rel);
 
 	toast_relid = heap_create_with_catalog(toast_relname,
 										   namespaceid,
@@ -394,58 +385,33 @@ create_toast_table(Relation rel, Oid toastOid, Oid toastIndexOid,
 }
 
 /*
- * Check to see whether the table needs a TOAST table.  It does only if
- * (1) there are any toastable attributes, and (2) the maximum length
- * of a tuple could exceed TOAST_TUPLE_THRESHOLD.  (We don't want to
- * create a toast table for something like "f1 varchar(20)".)
- * No need to create a TOAST table for partitioned tables.
+ * Check to see whether the table needs a TOAST table.
  */
 static bool
 needs_toast_table(Relation rel)
 {
-	int32		data_length = 0;
-	bool		maxlength_unknown = false;
-	bool		has_toastable_attrs = false;
-	TupleDesc	tupdesc;
-	int32		tuple_length;
-	int			i;
-
+	/*
+	 * No need to create a TOAST table for partitioned tables.
+	 */
 	if (rel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE)
 		return false;
 
-	tupdesc = rel->rd_att;
+	/*
+	 * We cannot allow toasting a shared relation after initdb (because
+	 * there's no way to mark it toasted in other databases' pg_class).
+	 */
+	if (rel->rd_rel->relisshared && !IsBootstrapProcessingMode())
+		return false;
 
-	for (i = 0; i < tupdesc->natts; i++)
-	{
-		Form_pg_attribute att = TupleDescAttr(tupdesc, i);
+	/*
+	 * Ignore attempts to create toast tables on catalog tables after initdb.
+	 * Which catalogs get toast tables is explicitly chosen in
+	 * catalog/toasting.h.  (We could get here via some ALTER TABLE command if
+	 * the catalog doesn't have a toast table.)
+	 */
+	if (IsCatalogRelation(rel) && !IsBootstrapProcessingMode())
+		return false;
 
-		if (att->attisdropped)
-			continue;
-		data_length = att_align_nominal(data_length, att->attalign);
-		if (att->attlen > 0)
-		{
-			/* Fixed-length types are never toastable */
-			data_length += att->attlen;
-		}
-		else
-		{
-			int32		maxlen = type_maximum_size(att->atttypid,
-												   att->atttypmod);
-
-			if (maxlen < 0)
-				maxlength_unknown = true;
-			else
-				data_length += maxlen;
-			if (att->attstorage != 'p')
-				has_toastable_attrs = true;
-		}
-	}
-	if (!has_toastable_attrs)
-		return false;			/* nothing to toast? */
-	if (maxlength_unknown)
-		return true;			/* any unlimited-length attrs? */
-	tuple_length = MAXALIGN(SizeofHeapTupleHeader +
-							BITMAPLEN(tupdesc->natts)) +
-		MAXALIGN(data_length);
-	return (tuple_length > TOAST_TUPLE_THRESHOLD);
+	/* Otherwise, let the AM decide. */
+	return table_relation_needs_toast_table(rel);
 }

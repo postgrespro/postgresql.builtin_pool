@@ -17,12 +17,11 @@
 #include "access/xact.h"
 #include "catalog/pg_am.h"
 #include "catalog/pg_proc.h"
+#include "commands/defrem.h"
+#include "miscadmin.h"
 #include "utils/fmgroids.h"
 #include "utils/memutils.h"
 #include "utils/syscache.h"
-
-
-static Oid	get_table_am_oid(const char *tableamname, bool missing_ok);
 
 
 /*
@@ -41,7 +40,7 @@ GetTableAmRoutine(Oid amhandler)
 	routine = (TableAmRoutine *) DatumGetPointer(datum);
 
 	if (routine == NULL || !IsA(routine, TableAmRoutine))
-		elog(ERROR, "Table access method handler %u did not return a TableAmRoutine struct",
+		elog(ERROR, "table access method handler %u did not return a TableAmRoutine struct",
 			 amhandler);
 
 	/*
@@ -62,111 +61,72 @@ GetTableAmRoutine(Oid amhandler)
 	Assert(routine->index_fetch_end != NULL);
 	Assert(routine->index_fetch_tuple != NULL);
 
+	Assert(routine->tuple_fetch_row_version != NULL);
 	Assert(routine->tuple_satisfies_snapshot != NULL);
 
-	return routine;
-}
-
-/*
- * GetTableAmRoutineByAmId - look up the handler of the table access
- * method with the given OID, and get its TableAmRoutine struct.
- */
-const TableAmRoutine *
-GetTableAmRoutineByAmId(Oid amoid)
-{
-	regproc		amhandler;
-	HeapTuple	tuple;
-	Form_pg_am	amform;
-
-	/* Get handler function OID for the access method */
-	tuple = SearchSysCache1(AMOID, ObjectIdGetDatum(amoid));
-	if (!HeapTupleIsValid(tuple))
-		elog(ERROR, "cache lookup failed for access method %u",
-			 amoid);
-	amform = (Form_pg_am) GETSTRUCT(tuple);
-
-	/* Check that it is a table access method */
-	if (amform->amtype != AMTYPE_TABLE)
-		ereport(ERROR,
-				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-				 errmsg("access method \"%s\" is not of type %s",
-						NameStr(amform->amname), "TABLE")));
-
-	amhandler = amform->amhandler;
-
-	/* Complain if handler OID is invalid */
-	if (!RegProcedureIsValid(amhandler))
-		ereport(ERROR,
-				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-				 errmsg("table access method \"%s\" does not have a handler",
-						NameStr(amform->amname))));
-
-	ReleaseSysCache(tuple);
-
-	/* And finally, call the handler function to get the API struct. */
-	return GetTableAmRoutine(amhandler);
-}
-
-/*
- * get_table_am_oid - given a table access method name, look up the OID
- *
- * If missing_ok is false, throw an error if table access method name not
- * found. If true, just return InvalidOid.
- */
-static Oid
-get_table_am_oid(const char *tableamname, bool missing_ok)
-{
-	Oid			result;
-	Relation	rel;
-	TableScanDesc scandesc;
-	HeapTuple	tuple;
-	ScanKeyData entry[1];
+	Assert(routine->tuple_insert != NULL);
 
 	/*
-	 * Search pg_am.  We use a heapscan here even though there is an index on
-	 * name, on the theory that pg_am will usually have just a few entries and
-	 * so an indexed lookup is a waste of effort.
+	 * Could be made optional, but would require throwing error during
+	 * parse-analysis.
 	 */
-	rel = heap_open(AccessMethodRelationId, AccessShareLock);
+	Assert(routine->tuple_insert_speculative != NULL);
+	Assert(routine->tuple_complete_speculative != NULL);
 
-	ScanKeyInit(&entry[0],
-				Anum_pg_am_amname,
-				BTEqualStrategyNumber, F_NAMEEQ,
-				CStringGetDatum(tableamname));
-	scandesc = table_beginscan_catalog(rel, 1, entry);
-	tuple = heap_getnext(scandesc, ForwardScanDirection);
+	Assert(routine->multi_insert != NULL);
+	Assert(routine->tuple_delete != NULL);
+	Assert(routine->tuple_update != NULL);
+	Assert(routine->tuple_lock != NULL);
 
-	/* We assume that there can be at most one matching tuple */
-	if (HeapTupleIsValid(tuple) &&
-		((Form_pg_am) GETSTRUCT(tuple))->amtype == AMTYPE_TABLE)
-		result = ((Form_pg_am) GETSTRUCT(tuple))->oid;
-	else
-		result = InvalidOid;
+	Assert(routine->relation_set_new_filenode != NULL);
+	Assert(routine->relation_nontransactional_truncate != NULL);
+	Assert(routine->relation_copy_data != NULL);
+	Assert(routine->relation_copy_for_cluster != NULL);
+	Assert(routine->relation_vacuum != NULL);
+	Assert(routine->scan_analyze_next_block != NULL);
+	Assert(routine->scan_analyze_next_tuple != NULL);
+	Assert(routine->index_build_range_scan != NULL);
+	Assert(routine->index_validate_scan != NULL);
 
-	table_endscan(scandesc);
-	heap_close(rel, AccessShareLock);
+	Assert(routine->relation_size != NULL);
 
-	if (!OidIsValid(result) && !missing_ok)
-		ereport(ERROR,
-				(errcode(ERRCODE_UNDEFINED_OBJECT),
-				 errmsg("table access method \"%s\" does not exist",
-						tableamname)));
+	Assert(routine->relation_estimate_size != NULL);
 
-	return result;
+	/* optional, but one callback implies presence of the other */
+	Assert((routine->scan_bitmap_next_block == NULL) ==
+		   (routine->scan_bitmap_next_tuple == NULL));
+	Assert(routine->scan_sample_next_block != NULL);
+	Assert(routine->scan_sample_next_tuple != NULL);
+
+	return routine;
 }
 
 /* check_hook: validate new default_table_access_method */
 bool
 check_default_table_access_method(char **newval, void **extra, GucSource source)
 {
-	/*
-	 * If we aren't inside a transaction, we cannot do database access so
-	 * cannot verify the name.  Must accept the value on faith.
-	 */
-	if (IsTransactionState())
+	if (**newval == '\0')
 	{
-		if (**newval != '\0' &&
-			!OidIsValid(get_table_am_oid(*newval, true)))
+		GUC_check_errdetail("%s cannot be empty.",
+							"default_table_access_method");
+		return false;
+	}
+
+	if (strlen(*newval) >= NAMEDATALEN)
+	{
+		GUC_check_errdetail("%s is too long (maximum %d characters).",
+							"default_table_access_method", NAMEDATALEN - 1);
+		return false;
+	}
+
+	/*
+	 * If we aren't inside a transaction, or not connected to a database, we
+	 * cannot do the catalog access necessary to verify the method.  Must
+	 * accept the value on faith.
+	 */
+	if (IsTransactionState() && MyDatabaseId != InvalidOid)
+	{
+		if (!OidIsValid(get_table_am_oid(*newval, true)))
 		{
 			/*
 			 * When source == PGC_S_TEST, don't throw a hard error for a
@@ -177,7 +137,7 @@ check_default_table_access_method(char **newval, void **extra, GucSource source)
 			{
 				ereport(NOTICE,
 						(errcode(ERRCODE_UNDEFINED_OBJECT),
-						 errmsg("Table access method \"%s\" does not exist",
+						 errmsg("table access method \"%s\" does not exist",
 								*newval)));
 			}
 			else

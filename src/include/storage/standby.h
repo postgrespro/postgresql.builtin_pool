@@ -28,7 +28,7 @@ extern void InitRecoveryTransactionEnvironment(void);
 extern void ShutdownRecoveryTransactionEnvironment(void);
 
 extern void ResolveRecoveryConflictWithSnapshot(TransactionId latestRemovedXid,
-									RelFileNode node);
+												RelFileNode node);
 extern void ResolveRecoveryConflictWithTablespace(Oid tsid);
 extern void ResolveRecoveryConflictWithDatabase(Oid dbid);
 
@@ -48,7 +48,7 @@ extern void StandbyLockTimeoutHandler(void);
  */
 extern void StandbyAcquireAccessExclusiveLock(TransactionId xid, Oid dbOid, Oid relOid);
 extern void StandbyReleaseLockTree(TransactionId xid,
-					   int nsubxids, TransactionId *subxids);
+								   int nsubxids, TransactionId *subxids);
 extern void StandbyReleaseAllLocks(void);
 extern void StandbyReleaseOldLocks(TransactionId oldxid);
 
@@ -72,7 +72,7 @@ typedef struct RunningTransactionsData
 	int			xcnt;			/* # of xact ids in xids[] */
 	int			subxcnt;		/* # of subxact ids in xids[] */
 	bool		subxid_overflow;	/* snapshot overflowed, subxids missing */
-	TransactionId nextXid;		/* copy of ShmemVariableCache->nextXid */
+	TransactionId nextXid;		/* xid from ShmemVariableCache->nextFullXid */
 	TransactionId oldestRunningXid; /* *not* oldestXmin */
 	TransactionId latestCompletedXid;	/* so we can set xmax */
 
@@ -86,6 +86,6 @@ extern void LogAccessExclusiveLockPrepare(void);
 
 extern XLogRecPtr LogStandbySnapshot(void);
 extern void LogStandbyInvalidations(int nmsgs, SharedInvalidationMessage *msgs,
-						bool relcacheInitFileInval);
+									bool relcacheInitFileInval);
 
 #endif							/* STANDBY_H */

@@ -22,11 +22,18 @@ typedef uint64 XLogRecPtr;
 
 /*
  * Zero is used indicate an invalid pointer. Bootstrap skips the first possible
- * WAL segment, initializing the first WAL page at XLOG_SEG_SIZE, so no XLOG
+ * WAL segment, initializing the first WAL page at WAL segment size, so no XLOG
  * record can begin at zero.
  */
 #define InvalidXLogRecPtr	0
 #define XLogRecPtrIsInvalid(r)	((r) == InvalidXLogRecPtr)
+
+/*
+ * First LSN to use for "fake" LSNs.
+ *
+ * Values smaller than this can be used for special per-AM purposes.
+ */
+#define FirstNormalUnloggedLSN	((XLogRecPtr) 1000)
 
 /*
  * XLogSegNo - physical log file sequence number.

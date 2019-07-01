@@ -136,11 +136,40 @@ typedef struct VacAttrStats
 	int			rowstride;
 } VacAttrStats;
 
+typedef enum VacuumOption
+{
+	VACOPT_VACUUM = 1 << 0,		/* do VACUUM */
+	VACOPT_ANALYZE = 1 << 1,	/* do ANALYZE */
+	VACOPT_VERBOSE = 1 << 2,	/* print progress info */
+	VACOPT_FREEZE = 1 << 3,		/* FREEZE option */
+	VACOPT_FULL = 1 << 4,		/* FULL (non-concurrent) vacuum */
+	VACOPT_SKIP_LOCKED = 1 << 5,	/* skip if cannot get lock */
+	VACOPT_SKIPTOAST = 1 << 6,	/* don't process the TOAST table, if any */
+	VACOPT_DISABLE_PAGE_SKIPPING = 1 << 7	/* don't skip any pages */
+} VacuumOption;
+
+/*
+ * A ternary value used by vacuum parameters.
+ *
+ * DEFAULT value is used to determine the value based on other
+ * configurations, e.g. reloptions.
+ */
+typedef enum VacOptTernaryValue
+{
+	VACOPT_TERNARY_DEFAULT = 0,
+	VACOPT_TERNARY_DISABLED,
+	VACOPT_TERNARY_ENABLED,
+} VacOptTernaryValue;
+
 /*
  * Parameters customizing behavior of VACUUM and ANALYZE.
+ *
+ * Note that at least one of VACOPT_VACUUM and VACOPT_ANALYZE must be set
+ * in options.
  */
 typedef struct VacuumParams
 {
+	int			options;		/* bitmask of VacuumOption */
 	int			freeze_min_age; /* min freeze age, -1 to use default */
 	int			freeze_table_age;	/* age at which to scan whole table */
 	int			multixact_freeze_min_age;	/* min multixact freeze age, -1 to
@@ -151,6 +180,10 @@ typedef struct VacuumParams
 	int			log_min_duration;	/* minimum execution threshold in ms at
 									 * which  verbose logs are activated, -1
 									 * to use default */
+	VacOptTernaryValue index_cleanup;	/* Do index vacuum and cleanup,
+										 * default value depends on reloptions */
+	VacOptTernaryValue truncate;	/* Truncate empty pages at the end,
+									 * default value depends on reloptions */
 } VacuumParams;
 
 /* GUC parameters */
@@ -162,44 +195,44 @@ extern int	vacuum_multixact_freeze_table_age;
 
 
 /* in commands/vacuum.c */
-extern void ExecVacuum(VacuumStmt *vacstmt, bool isTopLevel);
-extern void vacuum(int options, List *relations, VacuumParams *params,
-	   BufferAccessStrategy bstrategy, bool isTopLevel);
+extern void ExecVacuum(ParseState *pstate, VacuumStmt *vacstmt, bool isTopLevel);
+extern void vacuum(List *relations, VacuumParams *params,
+				   BufferAccessStrategy bstrategy, bool isTopLevel);
 extern void vac_open_indexes(Relation relation, LOCKMODE lockmode,
-				 int *nindexes, Relation **Irel);
+							 int *nindexes, Relation **Irel);
 extern void vac_close_indexes(int nindexes, Relation *Irel, LOCKMODE lockmode);
 extern double vac_estimate_reltuples(Relation relation,
-					   BlockNumber total_pages,
-					   BlockNumber scanned_pages,
-					   double scanned_tuples);
+									 BlockNumber total_pages,
+									 BlockNumber scanned_pages,
+									 double scanned_tuples);
 extern void vac_update_relstats(Relation relation,
-					BlockNumber num_pages,
-					double num_tuples,
-					BlockNumber num_all_visible_pages,
-					bool hasindex,
-					TransactionId frozenxid,
-					MultiXactId minmulti,
-					bool in_outer_xact);
+								BlockNumber num_pages,
+								double num_tuples,
+								BlockNumber num_all_visible_pages,
+								bool hasindex,
+								TransactionId frozenxid,
+								MultiXactId minmulti,
+								bool in_outer_xact);
 extern void vacuum_set_xid_limits(Relation rel,
-					  int freeze_min_age, int freeze_table_age,
-					  int multixact_freeze_min_age,
-					  int multixact_freeze_table_age,
-					  TransactionId *oldestXmin,
-					  TransactionId *freezeLimit,
-					  TransactionId *xidFullScanLimit,
-					  MultiXactId *multiXactCutoff,
-					  MultiXactId *mxactFullScanLimit);
+								  int freeze_min_age, int freeze_table_age,
+								  int multixact_freeze_min_age,
+								  int multixact_freeze_table_age,
+								  TransactionId *oldestXmin,
+								  TransactionId *freezeLimit,
+								  TransactionId *xidFullScanLimit,
+								  MultiXactId *multiXactCutoff,
+								  MultiXactId *mxactFullScanLimit);
 extern void vac_update_datfrozenxid(void);
 extern void vacuum_delay_point(void);
 extern bool vacuum_is_relation_owner(Oid relid, Form_pg_class reltuple,
-						 int options);
+									 int options);
 extern Relation vacuum_open_relation(Oid relid, RangeVar *relation,
-					 VacuumParams *params, int options, LOCKMODE lmode);
+									 int options, bool verbose, LOCKMODE lmode);
 
 /* in commands/analyze.c */
-extern void analyze_rel(Oid relid, RangeVar *relation, int options,
-			VacuumParams *params, List *va_cols, bool in_outer_xact,
-			BufferAccessStrategy bstrategy);
+extern void analyze_rel(Oid relid, RangeVar *relation,
+						VacuumParams *params, List *va_cols, bool in_outer_xact,
+						BufferAccessStrategy bstrategy);
 extern bool std_typanalyze(VacAttrStats *stats);
 
 /* in utils/misc/sampling.c --- duplicate of declarations in utils/sampling.h */

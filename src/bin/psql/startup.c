@@ -16,13 +16,15 @@
 
 #include "getopt_long.h"
 
+#include "common/logging.h"
+#include "fe_utils/print.h"
+
 #include "command.h"
 #include "common.h"
 #include "describe.h"
 #include "help.h"
 #include "input.h"
 #include "mainloop.h"
-#include "fe_utils/print.h"
 #include "settings.h"
 
 
@@ -79,15 +81,37 @@ struct adhoc_opts
 };
 
 static void parse_psql_options(int argc, char *argv[],
-				   struct adhoc_opts *options);
+							   struct adhoc_opts *options);
 static void simple_action_list_append(SimpleActionList *list,
-						  enum _actions action, const char *val);
+									  enum _actions action, const char *val);
 static void process_psqlrc(char *argv0);
 static void process_psqlrc_file(char *filename);
 static void showVersion(void);
 static void EstablishVariableSpace(void);
 
 #define NOPAGER		0
+
+static void
+log_pre_callback(void)
+{
+	if (pset.queryFout && pset.queryFout != stdout)
+		fflush(pset.queryFout);
+}
+
+static void
+log_locus_callback(const char **filename, uint64 *lineno)
+{
+	if (pset.inputfile)
+	{
+		*filename = pset.inputfile;
+		*lineno = pset.lineno;
+	}
+	else
+	{
+		*filename = NULL;
+		*lineno = 0;
+	}
+}
 
 /*
  *
@@ -103,6 +127,9 @@ main(int argc, char *argv[])
 	char		password[100];
 	bool		new_pass;
 
+	pg_logging_init(argv[0]);
+	pg_logging_set_pre_callback(log_pre_callback);
+	pg_logging_set_locus_callback(log_locus_callback);
 	set_pglocale_pgservice(argv[0], PG_TEXTDOMAIN("psql"));
 
 	if (argc > 1)
@@ -118,10 +145,6 @@ main(int argc, char *argv[])
 			exit(EXIT_SUCCESS);
 		}
 	}
-
-#ifdef WIN32
-	setvbuf(stderr, NULL, _IONBF, 0);
-#endif
 
 	pset.progname = get_progname(argv[0]);
 
@@ -190,7 +213,7 @@ main(int argc, char *argv[])
 	/* Bail out if -1 was specified but will be ignored. */
 	if (options.single_txn && options.actions.head == NULL)
 	{
-		fprintf(stderr, _("%s: -1 can only be used in non-interactive mode\n"), pset.progname);
+		pg_log_fatal("-1 can only be used in non-interactive mode");
 		exit(EXIT_FAILURE);
 	}
 
@@ -277,7 +300,7 @@ main(int argc, char *argv[])
 
 	if (PQstatus(pset.db) == CONNECTION_BAD)
 	{
-		fprintf(stderr, "%s: %s", pset.progname, PQerrorMessage(pset.db));
+		pg_log_error("could not connect to server: %s", PQerrorMessage(pset.db));
 		PQfinish(pset.db);
 		exit(EXIT_BADCONN);
 	}
@@ -305,8 +328,8 @@ main(int argc, char *argv[])
 		pset.logfile = fopen(options.logfilename, "a");
 		if (!pset.logfile)
 		{
-			fprintf(stderr, _("%s: could not open log file \"%s\": %s\n"),
-					pset.progname, options.logfilename, strerror(errno));
+			pg_log_fatal("could not open log file \"%s\": %m",
+						 options.logfilename);
 			exit(EXIT_FAILURE);
 		}
 	}
@@ -343,6 +366,8 @@ main(int argc, char *argv[])
 		{
 			if (cell->action == ACT_SINGLE_QUERY)
 			{
+				pg_logging_config(PG_LOG_FLAG_TERSE);
+
 				if (pset.echo == PSQL_ECHO_ALL)
 					puts(cell->val);
 
@@ -353,6 +378,8 @@ main(int argc, char *argv[])
 			{
 				PsqlScanState scan_state;
 				ConditionalStack cond_stack;
+
+				pg_logging_config(PG_LOG_FLAG_TERSE);
 
 				if (pset.echo == PSQL_ECHO_ALL)
 					puts(cell->val);
@@ -562,7 +589,7 @@ parse_psql_options(int argc, char *argv[], struct adhoc_opts *options)
 
 					if (!result)
 					{
-						fprintf(stderr, _("%s: could not set printing parameter \"%s\"\n"), pset.progname, value);
+						pg_log_fatal("could not set printing parameter \"%s\"", value);
 						exit(EXIT_FAILURE);
 					}
 
@@ -684,8 +711,8 @@ parse_psql_options(int argc, char *argv[], struct adhoc_opts *options)
 		else if (!options->username)
 			options->username = argv[optind];
 		else if (!pset.quiet)
-			fprintf(stderr, _("%s: warning: extra command-line argument \"%s\" ignored\n"),
-					pset.progname, argv[optind]);
+			pg_log_warning("extra command-line argument \"%s\" ignored",
+						   argv[optind]);
 
 		optind++;
 	}
@@ -733,7 +760,7 @@ process_psqlrc(char *argv0)
 
 	if (find_my_exec(argv0, my_exec_path) < 0)
 	{
-		fprintf(stderr, _("%s: could not find own program executable\n"), argv0);
+		pg_log_fatal("could not find own program executable");
 		exit(EXIT_FAILURE);
 	}
 
@@ -1084,13 +1111,15 @@ verbosity_hook(const char *newval)
 	Assert(newval != NULL);		/* else substitute hook messed up */
 	if (pg_strcasecmp(newval, "default") == 0)
 		pset.verbosity = PQERRORS_DEFAULT;
-	else if (pg_strcasecmp(newval, "terse") == 0)
-		pset.verbosity = PQERRORS_TERSE;
 	else if (pg_strcasecmp(newval, "verbose") == 0)
 		pset.verbosity = PQERRORS_VERBOSE;
+	else if (pg_strcasecmp(newval, "terse") == 0)
+		pset.verbosity = PQERRORS_TERSE;
+	else if (pg_strcasecmp(newval, "sqlstate") == 0)
+		pset.verbosity = PQERRORS_SQLSTATE;
 	else
 	{
-		PsqlVarEnumError("VERBOSITY", newval, "default, terse, verbose");
+		PsqlVarEnumError("VERBOSITY", newval, "default, verbose, terse, sqlstate");
 		return false;
 	}
 

@@ -21,10 +21,10 @@
 #include "utils/rel.h"
 
 static void entrySplitPage(GinBtree btree, Buffer origbuf,
-			   GinBtreeStack *stack,
-			   GinBtreeEntryInsertData *insertData,
-			   BlockNumber updateblkno,
-			   Page *newlpage, Page *newrpage);
+						   GinBtreeStack *stack,
+						   GinBtreeEntryInsertData *insertData,
+						   BlockNumber updateblkno,
+						   Page *newlpage, Page *newrpage);
 
 /*
  * Form a tuple for entry tree.
@@ -571,7 +571,7 @@ entryExecPlaceToPage(GinBtree btree, Buffer buf, GinBtreeStack *stack,
 		elog(ERROR, "failed to add item to index page in \"%s\"",
 			 RelationGetRelationName(btree->index));
 
-	if (RelationNeedsWAL(btree->index))
+	if (RelationNeedsWAL(btree->index) && !btree->isBuild)
 	{
 		/*
 		 * This must be static, because it has to survive until XLogInsert,

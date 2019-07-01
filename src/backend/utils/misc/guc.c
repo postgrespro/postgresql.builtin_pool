@@ -141,23 +141,23 @@ char	   *GUC_check_errhint_string;
 static void do_serialize(char **destptr, Size *maxbytes, const char *fmt,...) pg_attribute_printf(3, 4);
 
 static void set_config_sourcefile(const char *name, char *sourcefile,
-					  int sourceline);
+								  int sourceline);
 static bool call_bool_check_hook(struct config_bool *conf, bool *newval,
-					 void **extra, GucSource source, int elevel);
+								 void **extra, GucSource source, int elevel);
 static bool call_int_check_hook(struct config_int *conf, int *newval,
-					void **extra, GucSource source, int elevel);
+								void **extra, GucSource source, int elevel);
 static bool call_real_check_hook(struct config_real *conf, double *newval,
-					 void **extra, GucSource source, int elevel);
+								 void **extra, GucSource source, int elevel);
 static bool call_string_check_hook(struct config_string *conf, char **newval,
-					   void **extra, GucSource source, int elevel);
+								   void **extra, GucSource source, int elevel);
 static bool call_enum_check_hook(struct config_enum *conf, int *newval,
-					 void **extra, GucSource source, int elevel);
+								 void **extra, GucSource source, int elevel);
 
 static bool check_log_destination(char **newval, void **extra, GucSource source);
 static void assign_log_destination(const char *newval, void *extra);
 
 static bool check_wal_consistency_checking(char **newval, void **extra,
-							   GucSource source);
+										   GucSource source);
 static void assign_wal_consistency_checking(const char *newval, void *extra);
 
 #ifdef HAVE_SYSLOG
@@ -182,9 +182,11 @@ static const char *show_archive_command(void);
 static void assign_tcp_keepalives_idle(int newval, void *extra);
 static void assign_tcp_keepalives_interval(int newval, void *extra);
 static void assign_tcp_keepalives_count(int newval, void *extra);
+static void assign_tcp_user_timeout(int newval, void *extra);
 static const char *show_tcp_keepalives_idle(void);
 static const char *show_tcp_keepalives_interval(void);
 static const char *show_tcp_keepalives_count(void);
+static const char *show_tcp_user_timeout(void);
 static bool check_maxconnections(int *newval, void **extra, GucSource source);
 static bool check_max_worker_processes(int *newval, void **extra, GucSource source);
 static bool check_autovacuum_max_workers(int *newval, void **extra, GucSource source);
@@ -216,7 +218,7 @@ static bool check_default_with_oids(bool *newval, void **extra, GucSource source
 
 /* Private functions in guc-file.l that need to be called from guc.c */
 static ConfigVariable *ProcessConfigFileInternal(GucContext context,
-						  bool applySettings, int elevel);
+												 bool applySettings, int elevel);
 
 
 /*
@@ -465,13 +467,13 @@ static const struct config_enum_entry session_schedule_options[] = {
 
 static struct config_enum_entry shared_memory_options[] = {
 #ifndef WIN32
-	{ "sysv", SHMEM_TYPE_SYSV, false},
+	{"sysv", SHMEM_TYPE_SYSV, false},
 #endif
 #ifndef EXEC_BACKEND
-	{ "mmap", SHMEM_TYPE_MMAP, false},
+	{"mmap", SHMEM_TYPE_MMAP, false},
 #endif
 #ifdef WIN32
-	{ "windows", SHMEM_TYPE_WINDOWS, false},
+	{"windows", SHMEM_TYPE_WINDOWS, false},
 #endif
 	{NULL, 0, false}
 };
@@ -518,6 +520,7 @@ int			client_min_messages = NOTICE;
 int			log_min_duration_statement = -1;
 int			log_temp_files = -1;
 double		log_statement_sample_rate = 1.0;
+double		log_xact_sample_rate = 0;
 int			trace_recovery_messages = LOG;
 
 int			temp_file_limit = -1;
@@ -537,6 +540,7 @@ char	   *application_name;
 int			tcp_keepalives_idle;
 int			tcp_keepalives_interval;
 int			tcp_keepalives_count;
+int			tcp_user_timeout;
 
 /*
  * SSL renegotiation was been removed in PostgreSQL 9.5, but we tolerate it
@@ -583,7 +587,6 @@ static bool assert_enabled;
 static char *recovery_target_timeline_string;
 static char *recovery_target_string;
 static char *recovery_target_xid_string;
-static char *recovery_target_time_string;
 static char *recovery_target_name_string;
 static char *recovery_target_lsn_string;
 
@@ -889,7 +892,8 @@ static struct config_bool ConfigureNamesBool[] =
 	{
 		{"enable_seqscan", PGC_USERSET, QUERY_TUNING_METHOD,
 			gettext_noop("Enables the planner's use of sequential-scan plans."),
-			NULL
+			NULL,
+			GUC_EXPLAIN
 		},
 		&enable_seqscan,
 		true,
@@ -898,7 +902,8 @@ static struct config_bool ConfigureNamesBool[] =
 	{
 		{"enable_indexscan", PGC_USERSET, QUERY_TUNING_METHOD,
 			gettext_noop("Enables the planner's use of index-scan plans."),
-			NULL
+			NULL,
+			GUC_EXPLAIN
 		},
 		&enable_indexscan,
 		true,
@@ -907,7 +912,8 @@ static struct config_bool ConfigureNamesBool[] =
 	{
 		{"enable_indexonlyscan", PGC_USERSET, QUERY_TUNING_METHOD,
 			gettext_noop("Enables the planner's use of index-only-scan plans."),
-			NULL
+			NULL,
+			GUC_EXPLAIN
 		},
 		&enable_indexonlyscan,
 		true,
@@ -916,7 +922,8 @@ static struct config_bool ConfigureNamesBool[] =
 	{
 		{"enable_bitmapscan", PGC_USERSET, QUERY_TUNING_METHOD,
 			gettext_noop("Enables the planner's use of bitmap-scan plans."),
-			NULL
+			NULL,
+			GUC_EXPLAIN
 		},
 		&enable_bitmapscan,
 		true,
@@ -925,7 +932,8 @@ static struct config_bool ConfigureNamesBool[] =
 	{
 		{"enable_tidscan", PGC_USERSET, QUERY_TUNING_METHOD,
 			gettext_noop("Enables the planner's use of TID scan plans."),
-			NULL
+			NULL,
+			GUC_EXPLAIN
 		},
 		&enable_tidscan,
 		true,
@@ -934,7 +942,8 @@ static struct config_bool ConfigureNamesBool[] =
 	{
 		{"enable_sort", PGC_USERSET, QUERY_TUNING_METHOD,
 			gettext_noop("Enables the planner's use of explicit sort steps."),
-			NULL
+			NULL,
+			GUC_EXPLAIN
 		},
 		&enable_sort,
 		true,
@@ -943,7 +952,8 @@ static struct config_bool ConfigureNamesBool[] =
 	{
 		{"enable_hashagg", PGC_USERSET, QUERY_TUNING_METHOD,
 			gettext_noop("Enables the planner's use of hashed aggregation plans."),
-			NULL
+			NULL,
+			GUC_EXPLAIN
 		},
 		&enable_hashagg,
 		true,
@@ -952,7 +962,8 @@ static struct config_bool ConfigureNamesBool[] =
 	{
 		{"enable_material", PGC_USERSET, QUERY_TUNING_METHOD,
 			gettext_noop("Enables the planner's use of materialization."),
-			NULL
+			NULL,
+			GUC_EXPLAIN
 		},
 		&enable_material,
 		true,
@@ -961,7 +972,8 @@ static struct config_bool ConfigureNamesBool[] =
 	{
 		{"enable_nestloop", PGC_USERSET, QUERY_TUNING_METHOD,
 			gettext_noop("Enables the planner's use of nested-loop join plans."),
-			NULL
+			NULL,
+			GUC_EXPLAIN
 		},
 		&enable_nestloop,
 		true,
@@ -970,7 +982,8 @@ static struct config_bool ConfigureNamesBool[] =
 	{
 		{"enable_mergejoin", PGC_USERSET, QUERY_TUNING_METHOD,
 			gettext_noop("Enables the planner's use of merge join plans."),
-			NULL
+			NULL,
+			GUC_EXPLAIN
 		},
 		&enable_mergejoin,
 		true,
@@ -979,7 +992,8 @@ static struct config_bool ConfigureNamesBool[] =
 	{
 		{"enable_hashjoin", PGC_USERSET, QUERY_TUNING_METHOD,
 			gettext_noop("Enables the planner's use of hash join plans."),
-			NULL
+			NULL,
+			GUC_EXPLAIN
 		},
 		&enable_hashjoin,
 		true,
@@ -988,7 +1002,8 @@ static struct config_bool ConfigureNamesBool[] =
 	{
 		{"enable_gathermerge", PGC_USERSET, QUERY_TUNING_METHOD,
 			gettext_noop("Enables the planner's use of gather merge plans."),
-			NULL
+			NULL,
+			GUC_EXPLAIN
 		},
 		&enable_gathermerge,
 		true,
@@ -997,7 +1012,8 @@ static struct config_bool ConfigureNamesBool[] =
 	{
 		{"enable_partitionwise_join", PGC_USERSET, QUERY_TUNING_METHOD,
 			gettext_noop("Enables partitionwise join."),
-			NULL
+			NULL,
+			GUC_EXPLAIN
 		},
 		&enable_partitionwise_join,
 		false,
@@ -1006,7 +1022,8 @@ static struct config_bool ConfigureNamesBool[] =
 	{
 		{"enable_partitionwise_aggregate", PGC_USERSET, QUERY_TUNING_METHOD,
 			gettext_noop("Enables partitionwise aggregation and grouping."),
-			NULL
+			NULL,
+			GUC_EXPLAIN
 		},
 		&enable_partitionwise_aggregate,
 		false,
@@ -1015,7 +1032,8 @@ static struct config_bool ConfigureNamesBool[] =
 	{
 		{"enable_parallel_append", PGC_USERSET, QUERY_TUNING_METHOD,
 			gettext_noop("Enables the planner's use of parallel append plans."),
-			NULL
+			NULL,
+			GUC_EXPLAIN
 		},
 		&enable_parallel_append,
 		true,
@@ -1024,7 +1042,8 @@ static struct config_bool ConfigureNamesBool[] =
 	{
 		{"enable_parallel_hash", PGC_USERSET, QUERY_TUNING_METHOD,
 			gettext_noop("Enables the planner's use of parallel hash plans."),
-			NULL
+			NULL,
+			GUC_EXPLAIN
 		},
 		&enable_parallel_hash,
 		true,
@@ -1035,7 +1054,8 @@ static struct config_bool ConfigureNamesBool[] =
 			gettext_noop("Enable plan-time and run-time partition pruning."),
 			gettext_noop("Allows the query planner and executor to compare partition "
 						 "bounds to conditions in the query to determine which "
-						 "partitions must be scanned.")
+						 "partitions must be scanned."),
+			GUC_EXPLAIN
 		},
 		&enable_partition_pruning,
 		true,
@@ -1045,7 +1065,8 @@ static struct config_bool ConfigureNamesBool[] =
 		{"geqo", PGC_USERSET, QUERY_TUNING_GEQO,
 			gettext_noop("Enables genetic query optimization."),
 			gettext_noop("This algorithm attempts to do planning without "
-						 "exhaustive searching.")
+						 "exhaustive searching."),
+			GUC_EXPLAIN
 		},
 		&enable_geqo,
 		true,
@@ -1179,6 +1200,26 @@ static struct config_bool ConfigureNamesBool[] =
 		},
 		&wal_compression,
 		false,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"wal_init_zero", PGC_SUSET, WAL_SETTINGS,
+			gettext_noop("Writes zeroes to new WAL files before first use."),
+			NULL
+		},
+		&wal_init_zero,
+		true,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"wal_recycle", PGC_SUSET, WAL_SETTINGS,
+			gettext_noop("Recycles WAL files by renaming them."),
+			NULL
+		},
+		&wal_recycle,
+		true,
 		NULL, NULL, NULL
 	},
 
@@ -1575,6 +1616,7 @@ static struct config_bool ConfigureNamesBool[] =
 		true,
 		NULL, NULL, NULL
 	},
+
 	/*
 	 * WITH OIDS support, and consequently default_with_oids, was removed in
 	 * PostgreSQL 12, but we tolerate the parameter being set to false to
@@ -1643,7 +1685,7 @@ static struct config_bool ConfigureNamesBool[] =
 			"optimize_bounded_sort", PGC_USERSET, QUERY_TUNING_METHOD,
 			gettext_noop("Enable bounded sorting using heap sort."),
 			NULL,
-			GUC_NOT_IN_SAMPLE
+			GUC_NOT_IN_SAMPLE | GUC_EXPLAIN
 		},
 		&optimize_bounded_sort,
 		true,
@@ -1834,7 +1876,8 @@ static struct config_bool ConfigureNamesBool[] =
 	{
 		{"parallel_leader_participation", PGC_USERSET, RESOURCES_ASYNCHRONOUS,
 			gettext_noop("Controls whether Gather and Gather Merge also run subplans."),
-			gettext_noop("Should gather nodes also run subplans, or just gather tuples?")
+			gettext_noop("Should gather nodes also run subplans, or just gather tuples?"),
+			GUC_EXPLAIN
 		},
 		&parallel_leader_participation,
 		true,
@@ -1844,7 +1887,8 @@ static struct config_bool ConfigureNamesBool[] =
 	{
 		{"jit", PGC_USERSET, QUERY_TUNING_OTHER,
 			gettext_noop("Allow JIT compilation."),
-			NULL
+			NULL,
+			GUC_EXPLAIN
 		},
 		&jit_enabled,
 		true,
@@ -1973,7 +2017,8 @@ static struct config_int ConfigureNamesInt[] =
 						 "are not collapsed."),
 			gettext_noop("The planner will merge subqueries into upper "
 						 "queries if the resulting FROM list would have no more than "
-						 "this many items.")
+						 "this many items."),
+			GUC_EXPLAIN
 		},
 		&from_collapse_limit,
 		8, 1, INT_MAX,
@@ -1985,7 +2030,8 @@ static struct config_int ConfigureNamesInt[] =
 						 "constructs are not flattened."),
 			gettext_noop("The planner will flatten explicit JOIN "
 						 "constructs into lists of FROM items whenever a "
-						 "list of no more than this many items would result.")
+						 "list of no more than this many items would result."),
+			GUC_EXPLAIN
 		},
 		&join_collapse_limit,
 		8, 1, INT_MAX,
@@ -1994,7 +2040,8 @@ static struct config_int ConfigureNamesInt[] =
 	{
 		{"geqo_threshold", PGC_USERSET, QUERY_TUNING_GEQO,
 			gettext_noop("Sets the threshold of FROM items beyond which GEQO is used."),
-			NULL
+			NULL,
+			GUC_EXPLAIN
 		},
 		&geqo_threshold,
 		12, 2, INT_MAX,
@@ -2003,7 +2050,8 @@ static struct config_int ConfigureNamesInt[] =
 	{
 		{"geqo_effort", PGC_USERSET, QUERY_TUNING_GEQO,
 			gettext_noop("GEQO: effort is used to set the default for other GEQO parameters."),
-			NULL
+			NULL,
+			GUC_EXPLAIN
 		},
 		&Geqo_effort,
 		DEFAULT_GEQO_EFFORT, MIN_GEQO_EFFORT, MAX_GEQO_EFFORT,
@@ -2012,7 +2060,8 @@ static struct config_int ConfigureNamesInt[] =
 	{
 		{"geqo_pool_size", PGC_USERSET, QUERY_TUNING_GEQO,
 			gettext_noop("GEQO: number of individuals in the population."),
-			gettext_noop("Zero selects a suitable default value.")
+			gettext_noop("Zero selects a suitable default value."),
+			GUC_EXPLAIN
 		},
 		&Geqo_pool_size,
 		0, 0, INT_MAX,
@@ -2021,7 +2070,8 @@ static struct config_int ConfigureNamesInt[] =
 	{
 		{"geqo_generations", PGC_USERSET, QUERY_TUNING_GEQO,
 			gettext_noop("GEQO: number of iterations of the algorithm."),
-			gettext_noop("Zero selects a suitable default value.")
+			gettext_noop("Zero selects a suitable default value."),
+			GUC_EXPLAIN
 		},
 		&Geqo_generations,
 		0, 0, INT_MAX,
@@ -2171,7 +2221,7 @@ static struct config_int ConfigureNamesInt[] =
 		{"temp_buffers", PGC_USERSET, RESOURCES_MEM,
 			gettext_noop("Sets the maximum number of temporary buffers used by each session."),
 			NULL,
-			GUC_UNIT_BLOCKS
+			GUC_UNIT_BLOCKS | GUC_EXPLAIN
 		},
 		&num_temp_buffers,
 		1024, 100, INT_MAX / 2,
@@ -2248,7 +2298,7 @@ static struct config_int ConfigureNamesInt[] =
 			gettext_noop("This much memory can be used by each internal "
 						 "sort operation and hash table before switching to "
 						 "temporary disk files."),
-			GUC_UNIT_KB
+			GUC_UNIT_KB | GUC_EXPLAIN
 		},
 		&work_mem,
 		4096, 64, MAX_KILOBYTES,
@@ -2777,7 +2827,8 @@ static struct config_int ConfigureNamesInt[] =
 			PGC_USERSET,
 			RESOURCES_ASYNCHRONOUS,
 			gettext_noop("Number of simultaneous requests that can be handled efficiently by the disk subsystem."),
-			gettext_noop("For RAID arrays, this should be approximately the number of drive spindles in the array.")
+			gettext_noop("For RAID arrays, this should be approximately the number of drive spindles in the array."),
+			GUC_EXPLAIN
 		},
 		&effective_io_concurrency,
 #ifdef USE_PREFETCH
@@ -3022,7 +3073,8 @@ static struct config_int ConfigureNamesInt[] =
 	{
 		{"max_parallel_workers_per_gather", PGC_USERSET, RESOURCES_ASYNCHRONOUS,
 			gettext_noop("Sets the maximum number of parallel processes per executor node."),
-			NULL
+			NULL,
+			GUC_EXPLAIN
 		},
 		&max_parallel_workers_per_gather,
 		2, 0, MAX_PARALLEL_WORKER_LIMIT,
@@ -3032,7 +3084,8 @@ static struct config_int ConfigureNamesInt[] =
 	{
 		{"max_parallel_workers", PGC_USERSET, RESOURCES_ASYNCHRONOUS,
 			gettext_noop("Sets the maximum number of parallel workers that can be active at one time."),
-			NULL
+			NULL,
+			GUC_EXPLAIN
 		},
 		&max_parallel_workers,
 		8, 0, MAX_PARALLEL_WORKER_LIMIT,
@@ -3122,7 +3175,7 @@ static struct config_int ConfigureNamesInt[] =
 			gettext_noop("Sets the planner's assumption about the total size of the data caches."),
 			gettext_noop("That is, the total size of the caches (kernel cache and shared buffers) used for PostgreSQL data files. "
 						 "This is measured in disk pages, which are normally 8 kB each."),
-			GUC_UNIT_BLOCKS,
+			GUC_UNIT_BLOCKS | GUC_EXPLAIN,
 		},
 		&effective_cache_size,
 		DEFAULT_EFFECTIVE_CACHE_SIZE, 1, INT_MAX,
@@ -3133,7 +3186,7 @@ static struct config_int ConfigureNamesInt[] =
 		{"min_parallel_table_scan_size", PGC_USERSET, QUERY_TUNING_COST,
 			gettext_noop("Sets the minimum amount of table data for a parallel scan."),
 			gettext_noop("If the planner estimates that it will read a number of table pages too small to reach this limit, a parallel scan will not be considered."),
-			GUC_UNIT_BLOCKS,
+			GUC_UNIT_BLOCKS | GUC_EXPLAIN,
 		},
 		&min_parallel_table_scan_size,
 		(8 * 1024 * 1024) / BLCKSZ, 0, INT_MAX / 3,
@@ -3144,7 +3197,7 @@ static struct config_int ConfigureNamesInt[] =
 		{"min_parallel_index_scan_size", PGC_USERSET, QUERY_TUNING_COST,
 			gettext_noop("Sets the minimum amount of index data for a parallel scan."),
 			gettext_noop("If the planner estimates that it will read a number of index pages too small to reach this limit, a parallel scan will not be considered."),
-			GUC_UNIT_BLOCKS,
+			GUC_UNIT_BLOCKS | GUC_EXPLAIN,
 		},
 		&min_parallel_index_scan_size,
 		(512 * 1024) / BLCKSZ, 0, INT_MAX / 3,
@@ -3196,6 +3249,17 @@ static struct config_int ConfigureNamesInt[] =
 		NULL, NULL, NULL
 	},
 
+	{
+		{"tcp_user_timeout", PGC_USERSET, CLIENT_CONN_OTHER,
+			gettext_noop("TCP user timeout."),
+			gettext_noop("A value of 0 uses the system default."),
+			GUC_UNIT_MS
+		},
+		&tcp_user_timeout,
+		0, 0, INT_MAX,
+		NULL, assign_tcp_user_timeout, show_tcp_user_timeout
+	},
+
 	/* End-of-list marker */
 	{
 		{NULL, 0, 0, NULL, NULL}, NULL, 0, 0, 0, NULL, NULL, NULL
@@ -3209,7 +3273,8 @@ static struct config_real ConfigureNamesReal[] =
 		{"seq_page_cost", PGC_USERSET, QUERY_TUNING_COST,
 			gettext_noop("Sets the planner's estimate of the cost of a "
 						 "sequentially fetched disk page."),
-			NULL
+			NULL,
+			GUC_EXPLAIN
 		},
 		&seq_page_cost,
 		DEFAULT_SEQ_PAGE_COST, 0, DBL_MAX,
@@ -3219,7 +3284,8 @@ static struct config_real ConfigureNamesReal[] =
 		{"random_page_cost", PGC_USERSET, QUERY_TUNING_COST,
 			gettext_noop("Sets the planner's estimate of the cost of a "
 						 "nonsequentially fetched disk page."),
-			NULL
+			NULL,
+			GUC_EXPLAIN
 		},
 		&random_page_cost,
 		DEFAULT_RANDOM_PAGE_COST, 0, DBL_MAX,
@@ -3229,7 +3295,8 @@ static struct config_real ConfigureNamesReal[] =
 		{"cpu_tuple_cost", PGC_USERSET, QUERY_TUNING_COST,
 			gettext_noop("Sets the planner's estimate of the cost of "
 						 "processing each tuple (row)."),
-			NULL
+			NULL,
+			GUC_EXPLAIN
 		},
 		&cpu_tuple_cost,
 		DEFAULT_CPU_TUPLE_COST, 0, DBL_MAX,
@@ -3239,7 +3306,8 @@ static struct config_real ConfigureNamesReal[] =
 		{"cpu_index_tuple_cost", PGC_USERSET, QUERY_TUNING_COST,
 			gettext_noop("Sets the planner's estimate of the cost of "
 						 "processing each index entry during an index scan."),
-			NULL
+			NULL,
+			GUC_EXPLAIN
 		},
 		&cpu_index_tuple_cost,
 		DEFAULT_CPU_INDEX_TUPLE_COST, 0, DBL_MAX,
@@ -3249,7 +3317,8 @@ static struct config_real ConfigureNamesReal[] =
 		{"cpu_operator_cost", PGC_USERSET, QUERY_TUNING_COST,
 			gettext_noop("Sets the planner's estimate of the cost of "
 						 "processing each operator or function call."),
-			NULL
+			NULL,
+			GUC_EXPLAIN
 		},
 		&cpu_operator_cost,
 		DEFAULT_CPU_OPERATOR_COST, 0, DBL_MAX,
@@ -3259,7 +3328,8 @@ static struct config_real ConfigureNamesReal[] =
 		{"parallel_tuple_cost", PGC_USERSET, QUERY_TUNING_COST,
 			gettext_noop("Sets the planner's estimate of the cost of "
 						 "passing each tuple (row) from worker to master backend."),
-			NULL
+			NULL,
+			GUC_EXPLAIN
 		},
 		&parallel_tuple_cost,
 		DEFAULT_PARALLEL_TUPLE_COST, 0, DBL_MAX,
@@ -3269,7 +3339,8 @@ static struct config_real ConfigureNamesReal[] =
 		{"parallel_setup_cost", PGC_USERSET, QUERY_TUNING_COST,
 			gettext_noop("Sets the planner's estimate of the cost of "
 						 "starting up worker processes for parallel query."),
-			NULL
+			NULL,
+			GUC_EXPLAIN
 		},
 		&parallel_setup_cost,
 		DEFAULT_PARALLEL_SETUP_COST, 0, DBL_MAX,
@@ -3279,7 +3350,8 @@ static struct config_real ConfigureNamesReal[] =
 	{
 		{"jit_above_cost", PGC_USERSET, QUERY_TUNING_COST,
 			gettext_noop("Perform JIT compilation if query is more expensive."),
-			gettext_noop("-1 disables JIT compilation.")
+			gettext_noop("-1 disables JIT compilation."),
+			GUC_EXPLAIN
 		},
 		&jit_above_cost,
 		100000, -1, DBL_MAX,
@@ -3289,7 +3361,8 @@ static struct config_real ConfigureNamesReal[] =
 	{
 		{"jit_optimize_above_cost", PGC_USERSET, QUERY_TUNING_COST,
 			gettext_noop("Optimize JITed functions if query is more expensive."),
-			gettext_noop("-1 disables optimization.")
+			gettext_noop("-1 disables optimization."),
+			GUC_EXPLAIN
 		},
 		&jit_optimize_above_cost,
 		500000, -1, DBL_MAX,
@@ -3299,7 +3372,8 @@ static struct config_real ConfigureNamesReal[] =
 	{
 		{"jit_inline_above_cost", PGC_USERSET, QUERY_TUNING_COST,
 			gettext_noop("Perform JIT inlining if query is more expensive."),
-			gettext_noop("-1 disables inlining.")
+			gettext_noop("-1 disables inlining."),
+			GUC_EXPLAIN
 		},
 		&jit_inline_above_cost,
 		500000, -1, DBL_MAX,
@@ -3310,7 +3384,8 @@ static struct config_real ConfigureNamesReal[] =
 		{"cursor_tuple_fraction", PGC_USERSET, QUERY_TUNING_OTHER,
 			gettext_noop("Sets the planner's estimate of the fraction of "
 						 "a cursor's rows that will be retrieved."),
-			NULL
+			NULL,
+			GUC_EXPLAIN
 		},
 		&cursor_tuple_fraction,
 		DEFAULT_CURSOR_TUPLE_FRACTION, 0.0, 1.0,
@@ -3320,7 +3395,8 @@ static struct config_real ConfigureNamesReal[] =
 	{
 		{"geqo_selection_bias", PGC_USERSET, QUERY_TUNING_GEQO,
 			gettext_noop("GEQO: selective pressure within the population."),
-			NULL
+			NULL,
+			GUC_EXPLAIN
 		},
 		&Geqo_selection_bias,
 		DEFAULT_GEQO_SELECTION_BIAS,
@@ -3330,7 +3406,8 @@ static struct config_real ConfigureNamesReal[] =
 	{
 		{"geqo_seed", PGC_USERSET, QUERY_TUNING_GEQO,
 			gettext_noop("GEQO: seed for random path selection."),
-			NULL
+			NULL,
+			GUC_EXPLAIN
 		},
 		&Geqo_seed,
 		0.0, 0.0, 1.0,
@@ -3421,12 +3498,24 @@ static struct config_real ConfigureNamesReal[] =
 
 	{
 		{"log_statement_sample_rate", PGC_SUSET, LOGGING_WHEN,
-			gettext_noop("Fraction of statements over log_min_duration_statement to log."),
-			gettext_noop("If you only want a sample, use a value between 0 (never "
+			gettext_noop("Fraction of statements exceeding log_min_duration_statement to be logged."),
+			gettext_noop("If you only want a sample, use a value between 0.0 (never "
 						 "log) and 1.0 (always log).")
 		},
 		&log_statement_sample_rate,
 		1.0, 0.0, 1.0,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"log_transaction_sample_rate", PGC_SUSET, LOGGING_WHEN,
+			gettext_noop("Set the fraction of transactions to log for new transactions."),
+			gettext_noop("Logs all statements from a fraction of transactions. "
+						 "Use a value between 0.0 (never log) and 1.0 (log all "
+						 "statements for all transactions).")
+		},
+		&log_xact_sample_rate,
+		0.0, 0.0, 1.0,
 		NULL, NULL, NULL
 	},
 
@@ -3778,7 +3867,7 @@ static struct config_string ConfigureNamesString[] =
 		{"search_path", PGC_USERSET, CLIENT_CONN_STATEMENT,
 			gettext_noop("Sets the schema search order for names that are not schema-qualified."),
 			NULL,
-			GUC_LIST_INPUT | GUC_LIST_QUOTE
+			GUC_LIST_INPUT | GUC_LIST_QUOTE | GUC_EXPLAIN
 		},
 		&namespace_search_path,
 		"\"$user\", public",
@@ -4241,7 +4330,8 @@ static struct config_enum ConfigureNamesEnum[] =
 		{"constraint_exclusion", PGC_USERSET, QUERY_TUNING_OTHER,
 			gettext_noop("Enables the planner to use constraints to optimize queries."),
 			gettext_noop("Table scans will be skipped if their constraints"
-						 " guarantee that no rows match the query.")
+						 " guarantee that no rows match the query."),
+			GUC_EXPLAIN
 		},
 		&constraint_exclusion,
 		CONSTRAINT_EXCLUSION_PARTITION, constraint_exclusion_options,
@@ -4477,7 +4567,8 @@ static struct config_enum ConfigureNamesEnum[] =
 	{
 		{"force_parallel_mode", PGC_USERSET, QUERY_TUNING_OTHER,
 			gettext_noop("Forces use of parallel query facilities."),
-			gettext_noop("If possible, run query using a parallel worker and with parallel restrictions.")
+			gettext_noop("If possible, run query using a parallel worker and with parallel restrictions."),
+			GUC_EXPLAIN
 		},
 		&force_parallel_mode,
 		FORCE_PARALLEL_OFF, force_parallel_mode_options,
@@ -4501,7 +4592,8 @@ static struct config_enum ConfigureNamesEnum[] =
 			gettext_noop("Controls the planner's selection of custom or generic plan."),
 			gettext_noop("Prepared statements can have custom and generic plans, and the planner "
 						 "will attempt to choose which is better.  This can be set to override "
-						 "the default behavior.")
+						 "the default behavior."),
+			GUC_EXPLAIN
 		},
 		&plan_cache_mode,
 		PLAN_CACHE_MODE_AUTO, plan_cache_mode_options,
@@ -4572,6 +4664,9 @@ static struct config_generic **guc_variables;
 /* Current number of variables contained in the vector */
 static int	num_guc_variables;
 
+/* Current number of variables marked with GUC_EXPLAIN */
+static int	num_guc_explain_variables;
+
 /* Vector capacity */
 static int	size_guc_variables;
 
@@ -4590,18 +4685,18 @@ static void InitializeOneGUCOption(struct config_generic *gconf);
 static void push_old_value(struct config_generic *gconf, GucAction action);
 static void ReportGUCOption(struct config_generic *record);
 static void reapply_stacked_values(struct config_generic *variable,
-					   struct config_string *pHolder,
-					   GucStack *stack,
-					   const char *curvalue,
-					   GucContext curscontext, GucSource cursource);
+								   struct config_string *pHolder,
+								   GucStack *stack,
+								   const char *curvalue,
+								   GucContext curscontext, GucSource cursource);
 static void ShowGUCConfigOption(const char *name, DestReceiver *dest);
 static void ShowAllGUCConfig(DestReceiver *dest);
 static char *_ShowOption(struct config_generic *record, bool use_units);
 static bool validate_option_array_item(const char *name, const char *value,
-						   bool skipIfNoPermissions);
+									   bool skipIfNoPermissions);
 static void write_auto_conf_file(int fd, const char *filename, ConfigVariable *head_p);
 static void replace_auto_config_value(ConfigVariable **head_p, ConfigVariable **tail_p,
-						  const char *name, const char *value);
+									  const char *name, const char *value);
 
 
 /*
@@ -4835,6 +4930,7 @@ build_guc_variables(void)
 {
 	int			size_vars;
 	int			num_vars = 0;
+	int			num_explain_vars = 0;
 	struct config_generic **guc_vars;
 	int			i;
 
@@ -4845,6 +4941,9 @@ build_guc_variables(void)
 		/* Rather than requiring vartype to be filled in by hand, do this: */
 		conf->gen.vartype = PGC_BOOL;
 		num_vars++;
+
+		if (conf->gen.flags & GUC_EXPLAIN)
+			num_explain_vars++;
 	}
 
 	for (i = 0; ConfigureNamesInt[i].gen.name; i++)
@@ -4853,6 +4952,9 @@ build_guc_variables(void)
 
 		conf->gen.vartype = PGC_INT;
 		num_vars++;
+
+		if (conf->gen.flags & GUC_EXPLAIN)
+			num_explain_vars++;
 	}
 
 	for (i = 0; ConfigureNamesReal[i].gen.name; i++)
@@ -4861,6 +4963,9 @@ build_guc_variables(void)
 
 		conf->gen.vartype = PGC_REAL;
 		num_vars++;
+
+		if (conf->gen.flags & GUC_EXPLAIN)
+			num_explain_vars++;
 	}
 
 	for (i = 0; ConfigureNamesString[i].gen.name; i++)
@@ -4869,6 +4974,9 @@ build_guc_variables(void)
 
 		conf->gen.vartype = PGC_STRING;
 		num_vars++;
+
+		if (conf->gen.flags & GUC_EXPLAIN)
+			num_explain_vars++;
 	}
 
 	for (i = 0; ConfigureNamesEnum[i].gen.name; i++)
@@ -4877,6 +4985,9 @@ build_guc_variables(void)
 
 		conf->gen.vartype = PGC_ENUM;
 		num_vars++;
+
+		if (conf->gen.flags & GUC_EXPLAIN)
+			num_explain_vars++;
 	}
 
 	/*
@@ -4908,6 +5019,7 @@ build_guc_variables(void)
 		free(guc_variables);
 	guc_variables = guc_vars;
 	num_guc_variables = num_vars;
+	num_guc_explain_variables = num_explain_vars;
 	size_guc_variables = size_vars;
 	qsort((void *) guc_variables, num_guc_variables,
 		  sizeof(struct config_generic *), guc_var_compare);
@@ -8860,6 +8972,104 @@ ShowAllGUCConfig(DestReceiver *dest)
 }
 
 /*
+ * Returns an array of modified GUC options to show in EXPLAIN. Only options
+ * related to query planning (marked with GUC_EXPLAIN), with values different
+ * from built-in defaults.
+ */
+struct config_generic **
+get_explain_guc_options(int *num)
+{
+	int			i;
+	struct config_generic **result;
+
+	*num = 0;
+
+	/*
+	 * Allocate enough space to fit all GUC_EXPLAIN options. We may not need
+	 * all the space, but there are fairly few such options so we don't waste
+	 * a lot of memory.
+	 */
+	result = palloc(sizeof(struct config_generic *) * num_guc_explain_variables);
+
+	for (i = 0; i < num_guc_variables; i++)
+	{
+		bool		modified;
+		struct config_generic *conf = guc_variables[i];
+
+		/* return only options visible to the user */
+		if ((conf->flags & GUC_NO_SHOW_ALL) ||
+			((conf->flags & GUC_SUPERUSER_ONLY) &&
+			 !is_member_of_role(GetUserId(), DEFAULT_ROLE_READ_ALL_SETTINGS)))
+			continue;
+
+		/* only parameters explicitly marked for inclusion in explain */
+		if (!(conf->flags & GUC_EXPLAIN))
+			continue;
+
+		/* return only options that were modified (w.r.t. config file) */
+		modified = false;
+
+		switch (conf->vartype)
+		{
+			case PGC_BOOL:
+				{
+					struct config_bool *lconf = (struct config_bool *) conf;
+
+					modified = (lconf->boot_val != *(lconf->variable));
+				}
+				break;
+
+			case PGC_INT:
+				{
+					struct config_int *lconf = (struct config_int *) conf;
+
+					modified = (lconf->boot_val != *(lconf->variable));
+				}
+				break;
+
+			case PGC_REAL:
+				{
+					struct config_real *lconf = (struct config_real *) conf;
+
+					modified = (lconf->boot_val != *(lconf->variable));
+				}
+				break;
+
+			case PGC_STRING:
+				{
+					struct config_string *lconf = (struct config_string *) conf;
+
+					modified = (strcmp(lconf->boot_val, *(lconf->variable)) != 0);
+				}
+				break;
+
+			case PGC_ENUM:
+				{
+					struct config_enum *lconf = (struct config_enum *) conf;
+
+					modified = (lconf->boot_val != *(lconf->variable));
+				}
+				break;
+
+			default:
+				elog(ERROR, "unexpected GUC type: %d", conf->vartype);
+		}
+
+		/* skip GUC variables that match the built-in default */
+		if (!modified)
+			continue;
+
+		/* assign to the values array */
+		result[*num] = conf;
+		*num = *num + 1;
+
+		Assert(*num <= num_guc_explain_variables);
+	}
+
+	return result;
+}
+
+/*
  * Return GUC variable value by name; optionally return canonical form of
  * name.  If the GUC is unset, then throw an error unless missing_ok is true,
  * in which case return NULL.  Return value is palloc'd (but *varname isn't).
@@ -11132,6 +11342,23 @@ show_tcp_keepalives_count(void)
 	return nbuf;
 }
 
+static void
+assign_tcp_user_timeout(int newval, void *extra)
+{
+	/* See comments in assign_tcp_keepalives_idle */
+	(void) pq_settcpusertimeout(newval, MyProcPort);
+}
+
+static const char *
+show_tcp_user_timeout(void)
+{
+	/* See comments in assign_tcp_keepalives_idle */
+	static char nbuf[16];
+
+	snprintf(nbuf, sizeof(nbuf), "%d", pq_gettcpusertimeout(MyProcPort));
+	return nbuf;
+}
+
 static bool
 check_maxconnections(int *newval, void **extra, GucSource source)
 {
@@ -11429,20 +11656,20 @@ assign_recovery_target_xid(const char *newval, void *extra)
 		recoveryTarget = RECOVERY_TARGET_UNSET;
 }
 
+/*
+ * The interpretation of the recovery_target_time string can depend on the
+ * time zone setting, so we need to wait until after all GUC processing is
+ * done before we can do the final parsing of the string.  This check function
+ * only does a parsing pass to catch syntax errors, but we store the string
+ * and parse it again when we need to use it.
+ */
 static bool
 check_recovery_target_time(char **newval, void **extra, GucSource source)
 {
 	if (strcmp(*newval, "") != 0)
 	{
-		TimestampTz time;
-		TimestampTz *myextra;
-		MemoryContext oldcontext = CurrentMemoryContext;
-
 		/* reject some special values */
-		if (strcmp(*newval, "epoch") == 0 ||
-			strcmp(*newval, "infinity") == 0 ||
-			strcmp(*newval, "-infinity") == 0 ||
-			strcmp(*newval, "now") == 0 ||
+		if (strcmp(*newval, "now") == 0 ||
 			strcmp(*newval, "today") == 0 ||
 			strcmp(*newval, "tomorrow") == 0 ||
 			strcmp(*newval, "yesterday") == 0)
@@ -11450,32 +11677,38 @@ check_recovery_target_time(char **newval, void **extra, GucSource source)
 			return false;
 		}
 
-		PG_TRY();
+		/*
+		 * parse timestamp value (see also timestamptz_in())
+		 */
 		{
-			time = DatumGetTimestampTz(DirectFunctionCall3(timestamptz_in,
-														   CStringGetDatum(*newval),
-														   ObjectIdGetDatum(InvalidOid),
-														   Int32GetDatum(-1)));
+			char	   *str = *newval;
+			fsec_t		fsec;
+			struct pg_tm tt,
+					   *tm = &tt;
+			int			tz;
+			int			dtype;
+			int			nf;
+			int			dterr;
+			char	   *field[MAXDATEFIELDS];
+			int			ftype[MAXDATEFIELDS];
+			char		workbuf[MAXDATELEN + MAXDATEFIELDS];
+			TimestampTz timestamp;
+
+			dterr = ParseDateTime(str, workbuf, sizeof(workbuf),
+								  field, ftype, MAXDATEFIELDS, &nf);
+			if (dterr == 0)
+				dterr = DecodeDateTime(field, ftype, nf, &dtype, tm, &fsec, &tz);
+			if (dterr != 0)
+				return false;
+			if (dtype !=  DTK_DATE)
+				return false;
+
+			if (tm2timestamp(tm, fsec, &tz, &timestamp) != 0)
+			{
+				GUC_check_errdetail("timestamp out of range: \"%s\"", str);
+				return false;
+			}
 		}
-		PG_CATCH();
-		{
-			ErrorData  *edata;
-
-			/* Save error info */
-			MemoryContextSwitchTo(oldcontext);
-			edata = CopyErrorData();
-			FlushErrorState();
-
-			/* Pass the error message */
-			GUC_check_errdetail("%s", edata->message);
-			FreeErrorData(edata);
-			return false;
-		}
-		PG_END_TRY();
-
-		myextra = (TimestampTz *) guc_malloc(ERROR, sizeof(TimestampTz));
-		*myextra = time;
-		*extra = (void *) myextra;
 	}
 	return true;
 }
@@ -11488,10 +11721,7 @@ assign_recovery_target_time(const char *newval, void *extra)
 		error_multiple_recovery_targets();
 
 	if (newval && strcmp(newval, "") != 0)
-	{
 		recoveryTarget = RECOVERY_TARGET_TIME;
-		recoveryTargetTime = *((TimestampTz *) extra);
-	}
 	else
 		recoveryTarget = RECOVERY_TARGET_UNSET;
 }
@@ -11502,8 +11732,8 @@ check_recovery_target_name(char **newval, void **extra, GucSource source)
 	/* Use the value of newval directly */
 	if (strlen(*newval) >= MAXFNAMELEN)
 	{
-		GUC_check_errdetail("recovery_target_name is too long (maximum %d characters).",
-							MAXFNAMELEN - 1);
+		GUC_check_errdetail("%s is too long (maximum %d characters).",
+							"recovery_target_name", MAXFNAMELEN - 1);
 		return false;
 	}
 	return true;
@@ -11519,7 +11749,7 @@ assign_recovery_target_name(const char *newval, void *extra)
 	if (newval && strcmp(newval, "") != 0)
 	{
 		recoveryTarget = RECOVERY_TARGET_NAME;
-		recoveryTargetName = (char *) newval;
+		recoveryTargetName = newval;
 	}
 	else
 		recoveryTarget = RECOVERY_TARGET_UNSET;
@@ -11532,33 +11762,11 @@ check_recovery_target_lsn(char **newval, void **extra, GucSource source)
 	{
 		XLogRecPtr	lsn;
 		XLogRecPtr *myextra;
-		MemoryContext oldcontext = CurrentMemoryContext;
+		bool		have_error = false;
 
-		/*
-		 * Convert the LSN string given by the user to XLogRecPtr form.
-		 */
-		PG_TRY();
-		{
-			lsn = DatumGetLSN(DirectFunctionCall3(pg_lsn_in,
-												  CStringGetDatum(*newval),
-												  ObjectIdGetDatum(InvalidOid),
-												  Int32GetDatum(-1)));
-		}
-		PG_CATCH();
-		{
-			ErrorData  *edata;
-
-			/* Save error info */
-			MemoryContextSwitchTo(oldcontext);
-			edata = CopyErrorData();
-			FlushErrorState();
-
-			/* Pass the error message */
-			GUC_check_errdetail("%s", edata->message);
-			FreeErrorData(edata);
+		lsn = pg_lsn_in_internal(*newval, &have_error);
+		if (have_error)
 			return false;
-		}
-		PG_END_TRY();
 
 		myextra = (XLogRecPtr *) guc_malloc(ERROR, sizeof(XLogRecPtr));
 		*myextra = lsn;

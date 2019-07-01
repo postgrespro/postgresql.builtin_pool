@@ -48,7 +48,7 @@ my @contrib_excludes = (
 	'ltree_plpython',  'pgcrypto',
 	'sepgsql',         'brin',
 	'test_extensions', 'test_pg_dump',
-	'snapshot_too_old');
+	'snapshot_too_old', 'unsafe_tests');
 
 # Set of variables for frontend modules
 my $frontend_defines = { 'initdb' => 'FRONTEND' };
@@ -136,7 +136,7 @@ sub mkvcbuild
 
 	our @pgcommonfrontendfiles = (
 		@pgcommonallfiles, qw(fe_memutils.c file_utils.c
-		  restricted_token.c));
+		  logging.c restricted_token.c));
 
 	our @pgcommonbkndfiles = @pgcommonallfiles;
 
@@ -179,6 +179,8 @@ sub mkvcbuild
 		'src/backend/replication', 'repl_scanner.l',
 		'repl_gram.y',             'syncrep_scanner.l',
 		'syncrep_gram.y');
+	$postgres->AddFiles('src/backend/utils/adt', 'jsonpath_scan.l',
+		'jsonpath_gram.y');
 	$postgres->AddDefine('BUILDING_DLL');
 	$postgres->AddLibrary('secur32.lib');
 	$postgres->AddLibrary('ws2_32.lib');
@@ -191,6 +193,11 @@ sub mkvcbuild
 	{
 		$postgres->RemoveFile('src/backend/libpq/be-secure-common.c');
 		$postgres->RemoveFile('src/backend/libpq/be-secure-openssl.c');
+	}
+	if (!$solution->{options}->{gss})
+	{
+		$postgres->RemoveFile('src/backend/libpq/be-gssapi-common.c');
+		$postgres->RemoveFile('src/backend/libpq/be-secure-gssapi.c');
 	}
 
 	my $snowball = $solution->AddProject('dict_snowball', 'dll', '',
@@ -251,6 +258,11 @@ sub mkvcbuild
 	{
 		$libpq->RemoveFile('src/interfaces/libpq/fe-secure-common.c');
 		$libpq->RemoveFile('src/interfaces/libpq/fe-secure-openssl.c');
+	}
+	if (!$solution->{options}->{gss})
+	{
+		$libpq->RemoveFile('src/interfaces/libpq/fe-gssapi-common.c');
+		$libpq->RemoveFile('src/interfaces/libpq/fe-secure-gssapi.c');
 	}
 
 	my $libpqwalreceiver =

@@ -30,6 +30,7 @@
 #include "access/tableam.h"
 #include "access/xact.h"
 #include "catalog/namespace.h"
+#include "catalog/pg_am_d.h"
 #include "catalog/pg_authid.h"
 #include "funcapi.h"
 #include "miscadmin.h"
@@ -101,6 +102,10 @@ pgrowlocks(PG_FUNCTION_ARGS)
 		relrv = makeRangeVarFromNameList(textToQualifiedNameList(relname));
 		rel = relation_openrv(relrv, AccessShareLock);
 
+		if (rel->rd_rel->relam != HEAP_TABLE_AM_OID)
+			ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							errmsg("only heap AM is supported")));
+
 		if (rel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE)
 			ereport(ERROR,
 					(errcode(ERRCODE_WRONG_OBJECT_TYPE),
@@ -146,7 +151,7 @@ pgrowlocks(PG_FUNCTION_ARGS)
 	/* scan the relation */
 	while ((tuple = heap_getnext(scan, ForwardScanDirection)) != NULL)
 	{
-		HTSU_Result htsu;
+		TM_Result	htsu;
 		TransactionId xmax;
 		uint16		infomask;
 
@@ -160,9 +165,9 @@ pgrowlocks(PG_FUNCTION_ARGS)
 		infomask = tuple->t_data->t_infomask;
 
 		/*
-		 * A tuple is locked if HTSU returns BeingUpdated.
+		 * A tuple is locked if HTSU returns BeingModified.
 		 */
-		if (htsu == HeapTupleBeingUpdated)
+		if (htsu == TM_BeingModified)
 		{
 			char	  **values;
 

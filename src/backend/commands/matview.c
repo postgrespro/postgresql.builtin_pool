@@ -18,6 +18,7 @@
 #include "access/heapam.h"
 #include "access/htup_details.h"
 #include "access/multixact.h"
+#include "access/tableam.h"
 #include "access/xact.h"
 #include "access/xlog.h"
 #include "catalog/catalog.h"
@@ -53,7 +54,7 @@ typedef struct
 	/* These fields are filled by transientrel_startup: */
 	Relation	transientrel;	/* relation to write to */
 	CommandId	output_cid;		/* cmin to insert in output tuples */
-	int			hi_options;		/* heap_insert performance options */
+	int			ti_options;		/* table_tuple_insert performance options */
 	BulkInsertState bistate;	/* bulk insert state */
 } DR_transientrel;
 
@@ -64,10 +65,10 @@ static bool transientrel_receive(TupleTableSlot *slot, DestReceiver *self);
 static void transientrel_shutdown(DestReceiver *self);
 static void transientrel_destroy(DestReceiver *self);
 static uint64 refresh_matview_datafill(DestReceiver *dest, Query *query,
-						 const char *queryString);
+									   const char *queryString);
 static char *make_temptable_name_n(char *tempname, int n);
 static void refresh_by_match_merge(Oid matviewOid, Oid tempOid, Oid relowner,
-					   int save_sec_context);
+								   int save_sec_context);
 static void refresh_by_heap_swap(Oid matviewOid, Oid OIDNewHeap, char relpersistence);
 static bool is_usable_unique_index(Relation indexRel);
 static void OpenMatViewIncrementalMaintenance(void);
@@ -257,7 +258,7 @@ ExecRefreshMatView(RefreshMatViewStmt *stmt, const char *queryString,
 	 * as open scans.
 	 *
 	 * NB: We count on this to protect us against problems with refreshing the
-	 * data using HEAP_INSERT_FROZEN.
+	 * data using TABLE_INSERT_FROZEN.
 	 */
 	CheckTableNotInUse(matviewRel, "REFRESH MATERIALIZED VIEW");
 
@@ -283,7 +284,7 @@ ExecRefreshMatView(RefreshMatViewStmt *stmt, const char *queryString,
 	/* Concurrent refresh builds new data in temp tablespace, and does diff. */
 	if (concurrent)
 	{
-		tableSpace = GetDefaultTablespace(RELPERSISTENCE_TEMP);
+		tableSpace = GetDefaultTablespace(RELPERSISTENCE_TEMP, false);
 		relpersistence = RELPERSISTENCE_TEMP;
 	}
 	else
@@ -461,9 +462,9 @@ transientrel_startup(DestReceiver *self, int operation, TupleDesc typeinfo)
 	 * We can skip WAL-logging the insertions, unless PITR or streaming
 	 * replication is in use. We can skip the FSM in any case.
 	 */
-	myState->hi_options = HEAP_INSERT_SKIP_FSM | HEAP_INSERT_FROZEN;
+	myState->ti_options = TABLE_INSERT_SKIP_FSM | TABLE_INSERT_FROZEN;
 	if (!XLogIsNeeded())
-		myState->hi_options |= HEAP_INSERT_SKIP_WAL;
+		myState->ti_options |= TABLE_INSERT_SKIP_WAL;
 	myState->bistate = GetBulkInsertState();
 
 	/* Not using WAL requires smgr_targblock be initially invalid */
@@ -477,24 +478,23 @@ static bool
 transientrel_receive(TupleTableSlot *slot, DestReceiver *self)
 {
 	DR_transientrel *myState = (DR_transientrel *) self;
-	HeapTuple	tuple;
 
 	/*
-	 * get the heap tuple out of the tuple table slot, making sure we have a
-	 * writable copy
+	 * Note that the input slot might not be of the type of the target
+	 * relation. That's supported by table_tuple_insert(), but slightly less
+	 * efficient than inserting with the right slot - but the alternative
+	 * would be to copy into a slot of the right type, which would not be
+	 * cheap either. This also doesn't allow accessing per-AM data (say a
+	 * tuple's xmin), but since we don't do that here...
 	 */
-	tuple = ExecCopySlotHeapTuple(slot);
 
-	heap_insert(myState->transientrel,
-				tuple,
-				myState->output_cid,
-				myState->hi_options,
-				myState->bistate);
+	table_tuple_insert(myState->transientrel,
+					   slot,
+					   myState->output_cid,
+					   myState->ti_options,
+					   myState->bistate);
 
 	/* We know this is a newly created relation, so there are no indexes */
-
-	/* Free the copied tuple. */
-	heap_freetuple(tuple);
 
 	return true;
 }
@@ -509,9 +509,7 @@ transientrel_shutdown(DestReceiver *self)
 
 	FreeBulkInsertState(myState->bistate);
 
-	/* If we skipped using WAL, must heap_sync before commit */
-	if (myState->hi_options & HEAP_INSERT_SKIP_WAL)
-		heap_sync(myState->transientrel);
+	table_finish_bulk_insert(myState->transientrel, myState->ti_options);
 
 	/* close transientrel, but keep lock until commit */
 	table_close(myState->transientrel, NoLock);

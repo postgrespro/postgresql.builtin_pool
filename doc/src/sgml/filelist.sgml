@@ -90,6 +90,7 @@
 <!ENTITY gin        SYSTEM "gin.sgml">
 <!ENTITY brin       SYSTEM "brin.sgml">
 <!ENTITY planstats    SYSTEM "planstats.sgml">
+<!ENTITY tableam    SYSTEM "tableam.sgml">
 <!ENTITY indexam    SYSTEM "indexam.sgml">
 <!ENTITY nls        SYSTEM "nls.sgml">
 <!ENTITY plhandler  SYSTEM "plhandler.sgml">
@@ -175,6 +176,7 @@
 <!ENTITY features-unsupported SYSTEM "features-unsupported.sgml">
 
 <!ENTITY errcodes-table SYSTEM "errcodes-table.sgml">
+<!ENTITY keywords-table SYSTEM "keywords-table.sgml">
 
 <!-- back matter -->
 <!ENTITY biblio     SYSTEM "biblio.sgml">

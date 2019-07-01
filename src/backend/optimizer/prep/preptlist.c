@@ -54,7 +54,7 @@
 
 
 static List *expand_targetlist(List *tlist, int command_type,
-				  Index result_relation, Relation rel);
+							   Index result_relation, Relation rel);
 
 
 /*
@@ -121,7 +121,9 @@ preprocess_targetlist(PlannerInfo *root)
 	/*
 	 * Add necessary junk columns for rowmarked rels.  These values are needed
 	 * for locking of rels selected FOR UPDATE/SHARE, and to do EvalPlanQual
-	 * rechecking.  See comments for PlanRowMark in plannodes.h.
+	 * rechecking.  See comments for PlanRowMark in plannodes.h.  If you
+	 * change this stanza, see also expand_inherited_rtentry(), which has to
+	 * be able to add on junk columns equivalent to these.
 	 */
 	foreach(lc, root->rowMarks)
 	{

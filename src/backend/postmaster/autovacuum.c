@@ -188,7 +188,6 @@ typedef struct av_relation
 typedef struct autovac_table
 {
 	Oid			at_relid;
-	int			at_vacoptions;	/* bitmask of VacuumOption */
 	VacuumParams at_params;
 	double		at_vacuum_cost_delay;
 	int			at_vacuum_cost_limit;
@@ -313,7 +312,7 @@ NON_EXEC_STATIC void AutoVacLauncherMain(int argc, char *argv[]) pg_attribute_no
 
 static Oid	do_start_worker(void);
 static void launcher_determine_sleep(bool canlaunch, bool recursing,
-						 struct timeval *nap);
+									 struct timeval *nap);
 static void launch_worker(TimestampTz now);
 static List *get_database_list(void);
 static void rebuild_database_list(Oid newdb);
@@ -324,25 +323,25 @@ static void do_autovacuum(void);
 static void FreeWorkerInfo(int code, Datum arg);
 
 static autovac_table *table_recheck_autovac(Oid relid, HTAB *table_toast_map,
-					  TupleDesc pg_class_desc,
-					  int effective_multixact_freeze_max_age);
+											TupleDesc pg_class_desc,
+											int effective_multixact_freeze_max_age);
 static void relation_needs_vacanalyze(Oid relid, AutoVacOpts *relopts,
-						  Form_pg_class classForm,
-						  PgStat_StatTabEntry *tabentry,
-						  int effective_multixact_freeze_max_age,
-						  bool *dovacuum, bool *doanalyze, bool *wraparound);
+									  Form_pg_class classForm,
+									  PgStat_StatTabEntry *tabentry,
+									  int effective_multixact_freeze_max_age,
+									  bool *dovacuum, bool *doanalyze, bool *wraparound);
 
 static void autovacuum_do_vac_analyze(autovac_table *tab,
-						  BufferAccessStrategy bstrategy);
+									  BufferAccessStrategy bstrategy);
 static AutoVacOpts *extract_autovac_opts(HeapTuple tup,
-					 TupleDesc pg_class_desc);
+										 TupleDesc pg_class_desc);
 static PgStat_StatTabEntry *get_pgstat_tabentry_relid(Oid relid, bool isshared,
-						  PgStat_StatDBEntry *shared,
-						  PgStat_StatDBEntry *dbentry);
+													  PgStat_StatDBEntry *shared,
+													  PgStat_StatDBEntry *dbentry);
 static void perform_work_item(AutoVacuumWorkItem *workitem);
 static void autovac_report_activity(autovac_table *tab);
 static void autovac_report_workitem(AutoVacuumWorkItem *workitem,
-						const char *nspname, const char *relname);
+									const char *nspname, const char *relname);
 static void av_sighup_handler(SIGNAL_ARGS);
 static void avl_sigusr2_handler(SIGNAL_ARGS);
 static void avl_sigterm_handler(SIGNAL_ARGS);
@@ -2482,7 +2481,7 @@ do_autovacuum(void)
 			 * next table in our list.
 			 */
 			HOLD_INTERRUPTS();
-			if (tab->at_vacoptions & VACOPT_VACUUM)
+			if (tab->at_params.options & VACOPT_VACUUM)
 				errcontext("automatic vacuum of table \"%s.%s.%s\"",
 						   tab->at_datname, tab->at_nspname, tab->at_relname);
 			else
@@ -2883,10 +2882,12 @@ table_recheck_autovac(Oid relid, HTAB *table_toast_map,
 		tab = palloc(sizeof(autovac_table));
 		tab->at_relid = relid;
 		tab->at_sharedrel = classForm->relisshared;
-		tab->at_vacoptions = VACOPT_SKIPTOAST |
+		tab->at_params.options = VACOPT_SKIPTOAST |
 			(dovacuum ? VACOPT_VACUUM : 0) |
 			(doanalyze ? VACOPT_ANALYZE : 0) |
 			(!wraparound ? VACOPT_SKIP_LOCKED : 0);
+		tab->at_params.index_cleanup = VACOPT_TERNARY_DEFAULT;
+		tab->at_params.truncate = VACOPT_TERNARY_DEFAULT;
 		tab->at_params.freeze_min_age = freeze_min_age;
 		tab->at_params.freeze_table_age = freeze_table_age;
 		tab->at_params.multixact_freeze_min_age = multixact_freeze_min_age;
@@ -3033,8 +3034,8 @@ relation_needs_vacanalyze(Oid relid,
 		multiForceLimit = recentMulti - multixact_freeze_max_age;
 		if (multiForceLimit < FirstMultiXactId)
 			multiForceLimit -= FirstMultiXactId;
-		force_vacuum = MultiXactIdPrecedes(classForm->relminmxid,
-										   multiForceLimit);
+		force_vacuum = MultiXactIdIsValid(classForm->relminmxid) &&
+			MultiXactIdPrecedes(classForm->relminmxid, multiForceLimit);
 	}
 	*wraparound = force_vacuum;
 
@@ -3110,7 +3111,7 @@ autovacuum_do_vac_analyze(autovac_table *tab, BufferAccessStrategy bstrategy)
 	rel = makeVacuumRelation(rangevar, tab->at_relid, NIL);
 	rel_list = list_make1(rel);
 
-	vacuum(tab->at_vacoptions, rel_list, &tab->at_params, bstrategy, true);
+	vacuum(rel_list, &tab->at_params, bstrategy, true);
 }
 
 /*
@@ -3132,10 +3133,10 @@ autovac_report_activity(autovac_table *tab)
 	int			len;
 
 	/* Report the command and possible options */
-	if (tab->at_vacoptions & VACOPT_VACUUM)
+	if (tab->at_params.options & VACOPT_VACUUM)
 		snprintf(activity, MAX_AUTOVAC_ACTIV_LEN,
 				 "autovacuum: VACUUM%s",
-				 tab->at_vacoptions & VACOPT_ANALYZE ? " ANALYZE" : "");
+				 tab->at_params.options & VACOPT_ANALYZE ? " ANALYZE" : "");
 	else
 		snprintf(activity, MAX_AUTOVAC_ACTIV_LEN,
 				 "autovacuum: ANALYZE");

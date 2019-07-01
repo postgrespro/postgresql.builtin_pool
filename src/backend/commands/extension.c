@@ -104,27 +104,27 @@ typedef struct ExtensionVersionInfo
 
 /* Local functions */
 static List *find_update_path(List *evi_list,
-				 ExtensionVersionInfo *evi_start,
-				 ExtensionVersionInfo *evi_target,
-				 bool reject_indirect,
-				 bool reinitialize);
-static Oid get_required_extension(char *reqExtensionName,
-					   char *extensionName,
-					   char *origSchemaName,
-					   bool cascade,
-					   List *parents,
-					   bool is_create);
+							  ExtensionVersionInfo *evi_start,
+							  ExtensionVersionInfo *evi_target,
+							  bool reject_indirect,
+							  bool reinitialize);
+static Oid	get_required_extension(char *reqExtensionName,
+								   char *extensionName,
+								   char *origSchemaName,
+								   bool cascade,
+								   List *parents,
+								   bool is_create);
 static void get_available_versions_for_extension(ExtensionControlFile *pcontrol,
-									 Tuplestorestate *tupstore,
-									 TupleDesc tupdesc);
+												 Tuplestorestate *tupstore,
+												 TupleDesc tupdesc);
 static Datum convert_requires_to_datum(List *requires);
 static void ApplyExtensionUpdates(Oid extensionOid,
-					  ExtensionControlFile *pcontrol,
-					  const char *initialVersion,
-					  List *updateVersions,
-					  char *origSchemaName,
-					  bool cascade,
-					  bool is_create);
+								  ExtensionControlFile *pcontrol,
+								  const char *initialVersion,
+								  List *updateVersions,
+								  char *origSchemaName,
+								  bool cascade,
+								  bool is_create);
 static char *read_whole_file(const char *filename, int *length);
 
 
@@ -901,10 +901,11 @@ execute_extension_script(Oid extensionOid, ExtensionControlFile *control,
 		{
 			const char *qSchemaName = quote_identifier(schemaName);
 
-			t_sql = DirectFunctionCall3(replace_text,
-										t_sql,
-										CStringGetTextDatum("@extschema@"),
-										CStringGetTextDatum(qSchemaName));
+			t_sql = DirectFunctionCall3Coll(replace_text,
+											C_COLLATION_OID,
+											t_sql,
+											CStringGetTextDatum("@extschema@"),
+											CStringGetTextDatum(qSchemaName));
 		}
 
 		/*
@@ -913,10 +914,11 @@ execute_extension_script(Oid extensionOid, ExtensionControlFile *control,
 		 */
 		if (control->module_pathname)
 		{
-			t_sql = DirectFunctionCall3(replace_text,
-										t_sql,
-										CStringGetTextDatum("MODULE_PATHNAME"),
-										CStringGetTextDatum(control->module_pathname));
+			t_sql = DirectFunctionCall3Coll(replace_text,
+											C_COLLATION_OID,
+											t_sql,
+											CStringGetTextDatum("MODULE_PATHNAME"),
+											CStringGetTextDatum(control->module_pathname));
 		}
 
 		/* And now back to C string */

@@ -55,8 +55,8 @@ static List *translate_sub_tlist(List *tlist, int relid);
 static int	append_total_cost_compare(const void *a, const void *b);
 static int	append_startup_cost_compare(const void *a, const void *b);
 static List *reparameterize_pathlist_by_child(PlannerInfo *root,
-								 List *pathlist,
-								 RelOptInfo *child_rel);
+											  List *pathlist,
+											  RelOptInfo *child_rel);
 
 
 /*****************************************************************************
@@ -1203,12 +1203,13 @@ create_tidscan_path(PlannerInfo *root, RelOptInfo *rel, List *tidquals,
  *	  pathnode.
  *
  * Note that we must handle subpaths = NIL, representing a dummy access path.
+ * Also, there are callers that pass root = NULL.
  */
 AppendPath *
 create_append_path(PlannerInfo *root,
 				   RelOptInfo *rel,
 				   List *subpaths, List *partial_subpaths,
-				   Relids required_outer,
+				   List *pathkeys, Relids required_outer,
 				   int parallel_workers, bool parallel_aware,
 				   List *partitioned_rels, double rows)
 {
@@ -1242,7 +1243,7 @@ create_append_path(PlannerInfo *root,
 	pathnode->path.parallel_aware = parallel_aware;
 	pathnode->path.parallel_safe = rel->consider_parallel;
 	pathnode->path.parallel_workers = parallel_workers;
-	pathnode->path.pathkeys = NIL;	/* result is always considered unsorted */
+	pathnode->path.pathkeys = pathkeys;
 	pathnode->partitioned_rels = list_copy(partitioned_rels);
 
 	/*
@@ -1256,12 +1257,28 @@ create_append_path(PlannerInfo *root,
 	 */
 	if (pathnode->path.parallel_aware)
 	{
+		/*
+		 * We mustn't fiddle with the order of subpaths when the Append has
+		 * pathkeys.  The order they're listed in is critical to keeping the
+		 * pathkeys valid.
+		 */
+		Assert(pathkeys == NIL);
+
 		subpaths = list_qsort(subpaths, append_total_cost_compare);
 		partial_subpaths = list_qsort(partial_subpaths,
 									  append_startup_cost_compare);
 	}
 	pathnode->first_partial_path = list_length(subpaths);
 	pathnode->subpaths = list_concat(subpaths, partial_subpaths);
+
+	/*
+	 * Apply query-wide LIMIT if known and path is for sole base relation.
+	 * (Handling this at this low level is a bit klugy.)
+	 */
+	if (root != NULL && bms_equal(rel->relids, root->all_baserels))
+		pathnode->limit_tuples = root->limit_tuples;
+	else
+		pathnode->limit_tuples = -1.0;
 
 	foreach(l, pathnode->subpaths)
 	{
@@ -1276,7 +1293,24 @@ create_append_path(PlannerInfo *root,
 
 	Assert(!parallel_aware || pathnode->path.parallel_safe);
 
-	cost_append(pathnode);
+	/*
+	 * If there's exactly one child path, the Append is a no-op and will be
+	 * discarded later (in setrefs.c); therefore, we can inherit the child's
+	 * size and cost, as well as its pathkeys if any (overriding whatever the
+	 * caller might've said).  Otherwise, we must do the normal costsize
+	 * calculation.
+	 */
+	if (list_length(pathnode->subpaths) == 1)
+	{
+		Path	   *child = (Path *) linitial(pathnode->subpaths);
+
+		pathnode->path.rows = child->rows;
+		pathnode->path.startup_cost = child->startup_cost;
+		pathnode->path.total_cost = child->total_cost;
+		pathnode->path.pathkeys = child->pathkeys;
+	}
+	else
+		cost_append(pathnode);
 
 	/* If the caller provided a row estimate, override the computed value. */
 	if (rows >= 0)
@@ -1408,11 +1442,21 @@ create_merge_append_path(PlannerInfo *root,
 		Assert(bms_equal(PATH_REQ_OUTER(subpath), required_outer));
 	}
 
-	/* Now we can compute total costs of the MergeAppend */
-	cost_merge_append(&pathnode->path, root,
-					  pathkeys, list_length(subpaths),
-					  input_startup_cost, input_total_cost,
-					  pathnode->path.rows);
+	/*
+	 * Now we can compute total costs of the MergeAppend.  If there's exactly
+	 * one child path, the MergeAppend is a no-op and will be discarded later
+	 * (in setrefs.c); otherwise we do the normal cost calculation.
+	 */
+	if (list_length(subpaths) == 1)
+	{
+		pathnode->path.startup_cost = input_startup_cost;
+		pathnode->path.total_cost = input_total_cost;
+	}
+	else
+		cost_merge_append(&pathnode->path, root,
+						  pathkeys, list_length(subpaths),
+						  input_startup_cost, input_total_cost,
+						  pathnode->path.rows);
 
 	return pathnode;
 }
@@ -3550,17 +3594,42 @@ create_limit_path(PlannerInfo *root, RelOptInfo *rel,
 
 	/*
 	 * Adjust the output rows count and costs according to the offset/limit.
-	 * This is only a cosmetic issue if we are at top level, but if we are
-	 * building a subquery then it's important to report correct info to the
-	 * outer planner.
-	 *
-	 * When the offset or count couldn't be estimated, use 10% of the
-	 * estimated number of rows emitted from the subpath.
-	 *
-	 * XXX we don't bother to add eval costs of the offset/limit expressions
-	 * themselves to the path costs.  In theory we should, but in most cases
-	 * those expressions are trivial and it's just not worth the trouble.
 	 */
+	adjust_limit_rows_costs(&pathnode->path.rows,
+							&pathnode->path.startup_cost,
+							&pathnode->path.total_cost,
+							offset_est, count_est);
+
+	return pathnode;
+}
+
+/*
+ * adjust_limit_rows_costs
+ *	  Adjust the size and cost estimates for a LimitPath node according to the
+ *	  offset/limit.
+ *
+ * This is only a cosmetic issue if we are at top level, but if we are
+ * building a subquery then it's important to report correct info to the outer
+ * planner.
+ *
+ * When the offset or count couldn't be estimated, use 10% of the estimated
+ * number of rows emitted from the subpath.
+ *
+ * XXX we don't bother to add eval costs of the offset/limit expressions
+ * themselves to the path costs.  In theory we should, but in most cases those
+ * expressions are trivial and it's just not worth the trouble.
+ */
+void
+adjust_limit_rows_costs(double *rows,	/* in/out parameter */
+						Cost *startup_cost, /* in/out parameter */
+						Cost *total_cost,	/* in/out parameter */
+						int64 offset_est,
+						int64 count_est)
+{
+	double		input_rows = *rows;
+	Cost		input_startup_cost = *startup_cost;
+	Cost		input_total_cost = *total_cost;
+
 	if (offset_est != 0)
 	{
 		double		offset_rows;
@@ -3568,16 +3637,16 @@ create_limit_path(PlannerInfo *root, RelOptInfo *rel,
 		if (offset_est > 0)
 			offset_rows = (double) offset_est;
 		else
-			offset_rows = clamp_row_est(subpath->rows * 0.10);
-		if (offset_rows > pathnode->path.rows)
-			offset_rows = pathnode->path.rows;
-		if (subpath->rows > 0)
-			pathnode->path.startup_cost +=
-				(subpath->total_cost - subpath->startup_cost)
-				* offset_rows / subpath->rows;
-		pathnode->path.rows -= offset_rows;
-		if (pathnode->path.rows < 1)
-			pathnode->path.rows = 1;
+			offset_rows = clamp_row_est(input_rows * 0.10);
+		if (offset_rows > *rows)
+			offset_rows = *rows;
+		if (input_rows > 0)
+			*startup_cost +=
+				(input_total_cost - input_startup_cost)
+				* offset_rows / input_rows;
+		*rows -= offset_rows;
+		if (*rows < 1)
+			*rows = 1;
 	}
 
 	if (count_est != 0)
@@ -3587,19 +3656,17 @@ create_limit_path(PlannerInfo *root, RelOptInfo *rel,
 		if (count_est > 0)
 			count_rows = (double) count_est;
 		else
-			count_rows = clamp_row_est(subpath->rows * 0.10);
-		if (count_rows > pathnode->path.rows)
-			count_rows = pathnode->path.rows;
-		if (subpath->rows > 0)
-			pathnode->path.total_cost = pathnode->path.startup_cost +
-				(subpath->total_cost - subpath->startup_cost)
-				* count_rows / subpath->rows;
-		pathnode->path.rows = count_rows;
-		if (pathnode->path.rows < 1)
-			pathnode->path.rows = 1;
+			count_rows = clamp_row_est(input_rows * 0.10);
+		if (count_rows > *rows)
+			count_rows = *rows;
+		if (input_rows > 0)
+			*total_cost = *startup_cost +
+				(input_total_cost - input_startup_cost)
+				* count_rows / input_rows;
+		*rows = count_rows;
+		if (*rows < 1)
+			*rows = 1;
 	}
-
-	return pathnode;
 }
 
 
@@ -3708,7 +3775,7 @@ reparameterize_path(PlannerInfo *root, Path *path,
 				}
 				return (Path *)
 					create_append_path(root, rel, childpaths, partialpaths,
-									   required_outer,
+									   apath->path.pathkeys, required_outer,
 									   apath->path.parallel_workers,
 									   apath->path.parallel_aware,
 									   apath->partitioned_rels,

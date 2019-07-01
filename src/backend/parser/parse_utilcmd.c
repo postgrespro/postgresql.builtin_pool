@@ -114,37 +114,37 @@ typedef struct
 
 
 static void transformColumnDefinition(CreateStmtContext *cxt,
-						  ColumnDef *column);
+									  ColumnDef *column);
 static void transformTableConstraint(CreateStmtContext *cxt,
-						 Constraint *constraint);
+									 Constraint *constraint);
 static void transformTableLikeClause(CreateStmtContext *cxt,
-						 TableLikeClause *table_like_clause);
+									 TableLikeClause *table_like_clause);
 static void transformOfType(CreateStmtContext *cxt,
-				TypeName *ofTypename);
+							TypeName *ofTypename);
 static CreateStatsStmt *generateClonedExtStatsStmt(RangeVar *heapRel,
-						   Oid heapRelid, Oid source_statsid);
+												   Oid heapRelid, Oid source_statsid);
 static List *get_collation(Oid collation, Oid actual_datatype);
 static List *get_opclass(Oid opclass, Oid actual_datatype);
 static void transformIndexConstraints(CreateStmtContext *cxt);
 static IndexStmt *transformIndexConstraint(Constraint *constraint,
-						 CreateStmtContext *cxt);
+										   CreateStmtContext *cxt);
 static void transformExtendedStatistics(CreateStmtContext *cxt);
 static void transformFKConstraints(CreateStmtContext *cxt,
-					   bool skipValidation,
-					   bool isAddConstraint);
+								   bool skipValidation,
+								   bool isAddConstraint);
 static void transformCheckConstraints(CreateStmtContext *cxt,
-						  bool skipValidation);
+									  bool skipValidation);
 static void transformConstraintAttrs(CreateStmtContext *cxt,
-						 List *constraintList);
+									 List *constraintList);
 static void transformColumnType(CreateStmtContext *cxt, ColumnDef *column);
 static void setSchemaName(char *context_schema, char **stmt_schema_name);
 static void transformPartitionCmd(CreateStmtContext *cxt, PartitionCmd *cmd);
 static List *transformPartitionRangeBounds(ParseState *pstate, List *blist,
-							  Relation parent);
+										   Relation parent);
 static void validateInfiniteBounds(ParseState *pstate, List *blist);
 static Const *transformPartitionBoundValue(ParseState *pstate, Node *con,
-							 const char *colName, Oid colType, int32 colTypmod,
-							 Oid partCollation);
+										   const char *colName, Oid colType, int32 colTypmod,
+										   Oid partCollation);
 
 
 /*
@@ -293,8 +293,10 @@ transformCreateStmt(CreateStmt *stmt, const char *queryString)
 	}
 
 	/*
-	 * transformIndexConstraints wants cxt.alist to contain only index
-	 * statements, so transfer anything we already have into save_alist.
+	 * Transfer anything we already have in cxt.alist into save_alist, to keep
+	 * it separate from the output of transformIndexConstraints.  (This may
+	 * not be necessary anymore, but we'll keep doing it to preserve the
+	 * historical order of execution of the alist commands.)
 	 */
 	save_alist = cxt.alist;
 	cxt.alist = NIL;
@@ -502,6 +504,7 @@ transformColumnDefinition(CreateStmtContext *cxt, ColumnDef *column)
 	bool		saw_nullable;
 	bool		saw_default;
 	bool		saw_identity;
+	bool		saw_generated;
 	ListCell   *clist;
 
 	cxt->columns = lappend(cxt->columns, column);
@@ -609,6 +612,7 @@ transformColumnDefinition(CreateStmtContext *cxt, ColumnDef *column)
 	saw_nullable = false;
 	saw_default = false;
 	saw_identity = false;
+	saw_generated = false;
 
 	foreach(clist, column->constraints)
 	{
@@ -689,6 +693,29 @@ transformColumnDefinition(CreateStmtContext *cxt, ColumnDef *column)
 					break;
 				}
 
+			case CONSTR_GENERATED:
+				if (cxt->ofType)
+					ereport(ERROR,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							 errmsg("generated columns are not supported on typed tables")));
+				if (cxt->partbound)
+					ereport(ERROR,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							 errmsg("generated columns are not supported on partitions")));
+
+				if (saw_generated)
+					ereport(ERROR,
+							(errcode(ERRCODE_SYNTAX_ERROR),
+							 errmsg("multiple generation clauses specified for column \"%s\" of table \"%s\"",
+									column->colname, cxt->relation->relname),
+							 parser_errposition(cxt->pstate,
+												constraint->location)));
+				column->generated = ATTRIBUTE_GENERATED_STORED;
+				column->raw_default = constraint->raw_expr;
+				Assert(constraint->cooked_expr == NULL);
+				saw_generated = true;
+				break;
+
 			case CONSTR_CHECK:
 				cxt->ckconstraints = lappend(cxt->ckconstraints, constraint);
 				break;
@@ -752,6 +779,22 @@ transformColumnDefinition(CreateStmtContext *cxt, ColumnDef *column)
 			ereport(ERROR,
 					(errcode(ERRCODE_SYNTAX_ERROR),
 					 errmsg("both default and identity specified for column \"%s\" of table \"%s\"",
+							column->colname, cxt->relation->relname),
+					 parser_errposition(cxt->pstate,
+										constraint->location)));
+
+		if (saw_default && saw_generated)
+			ereport(ERROR,
+					(errcode(ERRCODE_SYNTAX_ERROR),
+					 errmsg("both default and generation expression specified for column \"%s\" of table \"%s\"",
+							column->colname, cxt->relation->relname),
+					 parser_errposition(cxt->pstate,
+										constraint->location)));
+
+		if (saw_identity && saw_generated)
+			ereport(ERROR,
+					(errcode(ERRCODE_SYNTAX_ERROR),
+					 errmsg("both identity and generation expression specified for column \"%s\" of table \"%s\"",
 							column->colname, cxt->relation->relname),
 					 parser_errposition(cxt->pstate,
 										constraint->location)));
@@ -983,11 +1026,13 @@ transformTableLikeClause(CreateStmtContext *cxt, TableLikeClause *table_like_cla
 		 * Copy default, if present and the default has been requested
 		 */
 		if (attribute->atthasdef &&
-			(table_like_clause->options & CREATE_TABLE_LIKE_DEFAULTS))
+			(table_like_clause->options & CREATE_TABLE_LIKE_DEFAULTS ||
+			 table_like_clause->options & CREATE_TABLE_LIKE_GENERATED))
 		{
 			Node	   *this_default = NULL;
 			AttrDefault *attrdef;
 			int			i;
+			bool		found_whole_row;
 
 			/* Find default in constraint structure */
 			Assert(constr != NULL);
@@ -1002,12 +1047,27 @@ transformTableLikeClause(CreateStmtContext *cxt, TableLikeClause *table_like_cla
 			}
 			Assert(this_default != NULL);
 
-			/*
-			 * If default expr could contain any vars, we'd need to fix 'em,
-			 * but it can't; so default is ready to apply to child.
-			 */
+			def->cooked_default = map_variable_attnos(this_default,
+													  1, 0,
+													  attmap, tupleDesc->natts,
+													  InvalidOid, &found_whole_row);
 
-			def->cooked_default = this_default;
+			/*
+			 * Prevent this for the same reason as for constraints below. Note
+			 * that defaults cannot contain any vars, so it's OK that the
+			 * error message refers to generated columns.
+			 */
+			if (found_whole_row)
+				ereport(ERROR,
+						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+						 errmsg("cannot convert whole-row table reference"),
+						 errdetail("Generation expression for column \"%s\" contains a whole-row reference to table \"%s\".",
+								   attributeName,
+								   RelationGetRelationName(relation))));
+
+			if (attribute->attgenerated &&
+				(table_like_clause->options & CREATE_TABLE_LIKE_GENERATED))
+				def->generated = attribute->attgenerated;
 		}
 
 		/*
@@ -1138,9 +1198,10 @@ transformTableLikeClause(CreateStmtContext *cxt, TableLikeClause *table_like_cla
 			parent_index = index_open(parent_index_oid, AccessShareLock);
 
 			/* Build CREATE INDEX statement to recreate the parent_index */
-			index_stmt = generateClonedIndexStmt(cxt->relation, InvalidOid,
+			index_stmt = generateClonedIndexStmt(cxt->relation,
 												 parent_index,
-												 attmap, tupleDesc->natts, NULL);
+												 attmap, tupleDesc->natts,
+												 NULL);
 
 			/* Copy comment on index, if requested */
 			if (table_like_clause->options & CREATE_TABLE_LIKE_COMMENTS)
@@ -1253,13 +1314,26 @@ transformOfType(CreateStmtContext *cxt, TypeName *ofTypename)
 
 /*
  * Generate an IndexStmt node using information from an already existing index
- * "source_idx", for the rel identified either by heapRel or heapRelid.
+ * "source_idx".
  *
- * Attribute numbers should be adjusted according to attmap.
+ * heapRel is stored into the IndexStmt's relation field, but we don't use it
+ * otherwise; some callers pass NULL, if they don't need it to be valid.
+ * (The target relation might not exist yet, so we mustn't try to access it.)
+ *
+ * Attribute numbers in expression Vars are adjusted according to attmap.
+ *
+ * If constraintOid isn't NULL, we store the OID of any constraint associated
+ * with the index there.
+ *
+ * Unlike transformIndexConstraint, we don't make any effort to force primary
+ * key columns to be NOT NULL.  The larger cloning process this is part of
+ * should have cloned their NOT NULL status separately (and DefineIndex will
+ * complain if that fails to happen).
  */
 IndexStmt *
-generateClonedIndexStmt(RangeVar *heapRel, Oid heapRelid, Relation source_idx,
-						const AttrNumber *attmap, int attmap_length, Oid *constraintOid)
+generateClonedIndexStmt(RangeVar *heapRel, Relation source_idx,
+						const AttrNumber *attmap, int attmap_length,
+						Oid *constraintOid)
 {
 	Oid			source_relid = RelationGetRelid(source_idx);
 	HeapTuple	ht_idxrel;
@@ -1279,8 +1353,8 @@ generateClonedIndexStmt(RangeVar *heapRel, Oid heapRelid, Relation source_idx,
 	Datum		datum;
 	bool		isnull;
 
-	Assert((heapRel == NULL && OidIsValid(heapRelid)) ||
-		   (heapRel != NULL && !OidIsValid(heapRelid)));
+	if (constraintOid)
+		*constraintOid = InvalidOid;
 
 	/*
 	 * Fetch pg_class tuple of source index.  We can't use the copy in the
@@ -1332,6 +1406,7 @@ generateClonedIndexStmt(RangeVar *heapRel, Oid heapRelid, Relation source_idx,
 	index->transformed = true;	/* don't need transformIndexStmt */
 	index->concurrent = false;
 	index->if_not_exists = false;
+	index->reset_default_tblspc = false;
 
 	/*
 	 * We don't try to preserve the name of the source index; instead, just
@@ -1652,6 +1727,8 @@ generateClonedExtStatsStmt(RangeVar *heapRel, Oid heapRelid,
 			stat_types = lappend(stat_types, makeString("ndistinct"));
 		else if (enabled[i] == STATS_EXT_DEPENDENCIES)
 			stat_types = lappend(stat_types, makeString("dependencies"));
+		else if (enabled[i] == STATS_EXT_MCV)
+			stat_types = lappend(stat_types, makeString("mcv"));
 		else
 			elog(ERROR, "unrecognized statistics kind %c", enabled[i]);
 	}
@@ -1761,6 +1838,7 @@ transformIndexConstraints(CreateStmtContext *cxt)
 {
 	IndexStmt  *index;
 	List	   *indexlist = NIL;
+	List	   *finalindexlist = NIL;
 	ListCell   *lc;
 
 	/*
@@ -1809,11 +1887,10 @@ transformIndexConstraints(CreateStmtContext *cxt)
 	 * XXX in ALTER TABLE case, it'd be nice to look for duplicate
 	 * pre-existing indexes, too.
 	 */
-	Assert(cxt->alist == NIL);
 	if (cxt->pkey != NULL)
 	{
 		/* Make sure we keep the PKEY index in preference to others... */
-		cxt->alist = list_make1(cxt->pkey);
+		finalindexlist = list_make1(cxt->pkey);
 	}
 
 	foreach(lc, indexlist)
@@ -1823,11 +1900,11 @@ transformIndexConstraints(CreateStmtContext *cxt)
 
 		index = lfirst(lc);
 
-		/* if it's pkey, it's already in cxt->alist */
+		/* if it's pkey, it's already in finalindexlist */
 		if (index == cxt->pkey)
 			continue;
 
-		foreach(k, cxt->alist)
+		foreach(k, finalindexlist)
 		{
 			IndexStmt  *priorindex = lfirst(k);
 
@@ -1855,19 +1932,32 @@ transformIndexConstraints(CreateStmtContext *cxt)
 		}
 
 		if (keep)
-			cxt->alist = lappend(cxt->alist, index);
+			finalindexlist = lappend(finalindexlist, index);
 	}
+
+	/*
+	 * Now append all the IndexStmts to cxt->alist.  If we generated an ALTER
+	 * TABLE SET NOT NULL statement to support a primary key, it's already in
+	 * cxt->alist.
+	 */
+	cxt->alist = list_concat(cxt->alist, finalindexlist);
 }
 
 /*
  * transformIndexConstraint
  *		Transform one UNIQUE, PRIMARY KEY, or EXCLUDE constraint for
  *		transformIndexConstraints.
+ *
+ * We return an IndexStmt.  For a PRIMARY KEY constraint, we additionally
+ * produce NOT NULL constraints, either by marking ColumnDefs in cxt->columns
+ * as is_not_null or by adding an ALTER TABLE SET NOT NULL command to
+ * cxt->alist.
  */
 static IndexStmt *
 transformIndexConstraint(Constraint *constraint, CreateStmtContext *cxt)
 {
 	IndexStmt  *index;
+	List	   *notnullcmds = NIL;
 	ListCell   *lc;
 
 	index = makeNode(IndexStmt);
@@ -1912,6 +2002,7 @@ transformIndexConstraint(Constraint *constraint, CreateStmtContext *cxt)
 	index->transformed = false;
 	index->concurrent = false;
 	index->if_not_exists = false;
+	index->reset_default_tblspc = constraint->reset_default_tblspc;
 
 	/*
 	 * If it's ALTER TABLE ADD CONSTRAINT USING INDEX, look up the index and
@@ -2110,9 +2201,7 @@ transformIndexConstraint(Constraint *constraint, CreateStmtContext *cxt)
 	 * For UNIQUE and PRIMARY KEY, we just have a list of column names.
 	 *
 	 * Make sure referenced keys exist.  If we are making a PRIMARY KEY index,
-	 * also make sure they are NOT NULL, if possible. (Although we could leave
-	 * it to DefineIndex to mark the columns NOT NULL, it's more efficient to
-	 * get it right the first time.)
+	 * also make sure they are NOT NULL.
 	 */
 	else
 	{
@@ -2120,11 +2209,12 @@ transformIndexConstraint(Constraint *constraint, CreateStmtContext *cxt)
 		{
 			char	   *key = strVal(lfirst(lc));
 			bool		found = false;
+			bool		forced_not_null = false;
 			ColumnDef  *column = NULL;
 			ListCell   *columns;
 			IndexElem  *iparam;
 
-			/* Make sure referenced column exist. */
+			/* Make sure referenced column exists. */
 			foreach(columns, cxt->columns)
 			{
 				column = castNode(ColumnDef, lfirst(columns));
@@ -2136,9 +2226,18 @@ transformIndexConstraint(Constraint *constraint, CreateStmtContext *cxt)
 			}
 			if (found)
 			{
-				/* found column in the new table; force it to be NOT NULL */
-				if (constraint->contype == CONSTR_PRIMARY)
+				/*
+				 * column is defined in the new table.  For PRIMARY KEY, we
+				 * can apply the NOT NULL constraint cheaply here ... unless
+				 * the column is marked is_from_type, in which case marking it
+				 * here would be ineffective (see MergeAttributes).
+				 */
+				if (constraint->contype == CONSTR_PRIMARY &&
+					!column->is_from_type)
+				{
 					column->is_not_null = true;
+					forced_not_null = true;
+				}
 			}
 			else if (SystemAttributeByName(key) != NULL)
 			{
@@ -2182,10 +2281,11 @@ transformIndexConstraint(Constraint *constraint, CreateStmtContext *cxt)
 							found = true;
 
 							/*
-							 * We currently have no easy way to force an
-							 * inherited column to be NOT NULL at creation, if
-							 * its parent wasn't so already. We leave it to
-							 * DefineIndex to fix things up in this case.
+							 * It's tempting to set forced_not_null if the
+							 * parent column is already NOT NULL, but that
+							 * seems unsafe because the column's NOT NULL
+							 * marking might disappear between now and
+							 * execution.  Do the runtime check to be safe.
 							 */
 							break;
 						}
@@ -2199,8 +2299,7 @@ transformIndexConstraint(Constraint *constraint, CreateStmtContext *cxt)
 			/*
 			 * In the ALTER TABLE case, don't complain about index keys not
 			 * created in the command; they may well exist already.
-			 * DefineIndex will complain about them if not, and will also take
-			 * care of marking them NOT NULL.
+			 * DefineIndex will complain about them if not.
 			 */
 			if (!found && !cxt->isalter)
 				ereport(ERROR,
@@ -2239,10 +2338,29 @@ transformIndexConstraint(Constraint *constraint, CreateStmtContext *cxt)
 			iparam->ordering = SORTBY_DEFAULT;
 			iparam->nulls_ordering = SORTBY_NULLS_DEFAULT;
 			index->indexParams = lappend(index->indexParams, iparam);
+
+			/*
+			 * For a primary-key column, also create an item for ALTER TABLE
+			 * SET NOT NULL if we couldn't ensure it via is_not_null above.
+			 */
+			if (constraint->contype == CONSTR_PRIMARY && !forced_not_null)
+			{
+				AlterTableCmd *notnullcmd = makeNode(AlterTableCmd);
+
+				notnullcmd->subtype = AT_SetNotNull;
+				notnullcmd->name = pstrdup(key);
+				notnullcmds = lappend(notnullcmds, notnullcmd);
+			}
 		}
 	}
 
-	/* Add included columns to index definition */
+	/*
+	 * Add included columns to index definition.  This is much like the
+	 * simple-column-name-list code above, except that we don't worry about
+	 * NOT NULL marking; included columns in a primary key should not be
+	 * forced NOT NULL.  We don't complain about duplicate columns, either,
+	 * though maybe we should?
+	 */
 	foreach(lc, constraint->including)
 	{
 		char	   *key = strVal(lfirst(lc));
@@ -2267,8 +2385,7 @@ transformIndexConstraint(Constraint *constraint, CreateStmtContext *cxt)
 			{
 				/*
 				 * column will be a system column in the new table, so accept
-				 * it. System columns can't ever be null, so no need to worry
-				 * about PRIMARY/NOT NULL constraint.
+				 * it.
 				 */
 				found = true;
 			}
@@ -2303,13 +2420,6 @@ transformIndexConstraint(Constraint *constraint, CreateStmtContext *cxt)
 						if (strcmp(key, inhname) == 0)
 						{
 							found = true;
-
-							/*
-							 * We currently have no easy way to force an
-							 * inherited column to be NOT NULL at creation, if
-							 * its parent wasn't so already. We leave it to
-							 * DefineIndex to fix things up in this case.
-							 */
 							break;
 						}
 					}
@@ -2323,8 +2433,7 @@ transformIndexConstraint(Constraint *constraint, CreateStmtContext *cxt)
 		/*
 		 * In the ALTER TABLE case, don't complain about index keys not
 		 * created in the command; they may well exist already. DefineIndex
-		 * will complain about them if not, and will also take care of marking
-		 * them NOT NULL.
+		 * will complain about them if not.
 		 */
 		if (!found && !cxt->isalter)
 			ereport(ERROR,
@@ -2340,6 +2449,22 @@ transformIndexConstraint(Constraint *constraint, CreateStmtContext *cxt)
 		iparam->collation = NIL;
 		iparam->opclass = NIL;
 		index->indexIncludingParams = lappend(index->indexIncludingParams, iparam);
+	}
+
+	/*
+	 * If we found anything that requires run-time SET NOT NULL, build a full
+	 * ALTER TABLE command for that and add it to cxt->alist.
+	 */
+	if (notnullcmds)
+	{
+		AlterTableStmt *alterstmt = makeNode(AlterTableStmt);
+
+		alterstmt->relation = copyObject(cxt->relation);
+		alterstmt->cmds = notnullcmds;
+		alterstmt->relkind = OBJECT_TABLE;
+		alterstmt->missing_ok = false;
+
+		cxt->alist = lappend(cxt->alist, alterstmt);
 	}
 
 	return index;
@@ -3160,9 +3285,8 @@ transformAlterTableStmt(Oid relid, AlterTableStmt *stmt,
 	}
 
 	/*
-	 * transformIndexConstraints wants cxt.alist to contain only index
-	 * statements, so transfer anything we already have into save_alist
-	 * immediately.
+	 * Transfer anything we already have in cxt.alist into save_alist, to keep
+	 * it separate from the output of transformIndexConstraints.
 	 */
 	save_alist = cxt.alist;
 	cxt.alist = NIL;
@@ -3180,13 +3304,31 @@ transformAlterTableStmt(Oid relid, AlterTableStmt *stmt,
 	 */
 	foreach(l, cxt.alist)
 	{
-		IndexStmt  *idxstmt = lfirst_node(IndexStmt, l);
+		Node	   *istmt = (Node *) lfirst(l);
 
-		idxstmt = transformIndexStmt(relid, idxstmt, queryString);
-		newcmd = makeNode(AlterTableCmd);
-		newcmd->subtype = OidIsValid(idxstmt->indexOid) ? AT_AddIndexConstraint : AT_AddIndex;
-		newcmd->def = (Node *) idxstmt;
-		newcmds = lappend(newcmds, newcmd);
+		/*
+		 * We assume here that cxt.alist contains only IndexStmts and possibly
+		 * ALTER TABLE SET NOT NULL statements generated from primary key
+		 * constraints.  We absorb the subcommands of the latter directly.
+		 */
+		if (IsA(istmt, IndexStmt))
+		{
+			IndexStmt  *idxstmt = (IndexStmt *) istmt;
+
+			idxstmt = transformIndexStmt(relid, idxstmt, queryString);
+			newcmd = makeNode(AlterTableCmd);
+			newcmd->subtype = OidIsValid(idxstmt->indexOid) ? AT_AddIndexConstraint : AT_AddIndex;
+			newcmd->def = (Node *) idxstmt;
+			newcmds = lappend(newcmds, newcmd);
+		}
+		else if (IsA(istmt, AlterTableStmt))
+		{
+			AlterTableStmt *alterstmt = (AlterTableStmt *) istmt;
+
+			newcmds = list_concat(newcmds, alterstmt->cmds);
+		}
+		else
+			elog(ERROR, "unexpected stmt type %d", (int) nodeTag(istmt));
 	}
 	cxt.alist = NIL;
 
@@ -3703,11 +3845,11 @@ transformPartitionBound(ParseState *pstate, Relation parent,
 		 * any necessary validation.
 		 */
 		result_spec->lowerdatums =
-					transformPartitionRangeBounds(pstate, spec->lowerdatums,
-												  parent);
+			transformPartitionRangeBounds(pstate, spec->lowerdatums,
+										  parent);
 		result_spec->upperdatums =
-					transformPartitionRangeBounds(pstate, spec->upperdatums,
-												  parent);
+			transformPartitionRangeBounds(pstate, spec->upperdatums,
+										  parent);
 	}
 	else
 		elog(ERROR, "unexpected partition strategy: %d", (int) strategy);
@@ -3734,24 +3876,36 @@ transformPartitionRangeBounds(ParseState *pstate, List *blist,
 	i = j = 0;
 	foreach(lc, blist)
 	{
-		Node *expr = lfirst(lc);
+		Node	   *expr = lfirst(lc);
 		PartitionRangeDatum *prd = NULL;
 
 		/*
-		 * Infinite range bounds -- "minvalue" and "maxvalue" -- get passed
-		 * in as ColumnRefs.
+		 * Infinite range bounds -- "minvalue" and "maxvalue" -- get passed in
+		 * as ColumnRefs.
 		 */
 		if (IsA(expr, ColumnRef))
 		{
-			ColumnRef *cref = (ColumnRef *) expr;
-			char *cname = NULL;
+			ColumnRef  *cref = (ColumnRef *) expr;
+			char	   *cname = NULL;
 
+			/*
+			 * There should be a single field named either "minvalue" or
+			 * "maxvalue".
+			 */
 			if (list_length(cref->fields) == 1 &&
 				IsA(linitial(cref->fields), String))
 				cname = strVal(linitial(cref->fields));
 
-			Assert(cname != NULL);
-			if (strcmp("minvalue", cname) == 0)
+			if (cname == NULL)
+			{
+				/*
+				 * ColumnRef is not in the desired single-field-name form. For
+				 * consistency between all partition strategies, let the
+				 * expression transformation report any errors rather than
+				 * doing it ourselves.
+				 */
+			}
+			else if (strcmp("minvalue", cname) == 0)
 			{
 				prd = makeNode(PartitionRangeDatum);
 				prd->kind = PARTITION_RANGE_DATUM_MINVALUE;
@@ -3811,8 +3965,8 @@ transformPartitionRangeBounds(ParseState *pstate, List *blist,
 	}
 
 	/*
-	 * Once we see MINVALUE or MAXVALUE for one column, the remaining
-	 * columns must be the same.
+	 * Once we see MINVALUE or MAXVALUE for one column, the remaining columns
+	 * must be the same.
 	 */
 	validateInfiniteBounds(pstate, result);
 
@@ -3876,13 +4030,13 @@ transformPartitionBoundValue(ParseState *pstate, Node *val,
 
 	/*
 	 * Check that the input expression's collation is compatible with one
-	 * specified for the parent's partition key (partcollation).  Don't
-	 * throw an error if it's the default collation which we'll replace with
-	 * the parent's collation anyway.
+	 * specified for the parent's partition key (partcollation).  Don't throw
+	 * an error if it's the default collation which we'll replace with the
+	 * parent's collation anyway.
 	 */
 	if (IsA(value, CollateExpr))
 	{
-		Oid		exprCollOid = exprCollation(value);
+		Oid			exprCollOid = exprCollation(value);
 
 		if (OidIsValid(exprCollOid) &&
 			exprCollOid != DEFAULT_COLLATION_OID &&
@@ -3914,12 +4068,12 @@ transformPartitionBoundValue(ParseState *pstate, Node *val,
 	if (!IsA(value, Const))
 		value = (Node *) expression_planner((Expr *) value);
 
-	/* Make sure the expression does not refer to any vars. */
-	if (contain_var_clause(value))
-		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_COLUMN_REFERENCE),
-				 errmsg("cannot use column references in partition bound expression"),
-				 parser_errposition(pstate, exprLocation(value))));
+	/*
+	 * transformExpr() should have already rejected column references,
+	 * subqueries, aggregates, window functions, and SRFs, based on the
+	 * EXPR_KIND_ for a default expression.
+	 */
+	Assert(!contain_var_clause(value));
 
 	/*
 	 * Evaluate the expression, assigning the partition key's collation to the

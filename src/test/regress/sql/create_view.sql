@@ -319,6 +319,15 @@ ALTER TABLE tmp1 RENAME TO tx1;
 \d+ aliased_view_3
 \d+ aliased_view_4
 
+-- Test aliasing of joins
+
+create view view_of_joins as
+select * from
+  (select * from (tbl1 cross join tbl2) same) ss,
+  (tbl3 cross join tbl4) same;
+
+\d+ view_of_joins
+
 -- Test view decompilation in the face of column addition/deletion/renaming
 
 create table tt2 (a int, b int, c int);
@@ -593,6 +602,5 @@ select pg_get_ruledef(oid, true) from pg_rewrite
   where ev_class = 'tt23v'::regclass and ev_type = '1';
 
 -- clean up all the random objects we made above
-\set VERBOSITY terse \\ -- suppress cascade details
 DROP SCHEMA temp_view_test CASCADE;
 DROP SCHEMA testviewschm2 CASCADE;

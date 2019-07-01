@@ -186,36 +186,36 @@ static const Oid object_classes[] = {
 
 
 static void findDependentObjects(const ObjectAddress *object,
-					 int objflags,
-					 int flags,
-					 ObjectAddressStack *stack,
-					 ObjectAddresses *targetObjects,
-					 const ObjectAddresses *pendingObjects,
-					 Relation *depRel);
+								 int objflags,
+								 int flags,
+								 ObjectAddressStack *stack,
+								 ObjectAddresses *targetObjects,
+								 const ObjectAddresses *pendingObjects,
+								 Relation *depRel);
 static void reportDependentObjects(const ObjectAddresses *targetObjects,
-					   DropBehavior behavior,
-					   int flags,
-					   const ObjectAddress *origObject);
+								   DropBehavior behavior,
+								   int flags,
+								   const ObjectAddress *origObject);
 static void deleteOneObject(const ObjectAddress *object,
-				Relation *depRel, int32 flags);
+							Relation *depRel, int32 flags);
 static void doDeletion(const ObjectAddress *object, int flags);
 static void AcquireDeletionLock(const ObjectAddress *object, int flags);
 static void ReleaseDeletionLock(const ObjectAddress *object);
 static bool find_expr_references_walker(Node *node,
-							find_expr_references_context *context);
+										find_expr_references_context *context);
 static void eliminate_duplicate_dependencies(ObjectAddresses *addrs);
 static int	object_address_comparator(const void *a, const void *b);
 static void add_object_address(ObjectClass oclass, Oid objectId, int32 subId,
-				   ObjectAddresses *addrs);
-static void add_exact_object_address_extra(const ObjectAddress *object,
-							   const ObjectAddressExtra *extra,
 							   ObjectAddresses *addrs);
+static void add_exact_object_address_extra(const ObjectAddress *object,
+										   const ObjectAddressExtra *extra,
+										   ObjectAddresses *addrs);
 static bool object_address_present_add_flags(const ObjectAddress *object,
-								 int flags,
-								 ObjectAddresses *addrs);
+											 int flags,
+											 ObjectAddresses *addrs);
 static bool stack_address_present_add_flags(const ObjectAddress *object,
-								int flags,
-								ObjectAddressStack *stack);
+											int flags,
+											ObjectAddressStack *stack);
 static void DeleteInitPrivs(const ObjectAddress *object);
 
 
@@ -306,6 +306,10 @@ deleteObjectsInList(ObjectAddresses *targetObjects, Relation *depRel,
  * PERFORM_DELETION_SKIP_EXTENSIONS: do not delete extensions, even when
  * deleting objects that are part of an extension.  This should generally
  * be used only when dropping temporary objects.
+ *
+ * PERFORM_DELETION_CONCURRENT_LOCK: perform the drop normally but with a lock
+ * as if it were concurrent.  This is used by REINDEX CONCURRENTLY.
+ *
  */
 void
 performDeletion(const ObjectAddress *object,
@@ -1316,9 +1320,10 @@ doDeletion(const ObjectAddress *object, int flags)
 					relKind == RELKIND_PARTITIONED_INDEX)
 				{
 					bool		concurrent = ((flags & PERFORM_DELETION_CONCURRENTLY) != 0);
+					bool		concurrent_lock_mode = ((flags & PERFORM_DELETION_CONCURRENT_LOCK) != 0);
 
 					Assert(object->objectSubId == 0);
-					index_drop(object->objectId, concurrent);
+					index_drop(object->objectId, concurrent, concurrent_lock_mode);
 				}
 				else
 				{
@@ -2608,6 +2613,23 @@ record_object_address_dependencies(const ObjectAddress *depender,
 	recordMultipleDependencies(depender,
 							   referenced->refs, referenced->numrefs,
 							   behavior);
+}
+
+/*
+ * Sort the items in an ObjectAddresses array.
+ *
+ * The major sort key is OID-descending, so that newer objects will be listed
+ * first in most cases.  This is primarily useful for ensuring stable outputs
+ * from regression tests; it's not recommended if the order of the objects is
+ * determined by user input, such as the order of targets in a DROP command.
+ */
+void
+sort_object_addresses(ObjectAddresses *addrs)
+{
+	if (addrs->numrefs > 1)
+		qsort((void *) addrs->refs, addrs->numrefs,
+			  sizeof(ObjectAddress),
+			  object_address_comparator);
 }
 
 /*

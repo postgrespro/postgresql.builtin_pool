@@ -32,11 +32,11 @@
 static bool allocate_recordbuf(XLogReaderState *state, uint32 reclength);
 
 static bool ValidXLogRecordHeader(XLogReaderState *state, XLogRecPtr RecPtr,
-					  XLogRecPtr PrevRecPtr, XLogRecord *record, bool randAccess);
+								  XLogRecPtr PrevRecPtr, XLogRecord *record, bool randAccess);
 static bool ValidXLogRecord(XLogReaderState *state, XLogRecord *record,
-				XLogRecPtr recptr);
-static int ReadPageInternal(XLogReaderState *state, XLogRecPtr pageptr,
-				 int reqLen);
+							XLogRecPtr recptr);
+static int	ReadPageInternal(XLogReaderState *state, XLogRecPtr pageptr,
+							 int reqLen);
 static void report_invalid_record(XLogReaderState *state, const char *fmt,...) pg_attribute_printf(2, 3);
 
 static void ResetDecoder(XLogReaderState *state);
@@ -1425,7 +1425,7 @@ RestoreBlockImage(XLogReaderState *record, uint8 block_id, char *page)
 	{
 		/* If a backup block image is compressed, decompress it */
 		if (pglz_decompress(ptr, bkpb->bimg_len, tmp.data,
-							BLCKSZ - bkpb->hole_length) < 0)
+							BLCKSZ - bkpb->hole_length, true) < 0)
 		{
 			report_invalid_record(record, "invalid compressed image at %X/%X, block %d",
 								  (uint32) (record->ReadRecPtr >> 32),

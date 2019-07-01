@@ -86,7 +86,7 @@ static int	pending_client_encoding = PG_SQL_ASCII;
 
 /* Internal functions */
 static char *perform_default_encoding_conversion(const char *src,
-									int len, bool is_client_to_server);
+												 int len, bool is_client_to_server);
 static int	cliplen(const char *str, int len, int limit);
 
 
@@ -561,7 +561,7 @@ char *
 pg_any_to_server(const char *s, int len, int encoding)
 {
 	if (len <= 0)
-		return unconstify(char *, s);		/* empty string is always valid */
+		return unconstify(char *, s);	/* empty string is always valid */
 
 	if (encoding == DatabaseEncoding->encoding ||
 		encoding == PG_SQL_ASCII)
@@ -634,11 +634,11 @@ char *
 pg_server_to_any(const char *s, int len, int encoding)
 {
 	if (len <= 0)
-		return unconstify(char *, s);		/* empty string is always valid */
+		return unconstify(char *, s);	/* empty string is always valid */
 
 	if (encoding == DatabaseEncoding->encoding ||
 		encoding == PG_SQL_ASCII)
-		return unconstify(char *, s);		/* assume data is valid */
+		return unconstify(char *, s);	/* assume data is valid */
 
 	if (DatabaseEncoding->encoding == PG_SQL_ASCII)
 	{
@@ -1046,11 +1046,16 @@ GetMessageEncoding(void)
 WCHAR *
 pgwin32_message_to_UTF16(const char *str, int len, int *utf16len)
 {
+	int			msgenc = GetMessageEncoding();
 	WCHAR	   *utf16;
 	int			dstlen;
 	UINT		codepage;
 
-	codepage = pg_enc2name_tbl[GetMessageEncoding()].codepage;
+	if (msgenc == PG_SQL_ASCII)
+		/* No conversion is possible, and SQL_ASCII is never utf16. */
+		return NULL;
+
+	codepage = pg_enc2name_tbl[msgenc].codepage;
 
 	/*
 	 * Use MultiByteToWideChar directly if there is a corresponding codepage,
@@ -1075,7 +1080,7 @@ pgwin32_message_to_UTF16(const char *str, int len, int *utf16len)
 		{
 			utf8 = (char *) pg_do_encoding_conversion((unsigned char *) str,
 													  len,
-													  GetMessageEncoding(),
+													  msgenc,
 													  PG_UTF8);
 			if (utf8 != str)
 				len = strlen(utf8);

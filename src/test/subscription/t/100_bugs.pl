@@ -3,7 +3,7 @@ use strict;
 use warnings;
 use PostgresNode;
 use TestLib;
-use Test::More tests => 1;
+use Test::More tests => 3;
 
 # Bug #15114
 
@@ -30,7 +30,8 @@ $node_publisher->safe_psql('postgres',
 	"CREATE TABLE tab1 (a int PRIMARY KEY, b int)");
 
 $node_publisher->safe_psql('postgres',
-	"CREATE FUNCTION double(x int) RETURNS int IMMUTABLE LANGUAGE SQL AS 'select x * 2'");
+	"CREATE FUNCTION double(x int) RETURNS int IMMUTABLE LANGUAGE SQL AS 'select x * 2'"
+);
 
 # an index with a predicate that lends itself to constant expressions
 # evaluation
@@ -42,7 +43,8 @@ $node_subscriber->safe_psql('postgres',
 	"CREATE TABLE tab1 (a int PRIMARY KEY, b int)");
 
 $node_subscriber->safe_psql('postgres',
-	"CREATE FUNCTION double(x int) RETURNS int IMMUTABLE LANGUAGE SQL AS 'select x * 2'");
+	"CREATE FUNCTION double(x int) RETURNS int IMMUTABLE LANGUAGE SQL AS 'select x * 2'"
+);
 
 $node_subscriber->safe_psql('postgres',
 	"CREATE INDEX ON tab1 (b) WHERE a > double(1)");
@@ -51,15 +53,50 @@ $node_publisher->safe_psql('postgres',
 	"CREATE PUBLICATION pub1 FOR ALL TABLES");
 
 $node_subscriber->safe_psql('postgres',
-	"CREATE SUBSCRIPTION sub1 CONNECTION '$publisher_connstr application_name=sub1' PUBLICATION pub1");
+	"CREATE SUBSCRIPTION sub1 CONNECTION '$publisher_connstr' PUBLICATION pub1"
+);
 
 $node_publisher->wait_for_catchup('sub1');
 
 # This would crash, first on the publisher, and then (if the publisher
 # is fixed) on the subscriber.
-$node_publisher->safe_psql('postgres',
-	"INSERT INTO tab1 VALUES (1, 2)");
+$node_publisher->safe_psql('postgres', "INSERT INTO tab1 VALUES (1, 2)");
 
 $node_publisher->wait_for_catchup('sub1');
 
 pass('index predicates do not cause crash');
+
+$node_publisher->stop('fast');
+$node_subscriber->stop('fast');
+
+
+# Handling of temporary and unlogged tables with FOR ALL TABLES publications
+
+# If a FOR ALL TABLES publication exists, temporary and unlogged
+# tables are ignored for publishing changes.  The bug was that we
+# would still check in that case that such a table has a replica
+# identity set before accepting updates.  If it did not it would cause
+# an error when an update was attempted.
+
+$node_publisher = get_new_node('publisher2');
+$node_publisher->init(allows_streaming => 'logical');
+$node_publisher->start;
+
+$node_publisher->safe_psql('postgres',
+	"CREATE PUBLICATION pub FOR ALL TABLES");
+
+is( $node_publisher->psql(
+		'postgres',
+		"CREATE TEMPORARY TABLE tt1 AS SELECT 1 AS a; UPDATE tt1 SET a = 2;"),
+	0,
+	'update to temporary table without replica identity with FOR ALL TABLES publication'
+);
+
+is( $node_publisher->psql(
+		'postgres',
+		"CREATE UNLOGGED TABLE tu1 AS SELECT 1 AS a; UPDATE tu1 SET a = 2;"),
+	0,
+	'update to unlogged table without replica identity with FOR ALL TABLES publication'
+);
+
+$node_publisher->stop('fast');

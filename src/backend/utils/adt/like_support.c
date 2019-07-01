@@ -70,36 +70,36 @@ typedef enum
 
 static Node *like_regex_support(Node *rawreq, Pattern_Type ptype);
 static List *match_pattern_prefix(Node *leftop,
-					 Node *rightop,
-					 Pattern_Type ptype,
-					 Oid expr_coll,
-					 Oid opfamily,
-					 Oid indexcollation);
+								  Node *rightop,
+								  Pattern_Type ptype,
+								  Oid expr_coll,
+								  Oid opfamily,
+								  Oid indexcollation);
 static double patternsel_common(PlannerInfo *root,
-				  Oid oprid,
-				  Oid opfuncid,
-				  List *args,
-				  int varRelid,
-				  Oid collation,
-				  Pattern_Type ptype,
-				  bool negate);
+								Oid oprid,
+								Oid opfuncid,
+								List *args,
+								int varRelid,
+								Oid collation,
+								Pattern_Type ptype,
+								bool negate);
 static Pattern_Prefix_Status pattern_fixed_prefix(Const *patt,
-					 Pattern_Type ptype,
-					 Oid collation,
-					 Const **prefix,
-					 Selectivity *rest_selec);
+												  Pattern_Type ptype,
+												  Oid collation,
+												  Const **prefix,
+												  Selectivity *rest_selec);
 static Selectivity prefix_selectivity(PlannerInfo *root,
-				   VariableStatData *vardata,
-				   Oid vartype, Oid opfamily, Const *prefixcon);
+									  VariableStatData *vardata,
+									  Oid vartype, Oid opfamily, Const *prefixcon);
 static Selectivity like_selectivity(const char *patt, int pattlen,
-				 bool case_insensitive);
+									bool case_insensitive);
 static Selectivity regex_selectivity(const char *patt, int pattlen,
-				  bool case_insensitive,
-				  int fixed_prefix_len);
-static int pattern_char_isalpha(char c, bool is_multibyte,
-					 pg_locale_t locale, bool locale_is_c);
+									 bool case_insensitive,
+									 int fixed_prefix_len);
+static int	pattern_char_isalpha(char c, bool is_multibyte,
+								 pg_locale_t locale, bool locale_is_c);
 static Const *make_greater_string(const Const *str_const, FmgrInfo *ltproc,
-					Oid collation);
+								  Oid collation);
 static Datum string_to_datum(const char *str, Oid datatype);
 static Const *string_to_const(const char *str, Oid datatype);
 static Const *string_to_bytea_const(const char *str, size_t str_len);
@@ -256,6 +256,22 @@ match_pattern_prefix(Node *leftop,
 		((Const *) rightop)->constisnull)
 		return NIL;
 	patt = (Const *) rightop;
+
+	/*
+	 * Not supported if the expression collation is nondeterministic.  The
+	 * optimized equality or prefix tests use bytewise comparisons, which is
+	 * not consistent with nondeterministic collations.  The actual
+	 * pattern-matching implementation functions will later error out that
+	 * pattern-matching is not supported with nondeterministic collations. (We
+	 * could also error out here, but by doing it later we get more precise
+	 * error messages.)  (It should be possible to support at least
+	 * Pattern_Prefix_Exact, but no point as along as the actual
+	 * pattern-matching implementations don't support it.)
+	 *
+	 * expr_coll is not set for a non-collation-aware data type such as bytea.
+	 */
+	if (expr_coll && !get_collation_isdeterministic(expr_coll))
+		return NIL;
 
 	/*
 	 * Try to extract a fixed prefix from the pattern.

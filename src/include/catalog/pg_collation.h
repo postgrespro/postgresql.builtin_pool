@@ -33,6 +33,7 @@ CATALOG(pg_collation,3456,CollationRelationId)
 	Oid			collnamespace;	/* OID of namespace containing collation */
 	Oid			collowner;		/* owner of collation */
 	char		collprovider;	/* see constants below */
+	bool		collisdeterministic BKI_DEFAULT(t);
 	int32		collencoding;	/* encoding for this collation; -1 = "all" */
 	NameData	collcollate;	/* LC_COLLATE setting */
 	NameData	collctype;		/* LC_CTYPE setting */
@@ -58,14 +59,15 @@ typedef FormData_pg_collation *Form_pg_collation;
 #endif							/* EXPOSE_TO_CLIENT_CODE */
 
 
-extern Oid CollationCreate(const char *collname, Oid collnamespace,
-				Oid collowner,
-				char collprovider,
-				int32 collencoding,
-				const char *collcollate, const char *collctype,
-				const char *collversion,
-				bool if_not_exists,
-				bool quiet);
+extern Oid	CollationCreate(const char *collname, Oid collnamespace,
+							Oid collowner,
+							char collprovider,
+							bool collisdeterministic,
+							int32 collencoding,
+							const char *collcollate, const char *collctype,
+							const char *collversion,
+							bool if_not_exists,
+							bool quiet);
 extern void RemoveCollationById(Oid collationOid);
 
 #endif							/* PG_COLLATION_H */

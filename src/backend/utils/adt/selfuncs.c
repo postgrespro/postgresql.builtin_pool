@@ -149,55 +149,55 @@ get_index_stats_hook_type get_index_stats_hook = NULL;
 
 static double eqsel_internal(PG_FUNCTION_ARGS, bool negate);
 static double eqjoinsel_inner(Oid opfuncoid,
-				VariableStatData *vardata1, VariableStatData *vardata2,
-				double nd1, double nd2,
-				bool isdefault1, bool isdefault2,
-				AttStatsSlot *sslot1, AttStatsSlot *sslot2,
-				Form_pg_statistic stats1, Form_pg_statistic stats2,
-				bool have_mcvs1, bool have_mcvs2);
+							  VariableStatData *vardata1, VariableStatData *vardata2,
+							  double nd1, double nd2,
+							  bool isdefault1, bool isdefault2,
+							  AttStatsSlot *sslot1, AttStatsSlot *sslot2,
+							  Form_pg_statistic stats1, Form_pg_statistic stats2,
+							  bool have_mcvs1, bool have_mcvs2);
 static double eqjoinsel_semi(Oid opfuncoid,
-			   VariableStatData *vardata1, VariableStatData *vardata2,
-			   double nd1, double nd2,
-			   bool isdefault1, bool isdefault2,
-			   AttStatsSlot *sslot1, AttStatsSlot *sslot2,
-			   Form_pg_statistic stats1, Form_pg_statistic stats2,
-			   bool have_mcvs1, bool have_mcvs2,
-			   RelOptInfo *inner_rel);
+							 VariableStatData *vardata1, VariableStatData *vardata2,
+							 double nd1, double nd2,
+							 bool isdefault1, bool isdefault2,
+							 AttStatsSlot *sslot1, AttStatsSlot *sslot2,
+							 Form_pg_statistic stats1, Form_pg_statistic stats2,
+							 bool have_mcvs1, bool have_mcvs2,
+							 RelOptInfo *inner_rel);
 static bool estimate_multivariate_ndistinct(PlannerInfo *root,
-								RelOptInfo *rel, List **varinfos, double *ndistinct);
+											RelOptInfo *rel, List **varinfos, double *ndistinct);
 static bool convert_to_scalar(Datum value, Oid valuetypid, Oid collid,
-				  double *scaledvalue,
-				  Datum lobound, Datum hibound, Oid boundstypid,
-				  double *scaledlobound, double *scaledhibound);
+							  double *scaledvalue,
+							  Datum lobound, Datum hibound, Oid boundstypid,
+							  double *scaledlobound, double *scaledhibound);
 static double convert_numeric_to_scalar(Datum value, Oid typid, bool *failure);
 static void convert_string_to_scalar(char *value,
-						 double *scaledvalue,
-						 char *lobound,
-						 double *scaledlobound,
-						 char *hibound,
-						 double *scaledhibound);
+									 double *scaledvalue,
+									 char *lobound,
+									 double *scaledlobound,
+									 char *hibound,
+									 double *scaledhibound);
 static void convert_bytea_to_scalar(Datum value,
-						double *scaledvalue,
-						Datum lobound,
-						double *scaledlobound,
-						Datum hibound,
-						double *scaledhibound);
+									double *scaledvalue,
+									Datum lobound,
+									double *scaledlobound,
+									Datum hibound,
+									double *scaledhibound);
 static double convert_one_string_to_scalar(char *value,
-							 int rangelo, int rangehi);
+										   int rangelo, int rangehi);
 static double convert_one_bytea_to_scalar(unsigned char *value, int valuelen,
-							int rangelo, int rangehi);
+										  int rangelo, int rangehi);
 static char *convert_string_datum(Datum value, Oid typid, Oid collid,
-					 bool *failure);
+								  bool *failure);
 static double convert_timevalue_to_scalar(Datum value, Oid typid,
-							bool *failure);
+										  bool *failure);
 static void examine_simple_variable(PlannerInfo *root, Var *var,
-						VariableStatData *vardata);
+									VariableStatData *vardata);
 static bool get_variable_range(PlannerInfo *root, VariableStatData *vardata,
-				   Oid sortop, Datum *min, Datum *max);
+							   Oid sortop, Datum *min, Datum *max);
 static bool get_actual_variable_range(PlannerInfo *root,
-						  VariableStatData *vardata,
-						  Oid sortop,
-						  Datum *min, Datum *max);
+									  VariableStatData *vardata,
+									  Oid sortop,
+									  Datum *min, Datum *max);
 static RelOptInfo *find_join_input_rel(PlannerInfo *root, Relids relids);
 
 
@@ -557,6 +557,81 @@ scalarineqsel(PlannerInfo *root, Oid operator, bool isgt, bool iseq,
 
 	if (!HeapTupleIsValid(vardata->statsTuple))
 	{
+		/*
+		 * No stats are available.  Typically this means we have to fall back
+		 * on the default estimate; but if the variable is CTID then we can
+		 * make an estimate based on comparing the constant to the table size.
+		 */
+		if (vardata->var && IsA(vardata->var, Var) &&
+			((Var *) vardata->var)->varattno == SelfItemPointerAttributeNumber)
+		{
+			ItemPointer itemptr;
+			double		block;
+			double		density;
+
+			/*
+			 * If the relation's empty, we're going to include all of it.
+			 * (This is mostly to avoid divide-by-zero below.)
+			 */
+			if (vardata->rel->pages == 0)
+				return 1.0;
+
+			itemptr = (ItemPointer) DatumGetPointer(constval);
+			block = ItemPointerGetBlockNumberNoCheck(itemptr);
+
+			/*
+			 * Determine the average number of tuples per page (density).
+			 *
+			 * Since the last page will, on average, be only half full, we can
+			 * estimate it to have half as many tuples as earlier pages.  So
+			 * give it half the weight of a regular page.
+			 */
+			density = vardata->rel->tuples / (vardata->rel->pages - 0.5);
+
+			/* If target is the last page, use half the density. */
+			if (block >= vardata->rel->pages - 1)
+				density *= 0.5;
+
+			/*
+			 * Using the average tuples per page, calculate how far into the
+			 * page the itemptr is likely to be and adjust block accordingly,
+			 * by adding that fraction of a whole block (but never more than a
+			 * whole block, no matter how high the itemptr's offset is).  Here
+			 * we are ignoring the possibility of dead-tuple line pointers,
+			 * which is fairly bogus, but we lack the info to do better.
+			 */
+			if (density > 0.0)
+			{
+				OffsetNumber offset = ItemPointerGetOffsetNumberNoCheck(itemptr);
+
+				block += Min(offset / density, 1.0);
+			}
+
+			/*
+			 * Convert relative block number to selectivity.  Again, the last
+			 * page has only half weight.
+			 */
+			selec = block / (vardata->rel->pages - 0.5);
+
+			/*
+			 * The calculation so far gave us a selectivity for the "<=" case.
+			 * We'll have one less tuple for "<" and one additional tuple for
+			 * ">=", the latter of which we'll reverse the selectivity for
+			 * below, so we can simply subtract one tuple for both cases.  The
+			 * cases that need this adjustment can be identified by iseq being
+			 * equal to isgt.
+			 */
+			if (iseq == isgt && vardata->rel->tuples >= 1.0)
+				selec -= (1.0 / vardata->rel->tuples);
+
+			/* Finally, reverse the selectivity for the ">", ">=" cases. */
+			if (isgt)
+				selec = 1.0 - selec;
+
+			CLAMP_PROBABILITY(selec);
+			return selec;
+		}
+
 		/* no stats available, so default result */
 		return DEFAULT_INEQ_SEL;
 	}
@@ -4514,18 +4589,29 @@ examine_variable(PlannerInfo *root, Node *node, int varRelid,
 							{
 								/* Get index's table for permission check */
 								RangeTblEntry *rte;
+								Oid			userid;
 
 								rte = planner_rt_fetch(index->rel->relid, root);
 								Assert(rte->rtekind == RTE_RELATION);
 
 								/*
+								 * Use checkAsUser if it's set, in case we're
+								 * accessing the table via a view.
+								 */
+								userid = rte->checkAsUser ? rte->checkAsUser : GetUserId();
+
+								/*
 								 * For simplicity, we insist on the whole
 								 * table being selectable, rather than trying
 								 * to identify which column(s) the index
-								 * depends on.
+								 * depends on.  Also require all rows to be
+								 * selectable --- there must be no
+								 * securityQuals from security barrier views
+								 * or RLS policies.
 								 */
 								vardata->acl_ok =
-									(pg_class_aclcheck(rte->relid, GetUserId(),
+									rte->securityQuals == NIL &&
+									(pg_class_aclcheck(rte->relid, userid,
 													   ACL_SELECT) == ACLCHECK_OK);
 							}
 							else
@@ -4588,12 +4674,22 @@ examine_simple_variable(PlannerInfo *root, Var *var,
 
 		if (HeapTupleIsValid(vardata->statsTuple))
 		{
-			/* check if user has permission to read this column */
+			Oid			userid;
+
+			/*
+			 * Check if user has permission to read this column.  We require
+			 * all rows to be accessible, so there must be no securityQuals
+			 * from security barrier views or RLS policies.  Use checkAsUser
+			 * if it's set, in case we're accessing the table via a view.
+			 */
+			userid = rte->checkAsUser ? rte->checkAsUser : GetUserId();
+
 			vardata->acl_ok =
-				(pg_class_aclcheck(rte->relid, GetUserId(),
-								   ACL_SELECT) == ACLCHECK_OK) ||
-				(pg_attribute_aclcheck(rte->relid, var->varattno, GetUserId(),
-									   ACL_SELECT) == ACLCHECK_OK);
+				rte->securityQuals == NIL &&
+				((pg_class_aclcheck(rte->relid, userid,
+									ACL_SELECT) == ACLCHECK_OK) ||
+				 (pg_attribute_aclcheck(rte->relid, var->varattno, userid,
+										ACL_SELECT) == ACLCHECK_OK));
 		}
 		else
 		{
@@ -5112,11 +5208,10 @@ get_actual_variable_range(PlannerInfo *root, VariableStatData *vardata,
 
 			/*
 			 * Open the table and index so we can read from them.  We should
-			 * already have at least AccessShareLock on the table, but not
-			 * necessarily on the index.
+			 * already have some type of lock on each.
 			 */
 			heapRel = table_open(rte->relid, NoLock);
-			indexRel = index_open(index->indexoid, AccessShareLock);
+			indexRel = index_open(index->indexoid, NoLock);
 
 			/* extract index key information from the index's pg_index info */
 			indexInfo = BuildIndexInfo(indexRel);
@@ -5230,7 +5325,7 @@ get_actual_variable_range(PlannerInfo *root, VariableStatData *vardata,
 			/* Clean everything up */
 			ExecDropSingleTupleTableSlot(slot);
 
-			index_close(indexRel, AccessShareLock);
+			index_close(indexRel, NoLock);
 			table_close(heapRel, NoLock);
 
 			MemoryContextSwitchTo(oldcontext);
@@ -6397,9 +6492,10 @@ gincostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
 	 */
 	if (!index->hypothetical)
 	{
-		indexRel = index_open(index->indexoid, AccessShareLock);
+		/* Lock should have already been obtained in plancat.c */
+		indexRel = index_open(index->indexoid, NoLock);
 		ginGetStats(indexRel, &ginStats);
-		index_close(indexRel, AccessShareLock);
+		index_close(indexRel, NoLock);
 	}
 	else
 	{
@@ -6706,11 +6802,12 @@ brincostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
 							  &spc_seq_page_cost);
 
 	/*
-	 * Obtain some data from the index itself.
+	 * Obtain some data from the index itself.  A lock should have already
+	 * been obtained on the index in plancat.c.
 	 */
-	indexRel = index_open(index->indexoid, AccessShareLock);
+	indexRel = index_open(index->indexoid, NoLock);
 	brinGetStats(indexRel, &statsData);
-	index_close(indexRel, AccessShareLock);
+	index_close(indexRel, NoLock);
 
 	/*
 	 * Compute index correlation

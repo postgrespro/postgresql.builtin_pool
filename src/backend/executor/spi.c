@@ -52,26 +52,26 @@ static int	_SPI_stack_depth = 0;	/* allocated size of _SPI_stack */
 static int	_SPI_connected = -1;	/* current stack index */
 
 static Portal SPI_cursor_open_internal(const char *name, SPIPlanPtr plan,
-						 ParamListInfo paramLI, bool read_only);
+									   ParamListInfo paramLI, bool read_only);
 
 static void _SPI_prepare_plan(const char *src, SPIPlanPtr plan);
 
 static void _SPI_prepare_oneshot_plan(const char *src, SPIPlanPtr plan);
 
-static int _SPI_execute_plan(SPIPlanPtr plan, ParamListInfo paramLI,
-				  Snapshot snapshot, Snapshot crosscheck_snapshot,
-				  bool read_only, bool fire_triggers, uint64 tcount);
+static int	_SPI_execute_plan(SPIPlanPtr plan, ParamListInfo paramLI,
+							  Snapshot snapshot, Snapshot crosscheck_snapshot,
+							  bool read_only, bool fire_triggers, uint64 tcount);
 
 static ParamListInfo _SPI_convert_params(int nargs, Oid *argtypes,
-					Datum *Values, const char *Nulls);
+										 Datum *Values, const char *Nulls);
 
 static int	_SPI_pquery(QueryDesc *queryDesc, bool fire_triggers, uint64 tcount);
 
 static void _SPI_error_callback(void *arg);
 
 static void _SPI_cursor_operation(Portal portal,
-					  FetchDirection direction, long count,
-					  DestReceiver *dest);
+								  FetchDirection direction, long count,
+								  DestReceiver *dest);
 
 static SPIPlanPtr _SPI_make_plan_non_temp(SPIPlanPtr plan);
 static SPIPlanPtr _SPI_save_plan(SPIPlanPtr plan);
@@ -217,8 +217,8 @@ SPI_start_transaction(void)
 	MemoryContextSwitchTo(oldcontext);
 }
 
-void
-SPI_commit(void)
+static void
+_SPI_commit(bool chain)
 {
 	MemoryContext oldcontext = CurrentMemoryContext;
 
@@ -241,6 +241,14 @@ SPI_commit(void)
 				(errcode(ERRCODE_INVALID_TRANSACTION_TERMINATION),
 				 errmsg("cannot commit while a subtransaction is active")));
 
+	/*
+	 * Hold any pinned portals that any PLs might be using.  We have to do
+	 * this before changing transaction state, since this will run
+	 * user-defined code that might throw an error.
+	 */
+	HoldPinnedPortals();
+
+	/* Start the actual commit */
 	_SPI_current->internal_xact = true;
 
 	/*
@@ -250,14 +258,36 @@ SPI_commit(void)
 	while (ActiveSnapshotSet())
 		PopActiveSnapshot();
 
+	if (chain)
+		SaveTransactionCharacteristics();
+
 	CommitTransactionCommand();
+
+	if (chain)
+	{
+		StartTransactionCommand();
+		RestoreTransactionCharacteristics();
+	}
+
 	MemoryContextSwitchTo(oldcontext);
 
 	_SPI_current->internal_xact = false;
 }
 
 void
-SPI_rollback(void)
+SPI_commit(void)
+{
+	_SPI_commit(false);
+}
+
+void
+SPI_commit_and_chain(void)
+{
+	_SPI_commit(true);
+}
+
+static void
+_SPI_rollback(bool chain)
 {
 	MemoryContext oldcontext = CurrentMemoryContext;
 
@@ -272,12 +302,43 @@ SPI_rollback(void)
 				(errcode(ERRCODE_INVALID_TRANSACTION_TERMINATION),
 				 errmsg("cannot roll back while a subtransaction is active")));
 
+	/*
+	 * Hold any pinned portals that any PLs might be using.  We have to do
+	 * this before changing transaction state, since this will run
+	 * user-defined code that might throw an error, and in any case couldn't
+	 * be run in an already-aborted transaction.
+	 */
+	HoldPinnedPortals();
+
+	/* Start the actual rollback */
 	_SPI_current->internal_xact = true;
 
+	if (chain)
+		SaveTransactionCharacteristics();
+
 	AbortCurrentTransaction();
+
+	if (chain)
+	{
+		StartTransactionCommand();
+		RestoreTransactionCharacteristics();
+	}
+
 	MemoryContextSwitchTo(oldcontext);
 
 	_SPI_current->internal_xact = false;
+}
+
+void
+SPI_rollback(void)
+{
+	_SPI_rollback(false);
+}
+
+void
+SPI_rollback_and_chain(void)
+{
+	_SPI_rollback(true);
 }
 
 /*

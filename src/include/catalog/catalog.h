@@ -24,18 +24,19 @@ extern bool IsCatalogRelation(Relation relation);
 
 extern bool IsSystemClass(Oid relid, Form_pg_class reltuple);
 extern bool IsToastClass(Form_pg_class reltuple);
-extern bool IsCatalogClass(Oid relid, Form_pg_class reltuple);
 
-extern bool IsSystemNamespace(Oid namespaceId);
+extern bool IsCatalogRelationOid(Oid relid);
+
+extern bool IsCatalogNamespace(Oid namespaceId);
 extern bool IsToastNamespace(Oid namespaceId);
 
 extern bool IsReservedName(const char *name);
 
 extern bool IsSharedRelation(Oid relationId);
 
-extern Oid GetNewOidWithIndex(Relation relation, Oid indexId,
-				   AttrNumber oidcolumn);
-extern Oid GetNewRelFileNode(Oid reltablespace, Relation pg_class,
-				  char relpersistence);
+extern Oid	GetNewOidWithIndex(Relation relation, Oid indexId,
+							   AttrNumber oidcolumn);
+extern Oid	GetNewRelFileNode(Oid reltablespace, Relation pg_class,
+							  char relpersistence);
 
 #endif							/* CATALOG_H */

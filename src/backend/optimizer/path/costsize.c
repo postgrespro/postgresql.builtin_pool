@@ -149,32 +149,32 @@ typedef struct
 
 static List *extract_nonindex_conditions(List *qual_clauses, List *indexclauses);
 static MergeScanSelCache *cached_scansel(PlannerInfo *root,
-			   RestrictInfo *rinfo,
-			   PathKey *pathkey);
+										 RestrictInfo *rinfo,
+										 PathKey *pathkey);
 static void cost_rescan(PlannerInfo *root, Path *path,
-			Cost *rescan_startup_cost, Cost *rescan_total_cost);
+						Cost *rescan_startup_cost, Cost *rescan_total_cost);
 static bool cost_qual_eval_walker(Node *node, cost_qual_eval_context *context);
 static void get_restriction_qual_cost(PlannerInfo *root, RelOptInfo *baserel,
-						  ParamPathInfo *param_info,
-						  QualCost *qpqual_cost);
+									  ParamPathInfo *param_info,
+									  QualCost *qpqual_cost);
 static bool has_indexed_join_quals(NestPath *joinpath);
 static double approx_tuple_count(PlannerInfo *root, JoinPath *path,
-				   List *quals);
+								 List *quals);
 static double calc_joinrel_size_estimate(PlannerInfo *root,
-						   RelOptInfo *joinrel,
-						   RelOptInfo *outer_rel,
-						   RelOptInfo *inner_rel,
-						   double outer_rows,
-						   double inner_rows,
-						   SpecialJoinInfo *sjinfo,
-						   List *restrictlist);
+										 RelOptInfo *joinrel,
+										 RelOptInfo *outer_rel,
+										 RelOptInfo *inner_rel,
+										 double outer_rows,
+										 double inner_rows,
+										 SpecialJoinInfo *sjinfo,
+										 List *restrictlist);
 static Selectivity get_foreign_key_join_selectivity(PlannerInfo *root,
-								 Relids outer_relids,
-								 Relids inner_relids,
-								 SpecialJoinInfo *sjinfo,
-								 List **restrictlist);
+													Relids outer_relids,
+													Relids inner_relids,
+													SpecialJoinInfo *sjinfo,
+													List **restrictlist);
 static Cost append_nonpartial_cost(List *subpaths, int numpaths,
-					   int parallel_workers);
+								   int parallel_workers);
 static void set_rel_width(PlannerInfo *root, RelOptInfo *rel);
 static double relation_byte_size(double tuples, int width);
 static double page_size(double tuples, int width);
@@ -1883,33 +1883,92 @@ cost_append(AppendPath *apath)
 
 	apath->path.startup_cost = 0;
 	apath->path.total_cost = 0;
+	apath->path.rows = 0;
 
 	if (apath->subpaths == NIL)
 		return;
 
 	if (!apath->path.parallel_aware)
 	{
-		Path	   *subpath = (Path *) linitial(apath->subpaths);
+		List	   *pathkeys = apath->path.pathkeys;
 
-		/*
-		 * Startup cost of non-parallel-aware Append is the startup cost of
-		 * first subpath.
-		 */
-		apath->path.startup_cost = subpath->startup_cost;
-
-		/* Compute rows and costs as sums of subplan rows and costs. */
-		foreach(l, apath->subpaths)
+		if (pathkeys == NIL)
 		{
-			Path	   *subpath = (Path *) lfirst(l);
+			Path	   *subpath = (Path *) linitial(apath->subpaths);
 
-			apath->path.rows += subpath->rows;
-			apath->path.total_cost += subpath->total_cost;
+			/*
+			 * For an unordered, non-parallel-aware Append we take the startup
+			 * cost as the startup cost of the first subpath.
+			 */
+			apath->path.startup_cost = subpath->startup_cost;
+
+			/* Compute rows and costs as sums of subplan rows and costs. */
+			foreach(l, apath->subpaths)
+			{
+				Path	   *subpath = (Path *) lfirst(l);
+
+				apath->path.rows += subpath->rows;
+				apath->path.total_cost += subpath->total_cost;
+			}
+		}
+		else
+		{
+			/*
+			 * For an ordered, non-parallel-aware Append we take the startup
+			 * cost as the sum of the subpath startup costs.  This ensures
+			 * that we don't underestimate the startup cost when a query's
+			 * LIMIT is such that several of the children have to be run to
+			 * satisfy it.  This might be overkill --- another plausible hack
+			 * would be to take the Append's startup cost as the maximum of
+			 * the child startup costs.  But we don't want to risk believing
+			 * that an ORDER BY LIMIT query can be satisfied at small cost
+			 * when the first child has small startup cost but later ones
+			 * don't.  (If we had the ability to deal with nonlinear cost
+			 * interpolation for partial retrievals, we would not need to be
+			 * so conservative about this.)
+			 *
+			 * This case is also different from the above in that we have to
+			 * account for possibly injecting sorts into subpaths that aren't
+			 * natively ordered.
+			 */
+			foreach(l, apath->subpaths)
+			{
+				Path	   *subpath = (Path *) lfirst(l);
+				Path		sort_path;	/* dummy for result of cost_sort */
+
+				if (!pathkeys_contained_in(pathkeys, subpath->pathkeys))
+				{
+					/*
+					 * We'll need to insert a Sort node, so include costs for
+					 * that.  We can use the parent's LIMIT if any, since we
+					 * certainly won't pull more than that many tuples from
+					 * any child.
+					 */
+					cost_sort(&sort_path,
+							  NULL, /* doesn't currently need root */
+							  pathkeys,
+							  subpath->total_cost,
+							  subpath->rows,
+							  subpath->pathtarget->width,
+							  0.0,
+							  work_mem,
+							  apath->limit_tuples);
+					subpath = &sort_path;
+				}
+
+				apath->path.rows += subpath->rows;
+				apath->path.startup_cost += subpath->startup_cost;
+				apath->path.total_cost += subpath->total_cost;
+			}
 		}
 	}
 	else						/* parallel-aware */
 	{
 		int			i = 0;
 		double		parallel_divisor = get_parallel_divisor(&apath->path);
+
+		/* Parallel-aware Append never produces ordered output. */
+		Assert(apath->path.pathkeys == NIL);
 
 		/* Calculate startup cost. */
 		foreach(l, apath->subpaths)

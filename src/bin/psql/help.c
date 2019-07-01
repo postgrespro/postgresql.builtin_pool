@@ -21,13 +21,14 @@
 #include <termios.h>
 #endif
 
-#include "common.h"
+#include "common/logging.h"
 #include "common/username.h"
+
+#include "common.h"
 #include "help.h"
 #include "input.h"
 #include "settings.h"
 #include "sql_help.h"
-
 
 /*
  * PLEASE:
@@ -59,7 +60,7 @@ usage(unsigned short int pager)
 		user = get_user_name(&errstr);
 		if (!user)
 		{
-			psql_error("%s\n", errstr);
+			pg_log_fatal("%s", errstr);
 			exit(EXIT_FAILURE);
 		}
 	}
@@ -168,7 +169,7 @@ slashUsage(unsigned short int pager)
 	 * Use "psql --help=commands | wc" to count correctly.  It's okay to count
 	 * the USE_READLINE line even in builds without that.
 	 */
-	output = PageOutput(126, pager ? &(pset.popt.topt) : NULL);
+	output = PageOutput(127, pager ? &(pset.popt.topt) : NULL);
 
 	fprintf(output, _("General\n"));
 	fprintf(output, _("  \\copyright             show PostgreSQL usage and distribution terms\n"));
@@ -250,6 +251,7 @@ slashUsage(unsigned short int pager)
 	fprintf(output, _("  \\do[S]  [PATTERN]      list operators\n"));
 	fprintf(output, _("  \\dO[S+] [PATTERN]      list collations\n"));
 	fprintf(output, _("  \\dp     [PATTERN]      list table, view, and sequence access privileges\n"));
+	fprintf(output, _("  \\dP[tin+] [PATTERN]    list [only table/index] partitioned relations\n"));
 	fprintf(output, _("  \\drds [PATRN1 [PATRN2]] list per-database role settings\n"));
 	fprintf(output, _("  \\dRp[+] [PATTERN]      list replication publications\n"));
 	fprintf(output, _("  \\dRs[+] [PATTERN]      list replication subscriptions\n"));
@@ -339,7 +341,7 @@ helpVariables(unsigned short int pager)
 	 * Windows builds currently print one more line than non-Windows builds.
 	 * Using the larger number is fine.
 	 */
-	output = PageOutput(156, pager ? &(pset.popt.topt) : NULL);
+	output = PageOutput(158, pager ? &(pset.popt.topt) : NULL);
 
 	fprintf(output, _("List of specially treated variables\n\n"));
 
@@ -413,7 +415,7 @@ helpVariables(unsigned short int pager)
 	fprintf(output, _("  USER\n"
 					  "    the currently connected database user\n"));
 	fprintf(output, _("  VERBOSITY\n"
-					  "    controls verbosity of error reports [default, verbose, terse]\n"));
+					  "    controls verbosity of error reports [default, verbose, terse, sqlstate]\n"));
 	fprintf(output, _("  VERSION\n"
 					  "  VERSION_NAME\n"
 					  "  VERSION_NUM\n"

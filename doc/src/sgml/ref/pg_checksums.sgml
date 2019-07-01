@@ -16,7 +16,7 @@ PostgreSQL documentation
 
  <refnamediv>
   <refname>pg_checksums</refname>
-  <refpurpose>verify data checksums in a <productname>PostgreSQL</productname> database cluster</refpurpose>
+  <refpurpose>enable, disable or check data checksums in a <productname>PostgreSQL</productname> database cluster</refpurpose>
  </refnamediv>
 
  <refsynopsisdiv>
@@ -36,10 +36,19 @@ PostgreSQL documentation
  <refsect1 id="r1-app-pg_checksums-1">
   <title>Description</title>
   <para>
-   <application>pg_checksums</application> verifies data checksums in a
-   <productname>PostgreSQL</productname> cluster.  The server must be shut
-   down cleanly before running <application>pg_checksums</application>.
-   The exit status is zero if there are no checksum errors, otherwise nonzero.
+   <application>pg_checksums</application> checks, enables or disables data
+   checksums in a <productname>PostgreSQL</productname> cluster.  The server
+   must be shut down cleanly before running
+   <application>pg_checksums</application>. When verifying checksums, the exit
+   status is zero if there are no checksum errors, and nonzero if at least one
+   checksum failure is detected. When enabling or disabling checksums, the
+   exit status is nonzero if the operation failed.
+  </para>
+
+  <para>
+   When verifying checksums, every file in the cluster is scanned. When
+   enabling checksums, every file in the cluster is rewritten. Disabling
+   checksums only updates the file <filename>pg_control</filename>.
   </para>
  </refsect1>
 
@@ -61,20 +70,80 @@ PostgreSQL documentation
      </varlistentry>
 
      <varlistentry>
-      <term><option>-v</option></term>
-      <term><option>--verbose</option></term>
+      <term><option>-c</option></term>
+      <term><option>--check</option></term>
       <listitem>
        <para>
-        Enable verbose output. Lists all checked files.
+        Checks checksums. This is the default mode if nothing else is
+        specified.
        </para>
       </listitem>
      </varlistentry>
 
      <varlistentry>
-      <term><option>-r <replaceable>relfilenode</replaceable></option></term>
+      <term><option>-d</option></term>
+      <term><option>--disable</option></term>
       <listitem>
        <para>
-        Only validate checksums in the relation with specified relfilenode.
+        Disables checksums.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><option>-e</option></term>
+      <term><option>--enable</option></term>
+      <listitem>
+       <para>
+        Enables checksums.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><option>-f <replaceable>filenode</replaceable></option></term>
+      <term><option>--filenode=<replaceable>filenode</replaceable></option></term>
+      <listitem>
+       <para>
+        Only validate checksums in the relation with filenode
+        <replaceable>filenode</replaceable>. 
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><option>-N</option></term>
+      <term><option>--no-sync</option></term>
+      <listitem>
+       <para>
+        By default, <command>pg_checksums</command> will wait for all files
+        to be written safely to disk.  This option causes
+        <command>pg_checksums</command> to return without waiting, which is
+        faster, but means that a subsequent operating system crash can leave
+        the updated data folder corrupt.  Generally, this option is useful
+        for testing but should not be used on a production installation.
+        This option has no effect when using <literal>--check</literal>.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><option>-P</option></term>
+      <term><option>--progress</option></term>
+      <listitem>
+       <para>
+        Enable progress reporting. Turning this on will deliver a progress
+        report while checking or enabling checksums.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><option>-v</option></term>
+      <term><option>--verbose</option></term>
+      <listitem>
+       <para>
+        Enable verbose output. Lists all checked files.
        </para>
       </listitem>
      </varlistentry>
@@ -117,6 +186,43 @@ PostgreSQL documentation
      </para>
     </listitem>
    </varlistentry>
+
+   <varlistentry>
+    <term><envar>PG_COLOR</envar></term>
+    <listitem>
+     <para>
+      Specifies whether to use color in diagnostics messages.  Possible values
+      are <literal>always</literal>, <literal>auto</literal>,
+      <literal>never</literal>.
+     </para>
+    </listitem>
+   </varlistentry>
   </variablelist>
+ </refsect1>
+
+ <refsect1>
+  <title>Notes</title>
+  <para>
+   Enabling checksums in a large cluster can potentially take a long time.
+   During this operation, the cluster or other programs that write to the
+   data directory must not be started or else data loss may occur.
+  </para>
+  <para>
+   When using a replication setup with tools which perform direct copies
+   of relation file blocks (for example <xref linkend="app-pgrewind"/>),
+   enabling or disabling checksums can lead to page corruptions in the
+   shape of incorrect checksums if the operation is not done consistently
+   across all nodes. When enabling or disabling checksums in a replication
+   setup, it is thus recommended to stop all the clusters before switching
+   them all consistently. Destroying all standbys, performing the operation
+   on the primary and finally recreating the standbys from scratch is also
+   safe.
+  </para>
+  <para>
+   If <application>pg_checksums</application> is aborted or killed while
+   enabling or disabling checksums, the cluster's data checksum configuration
+   remains unchanged, and <application>pg_checksums</application> can be
+   re-run to perform the same operation.
+  </para>
  </refsect1>
 </refentry>

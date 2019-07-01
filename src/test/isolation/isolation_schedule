@@ -24,6 +24,8 @@ test: deadlock-soft-2
 test: fk-contention
 test: fk-deadlock
 test: fk-deadlock2
+test: fk-partitioned-1
+test: fk-partitioned-2
 test: eval-plan-qual
 test: lock-update-delete
 test: lock-update-traversal
@@ -34,6 +36,7 @@ test: insert-conflict-do-update
 test: insert-conflict-do-update-2
 test: insert-conflict-do-update-3
 test: insert-conflict-toast
+test: insert-conflict-specconflict
 test: delete-abort-savept
 test: delete-abort-savept-2
 test: aborted-keyrevoke
@@ -42,9 +45,11 @@ test: multixact-no-forget
 test: lock-committed-update
 test: lock-committed-keyupdate
 test: update-locked-tuple
+test: reindex-concurrently
 test: propagate-lock-delete
 test: tuplelock-conflict
 test: tuplelock-update
+test: tuplelock-upgrade-no-deadlock
 test: freeze-the-dead
 test: nowait
 test: nowait-2

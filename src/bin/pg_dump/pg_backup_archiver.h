@@ -13,7 +13,7 @@
  *		as this notice is not removed.
  *
  *	The author is not responsible for loss or damages that may
- *	result from it's use.
+ *	result from its use.
  *
  *
  * IDENTIFICATION
@@ -96,12 +96,7 @@ typedef z_stream *z_streamp;
 													 * behavior */
 #define K_VERS_1_14 MAKE_ARCHIVE_VERSION(1, 14, 0)	/* add tableam */
 
-/*
- * Current archive version number (the format we can output)
- *
- * Note: If you update the current archive version, consider
- * https://postgr.es/m/20190227123217.GA27552@alvherre.pgsql
- */
+/* Current archive version number (the format we can output) */
 #define K_VERS_MAJOR 1
 #define K_VERS_MINOR 14
 #define K_VERS_REV 0
@@ -132,17 +127,14 @@ struct ParallelState;
 #define READ_ERROR_EXIT(fd) \
 	do { \
 		if (feof(fd)) \
-			exit_horribly(modulename, \
-						  "could not read from input file: end of file\n"); \
+			fatal("could not read from input file: end of file"); \
 		else \
-			exit_horribly(modulename, \
-					"could not read from input file: %s\n", strerror(errno)); \
+			fatal("could not read from input file: %m"); \
 	} while (0)
 
 #define WRITE_ERROR_EXIT \
 	do { \
-		exit_horribly(modulename, "could not write to output file: %s\n", \
-					  strerror(errno)); \
+		fatal("could not write to output file: %m"); \
 	} while (0)
 
 typedef enum T_Action
@@ -252,8 +244,6 @@ struct _archiveHandle
 	char	   *archiveDumpVersion; /* When reading an archive, the version of
 									 * the dumper */
 
-	int			debugLevel;		/* Used for logging (currently only by
-								 * --verbose) */
 	size_t		intSize;		/* Size of an integer in the archive */
 	size_t		offSize;		/* Size of a file offset in the archive -
 								 * Added V1.7 */
@@ -411,7 +401,7 @@ struct _tocEntry
 extern int	parallel_restore(ArchiveHandle *AH, TocEntry *te);
 extern void on_exit_close_archive(Archive *AHX);
 
-extern void warn_or_exit_horribly(ArchiveHandle *AH, const char *modulename, const char *fmt,...) pg_attribute_printf(3, 4);
+extern void warn_or_exit_horribly(ArchiveHandle *AH, const char *fmt,...) pg_attribute_printf(2, 3);
 
 /* Options for ArchiveEntry */
 typedef struct _archiveOpts
@@ -434,7 +424,7 @@ typedef struct _archiveOpts
 #define ARCHIVE_OPTS(...) &(ArchiveOpts){__VA_ARGS__}
 /* Called to add a TOC entry */
 extern TocEntry *ArchiveEntry(Archive *AHX, CatalogId catalogId,
-			 DumpId dumpId, ArchiveOpts *opts);
+							  DumpId dumpId, ArchiveOpts *opts);
 
 extern void WriteTOC(ArchiveHandle *AH);
 extern void ReadTOC(ArchiveHandle *AH);
@@ -486,7 +476,5 @@ extern void DropBlobIfExists(ArchiveHandle *AH, Oid oid);
 
 void		ahwrite(const void *ptr, size_t size, size_t nmemb, ArchiveHandle *AH);
 int			ahprintf(ArchiveHandle *AH, const char *fmt,...) pg_attribute_printf(2, 3);
-
-void		ahlog(ArchiveHandle *AH, int level, const char *fmt,...) pg_attribute_printf(3, 4);
 
 #endif

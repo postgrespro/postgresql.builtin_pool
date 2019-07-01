@@ -3,7 +3,7 @@
  * partdesc.c
  *		Support routines for manipulating partition descriptors
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -38,7 +38,7 @@ typedef struct PartitionDirectoryData
 {
 	MemoryContext pdir_mcxt;
 	HTAB	   *pdir_hash;
-} PartitionDirectoryData;
+}			PartitionDirectoryData;
 
 typedef struct PartitionDirectoryEntry
 {
@@ -49,10 +49,13 @@ typedef struct PartitionDirectoryEntry
 
 /*
  * RelationBuildPartitionDesc
- *		Form rel's partition descriptor
+ *		Form rel's partition descriptor, and store in relcache entry
  *
- * Not flushed from the cache by RelationClearRelation() unless changed because
- * of addition or removal of partition.
+ * Note: the descriptor won't be flushed from the cache by
+ * RelationClearRelation() unless it's changed because of
+ * addition or removal of a partition.  Hence, code holding a lock
+ * that's sufficient to prevent that can assume that rd_partdesc
+ * won't change underneath it.
  */
 void
 RelationBuildPartitionDesc(Relation rel)
@@ -67,24 +70,13 @@ RelationBuildPartitionDesc(Relation rel)
 				nparts;
 	PartitionKey key = RelationGetPartitionKey(rel);
 	MemoryContext oldcxt;
-	MemoryContext rbcontext;
 	int		   *mapping;
 
 	/*
-	 * While building the partition descriptor, we create various temporary
-	 * data structures; in CLOBBER_CACHE_ALWAYS mode, at least, it's important
-	 * not to leak them, since this can get called a lot.
-	 */
-	rbcontext = AllocSetContextCreate(CurrentMemoryContext,
-									  "RelationBuildPartitionDesc",
-									  ALLOCSET_DEFAULT_SIZES);
-	oldcxt = MemoryContextSwitchTo(rbcontext);
-
-	/*
 	 * Get partition oids from pg_inherits.  This uses a single snapshot to
-	 * fetch the list of children, so while more children may be getting
-	 * added concurrently, whatever this function returns will be accurate
-	 * as of some well-defined point in time.
+	 * fetch the list of children, so while more children may be getting added
+	 * concurrently, whatever this function returns will be accurate as of
+	 * some well-defined point in time.
 	 */
 	inhoids = find_inheritance_children(RelationGetRelid(rel), NoLock);
 	nparts = list_length(inhoids);
@@ -130,14 +122,14 @@ RelationBuildPartitionDesc(Relation rel)
 		 *
 		 * Note that this algorithm assumes that PartitionBoundSpec we manage
 		 * to fetch is the right one -- so this is only good enough for
-		 * concurrent ATTACH PARTITION, not concurrent DETACH PARTITION
-		 * or some hypothetical operation that changes the partition bounds.
+		 * concurrent ATTACH PARTITION, not concurrent DETACH PARTITION or
+		 * some hypothetical operation that changes the partition bounds.
 		 */
 		if (boundspec == NULL)
 		{
 			Relation	pg_class;
-			SysScanDesc	scan;
-			ScanKeyData	key[1];
+			SysScanDesc scan;
+			ScanKeyData key[1];
 			Datum		datum;
 			bool		isnull;
 
@@ -184,7 +176,19 @@ RelationBuildPartitionDesc(Relation rel)
 		++i;
 	}
 
-	/* Now build the actual relcache partition descriptor */
+	/* Assert we aren't about to leak any old data structure */
+	Assert(rel->rd_pdcxt == NULL);
+	Assert(rel->rd_partdesc == NULL);
+
+	/*
+	 * Now build the actual relcache partition descriptor.  Note that the
+	 * order of operations here is fairly critical.  If we fail partway
+	 * through this code, we won't have leaked memory because the rd_pdcxt is
+	 * attached to the relcache entry immediately, so it'll be freed whenever
+	 * the entry is rebuilt or destroyed.  However, we don't assign to
+	 * rd_partdesc until the cached data structure is fully complete and
+	 * valid, so that no other code might try to use it.
+	 */
 	rel->rd_pdcxt = AllocSetContextCreate(CacheMemoryContext,
 										  "partition descriptor",
 										  ALLOCSET_SMALL_SIZES);
@@ -197,14 +201,15 @@ RelationBuildPartitionDesc(Relation rel)
 	/* If there are no partitions, the rest of the partdesc can stay zero */
 	if (nparts > 0)
 	{
-		/* Create PartitionBoundInfo, using the temporary context. */
+		/* Create PartitionBoundInfo, using the caller's context. */
 		boundinfo = partition_bounds_create(boundspecs, nparts, key, &mapping);
 
 		/* Now copy all info into relcache's partdesc. */
-		MemoryContextSwitchTo(rel->rd_pdcxt);
+		oldcxt = MemoryContextSwitchTo(rel->rd_pdcxt);
 		partdesc->boundinfo = partition_bounds_copy(boundinfo, key);
 		partdesc->oids = (Oid *) palloc(nparts * sizeof(Oid));
 		partdesc->is_leaf = (bool *) palloc(nparts * sizeof(bool));
+		MemoryContextSwitchTo(oldcxt);
 
 		/*
 		 * Assign OIDs from the original array into mapped indexes of the
@@ -214,9 +219,8 @@ RelationBuildPartitionDesc(Relation rel)
 		 *
 		 * Also record leaf-ness of each partition.  For this we use
 		 * get_rel_relkind() which may leak memory, so be sure to run it in
-		 * the temporary context.
+		 * the caller's context.
 		 */
-		MemoryContextSwitchTo(rbcontext);
 		for (i = 0; i < nparts; i++)
 		{
 			int			index = mapping[i];
@@ -228,10 +232,6 @@ RelationBuildPartitionDesc(Relation rel)
 	}
 
 	rel->rd_partdesc = partdesc;
-
-	/* Return to caller's context, and blow away the temporary context. */
-	MemoryContextSwitchTo(oldcxt);
-	MemoryContextDelete(rbcontext);
 }
 
 /*
@@ -301,7 +301,7 @@ PartitionDirectoryLookup(PartitionDirectory pdir, Relation rel)
 void
 DestroyPartitionDirectory(PartitionDirectory pdir)
 {
-	HASH_SEQ_STATUS	status;
+	HASH_SEQ_STATUS status;
 	PartitionDirectoryEntry *pde;
 
 	hash_seq_init(&status, pdir->pdir_hash);

@@ -37,11 +37,19 @@ SELECT r.rolname, s.srvname, m.umoptions
  JOIN pg_foreign_server s ON (s.oid = m.umserver)
  ORDER BY 2;
 $$ LANGUAGE SQL;
+--
+-- We test creation and use of these role names to ensure that the server
+-- correctly distinguishes role keywords from quoted names that look like
+-- those keywords.  In a test environment, creation of these roles may
+-- provoke warnings, so hide the warnings by raising client_min_messages.
+--
+SET client_min_messages = ERROR;
 CREATE ROLE "Public";
 CREATE ROLE "None";
 CREATE ROLE "current_user";
 CREATE ROLE "session_user";
 CREATE ROLE "user";
+RESET client_min_messages;
 CREATE ROLE current_user; -- error
 ERROR:  CURRENT_USER cannot be used as a role name here
 LINE 1: CREATE ROLE current_user;
@@ -435,7 +443,6 @@ LINE 1: ALTER USER NONE SET application_name to 'BOMB';
 ALTER USER nonexistent SET application_name to 'BOMB'; -- error
 ERROR:  role "nonexistent" does not exist
 -- CREATE SCHEMA
-set client_min_messages to error;
 CREATE SCHEMA newschema1 AUTHORIZATION CURRENT_USER;
 CREATE SCHEMA newschema2 AUTHORIZATION "current_user";
 CREATE SCHEMA newschema3 AUTHORIZATION SESSION_USER;
@@ -472,10 +479,15 @@ SELECT n.nspname, r.rolname FROM pg_namespace n
 (5 rows)
 
 CREATE SCHEMA IF NOT EXISTS newschema1 AUTHORIZATION CURRENT_USER;
+NOTICE:  schema "newschema1" already exists, skipping
 CREATE SCHEMA IF NOT EXISTS newschema2 AUTHORIZATION "current_user";
+NOTICE:  schema "newschema2" already exists, skipping
 CREATE SCHEMA IF NOT EXISTS newschema3 AUTHORIZATION SESSION_USER;
+NOTICE:  schema "newschema3" already exists, skipping
 CREATE SCHEMA IF NOT EXISTS newschema4 AUTHORIZATION regress_testrolx;
+NOTICE:  schema "newschema4" already exists, skipping
 CREATE SCHEMA IF NOT EXISTS newschema5 AUTHORIZATION "Public";
+NOTICE:  schema "newschema5" already exists, skipping
 CREATE SCHEMA IF NOT EXISTS newschema6 AUTHORIZATION USER; -- error
 ERROR:  syntax error at or near "USER"
 LINE 1: CREATE SCHEMA IF NOT EXISTS newschema6 AUTHORIZATION USER;
@@ -509,7 +521,6 @@ SELECT n.nspname, r.rolname FROM pg_namespace n
 -- ALTER TABLE OWNER TO
 \c -
 SET SESSION AUTHORIZATION regress_testrol0;
-set client_min_messages to error;
 CREATE TABLE testtab1 (a int);
 CREATE TABLE testtab2 (a int);
 CREATE TABLE testtab3 (a int);

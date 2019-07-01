@@ -32,6 +32,7 @@ extern bool tlist_same_collations(List *tlist, List *colCollations, bool junkOK)
 extern void apply_tlist_labeling(List *dest_tlist, List *src_tlist);
 
 extern Oid *extract_grouping_ops(List *groupClause);
+extern Oid *extract_grouping_collations(List *groupClause, List *tlist);
 extern AttrNumber *extract_grouping_cols(List *groupClause, List *tlist);
 extern bool grouping_is_sortable(List *groupClause);
 extern bool grouping_is_hashable(List *groupClause);
@@ -41,13 +42,13 @@ extern List *make_tlist_from_pathtarget(PathTarget *target);
 extern PathTarget *copy_pathtarget(PathTarget *src);
 extern PathTarget *create_empty_pathtarget(void);
 extern void add_column_to_pathtarget(PathTarget *target,
-						 Expr *expr, Index sortgroupref);
+									 Expr *expr, Index sortgroupref);
 extern void add_new_column_to_pathtarget(PathTarget *target, Expr *expr);
 extern void add_new_columns_to_pathtarget(PathTarget *target, List *exprs);
 extern void apply_pathtarget_labeling_to_tlist(List *tlist, PathTarget *target);
 extern void split_pathtarget_at_srfs(PlannerInfo *root,
-						 PathTarget *target, PathTarget *input_target,
-						 List **targets, List **targets_contain_srfs);
+									 PathTarget *target, PathTarget *input_target,
+									 List **targets, List **targets_contain_srfs);
 
 /* Convenience macro to get a PathTarget with valid cost/width fields */
 #define create_pathtarget(root, tlist) \

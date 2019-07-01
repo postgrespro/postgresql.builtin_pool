@@ -1265,6 +1265,7 @@ _equalDefineStmt(const DefineStmt *a, const DefineStmt *b)
 	COMPARE_NODE_FIELD(args);
 	COMPARE_NODE_FIELD(definition);
 	COMPARE_SCALAR_FIELD(if_not_exists);
+	COMPARE_SCALAR_FIELD(replace);
 
 	return true;
 }
@@ -1346,6 +1347,7 @@ _equalIndexStmt(const IndexStmt *a, const IndexStmt *b)
 	COMPARE_SCALAR_FIELD(transformed);
 	COMPARE_SCALAR_FIELD(concurrent);
 	COMPARE_SCALAR_FIELD(if_not_exists);
+	COMPARE_SCALAR_FIELD(reset_default_tblspc);
 
 	return true;
 }
@@ -1509,6 +1511,7 @@ _equalTransactionStmt(const TransactionStmt *a, const TransactionStmt *b)
 	COMPARE_NODE_FIELD(options);
 	COMPARE_STRING_FIELD(savepoint_name);
 	COMPARE_STRING_FIELD(gid);
+	COMPARE_SCALAR_FIELD(chain);
 
 	return true;
 }
@@ -1670,8 +1673,9 @@ _equalDropdbStmt(const DropdbStmt *a, const DropdbStmt *b)
 static bool
 _equalVacuumStmt(const VacuumStmt *a, const VacuumStmt *b)
 {
-	COMPARE_SCALAR_FIELD(options);
+	COMPARE_NODE_FIELD(options);
 	COMPARE_NODE_FIELD(rels);
+	COMPARE_SCALAR_FIELD(is_vacuumcmd);
 
 	return true;
 }
@@ -2100,6 +2104,7 @@ _equalReindexStmt(const ReindexStmt *a, const ReindexStmt *b)
 	COMPARE_NODE_FIELD(relation);
 	COMPARE_STRING_FIELD(name);
 	COMPARE_SCALAR_FIELD(options);
+	COMPARE_SCALAR_FIELD(concurrent);
 
 	return true;
 }
@@ -2561,6 +2566,7 @@ _equalColumnDef(const ColumnDef *a, const ColumnDef *b)
 	COMPARE_NODE_FIELD(cooked_default);
 	COMPARE_SCALAR_FIELD(identity);
 	COMPARE_NODE_FIELD(identitySequence);
+	COMPARE_SCALAR_FIELD(generated);
 	COMPARE_NODE_FIELD(collClause);
 	COMPARE_SCALAR_FIELD(collOid);
 	COMPARE_NODE_FIELD(constraints);
@@ -2588,6 +2594,7 @@ _equalConstraint(const Constraint *a, const Constraint *b)
 	COMPARE_NODE_FIELD(options);
 	COMPARE_STRING_FIELD(indexname);
 	COMPARE_STRING_FIELD(indexspace);
+	COMPARE_SCALAR_FIELD(reset_default_tblspc);
 	COMPARE_STRING_FIELD(access_method);
 	COMPARE_NODE_FIELD(where_clause);
 	COMPARE_NODE_FIELD(pktable);
@@ -2660,6 +2667,7 @@ _equalRangeTblEntry(const RangeTblEntry *a, const RangeTblEntry *b)
 	COMPARE_BITMAPSET_FIELD(selectedCols);
 	COMPARE_BITMAPSET_FIELD(insertedCols);
 	COMPARE_BITMAPSET_FIELD(updatedCols);
+	COMPARE_BITMAPSET_FIELD(extraUpdatedCols);
 	COMPARE_NODE_FIELD(securityQuals);
 
 	return true;

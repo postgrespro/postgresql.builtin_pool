@@ -20,6 +20,7 @@
 #include "access/genam.h"
 #include "access/htup_details.h"
 #include "access/nbtree.h"
+#include "access/tableam.h"
 #include "access/sysattr.h"
 #include "access/table.h"
 #include "access/transam.h"
@@ -39,7 +40,6 @@
 #include "optimizer/optimizer.h"
 #include "optimizer/plancat.h"
 #include "optimizer/prep.h"
-#include "partitioning/partbounds.h"
 #include "partitioning/partdesc.h"
 #include "parser/parse_relation.h"
 #include "parser/parsetree.h"
@@ -62,21 +62,22 @@ get_relation_info_hook_type get_relation_info_hook = NULL;
 
 
 static void get_relation_foreign_keys(PlannerInfo *root, RelOptInfo *rel,
-						  Relation relation, bool inhparent);
+									  Relation relation, bool inhparent);
 static bool infer_collation_opclass_match(InferenceElem *elem, Relation idxRel,
-							  List *idxExprs);
-static int32 get_rel_data_width(Relation rel, int32 *attr_widths);
+										  List *idxExprs);
 static List *get_relation_constraints(PlannerInfo *root,
-						 Oid relationObjectId, RelOptInfo *rel,
-						 bool include_notnull);
+									  Oid relationObjectId, RelOptInfo *rel,
+									  bool include_noinherit,
+									  bool include_notnull,
+									  bool include_partition);
 static List *build_index_tlist(PlannerInfo *root, IndexOptInfo *index,
-				  Relation heapRelation);
+							   Relation heapRelation);
 static List *get_relation_statistics(RelOptInfo *rel, Relation relation);
 static void set_relation_partition_info(PlannerInfo *root, RelOptInfo *rel,
-							Relation relation);
+										Relation relation);
 static PartitionScheme find_partition_scheme(PlannerInfo *root, Relation rel);
 static void set_baserel_partition_key_exprs(Relation relation,
-								RelOptInfo *rel);
+											RelOptInfo *rel);
 
 /*
  * get_relation_info -
@@ -163,8 +164,8 @@ get_relation_info(PlannerInfo *root, Oid relationObjectId, bool inhparent,
 	if (hasindex)
 	{
 		List	   *indexoidlist;
-		ListCell   *l;
 		LOCKMODE	lmode;
+		ListCell   *l;
 
 		indexoidlist = RelationGetIndexList(relation);
 
@@ -173,13 +174,10 @@ get_relation_info(PlannerInfo *root, Oid relationObjectId, bool inhparent,
 		 * need, and do not release it.  This saves a couple of trips to the
 		 * shared lock manager while not creating any real loss of
 		 * concurrency, because no schema changes could be happening on the
-		 * index while we hold lock on the parent rel, and neither lock type
-		 * blocks any other kind of index operation.
+		 * index while we hold lock on the parent rel, and no lock type used
+		 * for queries blocks any other kind of index operation.
 		 */
-		if (rel->relid == root->parse->resultRelation)
-			lmode = RowExclusiveLock;
-		else
-			lmode = AccessShareLock;
+		lmode = root->simple_rte_array[varno]->rellockmode;
 
 		foreach(l, indexoidlist)
 		{
@@ -273,7 +271,8 @@ get_relation_info(PlannerInfo *root, Oid relationObjectId, bool inhparent,
 			info->amsearchnulls = amroutine->amsearchnulls;
 			info->amcanparallel = amroutine->amcanparallel;
 			info->amhasgettuple = (amroutine->amgettuple != NULL);
-			info->amhasgetbitmap = (amroutine->amgetbitmap != NULL);
+			info->amhasgetbitmap = amroutine->amgetbitmap != NULL &&
+				relation->rd_tableam->scan_bitmap_next_block != NULL;
 			info->amcostestimate = amroutine->amcostestimate;
 			Assert(info->amcostestimate != NULL);
 
@@ -592,8 +591,8 @@ infer_arbiter_indexes(PlannerInfo *root)
 	OnConflictExpr *onconflict = root->parse->onConflict;
 
 	/* Iteration state */
+	RangeTblEntry *rte;
 	Relation	relation;
-	Oid			relationObjectId;
 	Oid			indexOidFromConstraint = InvalidOid;
 	List	   *indexList;
 	ListCell   *l;
@@ -620,10 +619,9 @@ infer_arbiter_indexes(PlannerInfo *root)
 	 * the rewriter or when expand_inherited_rtentry() added it to the query's
 	 * rangetable.
 	 */
-	relationObjectId = rt_fetch(root->parse->resultRelation,
-								root->parse->rtable)->relid;
+	rte = rt_fetch(root->parse->resultRelation, root->parse->rtable);
 
-	relation = table_open(relationObjectId, NoLock);
+	relation = table_open(rte->relid, NoLock);
 
 	/*
 	 * Build normalized/BMS representation of plain indexed attributes, as
@@ -687,15 +685,14 @@ infer_arbiter_indexes(PlannerInfo *root)
 		ListCell   *el;
 
 		/*
-		 * Extract info from the relation descriptor for the index.  We know
-		 * that this is a target, so get lock type it is known will ultimately
-		 * be required by the executor.
+		 * Extract info from the relation descriptor for the index.  Obtain
+		 * the same lock type that the executor will ultimately use.
 		 *
 		 * Let executor complain about !indimmediate case directly, because
 		 * enforcement needs to occur there anyway when an inference clause is
 		 * omitted.
 		 */
-		idxRel = index_open(indexoid, RowExclusiveLock);
+		idxRel = index_open(indexoid, rte->rellockmode);
 		idxForm = idxRel->rd_index;
 
 		if (!idxForm->indisvalid)
@@ -949,47 +946,26 @@ estimate_rel_size(Relation rel, int32 *attr_widths,
 	switch (rel->rd_rel->relkind)
 	{
 		case RELKIND_RELATION:
-		case RELKIND_INDEX:
 		case RELKIND_MATVIEW:
 		case RELKIND_TOASTVALUE:
+			table_relation_estimate_size(rel, attr_widths, pages, tuples,
+										 allvisfrac);
+			break;
+
+		case RELKIND_INDEX:
+
+			/*
+			 * XXX: It'd probably be good to move this into a callback,
+			 * individual index types e.g. know if they have a metapage.
+			 */
+
 			/* it has storage, ok to call the smgr */
 			curpages = RelationGetNumberOfBlocks(rel);
 
-			/*
-			 * HACK: if the relation has never yet been vacuumed, use a
-			 * minimum size estimate of 10 pages.  The idea here is to avoid
-			 * assuming a newly-created table is really small, even if it
-			 * currently is, because that may not be true once some data gets
-			 * loaded into it.  Once a vacuum or analyze cycle has been done
-			 * on it, it's more reasonable to believe the size is somewhat
-			 * stable.
-			 *
-			 * (Note that this is only an issue if the plan gets cached and
-			 * used again after the table has been filled.  What we're trying
-			 * to avoid is using a nestloop-type plan on a table that has
-			 * grown substantially since the plan was made.  Normally,
-			 * autovacuum/autoanalyze will occur once enough inserts have
-			 * happened and cause cached-plan invalidation; but that doesn't
-			 * happen instantaneously, and it won't happen at all for cases
-			 * such as temporary tables.)
-			 *
-			 * We approximate "never vacuumed" by "has relpages = 0", which
-			 * means this will also fire on genuinely empty relations.  Not
-			 * great, but fortunately that's a seldom-seen case in the real
-			 * world, and it shouldn't degrade the quality of the plan too
-			 * much anyway to err in this direction.
-			 *
-			 * There are two exceptions wherein we don't apply this heuristic.
-			 * One is if the table has inheritance children.  Totally empty
-			 * parent tables are quite common, so we should be willing to
-			 * believe that they are empty.  Also, we don't apply the 10-page
-			 * minimum to indexes.
-			 */
-			if (curpages < 10 &&
-				rel->rd_rel->relpages == 0 &&
-				!rel->rd_rel->relhassubclass &&
-				rel->rd_rel->relkind != RELKIND_INDEX)
-				curpages = 10;
+			/* coerce values in pg_class to more desirable types */
+			relpages = (BlockNumber) rel->rd_rel->relpages;
+			reltuples = (double) rel->rd_rel->reltuples;
+			relallvisible = (BlockNumber) rel->rd_rel->relallvisible;
 
 			/* report estimated # pages */
 			*pages = curpages;
@@ -1006,13 +982,12 @@ estimate_rel_size(Relation rel, int32 *attr_widths,
 			relallvisible = (BlockNumber) rel->rd_rel->relallvisible;
 
 			/*
-			 * If it's an index, discount the metapage while estimating the
-			 * number of tuples.  This is a kluge because it assumes more than
-			 * it ought to about index structure.  Currently it's OK for
-			 * btree, hash, and GIN indexes but suspect for GiST indexes.
+			 * Discount the metapage while estimating the number of tuples.
+			 * This is a kluge because it assumes more than it ought to about
+			 * index structure.  Currently it's OK for btree, hash, and GIN
+			 * indexes but suspect for GiST indexes.
 			 */
-			if (rel->rd_rel->relkind == RELKIND_INDEX &&
-				relpages > 0)
+			if (relpages > 0)
 			{
 				curpages--;
 				relpages--;
@@ -1037,6 +1012,8 @@ estimate_rel_size(Relation rel, int32 *attr_widths,
 				 * considering how crude the estimate is, and (b) it creates
 				 * platform dependencies in the default plans which are kind
 				 * of a headache for regression testing.
+				 *
+				 * XXX: Should this logic be more index specific?
 				 */
 				int32		tuple_width;
 
@@ -1061,6 +1038,7 @@ estimate_rel_size(Relation rel, int32 *attr_widths,
 			else
 				*allvisfrac = (double) relallvisible / curpages;
 			break;
+
 		case RELKIND_SEQUENCE:
 			/* Sequences always have a known size */
 			*pages = 1;
@@ -1096,7 +1074,7 @@ estimate_rel_size(Relation rel, int32 *attr_widths,
  * since they might be mostly NULLs, treating them as zero-width is not
  * necessarily the wrong thing anyway.
  */
-static int32
+int32
 get_rel_data_width(Relation rel, int32 *attr_widths)
 {
 	int32		tuple_width = 0;
@@ -1158,15 +1136,21 @@ get_relation_data_width(Oid relid, int32 *attr_widths)
 /*
  * get_relation_constraints
  *
- * Retrieve the validated CHECK constraint expressions of the given relation.
+ * Retrieve the applicable constraint expressions of the given relation.
  *
  * Returns a List (possibly empty) of constraint expressions.  Each one
  * has been canonicalized, and its Vars are changed to have the varno
  * indicated by rel->relid.  This allows the expressions to be easily
  * compared to expressions taken from WHERE.
  *
+ * If include_noinherit is true, it's okay to include constraints that
+ * are marked NO INHERIT.
+ *
  * If include_notnull is true, "col IS NOT NULL" expressions are generated
  * and added to the result for each column that's marked attnotnull.
+ *
+ * If include_partition is true, and the relation is a partition,
+ * also include the partitioning constraints.
  *
  * Note: at present this is invoked at most once per relation per planner
  * run, and in many cases it won't be invoked at all, so there seems no
@@ -1175,7 +1159,9 @@ get_relation_data_width(Oid relid, int32 *attr_widths)
 static List *
 get_relation_constraints(PlannerInfo *root,
 						 Oid relationObjectId, RelOptInfo *rel,
-						 bool include_notnull)
+						 bool include_noinherit,
+						 bool include_notnull,
+						 bool include_partition)
 {
 	List	   *result = NIL;
 	Index		varno = rel->relid;
@@ -1199,9 +1185,12 @@ get_relation_constraints(PlannerInfo *root,
 
 			/*
 			 * If this constraint hasn't been fully validated yet, we must
-			 * ignore it here.
+			 * ignore it here.  Also ignore if NO INHERIT and we weren't told
+			 * that that's safe.
 			 */
 			if (!constr->check[i].ccvalid)
+				continue;
+			if (constr->check[i].ccnoinherit && !include_noinherit)
 				continue;
 
 			cexpr = stringToNode(constr->check[i].ccbin);
@@ -1267,13 +1256,9 @@ get_relation_constraints(PlannerInfo *root,
 	}
 
 	/*
-	 * Append partition predicates, if any.
-	 *
-	 * For selects, partition pruning uses the parent table's partition bound
-	 * descriptor, instead of constraint exclusion which is driven by the
-	 * individual partition's partition constraint.
+	 * Add partitioning constraints, if requested.
 	 */
-	if (enable_partition_pruning && root->parse->commandType != CMD_SELECT)
+	if (include_partition && relation->rd_rel->relispartition)
 	{
 		List	   *pcqual = RelationGetPartitionQual(relation);
 
@@ -1323,13 +1308,18 @@ get_relation_statistics(RelOptInfo *rel, Relation relation)
 		Oid			statOid = lfirst_oid(l);
 		Form_pg_statistic_ext staForm;
 		HeapTuple	htup;
+		HeapTuple	dtup;
 		Bitmapset  *keys = NULL;
 		int			i;
 
 		htup = SearchSysCache1(STATEXTOID, ObjectIdGetDatum(statOid));
-		if (!htup)
+		if (!HeapTupleIsValid(htup))
 			elog(ERROR, "cache lookup failed for statistics object %u", statOid);
 		staForm = (Form_pg_statistic_ext) GETSTRUCT(htup);
+
+		dtup = SearchSysCache1(STATEXTDATASTXOID, ObjectIdGetDatum(statOid));
+		if (!HeapTupleIsValid(dtup))
+			elog(ERROR, "cache lookup failed for statistics object %u", statOid);
 
 		/*
 		 * First, build the array of columns covered.  This is ultimately
@@ -1340,7 +1330,7 @@ get_relation_statistics(RelOptInfo *rel, Relation relation)
 			keys = bms_add_member(keys, staForm->stxkeys.values[i]);
 
 		/* add one StatisticExtInfo for each kind built */
-		if (statext_is_kind_built(htup, STATS_EXT_NDISTINCT))
+		if (statext_is_kind_built(dtup, STATS_EXT_NDISTINCT))
 		{
 			StatisticExtInfo *info = makeNode(StatisticExtInfo);
 
@@ -1352,7 +1342,7 @@ get_relation_statistics(RelOptInfo *rel, Relation relation)
 			stainfos = lcons(info, stainfos);
 		}
 
-		if (statext_is_kind_built(htup, STATS_EXT_DEPENDENCIES))
+		if (statext_is_kind_built(dtup, STATS_EXT_DEPENDENCIES))
 		{
 			StatisticExtInfo *info = makeNode(StatisticExtInfo);
 
@@ -1364,7 +1354,20 @@ get_relation_statistics(RelOptInfo *rel, Relation relation)
 			stainfos = lcons(info, stainfos);
 		}
 
+		if (statext_is_kind_built(dtup, STATS_EXT_MCV))
+		{
+			StatisticExtInfo *info = makeNode(StatisticExtInfo);
+
+			info->statOid = statOid;
+			info->rel = rel;
+			info->kind = STATS_EXT_MCV;
+			info->keys = bms_copy(keys);
+
+			stainfos = lcons(info, stainfos);
+		}
+
 		ReleaseSysCache(htup);
+		ReleaseSysCache(dtup);
 		bms_free(keys);
 	}
 
@@ -1378,7 +1381,7 @@ get_relation_statistics(RelOptInfo *rel, Relation relation)
  *
  * Detect whether the relation need not be scanned because it has either
  * self-inconsistent restrictions, or restrictions inconsistent with the
- * relation's validated CHECK constraints.
+ * relation's applicable constraints.
  *
  * Note: this examines only rel->relid, rel->reloptkind, and
  * rel->baserestrictinfo; therefore it can be called before filling in
@@ -1388,6 +1391,9 @@ bool
 relation_excluded_by_constraints(PlannerInfo *root,
 								 RelOptInfo *rel, RangeTblEntry *rte)
 {
+	bool		include_noinherit;
+	bool		include_notnull;
+	bool		include_partition = false;
 	List	   *safe_restrictions;
 	List	   *constraint_pred;
 	List	   *safe_constraints;
@@ -1395,6 +1401,13 @@ relation_excluded_by_constraints(PlannerInfo *root,
 
 	/* As of now, constraint exclusion works only with simple relations. */
 	Assert(IS_SIMPLE_REL(rel));
+
+	/*
+	 * If there are no base restriction clauses, we have no hope of proving
+	 * anything below, so fall out quickly.
+	 */
+	if (rel->baserestrictinfo == NIL)
+		return false;
 
 	/*
 	 * Regardless of the setting of constraint_exclusion, detect
@@ -1422,35 +1435,41 @@ relation_excluded_by_constraints(PlannerInfo *root,
 	switch (constraint_exclusion)
 	{
 		case CONSTRAINT_EXCLUSION_OFF:
-
-			/*
-			 * Don't prune if feature turned off -- except if the relation is
-			 * a partition.  While partprune.c-style partition pruning is not
-			 * yet in use for all cases (update/delete is not handled), it
-			 * would be a UI horror to use different user-visible controls
-			 * depending on such a volatile implementation detail.  Therefore,
-			 * for partitioned tables we use enable_partition_pruning to
-			 * control this behavior.
-			 */
-			if (root->inhTargetKind == INHKIND_PARTITIONED)
-				break;
+			/* In 'off' mode, never make any further tests */
 			return false;
 
 		case CONSTRAINT_EXCLUSION_PARTITION:
 
 			/*
 			 * When constraint_exclusion is set to 'partition' we only handle
-			 * OTHER_MEMBER_RELs, or BASERELs in cases where the result target
-			 * is an inheritance parent or a partitioned table.
+			 * appendrel members.  Normally, they are RELOPT_OTHER_MEMBER_REL
+			 * relations, but we also consider inherited target relations as
+			 * appendrel members for the purposes of constraint exclusion
+			 * (since, indeed, they were appendrel members earlier in
+			 * inheritance_planner).
+			 *
+			 * In both cases, partition pruning was already applied, so there
+			 * is no need to consider the rel's partition constraints here.
 			 */
-			if ((rel->reloptkind != RELOPT_OTHER_MEMBER_REL) &&
-				!(rel->reloptkind == RELOPT_BASEREL &&
-				  root->inhTargetKind != INHKIND_NONE &&
-				  rel->relid == root->parse->resultRelation))
-				return false;
-			break;
+			if (rel->reloptkind == RELOPT_OTHER_MEMBER_REL ||
+				(rel->relid == root->parse->resultRelation &&
+				 root->inhTargetKind != INHKIND_NONE))
+				break;			/* appendrel member, so process it */
+			return false;
 
 		case CONSTRAINT_EXCLUSION_ON:
+
+			/*
+			 * In 'on' mode, always apply constraint exclusion.  If we are
+			 * considering a baserel that is a partition (i.e., it was
+			 * directly named rather than expanded from a parent table), then
+			 * its partition constraints haven't been considered yet, so
+			 * include them in the processing here.
+			 */
+			if (rel->reloptkind == RELOPT_BASEREL &&
+				!(rel->relid == root->parse->resultRelation &&
+				  root->inhTargetKind != INHKIND_NONE))
+				include_partition = true;
 			break;				/* always try to exclude */
 	}
 
@@ -1479,24 +1498,33 @@ relation_excluded_by_constraints(PlannerInfo *root,
 		return true;
 
 	/*
-	 * Only plain relations have constraints.  In a partitioning hierarchy,
-	 * but not with regular table inheritance, it's OK to assume that any
-	 * constraints that hold for the parent also hold for every child; for
-	 * instance, table inheritance allows the parent to have constraints
-	 * marked NO INHERIT, but table partitioning does not.  We choose to check
-	 * whether the partitioning parents can be excluded here; doing so
-	 * consumes some cycles, but potentially saves us the work of excluding
-	 * each child individually.
+	 * Only plain relations have constraints, so stop here for other rtekinds.
 	 */
-	if (rte->rtekind != RTE_RELATION ||
-		(rte->inh && rte->relkind != RELKIND_PARTITIONED_TABLE))
+	if (rte->rtekind != RTE_RELATION)
 		return false;
 
 	/*
-	 * OK to fetch the constraint expressions.  Include "col IS NOT NULL"
-	 * expressions for attnotnull columns, in case we can refute those.
+	 * If we are scanning just this table, we can use NO INHERIT constraints,
+	 * but not if we're scanning its children too.  (Note that partitioned
+	 * tables should never have NO INHERIT constraints; but it's not necessary
+	 * for us to assume that here.)
 	 */
-	constraint_pred = get_relation_constraints(root, rte->relid, rel, true);
+	include_noinherit = !rte->inh;
+
+	/*
+	 * Currently, attnotnull constraints must be treated as NO INHERIT unless
+	 * this is a partitioned table.  In future we might track their
+	 * inheritance status more accurately, allowing this to be refined.
+	 */
+	include_notnull = (!rte->inh || rte->relkind == RELKIND_PARTITIONED_TABLE);
+
+	/*
+	 * Fetch the appropriate set of constraint expressions.
+	 */
+	constraint_pred = get_relation_constraints(root, rte->relid, rel,
+											   include_noinherit,
+											   include_notnull,
+											   include_partition);
 
 	/*
 	 * We do not currently enforce that CHECK constraints contain only
@@ -2072,6 +2100,25 @@ has_row_triggers(PlannerInfo *root, Index rti, CmdType event)
 	return result;
 }
 
+bool
+has_stored_generated_columns(PlannerInfo *root, Index rti)
+{
+	RangeTblEntry *rte = planner_rt_fetch(rti, root);
+	Relation	relation;
+	TupleDesc	tupdesc;
+	bool		result = false;
+
+	/* Assume we already have adequate lock */
+	relation = heap_open(rte->relid, NoLock);
+
+	tupdesc = RelationGetDescr(relation);
+	result = tupdesc->constr && tupdesc->constr->has_generated_stored;
+
+	heap_close(relation, NoLock);
+
+	return result;
+}
+
 /*
  * set_relation_partition_info
  *
@@ -2082,16 +2129,17 @@ set_relation_partition_info(PlannerInfo *root, RelOptInfo *rel,
 							Relation relation)
 {
 	PartitionDesc partdesc;
-	PartitionKey partkey;
 
-	Assert(relation->rd_rel->relkind == RELKIND_PARTITIONED_TABLE);
+	/* Create the PartitionDirectory infrastructure if we didn't already */
+	if (root->glob->partition_directory == NULL)
+		root->glob->partition_directory =
+			CreatePartitionDirectory(CurrentMemoryContext);
 
 	partdesc = PartitionDirectoryLookup(root->glob->partition_directory,
 										relation);
-	partkey = RelationGetPartitionKey(relation);
 	rel->part_scheme = find_partition_scheme(root, relation);
 	Assert(partdesc != NULL && rel->part_scheme != NULL);
-	rel->boundinfo = partition_bounds_copy(partdesc->boundinfo, partkey);
+	rel->boundinfo = partdesc->boundinfo;
 	rel->nparts = partdesc->nparts;
 	set_baserel_partition_key_exprs(relation, rel);
 	rel->partition_qual = RelationGetPartitionQual(relation);

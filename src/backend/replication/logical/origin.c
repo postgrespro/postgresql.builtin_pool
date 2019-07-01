@@ -78,6 +78,7 @@
 #include "access/table.h"
 #include "access/xact.h"
 
+#include "catalog/catalog.h"
 #include "catalog/indexing.h"
 #include "nodes/execnodes.h"
 
@@ -579,12 +580,9 @@ CheckPointReplicationOrigin(void)
 	errno = 0;
 	if ((write(tmpfd, &magic, sizeof(magic))) != sizeof(magic))
 	{
-		int			save_errno = errno;
-
-		CloseTransientFile(tmpfd);
-
 		/* if write didn't set errno, assume problem is no disk space */
-		errno = save_errno ? save_errno : ENOSPC;
+		if (errno == 0)
+			errno = ENOSPC;
 		ereport(PANIC,
 				(errcode_for_file_access(),
 				 errmsg("could not write to file \"%s\": %m",
@@ -624,12 +622,9 @@ CheckPointReplicationOrigin(void)
 		if ((write(tmpfd, &disk_state, sizeof(disk_state))) !=
 			sizeof(disk_state))
 		{
-			int			save_errno = errno;
-
-			CloseTransientFile(tmpfd);
-
 			/* if write didn't set errno, assume problem is no disk space */
-			errno = save_errno ? save_errno : ENOSPC;
+			if (errno == 0)
+				errno = ENOSPC;
 			ereport(PANIC,
 					(errcode_for_file_access(),
 					 errmsg("could not write to file \"%s\": %m",
@@ -646,12 +641,9 @@ CheckPointReplicationOrigin(void)
 	errno = 0;
 	if ((write(tmpfd, &crc, sizeof(crc))) != sizeof(crc))
 	{
-		int			save_errno = errno;
-
-		CloseTransientFile(tmpfd);
-
 		/* if write didn't set errno, assume problem is no disk space */
-		errno = save_errno ? save_errno : ENOSPC;
+		if (errno == 0)
+			errno = ENOSPC;
 		ereport(PANIC,
 				(errcode_for_file_access(),
 				 errmsg("could not write to file \"%s\": %m",
@@ -1237,6 +1229,24 @@ pg_replication_origin_create(PG_FUNCTION_ARGS)
 	replorigin_check_prerequisites(false, false);
 
 	name = text_to_cstring((text *) DatumGetPointer(PG_GETARG_DATUM(0)));
+
+	/* Replication origins "pg_xxx" are reserved for internal use */
+	if (IsReservedName(name))
+		ereport(ERROR,
+				(errcode(ERRCODE_RESERVED_NAME),
+				 errmsg("replication origin name \"%s\" is reserved",
+						name),
+				 errdetail("Origin names starting with \"pg_\" are reserved.")));
+
+	/*
+	 * If built with appropriate switch, whine when regression-testing
+	 * conventions for replication origin names are violated.
+	 */
+#ifdef ENFORCE_REGRESSION_TEST_NAME_RESTRICTIONS
+	if (strncmp(name, "regress_", 8) != 0)
+		elog(WARNING, "replication origins created by regression test cases should have names starting with \"regress_\"");
+#endif
+
 	roident = replorigin_create(name);
 
 	pfree(name);

@@ -306,11 +306,14 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 				create_extension_opt_item alter_extension_opt_item
 
 %type <ival>	opt_lock lock_type cast_context
-%type <ival>	vacuum_option_list vacuum_option_elem
-				analyze_option_list analyze_option_elem
+%type <str>		vac_analyze_option_name
+%type <defelt>	vac_analyze_option_elem
+%type <list>	vac_analyze_option_list
+%type <node>	vac_analyze_option_arg
 %type <boolean>	opt_or_replace
 				opt_grant_grant_option opt_grant_admin_option
 				opt_nowait opt_if_exists opt_with_data
+				opt_transaction_chain
 %type <ival>	opt_nowait_or_skip
 
 %type <list>	OptRoleList AlterOptRoleList
@@ -678,7 +681,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 	SAVEPOINT SCHEMA SCHEMAS SCROLL SEARCH SECOND_P SECURITY SELECT SEQUENCE SEQUENCES
 	SERIALIZABLE SERVER SESSION SESSION_USER SET SETS SETOF SHARE SHOW
 	SIMILAR SIMPLE SKIP SMALLINT SNAPSHOT SOME SQL_P STABLE STANDALONE_P
-	START STATEMENT STATISTICS STDIN STDOUT STORAGE STRICT_P STRIP_P
+	START STATEMENT STATISTICS STDIN STDOUT STORAGE STORED STRICT_P STRIP_P
 	SUBSCRIPTION SUBSTRING SUPPORT SYMMETRIC SYSID SYSTEM_P
 
 	TABLE TABLES TABLESAMPLE TABLESPACE TEMP TEMPLATE TEMPORARY TEXT_P THEN
@@ -3494,6 +3497,29 @@ ColConstraintElem:
 					n->location = @1;
 					$$ = (Node *)n;
 				}
+			| GENERATED generated_when AS '(' a_expr ')' STORED
+				{
+					Constraint *n = makeNode(Constraint);
+					n->contype = CONSTR_GENERATED;
+					n->generated_when = $2;
+					n->raw_expr = $5;
+					n->cooked_expr = NULL;
+					n->location = @1;
+
+					/*
+					 * Can't do this in the grammar because of shift/reduce
+					 * conflicts.  (IDENTITY allows both ALWAYS and BY
+					 * DEFAULT, but generated columns only allow ALWAYS.)  We
+					 * can also give a more useful error message and location.
+					 */
+					if ($2 != ATTRIBUTE_IDENTITY_ALWAYS)
+						ereport(ERROR,
+								(errcode(ERRCODE_SYNTAX_ERROR),
+								 errmsg("for a generated column, GENERATED ALWAYS must be specified"),
+								 parser_errposition(@2)));
+
+					$$ = (Node *)n;
+				}
 			| REFERENCES qualified_name opt_column_list key_match key_actions
 				{
 					Constraint *n = makeNode(Constraint);
@@ -3584,6 +3610,7 @@ TableLikeOption:
 				| CONSTRAINTS		{ $$ = CREATE_TABLE_LIKE_CONSTRAINTS; }
 				| DEFAULTS			{ $$ = CREATE_TABLE_LIKE_DEFAULTS; }
 				| IDENTITY_P		{ $$ = CREATE_TABLE_LIKE_IDENTITY; }
+				| GENERATED			{ $$ = CREATE_TABLE_LIKE_GENERATED; }
 				| INDEXES			{ $$ = CREATE_TABLE_LIKE_INDEXES; }
 				| STATISTICS		{ $$ = CREATE_TABLE_LIKE_STATISTICS; }
 				| STORAGE			{ $$ = CREATE_TABLE_LIKE_STORAGE; }
@@ -5617,25 +5644,27 @@ CreateAssertionStmt:
  *****************************************************************************/
 
 DefineStmt:
-			CREATE AGGREGATE func_name aggr_args definition
+			CREATE opt_or_replace AGGREGATE func_name aggr_args definition
 				{
 					DefineStmt *n = makeNode(DefineStmt);
 					n->kind = OBJECT_AGGREGATE;
 					n->oldstyle = false;
-					n->defnames = $3;
-					n->args = $4;
-					n->definition = $5;
+					n->replace = $2;
+					n->defnames = $4;
+					n->args = $5;
+					n->definition = $6;
 					$$ = (Node *)n;
 				}
-			| CREATE AGGREGATE func_name old_aggr_definition
+			| CREATE opt_or_replace AGGREGATE func_name old_aggr_definition
 				{
 					/* old-style (pre-8.2) syntax for CREATE AGGREGATE */
 					DefineStmt *n = makeNode(DefineStmt);
 					n->kind = OBJECT_AGGREGATE;
 					n->oldstyle = true;
-					n->defnames = $3;
+					n->replace = $2;
+					n->defnames = $4;
 					n->args = NIL;
-					n->definition = $4;
+					n->definition = $5;
 					$$ = (Node *)n;
 				}
 			| CREATE OPERATOR any_operator definition
@@ -7334,6 +7363,7 @@ IndexStmt:	CREATE opt_unique INDEX opt_concurrently opt_index_name
 					n->initdeferred = false;
 					n->transformed = false;
 					n->if_not_exists = false;
+					n->reset_default_tblspc = false;
 					$$ = (Node *)n;
 				}
 			| CREATE opt_unique INDEX opt_concurrently IF_P NOT EXISTS index_name
@@ -7361,6 +7391,7 @@ IndexStmt:	CREATE opt_unique INDEX opt_concurrently opt_index_name
 					n->initdeferred = false;
 					n->transformed = false;
 					n->if_not_exists = true;
+					n->reset_default_tblspc = false;
 					$$ = (Node *)n;
 				}
 		;
@@ -8296,42 +8327,46 @@ DropTransformStmt: DROP TRANSFORM opt_if_exists FOR Typename LANGUAGE name opt_d
  *
  *		QUERY:
  *
- *		REINDEX [ (options) ] type <name>
+ *		REINDEX [ (options) ] type [CONCURRENTLY] <name>
  *****************************************************************************/
 
 ReindexStmt:
-			REINDEX reindex_target_type qualified_name
+			REINDEX reindex_target_type opt_concurrently qualified_name
 				{
 					ReindexStmt *n = makeNode(ReindexStmt);
 					n->kind = $2;
-					n->relation = $3;
+					n->concurrent = $3;
+					n->relation = $4;
 					n->name = NULL;
 					n->options = 0;
 					$$ = (Node *)n;
 				}
-			| REINDEX reindex_target_multitable name
+			| REINDEX reindex_target_multitable opt_concurrently name
 				{
 					ReindexStmt *n = makeNode(ReindexStmt);
 					n->kind = $2;
-					n->name = $3;
+					n->concurrent = $3;
+					n->name = $4;
 					n->relation = NULL;
 					n->options = 0;
 					$$ = (Node *)n;
 				}
-			| REINDEX '(' reindex_option_list ')' reindex_target_type qualified_name
+			| REINDEX '(' reindex_option_list ')' reindex_target_type opt_concurrently qualified_name
 				{
 					ReindexStmt *n = makeNode(ReindexStmt);
 					n->kind = $5;
-					n->relation = $6;
+					n->concurrent = $6;
+					n->relation = $7;
 					n->name = NULL;
 					n->options = $3;
 					$$ = (Node *)n;
 				}
-			| REINDEX '(' reindex_option_list ')' reindex_target_multitable name
+			| REINDEX '(' reindex_option_list ')' reindex_target_multitable opt_concurrently name
 				{
 					ReindexStmt *n = makeNode(ReindexStmt);
 					n->kind = $5;
-					n->name = $6;
+					n->concurrent = $6;
+					n->name = $7;
 					n->relation = NULL;
 					n->options = $3;
 					$$ = (Node *)n;
@@ -9789,11 +9824,12 @@ UnlistenStmt:
  *****************************************************************************/
 
 TransactionStmt:
-			ABORT_P opt_transaction
+			ABORT_P opt_transaction opt_transaction_chain
 				{
 					TransactionStmt *n = makeNode(TransactionStmt);
 					n->kind = TRANS_STMT_ROLLBACK;
 					n->options = NIL;
+					n->chain = $3;
 					$$ = (Node *)n;
 				}
 			| BEGIN_P opt_transaction transaction_mode_list_or_empty
@@ -9810,25 +9846,28 @@ TransactionStmt:
 					n->options = $3;
 					$$ = (Node *)n;
 				}
-			| COMMIT opt_transaction
+			| COMMIT opt_transaction opt_transaction_chain
 				{
 					TransactionStmt *n = makeNode(TransactionStmt);
 					n->kind = TRANS_STMT_COMMIT;
 					n->options = NIL;
+					n->chain = $3;
 					$$ = (Node *)n;
 				}
-			| END_P opt_transaction
+			| END_P opt_transaction opt_transaction_chain
 				{
 					TransactionStmt *n = makeNode(TransactionStmt);
 					n->kind = TRANS_STMT_COMMIT;
 					n->options = NIL;
+					n->chain = $3;
 					$$ = (Node *)n;
 				}
-			| ROLLBACK opt_transaction
+			| ROLLBACK opt_transaction opt_transaction_chain
 				{
 					TransactionStmt *n = makeNode(TransactionStmt);
 					n->kind = TRANS_STMT_ROLLBACK;
 					n->options = NIL;
+					n->chain = $3;
 					$$ = (Node *)n;
 				}
 			| SAVEPOINT ColId
@@ -9926,6 +9965,12 @@ transaction_mode_list_or_empty:
 			transaction_mode_list
 			| /* EMPTY */
 					{ $$ = NIL; }
+		;
+
+opt_transaction_chain:
+			AND CHAIN		{ $$ = true; }
+			| AND NO CHAIN	{ $$ = false; }
+			| /* EMPTY */	{ $$ = false; }
 		;
 
 
@@ -10460,91 +10505,86 @@ cluster_index_specification:
 VacuumStmt: VACUUM opt_full opt_freeze opt_verbose opt_analyze opt_vacuum_relation_list
 				{
 					VacuumStmt *n = makeNode(VacuumStmt);
-					n->options = VACOPT_VACUUM;
+					n->options = NIL;
 					if ($2)
-						n->options |= VACOPT_FULL;
+						n->options = lappend(n->options,
+											 makeDefElem("full", NULL, @2));
 					if ($3)
-						n->options |= VACOPT_FREEZE;
+						n->options = lappend(n->options,
+											 makeDefElem("freeze", NULL, @3));
 					if ($4)
-						n->options |= VACOPT_VERBOSE;
+						n->options = lappend(n->options,
+											 makeDefElem("verbose", NULL, @4));
 					if ($5)
-						n->options |= VACOPT_ANALYZE;
+						n->options = lappend(n->options,
+											 makeDefElem("analyze", NULL, @5));
 					n->rels = $6;
+					n->is_vacuumcmd = true;
 					$$ = (Node *)n;
 				}
-			| VACUUM '(' vacuum_option_list ')' opt_vacuum_relation_list
+			| VACUUM '(' vac_analyze_option_list ')' opt_vacuum_relation_list
 				{
 					VacuumStmt *n = makeNode(VacuumStmt);
-					n->options = VACOPT_VACUUM | $3;
+					n->options = $3;
 					n->rels = $5;
+					n->is_vacuumcmd = true;
 					$$ = (Node *) n;
-				}
-		;
-
-vacuum_option_list:
-			vacuum_option_elem								{ $$ = $1; }
-			| vacuum_option_list ',' vacuum_option_elem		{ $$ = $1 | $3; }
-		;
-
-vacuum_option_elem:
-			analyze_keyword		{ $$ = VACOPT_ANALYZE; }
-			| VERBOSE			{ $$ = VACOPT_VERBOSE; }
-			| FREEZE			{ $$ = VACOPT_FREEZE; }
-			| FULL				{ $$ = VACOPT_FULL; }
-			| IDENT
-				{
-					if (strcmp($1, "disable_page_skipping") == 0)
-						$$ = VACOPT_DISABLE_PAGE_SKIPPING;
-					else if (strcmp($1, "skip_locked") == 0)
-						$$ = VACOPT_SKIP_LOCKED;
-					else
-						ereport(ERROR,
-								(errcode(ERRCODE_SYNTAX_ERROR),
-							 errmsg("unrecognized VACUUM option \"%s\"", $1),
-									 parser_errposition(@1)));
 				}
 		;
 
 AnalyzeStmt: analyze_keyword opt_verbose opt_vacuum_relation_list
 				{
 					VacuumStmt *n = makeNode(VacuumStmt);
-					n->options = VACOPT_ANALYZE;
+					n->options = NIL;
 					if ($2)
-						n->options |= VACOPT_VERBOSE;
+						n->options = lappend(n->options,
+											 makeDefElem("verbose", NULL, @2));
 					n->rels = $3;
+					n->is_vacuumcmd = false;
 					$$ = (Node *)n;
 				}
-			| analyze_keyword '(' analyze_option_list ')' opt_vacuum_relation_list
+			| analyze_keyword '(' vac_analyze_option_list ')' opt_vacuum_relation_list
 				{
 					VacuumStmt *n = makeNode(VacuumStmt);
-					n->options = VACOPT_ANALYZE | $3;
+					n->options = $3;
 					n->rels = $5;
+					n->is_vacuumcmd = false;
 					$$ = (Node *) n;
 				}
 		;
 
-analyze_option_list:
-			analyze_option_elem								{ $$ = $1; }
-			| analyze_option_list ',' analyze_option_elem	{ $$ = $1 | $3; }
-		;
-
-analyze_option_elem:
-			VERBOSE				{ $$ = VACOPT_VERBOSE; }
-			| IDENT
+vac_analyze_option_list:
+			vac_analyze_option_elem
 				{
-					if (strcmp($1, "skip_locked") == 0)
-						$$ = VACOPT_SKIP_LOCKED;
-					else
-						ereport(ERROR,
-								(errcode(ERRCODE_SYNTAX_ERROR),
-								 errmsg("unrecognized ANALYZE option \"%s\"", $1),
-									 parser_errposition(@1)));
+					$$ = list_make1($1);
+				}
+			| vac_analyze_option_list ',' vac_analyze_option_elem
+				{
+					$$ = lappend($1, $3);
 				}
 		;
 
 analyze_keyword:
 			ANALYZE									{}
 			| ANALYSE /* British */					{}
+		;
+
+vac_analyze_option_elem:
+			vac_analyze_option_name vac_analyze_option_arg
+				{
+					$$ = makeDefElem($1, $2, @1);
+				}
+		;
+
+vac_analyze_option_name:
+			NonReservedWord							{ $$ = $1; }
+			| analyze_keyword						{ $$ = "analyze"; }
+		;
+
+vac_analyze_option_arg:
+			opt_boolean_or_string					{ $$ = (Node *) makeString($1); }
+			| NumericOnly			{ $$ = (Node *) $1; }
+			| /* EMPTY */		 					{ $$ = NULL; }
 		;
 
 opt_analyze:
@@ -12502,7 +12542,7 @@ SimpleTypename:
  * Note that ConstInterval is not included here since it must
  * be pushed up higher in the rules to accommodate the postfix
  * options (e.g. INTERVAL '1' YEAR). Likewise, we have to handle
- * the generic-type-name case in AExprConst to avoid premature
+ * the generic-type-name case in AexprConst to avoid premature
  * reduce/reduce conflicts against function names.
  */
 ConstTypename:
@@ -15221,6 +15261,7 @@ unreserved_keyword:
 			| STDIN
 			| STDOUT
 			| STORAGE
+			| STORED
 			| STRICT_P
 			| STRIP_P
 			| SUBSCRIPTION

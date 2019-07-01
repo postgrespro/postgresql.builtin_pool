@@ -566,12 +566,8 @@ SELECT asinh(float8 'nan');
    NaN
 (1 row)
 
-SELECT acosh(float8 'infinity');
-  acosh   
-----------
- Infinity
-(1 row)
-
+-- acosh(Inf) should be Inf, but some mingw versions produce NaN, so skip test
+-- SELECT acosh(float8 'infinity');
 SELECT acosh(float8 '-infinity');
 ERROR:  input is out of range
 SELECT acosh(float8 'nan');
@@ -1201,8 +1197,11 @@ select float8send(flt) as ibits,
 (209 rows)
 
 -- clean up, lest opr_sanity complain
-\set VERBOSITY terse
 drop type xfloat8 cascade;
 NOTICE:  drop cascades to 6 other objects
-\set VERBOSITY default
---
+DETAIL:  drop cascades to function xfloat8in(cstring)
+drop cascades to function xfloat8out(xfloat8)
+drop cascades to cast from xfloat8 to double precision
+drop cascades to cast from double precision to xfloat8
+drop cascades to cast from xfloat8 to bigint
+drop cascades to cast from bigint to xfloat8

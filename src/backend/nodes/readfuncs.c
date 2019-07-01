@@ -1430,6 +1430,7 @@ _readRangeTblEntry(void)
 	READ_BITMAPSET_FIELD(selectedCols);
 	READ_BITMAPSET_FIELD(insertedCols);
 	READ_BITMAPSET_FIELD(updatedCols);
+	READ_BITMAPSET_FIELD(extraUpdatedCols);
 	READ_NODE_FIELD(securityQuals);
 
 	READ_DONE();
@@ -1677,6 +1678,7 @@ _readRecursiveUnion(void)
 	READ_INT_FIELD(numCols);
 	READ_ATTRNUMBER_ARRAY(dupColIdx, local_node->numCols);
 	READ_OID_ARRAY(dupOperators, local_node->numCols);
+	READ_OID_ARRAY(dupCollations, local_node->numCols);
 	READ_LONG_FIELD(numGroups);
 
 	READ_DONE();
@@ -2143,6 +2145,7 @@ _readGroup(void)
 	READ_INT_FIELD(numCols);
 	READ_ATTRNUMBER_ARRAY(grpColIdx, local_node->numCols);
 	READ_OID_ARRAY(grpOperators, local_node->numCols);
+	READ_OID_ARRAY(grpCollations, local_node->numCols);
 
 	READ_DONE();
 }
@@ -2162,6 +2165,7 @@ _readAgg(void)
 	READ_INT_FIELD(numCols);
 	READ_ATTRNUMBER_ARRAY(grpColIdx, local_node->numCols);
 	READ_OID_ARRAY(grpOperators, local_node->numCols);
+	READ_OID_ARRAY(grpCollations, local_node->numCols);
 	READ_LONG_FIELD(numGroups);
 	READ_BITMAPSET_FIELD(aggParams);
 	READ_NODE_FIELD(groupingSets);
@@ -2184,9 +2188,11 @@ _readWindowAgg(void)
 	READ_INT_FIELD(partNumCols);
 	READ_ATTRNUMBER_ARRAY(partColIdx, local_node->partNumCols);
 	READ_OID_ARRAY(partOperators, local_node->partNumCols);
+	READ_OID_ARRAY(partCollations, local_node->partNumCols);
 	READ_INT_FIELD(ordNumCols);
 	READ_ATTRNUMBER_ARRAY(ordColIdx, local_node->ordNumCols);
 	READ_OID_ARRAY(ordOperators, local_node->ordNumCols);
+	READ_OID_ARRAY(ordCollations, local_node->ordNumCols);
 	READ_INT_FIELD(frameOptions);
 	READ_NODE_FIELD(startOffset);
 	READ_NODE_FIELD(endOffset);
@@ -2212,6 +2218,7 @@ _readUnique(void)
 	READ_INT_FIELD(numCols);
 	READ_ATTRNUMBER_ARRAY(uniqColIdx, local_node->numCols);
 	READ_OID_ARRAY(uniqOperators, local_node->numCols);
+	READ_OID_ARRAY(uniqCollations, local_node->numCols);
 
 	READ_DONE();
 }
@@ -2290,6 +2297,7 @@ _readSetOp(void)
 	READ_INT_FIELD(numCols);
 	READ_ATTRNUMBER_ARRAY(dupColIdx, local_node->numCols);
 	READ_OID_ARRAY(dupOperators, local_node->numCols);
+	READ_OID_ARRAY(dupCollations, local_node->numCols);
 	READ_INT_FIELD(flagColIdx);
 	READ_INT_FIELD(firstFlag);
 	READ_LONG_FIELD(numGroups);
@@ -2380,16 +2388,13 @@ _readPartitionedRelPruneInfo(void)
 	READ_LOCALS(PartitionedRelPruneInfo);
 
 	READ_UINT_FIELD(rtindex);
-	READ_NODE_FIELD(pruning_steps);
 	READ_BITMAPSET_FIELD(present_parts);
 	READ_INT_FIELD(nparts);
-	READ_INT_FIELD(nexprs);
 	READ_INT_ARRAY(subplan_map, local_node->nparts);
 	READ_INT_ARRAY(subpart_map, local_node->nparts);
 	READ_OID_ARRAY(relid_map, local_node->nparts);
-	READ_BOOL_ARRAY(hasexecparam, local_node->nexprs);
-	READ_BOOL_FIELD(do_initial_prune);
-	READ_BOOL_FIELD(do_exec_prune);
+	READ_NODE_FIELD(initial_pruning_steps);
+	READ_NODE_FIELD(exec_pruning_steps);
 	READ_BITMAPSET_FIELD(execparamids);
 
 	READ_DONE();

@@ -35,7 +35,7 @@
 
 static Oid	get_partition_parent_worker(Relation inhRel, Oid relid);
 static void get_partition_ancestors_worker(Relation inhRel, Oid relid,
-							   List **ancestors);
+										   List **ancestors);
 
 /*
  * get_partition_parent
@@ -143,6 +143,42 @@ get_partition_ancestors_worker(Relation inhRel, Oid relid, List **ancestors)
 
 	*ancestors = lappend_oid(*ancestors, parentOid);
 	get_partition_ancestors_worker(inhRel, parentOid, ancestors);
+}
+
+/*
+ * index_get_partition
+ *		Return the OID of index of the given partition that is a child
+ *		of the given index, or InvalidOid if there isn't one.
+ */
+Oid
+index_get_partition(Relation partition, Oid indexId)
+{
+	List	   *idxlist = RelationGetIndexList(partition);
+	ListCell   *l;
+
+	foreach(l, idxlist)
+	{
+		Oid			partIdx = lfirst_oid(l);
+		HeapTuple	tup;
+		Form_pg_class classForm;
+		bool		ispartition;
+
+		tup = SearchSysCache1(RELOID, ObjectIdGetDatum(partIdx));
+		if (!HeapTupleIsValid(tup))
+			elog(ERROR, "cache lookup failed for relation %u", partIdx);
+		classForm = (Form_pg_class) GETSTRUCT(tup);
+		ispartition = classForm->relispartition;
+		ReleaseSysCache(tup);
+		if (!ispartition)
+			continue;
+		if (get_partition_parent(lfirst_oid(l)) == indexId)
+		{
+			list_free(idxlist);
+			return partIdx;
+		}
+	}
+
+	return InvalidOid;
 }
 
 /*
@@ -283,7 +319,7 @@ get_default_partition_oid(Oid parentId)
 /*
  * update_default_partition_oid
  *
- * Update pg_partition_table.partdefid with a new default partition OID.
+ * Update pg_partitioned_table.partdefid with a new default partition OID.
  */
 void
 update_default_partition_oid(Oid parentId, Oid defaultPartId)

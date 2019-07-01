@@ -49,11 +49,11 @@ int			Password_encryption = PASSWORD_TYPE_MD5;
 check_password_hook_type check_password_hook = NULL;
 
 static void AddRoleMems(const char *rolename, Oid roleid,
-			List *memberSpecs, List *memberIds,
-			Oid grantorId, bool admin_opt);
+						List *memberSpecs, List *memberIds,
+						Oid grantorId, bool admin_opt);
 static void DelRoleMems(const char *rolename, Oid roleid,
-			List *memberSpecs, List *memberIds,
-			bool admin_opt);
+						List *memberSpecs, List *memberIds,
+						bool admin_opt);
 
 
 /* Check if current user has createrole privileges */
@@ -325,6 +325,15 @@ CreateRole(ParseState *pstate, CreateRoleStmt *stmt)
 				 errmsg("role name \"%s\" is reserved",
 						stmt->role),
 				 errdetail("Role names starting with \"pg_\" are reserved.")));
+
+	/*
+	 * If built with appropriate switch, whine when regression-testing
+	 * conventions for role names are violated.
+	 */
+#ifdef ENFORCE_REGRESSION_TEST_NAME_RESTRICTIONS
+	if (strncmp(stmt->role, "regress_", 8) != 0)
+		elog(WARNING, "roles created by regression test cases should have names starting with \"regress_\"");
+#endif
 
 	/*
 	 * Check the pg_authid relation to be certain the role doesn't already
@@ -1211,6 +1220,15 @@ RenameRole(const char *oldname, const char *newname)
 				 errmsg("role name \"%s\" is reserved",
 						newname),
 				 errdetail("Role names starting with \"pg_\" are reserved.")));
+
+	/*
+	 * If built with appropriate switch, whine when regression-testing
+	 * conventions for role names are violated.
+	 */
+#ifdef ENFORCE_REGRESSION_TEST_NAME_RESTRICTIONS
+	if (strncmp(newname, "regress_", 8) != 0)
+		elog(WARNING, "roles created by regression test cases should have names starting with \"regress_\"");
+#endif
 
 	/* make sure the new name doesn't exist */
 	if (SearchSysCacheExists1(AUTHNAME, CStringGetDatum(newname)))

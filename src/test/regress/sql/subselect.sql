@@ -436,6 +436,23 @@ insert into inner_7597 values(0, null);
 select * from outer_7597 where (f1, f2) not in (select * from inner_7597);
 
 --
+-- Similar test case using text that verifies that collation
+-- information is passed through by execTuplesEqual() in nodeSubplan.c
+-- (otherwise it would error in texteq())
+--
+
+create temp table outer_text (f1 text, f2 text);
+insert into outer_text values ('a', 'a');
+insert into outer_text values ('b', 'a');
+insert into outer_text values ('a', null);
+insert into outer_text values ('b', null);
+
+create temp table inner_text (c1 text, c2 text);
+insert into inner_text values ('a', null);
+
+select * from outer_text where (f1, f2) not in (select * from inner_text);
+
+--
 -- Test case for premature memory release during hashing of subplan output
 --
 
@@ -672,6 +689,41 @@ select * from x, x x2 where x.n = x2.n;
 explain (verbose, costs off)
 with x as not materialized (select * from (select f1, now() as n from subselect_tbl) ss)
 select * from x, x x2 where x.n = x2.n;
+
+-- Multiply-referenced CTEs can't be inlined if they contain outer self-refs
+explain (verbose, costs off)
+with recursive x(a) as
+  ((values ('a'), ('b'))
+   union all
+   (with z as not materialized (select * from x)
+    select z.a || z1.a as a from z cross join z as z1
+    where length(z.a || z1.a) < 5))
+select * from x;
+
+with recursive x(a) as
+  ((values ('a'), ('b'))
+   union all
+   (with z as not materialized (select * from x)
+    select z.a || z1.a as a from z cross join z as z1
+    where length(z.a || z1.a) < 5))
+select * from x;
+
+explain (verbose, costs off)
+with recursive x(a) as
+  ((values ('a'), ('b'))
+   union all
+   (with z as not materialized (select * from x)
+    select z.a || z.a as a from z
+    where length(z.a || z.a) < 5))
+select * from x;
+
+with recursive x(a) as
+  ((values ('a'), ('b'))
+   union all
+   (with z as not materialized (select * from x)
+    select z.a || z.a as a from z
+    where length(z.a || z.a) < 5))
+select * from x;
 
 -- Check handling of outer references
 explain (verbose, costs off)

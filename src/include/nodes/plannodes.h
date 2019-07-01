@@ -297,6 +297,7 @@ typedef struct RecursiveUnion
 								 * duplicate-ness */
 	AttrNumber *dupColIdx;		/* their indexes in the target list */
 	Oid		   *dupOperators;	/* equality operators to compare with */
+	Oid		   *dupCollations;
 	long		numGroups;		/* estimated number of groups in input */
 } RecursiveUnion;
 
@@ -773,6 +774,7 @@ typedef struct Group
 	int			numCols;		/* number of grouping columns */
 	AttrNumber *grpColIdx;		/* their indexes in the target list */
 	Oid		   *grpOperators;	/* equality operators to compare with */
+	Oid		   *grpCollations;
 } Group;
 
 /* ---------------
@@ -797,6 +799,7 @@ typedef struct Agg
 	int			numCols;		/* number of grouping columns */
 	AttrNumber *grpColIdx;		/* their indexes in the target list */
 	Oid		   *grpOperators;	/* equality operators to compare with */
+	Oid		   *grpCollations;
 	long		numGroups;		/* estimated number of groups in input */
 	Bitmapset  *aggParams;		/* IDs of Params used in Aggref inputs */
 	/* Note: planner provides numGroups & aggParams only in HASHED/MIXED case */
@@ -815,9 +818,11 @@ typedef struct WindowAgg
 	int			partNumCols;	/* number of columns in partition clause */
 	AttrNumber *partColIdx;		/* their indexes in the target list */
 	Oid		   *partOperators;	/* equality operators for partition columns */
+	Oid		   *partCollations; /* collations for partition columns */
 	int			ordNumCols;		/* number of columns in ordering clause */
 	AttrNumber *ordColIdx;		/* their indexes in the target list */
 	Oid		   *ordOperators;	/* equality operators for ordering columns */
+	Oid		   *ordCollations;	/* collations for ordering columns */
 	int			frameOptions;	/* frame_clause options, see WindowDef */
 	Node	   *startOffset;	/* expression for starting bound, if any */
 	Node	   *endOffset;		/* expression for ending bound, if any */
@@ -839,6 +844,7 @@ typedef struct Unique
 	int			numCols;		/* number of columns to check for uniqueness */
 	AttrNumber *uniqColIdx;		/* their indexes in the target list */
 	Oid		   *uniqOperators;	/* equality operators to compare with */
+	Oid		   *uniqCollations; /* collations for equality comparisons */
 } Unique;
 
 /* ------------
@@ -913,6 +919,7 @@ typedef struct SetOp
 								 * duplicate-ness */
 	AttrNumber *dupColIdx;		/* their indexes in the target list */
 	Oid		   *dupOperators;	/* equality operators to compare with */
+	Oid		   *dupCollations;
 	AttrNumber	flagColIdx;		/* where is the flag column, if any */
 	int			firstFlag;		/* flag value for first input relation */
 	long		numGroups;		/* estimated number of groups in input */
@@ -1096,26 +1103,29 @@ typedef struct PartitionPruneInfo
  * it is -1 if the partition is a leaf or has been pruned.  Note that subplan
  * indexes, as stored in 'subplan_map', are global across the parent plan
  * node, but partition indexes are valid only within a particular hierarchy.
+ * relid_map[p] contains the partition's OID, or 0 if the partition was pruned.
  */
 typedef struct PartitionedRelPruneInfo
 {
 	NodeTag		type;
 	Index		rtindex;		/* RT index of partition rel for this level */
-	List	   *pruning_steps;	/* List of PartitionPruneStep, see below */
 	Bitmapset  *present_parts;	/* Indexes of all partitions which subplans or
-								 * subparts are present for. */
-	int			nparts;			/* Length of subplan_map[] and subpart_map[] */
-	int			nexprs;			/* Length of hasexecparam[] */
+								 * subparts are present for */
+	int			nparts;			/* Length of the following arrays: */
 	int		   *subplan_map;	/* subplan index by partition index, or -1 */
 	int		   *subpart_map;	/* subpart index by partition index, or -1 */
-	Oid		   *relid_map;		/* relation OID by partition index, or -1 */
-	bool	   *hasexecparam;	/* true if corresponding pruning_step contains
-								 * any PARAM_EXEC Params. */
-	bool		do_initial_prune;	/* true if pruning should be performed
-									 * during executor startup. */
-	bool		do_exec_prune;	/* true if pruning should be performed during
-								 * executor run. */
-	Bitmapset  *execparamids;	/* All PARAM_EXEC Param IDs in pruning_steps */
+	Oid		   *relid_map;		/* relation OID by partition index, or 0 */
+
+	/*
+	 * initial_pruning_steps shows how to prune during executor startup (i.e.,
+	 * without use of any PARAM_EXEC Params); it is NIL if no startup pruning
+	 * is required.  exec_pruning_steps shows how to prune with PARAM_EXEC
+	 * Params; it is NIL if no per-scan pruning is required.
+	 */
+	List	   *initial_pruning_steps;	/* List of PartitionPruneStep */
+	List	   *exec_pruning_steps; /* List of PartitionPruneStep */
+	Bitmapset  *execparamids;	/* All PARAM_EXEC Param IDs in
+								 * exec_pruning_steps */
 } PartitionedRelPruneInfo;
 
 /*

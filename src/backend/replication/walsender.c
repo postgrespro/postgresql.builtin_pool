@@ -218,7 +218,7 @@ typedef struct
 	int			write_head;
 	int			read_heads[NUM_SYNC_REP_WAIT_MODE];
 	WalTimeSample last_read[NUM_SYNC_REP_WAIT_MODE];
-}			LagTracker;
+} LagTracker;
 
 static LagTracker *lag_tracker;
 
@@ -903,8 +903,9 @@ CreateReplicationSlot(CreateReplicationSlotCmd *cmd)
 		{
 			if (IsTransactionBlock())
 				ereport(ERROR,
-						(errmsg("CREATE_REPLICATION_SLOT ... EXPORT_SNAPSHOT "
-								"must not be called inside a transaction")));
+				/*- translator: %s is a CREATE_REPLICATION_SLOT statement */
+						(errmsg("%s must not be called inside a transaction",
+								"CREATE_REPLICATION_SLOT ... EXPORT_SNAPSHOT")));
 
 			need_full_snapshot = true;
 		}
@@ -912,28 +913,33 @@ CreateReplicationSlot(CreateReplicationSlotCmd *cmd)
 		{
 			if (!IsTransactionBlock())
 				ereport(ERROR,
-						(errmsg("CREATE_REPLICATION_SLOT ... USE_SNAPSHOT "
-								"must be called inside a transaction")));
+				/*- translator: %s is a CREATE_REPLICATION_SLOT statement */
+						(errmsg("%s must be called inside a transaction",
+								"CREATE_REPLICATION_SLOT ... USE_SNAPSHOT")));
 
 			if (XactIsoLevel != XACT_REPEATABLE_READ)
 				ereport(ERROR,
-						(errmsg("CREATE_REPLICATION_SLOT ... USE_SNAPSHOT "
-								"must be called in REPEATABLE READ isolation mode transaction")));
+				/*- translator: %s is a CREATE_REPLICATION_SLOT statement */
+						(errmsg("%s must be called in REPEATABLE READ isolation mode transaction",
+								"CREATE_REPLICATION_SLOT ... USE_SNAPSHOT")));
 
 			if (FirstSnapshotSet)
 				ereport(ERROR,
-						(errmsg("CREATE_REPLICATION_SLOT ... USE_SNAPSHOT "
-								"must be called before any query")));
+				/*- translator: %s is a CREATE_REPLICATION_SLOT statement */
+						(errmsg("%s must be called before any query",
+								"CREATE_REPLICATION_SLOT ... USE_SNAPSHOT")));
 
 			if (IsSubTransaction())
 				ereport(ERROR,
-						(errmsg("CREATE_REPLICATION_SLOT ... USE_SNAPSHOT "
-								"must not be called in a subtransaction")));
+				/*- translator: %s is a CREATE_REPLICATION_SLOT statement */
+						(errmsg("%s must not be called in a subtransaction",
+								"CREATE_REPLICATION_SLOT ... USE_SNAPSHOT")));
 
 			need_full_snapshot = true;
 		}
 
 		ctx = CreateInitDecodingContext(cmd->plugin, NIL, need_full_snapshot,
+										InvalidXLogRecPtr,
 										logical_read_xlog_page,
 										WalSndPrepareWrite, WalSndWriteData,
 										WalSndUpdateProgress);
@@ -1081,7 +1087,8 @@ StartLogicalReplication(StartReplicationCmd *cmd)
 	 * Create our decoding context, making it start at the previously ack'ed
 	 * position.
 	 *
-	 * Do this before sending CopyBoth, so that any errors are reported early.
+	 * Do this before sending a CopyBothResponse message, so that any errors
+	 * are reported early.
 	 */
 	logical_decoding_ctx =
 		CreateDecodingContext(cmd->startpoint, cmd->options, false,
@@ -1401,7 +1408,7 @@ WalSndWaitForWal(XLogRecPtr loc)
 		sleeptime = WalSndComputeSleeptime(GetCurrentTimestamp());
 
 		wakeEvents = WL_LATCH_SET | WL_EXIT_ON_PM_DEATH |
-					 WL_SOCKET_READABLE | WL_TIMEOUT;
+			WL_SOCKET_READABLE | WL_TIMEOUT;
 
 		if (pq_is_send_pending())
 			wakeEvents |= WL_SOCKET_WRITEABLE;
@@ -1551,7 +1558,10 @@ exec_replication_command(const char *cmd_string)
 				DestReceiver *dest = CreateDestReceiver(DestRemoteSimple);
 				VariableShowStmt *n = (VariableShowStmt *) cmd_node;
 
+				/* syscache access needs a transaction environment */
+				StartTransactionCommand();
 				GetPGVariable(n->name, dest);
+				CommitTransactionCommand();
 			}
 			break;
 
@@ -1912,10 +1922,13 @@ PhysicalReplicationSlotNewXmin(TransactionId feedbackXmin, TransactionId feedbac
 static bool
 TransactionIdInRecentPast(TransactionId xid, uint32 epoch)
 {
+	FullTransactionId nextFullXid;
 	TransactionId nextXid;
 	uint32		nextEpoch;
 
-	GetNextXidAndEpoch(&nextXid, &nextEpoch);
+	nextFullXid = ReadNextFullTransactionId();
+	nextXid = XidFromFullTransactionId(nextFullXid);
+	nextEpoch = EpochFromFullTransactionId(nextFullXid);
 
 	if (xid <= nextXid)
 	{
@@ -2243,7 +2256,7 @@ WalSndLoop(WalSndSendDataCallback send_data)
 			int			wakeEvents;
 
 			wakeEvents = WL_LATCH_SET | WL_EXIT_ON_PM_DEATH | WL_TIMEOUT |
-						 WL_SOCKET_READABLE;
+				WL_SOCKET_READABLE;
 
 			/*
 			 * Use fresh timestamp, not last_processed, to reduce the chance

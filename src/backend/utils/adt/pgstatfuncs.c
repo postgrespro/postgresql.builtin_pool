@@ -15,6 +15,7 @@
 #include "postgres.h"
 
 #include "access/htup_details.h"
+#include "access/xlog.h"
 #include "catalog/pg_authid.h"
 #include "catalog/pg_type.h"
 #include "common/ip.h"
@@ -468,6 +469,10 @@ pg_stat_get_progress_info(PG_FUNCTION_ARGS)
 	/* Translate command name into command type code. */
 	if (pg_strcasecmp(cmd, "VACUUM") == 0)
 		cmdtype = PROGRESS_COMMAND_VACUUM;
+	else if (pg_strcasecmp(cmd, "CLUSTER") == 0)
+		cmdtype = PROGRESS_COMMAND_CLUSTER;
+	else if (pg_strcasecmp(cmd, "CREATE INDEX") == 0)
+		cmdtype = PROGRESS_COMMAND_CREATE_INDEX;
 	else
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
@@ -541,7 +546,7 @@ pg_stat_get_progress_info(PG_FUNCTION_ARGS)
 Datum
 pg_stat_get_activity(PG_FUNCTION_ARGS)
 {
-#define PG_STAT_GET_ACTIVITY_COLS	26
+#define PG_STAT_GET_ACTIVITY_COLS	29
 	int			num_backends = pgstat_fetch_stat_numbackends();
 	int			curr_backend;
 	int			pid = PG_ARGISNULL(0) ? -1 : PG_GETARG_INT32(0);
@@ -855,6 +860,21 @@ pg_stat_get_activity(PG_FUNCTION_ARGS)
 				values[18] = BoolGetDatum(false);	/* ssl */
 				nulls[19] = nulls[20] = nulls[21] = nulls[22] = nulls[23] = nulls[24] = nulls[25] = true;
 			}
+
+			/* GSSAPI information */
+			if (beentry->st_gss)
+			{
+				values[26] = BoolGetDatum(beentry->st_gssstatus->gss_auth); /* gss_auth */
+				values[27] = CStringGetTextDatum(beentry->st_gssstatus->gss_princ);
+				values[28] = BoolGetDatum(beentry->st_gssstatus->gss_enc);	/* GSS Encryption in use */
+			}
+			else
+			{
+				values[26] = BoolGetDatum(false);	/* gss_auth */
+				nulls[27] = true;	/* No GSS principal */
+				values[28] = BoolGetDatum(false);	/* GSS Encryption not in
+													 * use */
+			}
 		}
 		else
 		{
@@ -879,6 +899,9 @@ pg_stat_get_activity(PG_FUNCTION_ARGS)
 			nulls[23] = true;
 			nulls[24] = true;
 			nulls[25] = true;
+			nulls[26] = true;
+			nulls[27] = true;
+			nulls[28] = true;
 		}
 
 		tuplestore_putvalues(tupstore, tupdesc, values, nulls);
@@ -1504,12 +1527,36 @@ pg_stat_get_db_checksum_failures(PG_FUNCTION_ARGS)
 	int64		result;
 	PgStat_StatDBEntry *dbentry;
 
+	if (!DataChecksumsEnabled())
+		PG_RETURN_NULL();
+
 	if ((dbentry = pgstat_fetch_stat_dbentry(dbid)) == NULL)
 		result = 0;
 	else
 		result = (int64) (dbentry->n_checksum_failures);
 
 	PG_RETURN_INT64(result);
+}
+
+Datum
+pg_stat_get_db_checksum_last_failure(PG_FUNCTION_ARGS)
+{
+	Oid			dbid = PG_GETARG_OID(0);
+	TimestampTz result;
+	PgStat_StatDBEntry *dbentry;
+
+	if (!DataChecksumsEnabled())
+		PG_RETURN_NULL();
+
+	if ((dbentry = pgstat_fetch_stat_dbentry(dbid)) == NULL)
+		result = 0;
+	else
+		result = dbentry->last_checksum_failure;
+
+	if (result == 0)
+		PG_RETURN_NULL();
+	else
+		PG_RETURN_TIMESTAMPTZ(result);
 }
 
 Datum

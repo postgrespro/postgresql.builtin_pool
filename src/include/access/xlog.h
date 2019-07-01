@@ -95,7 +95,7 @@ typedef enum
 	RECOVERY_TARGET_TIMELINE_CONTROLFILE,
 	RECOVERY_TARGET_TIMELINE_LATEST,
 	RECOVERY_TARGET_TIMELINE_NUMERIC
-}			RecoveryTargetTimeLineGoal;
+} RecoveryTargetTimeLineGoal;
 
 extern XLogRecPtr ProcLastRecPtr;
 extern XLogRecPtr XactLastRecEnd;
@@ -116,6 +116,8 @@ extern bool EnableHotStandby;
 extern bool fullPageWrites;
 extern bool wal_log_hints;
 extern bool wal_compression;
+extern bool wal_init_zero;
+extern bool wal_recycle;
 extern bool *wal_consistency_checking;
 extern char *wal_consistency_checking_string;
 extern bool log_checkpoints;
@@ -130,8 +132,8 @@ extern char *PrimarySlotName;
 
 /* indirectly set via GUC system */
 extern TransactionId recoveryTargetXid;
-extern TimestampTz recoveryTargetTime;
-extern char *recoveryTargetName;
+extern char *recovery_target_time_string;
+extern const char *recoveryTargetName;
 extern XLogRecPtr recoveryTargetLSN;
 extern RecoveryTargetType recoveryTarget;
 extern char *PromoteTriggerFile;
@@ -215,9 +217,10 @@ extern bool XLOG_DEBUG;
 										 * belonging to unlogged tables */
 /* These are important to RequestCheckpoint */
 #define CHECKPOINT_WAIT			0x0020	/* Wait for completion */
+#define CHECKPOINT_REQUESTED	0x0040	/* Checkpoint request has been made */
 /* These indicate the cause of a checkpoint request */
-#define CHECKPOINT_CAUSE_XLOG	0x0040	/* XLOG consumption */
-#define CHECKPOINT_CAUSE_TIME	0x0080	/* Elapsed time */
+#define CHECKPOINT_CAUSE_XLOG	0x0080	/* XLOG consumption */
+#define CHECKPOINT_CAUSE_TIME	0x0100	/* Elapsed time */
 
 /*
  * Flag bits for the record being inserted, set using XLogSetRecordFlags().
@@ -254,8 +257,8 @@ extern CheckpointStatsData CheckpointStats;
 struct XLogRecData;
 
 extern XLogRecPtr XLogInsertRecord(struct XLogRecData *rdata,
-				 XLogRecPtr fpw_lsn,
-				 uint8 flags);
+								   XLogRecPtr fpw_lsn,
+								   uint8 flags);
 extern void XLogFlush(XLogRecPtr RecPtr);
 extern bool XLogBackgroundFlush(void);
 extern bool XLogNeedsFlush(XLogRecPtr RecPtr);
@@ -309,7 +312,6 @@ extern XLogRecPtr GetRedoRecPtr(void);
 extern XLogRecPtr GetInsertRecPtr(void);
 extern XLogRecPtr GetFlushRecPtr(void);
 extern XLogRecPtr GetLastImportantRecPtr(void);
-extern void GetNextXidAndEpoch(TransactionId *xid, uint32 *epoch);
 extern void RemovePromoteSignalFiles(void);
 
 extern bool CheckPromoteSignal(void);
@@ -343,11 +345,11 @@ typedef enum SessionBackupState
 } SessionBackupState;
 
 extern XLogRecPtr do_pg_start_backup(const char *backupidstr, bool fast,
-				   TimeLineID *starttli_p, StringInfo labelfile,
-				   List **tablespaces, StringInfo tblspcmapfile, bool infotbssize,
-				   bool needtblspcmapfile);
+									 TimeLineID *starttli_p, StringInfo labelfile,
+									 List **tablespaces, StringInfo tblspcmapfile, bool infotbssize,
+									 bool needtblspcmapfile);
 extern XLogRecPtr do_pg_stop_backup(char *labelfile, bool waitforarchive,
-				  TimeLineID *stoptli_p);
+									TimeLineID *stoptli_p);
 extern void do_pg_abort_backup(void);
 extern SessionBackupState get_backup_status(void);
 

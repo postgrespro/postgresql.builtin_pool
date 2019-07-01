@@ -54,32 +54,32 @@ static Query *transformOptionalSelectInto(ParseState *pstate, Node *parseTree);
 static Query *transformDeleteStmt(ParseState *pstate, DeleteStmt *stmt);
 static Query *transformInsertStmt(ParseState *pstate, InsertStmt *stmt);
 static List *transformInsertRow(ParseState *pstate, List *exprlist,
-				   List *stmtcols, List *icolumns, List *attrnos,
-				   bool strip_indirection);
+								List *stmtcols, List *icolumns, List *attrnos,
+								bool strip_indirection);
 static OnConflictExpr *transformOnConflictClause(ParseState *pstate,
-						  OnConflictClause *onConflictClause);
+												 OnConflictClause *onConflictClause);
 static int	count_rowexpr_columns(ParseState *pstate, Node *expr);
 static Query *transformSelectStmt(ParseState *pstate, SelectStmt *stmt);
 static Query *transformValuesClause(ParseState *pstate, SelectStmt *stmt);
 static Query *transformSetOperationStmt(ParseState *pstate, SelectStmt *stmt);
 static Node *transformSetOperationTree(ParseState *pstate, SelectStmt *stmt,
-						  bool isTopLevel, List **targetlist);
+									   bool isTopLevel, List **targetlist);
 static void determineRecursiveColTypes(ParseState *pstate,
-						   Node *larg, List *nrtargetlist);
+									   Node *larg, List *nrtargetlist);
 static Query *transformUpdateStmt(ParseState *pstate, UpdateStmt *stmt);
 static List *transformReturningList(ParseState *pstate, List *returningList);
 static List *transformUpdateTargetList(ParseState *pstate,
-						  List *targetList);
+									   List *targetList);
 static Query *transformDeclareCursorStmt(ParseState *pstate,
-						   DeclareCursorStmt *stmt);
+										 DeclareCursorStmt *stmt);
 static Query *transformExplainStmt(ParseState *pstate,
-					 ExplainStmt *stmt);
+								   ExplainStmt *stmt);
 static Query *transformCreateTableAsStmt(ParseState *pstate,
-						   CreateTableAsStmt *stmt);
+										 CreateTableAsStmt *stmt);
 static Query *transformCallStmt(ParseState *pstate,
-				  CallStmt *stmt);
+								CallStmt *stmt);
 static void transformLockingClause(ParseState *pstate, Query *qry,
-					   LockingClause *lc, bool pushedDown);
+								   LockingClause *lc, bool pushedDown);
 #ifdef RAW_EXPRESSION_COVERAGE_TEST
 static bool test_raw_expression_coverage(Node *node, void *context);
 #endif
@@ -2082,7 +2082,7 @@ transformSetOperationTree(ParseState *pstate, SelectStmt *stmt,
 			 * Select common collation.  A common collation is required for
 			 * all set operators except UNION ALL; see SQL:2008 7.13 <query
 			 * expression> Syntax Rule 15c.  (If we fail to identify a common
-			 * collation for a UNION ALL column, the curCollations element
+			 * collation for a UNION ALL column, the colCollations element
 			 * will be set to InvalidOid, which may result in a runtime error
 			 * if something at a higher query level wants to use the column's
 			 * collation.)
@@ -2287,6 +2287,7 @@ transformUpdateTargetList(ParseState *pstate, List *origTlist)
 	RangeTblEntry *target_rte;
 	ListCell   *orig_tl;
 	ListCell   *tl;
+	TupleDesc	tupdesc = pstate->p_target_relation->rd_att;
 
 	tlist = transformTargetList(pstate, origTlist,
 								EXPR_KIND_UPDATE_SOURCE);
@@ -2344,6 +2345,32 @@ transformUpdateTargetList(ParseState *pstate, List *origTlist)
 	}
 	if (orig_tl != NULL)
 		elog(ERROR, "UPDATE target count mismatch --- internal error");
+
+	/*
+	 * Record in extraUpdatedCols generated columns referencing updated base
+	 * columns.
+	 */
+	if (tupdesc->constr &&
+		tupdesc->constr->has_generated_stored)
+	{
+		for (int i = 0; i < tupdesc->constr->num_defval; i++)
+		{
+			AttrDefault defval = tupdesc->constr->defval[i];
+			Node	   *expr;
+			Bitmapset  *attrs_used = NULL;
+
+			/* skip if not generated column */
+			if (!TupleDescAttr(tupdesc, defval.adnum - 1)->attgenerated)
+				continue;
+
+			expr = stringToNode(defval.adbin);
+			pull_varattnos(expr, 1, &attrs_used);
+
+			if (bms_overlap(target_rte->updatedCols, attrs_used))
+				target_rte->extraUpdatedCols = bms_add_member(target_rte->extraUpdatedCols,
+															  defval.adnum - FirstLowInvalidHeapAttributeNumber);
+		}
+	}
 
 	return tlist;
 }
@@ -2572,7 +2599,7 @@ transformCreateTableAsStmt(ParseState *pstate, CreateTableAsStmt *stmt)
 		if (stmt->into->rel->relpersistence == RELPERSISTENCE_UNLOGGED)
 			ereport(ERROR,
 					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-					 errmsg("materialized views cannot be UNLOGGED")));
+					 errmsg("materialized views cannot be unlogged")));
 
 		/*
 		 * At runtime, we'll need a copy of the parsed-but-not-rewritten Query

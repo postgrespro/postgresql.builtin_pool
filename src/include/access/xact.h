@@ -14,6 +14,7 @@
 #ifndef XACT_H
 #define XACT_H
 
+#include "access/transam.h"
 #include "access/xlogreader.h"
 #include "lib/stringinfo.h"
 #include "nodes/pg_list.h"
@@ -53,6 +54,9 @@ extern PGDLLIMPORT int XactIsoLevel;
 /* Xact read-only state */
 extern bool DefaultXactReadOnly;
 extern bool XactReadOnly;
+
+/* flag for logging statements in this transaction */
+extern bool xact_is_sampled;
 
 /*
  * Xact is deferrable -- only meaningful (currently) for read only
@@ -355,6 +359,10 @@ extern TransactionId GetCurrentTransactionId(void);
 extern TransactionId GetCurrentTransactionIdIfAny(void);
 extern TransactionId GetStableLatestTransactionId(void);
 extern SubTransactionId GetCurrentSubTransactionId(void);
+extern FullTransactionId GetTopFullTransactionId(void);
+extern FullTransactionId GetTopFullTransactionIdIfAny(void);
+extern FullTransactionId GetCurrentFullTransactionId(void);
+extern FullTransactionId GetCurrentFullTransactionIdIfAny(void);
 extern void MarkCurrentTransactionIdLoggedIfAny(void);
 extern bool SubTransactionIsActive(SubTransactionId subxid);
 extern CommandId GetCurrentCommandId(bool used);
@@ -368,12 +376,14 @@ extern bool TransactionIdIsCurrentTransactionId(TransactionId xid);
 extern void CommandCounterIncrement(void);
 extern void ForceSyncCommit(void);
 extern void StartTransactionCommand(void);
+extern void SaveTransactionCharacteristics(void);
+extern void RestoreTransactionCharacteristics(void);
 extern void CommitTransactionCommand(void);
 extern void AbortCurrentTransaction(void);
 extern void BeginTransactionBlock(void);
-extern bool EndTransactionBlock(void);
+extern bool EndTransactionBlock(bool chain);
 extern bool PrepareTransactionBlock(const char *gid);
-extern void UserAbortTransactionBlock(void);
+extern void UserAbortTransactionBlock(bool chain);
 extern void BeginImplicitTransactionBlock(void);
 extern void EndImplicitTransactionBlock(void);
 extern void ReleaseSavepoint(const char *name);
@@ -403,19 +413,19 @@ extern void UnregisterSubXactCallback(SubXactCallback callback, void *arg);
 extern int	xactGetCommittedChildren(TransactionId **ptr);
 
 extern XLogRecPtr XactLogCommitRecord(TimestampTz commit_time,
-					int nsubxacts, TransactionId *subxacts,
-					int nrels, RelFileNode *rels,
-					int nmsgs, SharedInvalidationMessage *msgs,
-					bool relcacheInval, bool forceSync,
-					int xactflags,
-					TransactionId twophase_xid,
-					const char *twophase_gid);
+									  int nsubxacts, TransactionId *subxacts,
+									  int nrels, RelFileNode *rels,
+									  int nmsgs, SharedInvalidationMessage *msgs,
+									  bool relcacheInval, bool forceSync,
+									  int xactflags,
+									  TransactionId twophase_xid,
+									  const char *twophase_gid);
 
 extern XLogRecPtr XactLogAbortRecord(TimestampTz abort_time,
-				   int nsubxacts, TransactionId *subxacts,
-				   int nrels, RelFileNode *rels,
-				   int xactflags, TransactionId twophase_xid,
-				   const char *twophase_gid);
+									 int nsubxacts, TransactionId *subxacts,
+									 int nrels, RelFileNode *rels,
+									 int xactflags, TransactionId twophase_xid,
+									 const char *twophase_gid);
 extern void xact_redo(XLogReaderState *record);
 
 /* xactdesc.c */

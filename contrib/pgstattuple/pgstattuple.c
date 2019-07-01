@@ -31,7 +31,7 @@
 #include "access/relscan.h"
 #include "access/tableam.h"
 #include "catalog/namespace.h"
-#include "catalog/pg_am.h"
+#include "catalog/pg_am_d.h"
 #include "funcapi.h"
 #include "miscadmin.h"
 #include "storage/bufmgr.h"
@@ -66,22 +66,22 @@ typedef void (*pgstat_page) (pgstattuple_type *, Relation, BlockNumber,
 							 BufferAccessStrategy);
 
 static Datum build_pgstattuple_type(pgstattuple_type *stat,
-					   FunctionCallInfo fcinfo);
+									FunctionCallInfo fcinfo);
 static Datum pgstat_relation(Relation rel, FunctionCallInfo fcinfo);
 static Datum pgstat_heap(Relation rel, FunctionCallInfo fcinfo);
 static void pgstat_btree_page(pgstattuple_type *stat,
-				  Relation rel, BlockNumber blkno,
-				  BufferAccessStrategy bstrategy);
+							  Relation rel, BlockNumber blkno,
+							  BufferAccessStrategy bstrategy);
 static void pgstat_hash_page(pgstattuple_type *stat,
-				 Relation rel, BlockNumber blkno,
-				 BufferAccessStrategy bstrategy);
+							 Relation rel, BlockNumber blkno,
+							 BufferAccessStrategy bstrategy);
 static void pgstat_gist_page(pgstattuple_type *stat,
-				 Relation rel, BlockNumber blkno,
-				 BufferAccessStrategy bstrategy);
+							 Relation rel, BlockNumber blkno,
+							 BufferAccessStrategy bstrategy);
 static Datum pgstat_index(Relation rel, BlockNumber start,
-			 pgstat_page pagefn, FunctionCallInfo fcinfo);
+						  pgstat_page pagefn, FunctionCallInfo fcinfo);
 static void pgstat_index_page(pgstattuple_type *stat, Page page,
-				  OffsetNumber minoff, OffsetNumber maxoff);
+							  OffsetNumber minoff, OffsetNumber maxoff);
 
 /*
  * build_pgstattuple_type -- build a pgstattuple_type tuple
@@ -328,13 +328,18 @@ pgstat_heap(Relation rel, FunctionCallInfo fcinfo)
 	pgstattuple_type stat = {0};
 	SnapshotData SnapshotDirty;
 
+	if (rel->rd_rel->relam != HEAP_TABLE_AM_OID)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("only heap AM is supported")));
+
 	/* Disable syncscan because we assume we scan from block zero upwards */
 	scan = table_beginscan_strat(rel, SnapshotAny, 0, NULL, true, false);
 	hscan = (HeapScanDesc) scan;
 
 	InitDirtySnapshot(SnapshotDirty);
 
-	nblocks = hscan->rs_nblocks; /* # blocks to be scanned */
+	nblocks = hscan->rs_nblocks;	/* # blocks to be scanned */
 
 	/* scan the relation */
 	while ((tuple = heap_getnext(scan, ForwardScanDirection)) != NULL)

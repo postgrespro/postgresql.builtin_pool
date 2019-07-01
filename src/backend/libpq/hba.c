@@ -139,16 +139,16 @@ static const char *const UserAuthName[] =
 
 
 static MemoryContext tokenize_file(const char *filename, FILE *file,
-			  List **tok_lines, int elevel);
+								   List **tok_lines, int elevel);
 static List *tokenize_inc_file(List *tokens, const char *outer_filename,
-				  const char *inc_filename, int elevel, char **err_msg);
+							   const char *inc_filename, int elevel, char **err_msg);
 static bool parse_hba_auth_opt(char *name, char *val, HbaLine *hbaline,
-				   int elevel, char **err_msg);
+							   int elevel, char **err_msg);
 static bool verify_option_list_length(List *options, const char *optionname,
-						  List *masters, const char *mastername, int line_num);
+									  List *masters, const char *mastername, int line_num);
 static ArrayType *gethba_options(HbaLine *hba);
 static void fill_hba_line(Tuplestorestate *tuple_store, TupleDesc tupdesc,
-			  int lineno, HbaLine *hba, const char *err_msg);
+						  int lineno, HbaLine *hba, const char *err_msg);
 static void fill_hba_view(Tuplestorestate *tuple_store, TupleDesc tupdesc);
 
 
@@ -994,7 +994,9 @@ parse_hba_line(TokenizedLine *tok_line, int elevel)
 	}
 	else if (strcmp(token->string, "host") == 0 ||
 			 strcmp(token->string, "hostssl") == 0 ||
-			 strcmp(token->string, "hostnossl") == 0)
+			 strcmp(token->string, "hostnossl") == 0 ||
+			 strcmp(token->string, "hostgssenc") == 0 ||
+			 strcmp(token->string, "hostnogssenc") == 0)
 	{
 
 		if (token->string[4] == 's')	/* "hostssl" */
@@ -1022,10 +1024,23 @@ parse_hba_line(TokenizedLine *tok_line, int elevel)
 			*err_msg = "hostssl record cannot match because SSL is not supported by this build";
 #endif
 		}
-		else if (token->string[4] == 'n')	/* "hostnossl" */
+		else if (token->string[4] == 'g')	/* "hostgssenc" */
 		{
-			parsedline->conntype = ctHostNoSSL;
+			parsedline->conntype = ctHostGSS;
+#ifndef ENABLE_GSS
+			ereport(elevel,
+					(errcode(ERRCODE_CONFIG_FILE_ERROR),
+					 errmsg("hostgssenc record cannot match because GSSAPI is not supported by this build"),
+					 errhint("Compile with --with-gssapi to use GSSAPI connections."),
+					 errcontext("line %d of configuration file \"%s\"",
+								line_num, HbaFileName)));
+			*err_msg = "hostgssenc record cannot match because GSSAPI is not supported by this build";
+#endif
 		}
+		else if (token->string[4] == 'n' && token->string[6] == 's')
+			parsedline->conntype = ctHostNoSSL;
+		else if (token->string[4] == 'n' && token->string[6] == 'g')
+			parsedline->conntype = ctHostNoGSS;
 		else
 		{
 			/* "host" */
@@ -1404,6 +1419,19 @@ parse_hba_line(TokenizedLine *tok_line, int elevel)
 		*err_msg = "gssapi authentication is not supported on local sockets";
 		return NULL;
 	}
+	if (parsedline->conntype == ctHostGSS &&
+		parsedline->auth_method != uaGSS &&
+		parsedline->auth_method != uaReject &&
+		parsedline->auth_method != uaTrust)
+	{
+		ereport(elevel,
+				(errcode(ERRCODE_CONFIG_FILE_ERROR),
+				 errmsg("GSSAPI encryption only supports gss, trust, or reject authentication"),
+				 errcontext("line %d of configuration file \"%s\"",
+							line_num, HbaFileName)));
+		*err_msg = "GSSAPI encryption only supports gss, trust, or reject authentication";
+		return NULL;
+	}
 
 	if (parsedline->conntype != ctLocal &&
 		parsedline->auth_method == uaPeer)
@@ -1500,7 +1528,10 @@ parse_hba_line(TokenizedLine *tok_line, int elevel)
 	 */
 	if (parsedline->auth_method == uaLDAP)
 	{
+#ifndef HAVE_LDAP_INITIALIZE
+		/* Not mandatory for OpenLDAP, because it can use DNS SRV records */
 		MANDATORY_AUTH_ARG(parsedline->ldapserver, "ldapserver", "ldap");
+#endif
 
 		/*
 		 * LDAP can operate in two modes: either with a direct bind, using
@@ -2075,6 +2106,17 @@ check_hba(hbaPort *port)
 					continue;
 			}
 
+			/* Check GSSAPI state */
+#ifdef ENABLE_GSS
+			if (port->gss->enc && hba->conntype == ctHostNoGSS)
+				continue;
+			else if (!port->gss->enc && hba->conntype == ctHostGSS)
+				continue;
+#else
+			if (hba->conntype == ctHostGSS)
+				continue;
+#endif
+
 			/* Check IP address */
 			switch (hba->ip_cmp_method)
 			{
@@ -2410,6 +2452,12 @@ fill_hba_line(Tuplestorestate *tuple_store, TupleDesc tupdesc,
 				break;
 			case ctHostNoSSL:
 				typestr = "hostnossl";
+				break;
+			case ctHostGSS:
+				typestr = "hostgssenc";
+				break;
+			case ctHostNoGSS:
+				typestr = "hostnogssenc";
 				break;
 		}
 		if (typestr)
