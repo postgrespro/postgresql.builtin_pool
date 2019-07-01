@@ -4276,16 +4276,6 @@ static struct config_string ConfigureNamesString[] =
 		NULL, NULL, NULL
 	},
 
-	{
-		{"partition_key", PGC_USERSET, QUERY_TUNING_METHOD,
-			gettext_noop("Sets the name of parition key which should be taken in account in caclulating foreign key selectivity."),
-			NULL
-		},
-		&partition_key,
-		NULL,
-		NULL, NULL, NULL
-	},
-
 	/* End-of-list marker */
 	{
 		{NULL, 0, 0, NULL, NULL}, NULL, NULL, NULL, NULL, NULL

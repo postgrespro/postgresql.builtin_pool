@@ -139,8 +139,6 @@ bool		enable_parallel_append = true;
 bool		enable_parallel_hash = true;
 bool		enable_partition_pruning = true;
 
-char*       partition_key;
-
 typedef struct
 {
 	PlannerInfo *root;
@@ -180,10 +178,7 @@ static double relation_byte_size(double tuples, int width);
 static double page_size(double tuples, int width);
 static double get_parallel_divisor(Path *path);
 
-static Selectivity partkey_selectivity(PlannerInfo *root, RelOptInfo *outer_rel, RelOptInfo *inner_rel, JoinType jointype, bool* outer);
-static Node *partkey_clause(PlannerInfo *root, RelOptInfo *baserel);
-static bool is_partkey_clause(PlannerInfo *root, Node *node);
- 
+
 /*
  * clamp_row_est
  *		Force a row-count estimate to a sane value.
@@ -3340,7 +3335,6 @@ initial_cost_hashjoin(PlannerInfo *root, JoinCostWorkspace *workspace,
 
 		startup_cost += seq_page_cost * innerpages;
 		run_cost += seq_page_cost * (innerpages + 2 * outerpages);
-		elog(DEBUG1, "Hash swap cost %f", seq_page_cost * (innerpages + 2 * outerpages));
 	}
 
 	/* CPU costs left for later */
@@ -4410,22 +4404,17 @@ void
 set_baserel_size_estimates(PlannerInfo *root, RelOptInfo *rel)
 {
 	double		nrows;
-	Node       *pk_clause;
-	Selectivity sel;
 
 	/* Should only be applied to base relations */
 	Assert(rel->relid > 0);
 
-	sel = clauselist_selectivity(root,
+	nrows = rel->tuples *
+		clauselist_selectivity(root,
 							   rel->baserestrictinfo,
 							   0,
 							   JOIN_INNER,
 							   NULL);
-	pk_clause = partkey_clause(root, rel);
-	if (pk_clause)
-		sel /= clause_selectivity(root, pk_clause, 0, JOIN_INNER, NULL);
 
-	nrows = rel->tuples * sel;
 	rel->rows = clamp_row_est(nrows);
 
 	cost_qual_eval(&rel->baserestrictcost, rel->baserestrictinfo, root);
@@ -4580,9 +4569,7 @@ calc_joinrel_size_estimate(PlannerInfo *root,
 	Selectivity fkselec;
 	Selectivity jselec;
 	Selectivity pselec;
-	Selectivity pkselec;
 	double		nrows;
-	bool        outer_pkselec = false;
 
 	/*
 	 * Compute joinclause selectivity.  Note that we are only considering
@@ -4650,15 +4637,8 @@ calc_joinrel_size_estimate(PlannerInfo *root,
 										0,
 										jointype,
 										sjinfo);
-		pselec = 0.0; /* not used, keep compiler quiet */
+		pselec = 0.0;			/* not used, keep compiler quiet */
 	}
-	if (partition_key && *partition_key)
-	{
-		pkselec = partkey_selectivity(root, outer_rel, inner_rel, jointype, &outer_pkselec);
-		elog(DEBUG1, "jointype=%d, pkselec=%fm pselec=%f", jointype, pkselec, pselec);
-	}
-	else
-		pkselec = 1.0;
 
 	/*
 	 * Basically, we multiply size of Cartesian product by selectivity.
@@ -4677,13 +4657,9 @@ calc_joinrel_size_estimate(PlannerInfo *root,
 		case JOIN_INNER:
 			nrows = outer_rows * inner_rows * fkselec * jselec;
 			/* pselec not used */
-			nrows /= pkselec;
 			break;
 		case JOIN_LEFT:
 			nrows = outer_rows * inner_rows * fkselec * jselec;
-			nrows /= pkselec;
-			if (outer_pkselec)
-				outer_rows /= pkselec;
 			if (nrows < outer_rows)
 				nrows = outer_rows;
 			nrows *= pselec;
@@ -4713,76 +4689,6 @@ calc_joinrel_size_estimate(PlannerInfo *root,
 
 	return clamp_row_est(nrows);
 }
-
-static Selectivity
-partkey_selectivity(PlannerInfo *root, RelOptInfo *outer_rel, RelOptInfo *inner_rel, JoinType jointype, bool* outer)
-{
-	if (outer_rel->reloptkind == RELOPT_BASEREL && outer_rel->rtekind == RTE_RELATION)
-	{
-		Node *outer_partkey_clause = partkey_clause(root, outer_rel);
-		if (outer_partkey_clause)
-		{
-			*outer = true;
-			return clause_selectivity(root, outer_partkey_clause, 0, jointype, NULL);
-		}
-	}
-	if (inner_rel->reloptkind == RELOPT_BASEREL && inner_rel->rtekind == RTE_RELATION)
-	{
-		Node *inner_partkey_clause = partkey_clause(root, inner_rel);
-		if (inner_partkey_clause)
-		{
-			return clause_selectivity(root, inner_partkey_clause, 0, jointype, NULL);
-		}
-	}
-	return 1.0;
-}
-
-static Node *
-partkey_clause(PlannerInfo *root, RelOptInfo *baserel)
-{
-	ListCell *l;
-	foreach(l, baserel->baserestrictinfo)
-	{
-		RestrictInfo *rinfo = (RestrictInfo *) lfirst(l);
-		Node *clause = (Node *) rinfo->clause;
-		if (is_opclause(clause))
-		{
-			OpExpr *opclause = (OpExpr *) clause;
-			if (list_length(opclause->args) == 2 && (
-					is_partkey_clause(root, (Node *) linitial(opclause->args))
-					|| is_partkey_clause(root, (Node *) lsecond(opclause->args))))
-				return (Node *) rinfo;
-		}
-	}
-	return NULL;
-}
-
-static bool
-is_partkey_clause(PlannerInfo *root, Node *node)
-{
-	Node *basenode;
-
-	if (IsA(node, RelabelType))
-		basenode = (Node *) ((RelabelType *) node)->arg;
-	else
-		basenode = node;
-
-	if (IsA(basenode, Var))
-	{
-		Var *var = (Var *) basenode;
-		RangeTblEntry* rte = NULL;
-		if (var->varno < root->simple_rel_array_size)
-			rte = root->simple_rte_array[var->varno];
-		if (rte)
-		{
-			char *colname = get_attname(rte->relid, var->varattno, true);
-			if (colname != NULL && strcmp(colname, partition_key) == 0)
-				return true;
-		}
-	}
-	return false;
-}
-
 
 /*
  * get_foreign_key_join_selectivity
