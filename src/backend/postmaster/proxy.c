@@ -362,7 +362,7 @@ socket_write(Channel* chan, char const* buf, size_t size)
 #endif
 		rc = chan->client_port
 			? secure_raw_write(chan->client_port, buf, size)
-			: write(chan->backend_socket, buf, size);
+			: send(chan->backend_socket, buf, size, 0);
 	if (rc == 0 || (rc < 0 && (errno != EAGAIN && errno != EWOULDBLOCK)))
 	{
 		channel_hangout(chan, "write");
@@ -442,7 +442,7 @@ channel_read(Channel* chan)
 #endif
 			rc = chan->client_port
 				? secure_raw_read(chan->client_port, chan->buf + chan->rx_pos, chan->buf_size - chan->rx_pos)
-				: read(chan->backend_socket, chan->buf + chan->rx_pos, chan->buf_size - chan->rx_pos);
+				: recv(chan->backend_socket, chan->buf + chan->rx_pos, chan->buf_size - chan->rx_pos, 0);
 
 		ELOG(LOG, "%p: read %d: %m", chan, (int)rc);
 		if (rc <= 0)
