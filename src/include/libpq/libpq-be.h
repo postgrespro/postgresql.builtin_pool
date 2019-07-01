@@ -8,7 +8,7 @@
  *	  Structs that need to be client-visible are in pqcomm.h.
  *
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/libpq/libpq-be.h
@@ -258,7 +258,9 @@ extern int	be_tls_get_cipher_bits(Port *port);
 extern bool be_tls_get_compression(Port *port);
 extern const char *be_tls_get_version(Port *port);
 extern const char *be_tls_get_cipher(Port *port);
-extern void be_tls_get_peerdn_name(Port *port, char *ptr, size_t len);
+extern void be_tls_get_peer_subject_name(Port *port, char *ptr, size_t len);
+extern void be_tls_get_peer_issuer_name(Port *port, char *ptr, size_t len);
+extern void be_tls_get_peer_serial(Port *port, char *ptr, size_t len);
 
 /*
  * Get the server certificate hash for SCRAM channel binding type

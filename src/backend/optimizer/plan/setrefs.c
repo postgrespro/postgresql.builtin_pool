@@ -4,7 +4,7 @@
  *	  Post-processing of a completed plan tree: fix references to subplan
  *	  vars, compute regproc values for operators, etc
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -19,6 +19,7 @@
 #include "catalog/pg_type.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
+#include "optimizer/optimizer.h"
 #include "optimizer/pathnode.h"
 #include "optimizer/planmain.h"
 #include "optimizer/planner.h"
@@ -340,7 +341,7 @@ flatten_unplanned_rtes(PlannerGlobal *glob, RangeTblEntry *rte)
 	(void) query_tree_walker(rte->subquery,
 							 flatten_rtes_walker,
 							 (void *) glob,
-							 QTW_EXAMINE_RTES);
+							 QTW_EXAMINE_RTES_BEFORE);
 }
 
 static bool
@@ -363,7 +364,7 @@ flatten_rtes_walker(Node *node, PlannerGlobal *glob)
 		return query_tree_walker((Query *) node,
 								 flatten_rtes_walker,
 								 (void *) glob,
-								 QTW_EXAMINE_RTES);
+								 QTW_EXAMINE_RTES_BEFORE);
 	}
 	return expression_tree_walker(node, flatten_rtes_walker,
 								  (void *) glob);
@@ -2589,13 +2590,13 @@ record_plan_function_dependency(PlannerInfo *root, Oid funcid)
  * someday fix_expr_common might call it.
  */
 void
-record_plan_type_dependency(PlannerInfo *root, Oid typeid)
+record_plan_type_dependency(PlannerInfo *root, Oid typid)
 {
 	/*
 	 * As in record_plan_function_dependency, ignore the possibility that
 	 * someone would change a built-in domain.
 	 */
-	if (typeid >= (Oid) FirstBootstrapObjectId)
+	if (typid >= (Oid) FirstBootstrapObjectId)
 	{
 		PlanInvalItem *inval_item = makeNode(PlanInvalItem);
 
@@ -2606,7 +2607,7 @@ record_plan_type_dependency(PlannerInfo *root, Oid typeid)
 		 */
 		inval_item->cacheId = TYPEOID;
 		inval_item->hashValue = GetSysCacheHashValue1(TYPEOID,
-													  ObjectIdGetDatum(typeid));
+													  ObjectIdGetDatum(typid));
 
 		root->glob->invalItems = lappend(root->glob->invalItems, inval_item);
 	}

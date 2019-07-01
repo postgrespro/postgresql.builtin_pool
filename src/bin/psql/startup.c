@@ -1,7 +1,7 @@
 /*
  * psql - the PostgreSQL interactive terminal
  *
- * Copyright (c) 2000-2018, PostgreSQL Global Development Group
+ * Copyright (c) 2000-2019, PostgreSQL Global Development Group
  *
  * src/bin/psql/startup.c
  */
@@ -1128,6 +1128,11 @@ show_context_hook(const char *newval)
 	return true;
 }
 
+static bool
+hide_tableam_hook(const char *newval)
+{
+	return ParseVariableBool(newval, "HIDE_TABLEAM", &pset.hide_tableam);
+}
 
 static void
 EstablishVariableSpace(void)
@@ -1191,4 +1196,7 @@ EstablishVariableSpace(void)
 	SetVariableHooks(pset.vars, "SHOW_CONTEXT",
 					 show_context_substitute_hook,
 					 show_context_hook);
+	SetVariableHooks(pset.vars, "HIDE_TABLEAM",
+					 bool_substitute_hook,
+					 hide_tableam_hook);
 }

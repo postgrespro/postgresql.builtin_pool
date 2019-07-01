@@ -49,6 +49,7 @@ extern struct _include_path *include_paths;
 extern struct cursor *cur;
 extern struct typedefs *types;
 extern struct _defines *defines;
+extern struct declared_name_st *g_declared_list;
 extern struct ECPGtype ecpg_no_indicator;
 extern struct variable no_indicator;
 extern struct arguments *argsinsert;
@@ -59,8 +60,7 @@ extern struct when when_error,
 extern struct ECPGstruct_member *struct_member_list[STRUCT_DEPTH];
 
 /* Globals from keywords.c */
-extern const ScanKeyword SQLScanKeywords[];
-extern const int NumSQLScanKeywords;
+extern const uint16 SQLScanKeywordTokens[];
 
 /* functions */
 
@@ -70,7 +70,9 @@ extern void output_line_number(void);
 extern void output_statement(char *, int, enum ECPG_statement_type);
 extern void output_prepare_statement(char *, char *);
 extern void output_deallocate_prepare_statement(char *);
-extern void output_simple_statement(char *);
+extern void output_simple_statement(char *, int);
+extern void output_declare_statement(char *);
+extern void output_cursor_statement(int , char *, char *, char *, int , enum ECPG_statement_type);
 extern char *hashline_number(void);
 extern int	base_yyparse(void);
 extern int	base_yylex(void);
@@ -102,8 +104,8 @@ extern void check_indicator(struct ECPGtype *);
 extern void remove_typedefs(int);
 extern void remove_variables(int);
 extern struct variable *new_variable(const char *, struct ECPGtype *, int);
-extern const ScanKeyword *ScanCKeywordLookup(const char *);
-extern const ScanKeyword *ScanECPGKeywordLookup(const char *text);
+extern int	ScanCKeywordLookup(const char *text);
+extern int	ScanECPGKeywordLookup(const char *text);
 extern void parser_init(void);
 extern int	filtered_base_yylex(void);
 

@@ -11,7 +11,7 @@
  *			- Add a pgstat config column to pg_database, so this
  *			  entire thing can be enabled/disabled on a per db basis.
  *
- *	Copyright (c) 2001-2018, PostgreSQL Global Development Group
+ *	Copyright (c) 2001-2019, PostgreSQL Global Development Group
  *
  *	src/backend/postmaster/pgstat.c
  * ----------
@@ -36,6 +36,7 @@
 
 #include "access/heapam.h"
 #include "access/htup_details.h"
+#include "access/tableam.h"
 #include "access/transam.h"
 #include "access/twophase_rmgr.h"
 #include "access/xact.h"
@@ -67,7 +68,6 @@
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
 #include "utils/timestamp.h"
-#include "utils/tqual.h"
 
 
 /* ----------
@@ -335,6 +335,7 @@ static void pgstat_recv_funcstat(PgStat_MsgFuncstat *msg, int len);
 static void pgstat_recv_funcpurge(PgStat_MsgFuncpurge *msg, int len);
 static void pgstat_recv_recoveryconflict(PgStat_MsgRecoveryConflict *msg, int len);
 static void pgstat_recv_deadlock(PgStat_MsgDeadlock *msg, int len);
+static void pgstat_recv_checksum_failure(PgStat_MsgChecksumFailure *msg, int len);
 static void pgstat_recv_tempfile(PgStat_MsgTempFile *msg, int len);
 
 /* ------------------------------------------------------------
@@ -1206,7 +1207,7 @@ pgstat_collect_oids(Oid catalogid, AttrNumber anum_oid)
 	HTAB	   *htab;
 	HASHCTL		hash_ctl;
 	Relation	rel;
-	HeapScanDesc scan;
+	TableScanDesc scan;
 	HeapTuple	tup;
 	Snapshot	snapshot;
 
@@ -1219,9 +1220,9 @@ pgstat_collect_oids(Oid catalogid, AttrNumber anum_oid)
 					   &hash_ctl,
 					   HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 
-	rel = heap_open(catalogid, AccessShareLock);
+	rel = table_open(catalogid, AccessShareLock);
 	snapshot = RegisterSnapshot(GetLatestSnapshot());
-	scan = heap_beginscan(rel, snapshot, 0, NULL);
+	scan = table_beginscan(rel, snapshot, 0, NULL);
 	while ((tup = heap_getnext(scan, ForwardScanDirection)) != NULL)
 	{
 		Oid			thisoid;
@@ -1234,9 +1235,9 @@ pgstat_collect_oids(Oid catalogid, AttrNumber anum_oid)
 
 		(void) hash_search(htab, (void *) &thisoid, HASH_ENTER, NULL);
 	}
-	heap_endscan(scan);
+	table_endscan(scan);
 	UnregisterSnapshot(snapshot);
-	heap_close(rel, AccessShareLock);
+	table_close(rel, AccessShareLock);
 
 	return htab;
 }
@@ -1519,6 +1520,40 @@ pgstat_report_deadlock(void)
 	pgstat_send(&msg, sizeof(msg));
 }
 
+
+
+/* --------
+ * pgstat_report_checksum_failures_in_db(dboid, failure_count) -
+ *
+ *	Tell the collector about one or more checksum failures.
+ * --------
+ */
+void
+pgstat_report_checksum_failures_in_db(Oid dboid, int failurecount)
+{
+	PgStat_MsgChecksumFailure msg;
+
+	if (pgStatSock == PGINVALID_SOCKET || !pgstat_track_counts)
+		return;
+
+	pgstat_setheader(&msg.m_hdr, PGSTAT_MTYPE_CHECKSUMFAILURE);
+	msg.m_databaseid = dboid;
+	msg.m_failurecount = failurecount;
+	pgstat_send(&msg, sizeof(msg));
+}
+
+/* --------
+ * pgstat_report_checksum_failure() -
+ *
+ *	Tell the collector about a checksum failure.
+ * --------
+ */
+void
+pgstat_report_checksum_failure(void)
+{
+	pgstat_report_checksum_failures_in_db(MyDatabaseId, 1);
+}
+
 /* --------
  * pgstat_report_tempfile() -
  *
@@ -1582,7 +1617,7 @@ pgstat_send_inquiry(TimestampTz clock_time, TimestampTz cutoff_time, Oid databas
  * Called by the executor before invoking a function.
  */
 void
-pgstat_init_function_usage(FunctionCallInfoData *fcinfo,
+pgstat_init_function_usage(FunctionCallInfo fcinfo,
 						   PgStat_FunctionCallUsage *fcu)
 {
 	PgStat_BackendFunctionEntry *htabent;
@@ -2907,7 +2942,9 @@ pgstat_bestart(void)
 		beentry->st_sslstatus->ssl_compression = be_tls_get_compression(MyProcPort);
 		strlcpy(beentry->st_sslstatus->ssl_version, be_tls_get_version(MyProcPort), NAMEDATALEN);
 		strlcpy(beentry->st_sslstatus->ssl_cipher, be_tls_get_cipher(MyProcPort), NAMEDATALEN);
-		be_tls_get_peerdn_name(MyProcPort, beentry->st_sslstatus->ssl_clientdn, NAMEDATALEN);
+		be_tls_get_peer_subject_name(MyProcPort, beentry->st_sslstatus->ssl_client_dn, NAMEDATALEN);
+		be_tls_get_peer_serial(MyProcPort, beentry->st_sslstatus->ssl_client_serial, NAMEDATALEN);
+		be_tls_get_peer_issuer_name(MyProcPort, beentry->st_sslstatus->ssl_issuer_dn, NAMEDATALEN);
 	}
 	else
 	{
@@ -3586,6 +3623,12 @@ pgstat_get_wait_ipc(WaitEventIPC w)
 		case WAIT_EVENT_BTREE_PAGE:
 			event_name = "BtreePage";
 			break;
+		case WAIT_EVENT_CHECKPOINT_DONE:
+			event_name = "CheckpointDone";
+			break;
+		case WAIT_EVENT_CHECKPOINT_START:
+			event_name = "CheckpointStart";
+			break;
 		case WAIT_EVENT_CLOG_GROUP_UPDATE:
 			event_name = "ClogGroupUpdate";
 			break;
@@ -3799,7 +3842,7 @@ pgstat_get_wait_io(WaitEventIO w)
 			event_name = "LockFileCreateSync";
 			break;
 		case WAIT_EVENT_LOCK_FILE_CREATE_WRITE:
-			event_name = "LockFileCreateWRITE";
+			event_name = "LockFileCreateWrite";
 			break;
 		case WAIT_EVENT_LOCK_FILE_RECHECKDATADIR_READ:
 			event_name = "LockFileReCheckDataDirRead";
@@ -4454,6 +4497,10 @@ PgstatCollectorMain(int argc, char *argv[])
 					pgstat_recv_tempfile((PgStat_MsgTempFile *) &msg, len);
 					break;
 
+				case PGSTAT_MTYPE_CHECKSUMFAILURE:
+					pgstat_recv_checksum_failure((PgStat_MsgChecksumFailure *) &msg, len);
+					break;
+
 				default:
 					break;
 			}
@@ -4553,6 +4600,7 @@ reset_dbentry_counters(PgStat_StatDBEntry *dbentry)
 	dbentry->n_temp_files = 0;
 	dbentry->n_temp_bytes = 0;
 	dbentry->n_deadlocks = 0;
+	dbentry->n_checksum_failures = 0;
 	dbentry->n_block_read_time = 0;
 	dbentry->n_block_write_time = 0;
 
@@ -6193,6 +6241,22 @@ pgstat_recv_deadlock(PgStat_MsgDeadlock *msg, int len)
 	dbentry = pgstat_get_db_entry(msg->m_databaseid, true);
 
 	dbentry->n_deadlocks++;
+}
+
+/* ----------
+ * pgstat_recv_checksum_failure() -
+ *
+ *	Process a CHECKSUMFAILURE message.
+ * ----------
+ */
+static void
+pgstat_recv_checksum_failure(PgStat_MsgChecksumFailure *msg, int len)
+{
+	PgStat_StatDBEntry *dbentry;
+
+	dbentry = pgstat_get_db_entry(msg->m_databaseid, true);
+
+	dbentry->n_checksum_failures += msg->m_failurecount;
 }
 
 /* ----------

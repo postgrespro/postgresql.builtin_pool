@@ -638,9 +638,12 @@ psql: could not connect to server: No such file or directory
    </para>
 
    <para>
-    Upon starting the server, <productname>PostgreSQL</productname> normally allocates
+    By default, <productname>PostgreSQL</productname> allocates
     a very small amount of System V shared memory, as well as a much larger
-    amount of POSIX (<function>mmap</function>) shared memory.
+    amount of anonymous <function>mmap</function> shared memory.
+    Alternatively, a single large System V shared memory region can be used
+    (see <xref linkend="guc-shared-memory-type"/>).
+    
     In addition a significant number of semaphores, which can be either
     System V or POSIX style, are created at server startup.  Currently,
     POSIX semaphores are used on Linux and FreeBSD systems while other
@@ -717,13 +720,13 @@ psql: could not connect to server: No such file or directory
        <row>
         <entry><varname>SEMMNI</varname></entry>
         <entry>Maximum number of semaphore identifiers (i.e., sets)</entry>
-        <entry>at least <literal>ceil((max_connections + autovacuum_max_workers + max_worker_processes + 5) / 16)</literal> plus room for other applications</entry>
+        <entry>at least <literal>ceil((max_connections + autovacuum_max_workers + wax_wal_senders + max_worker_processes + 5) / 16)</literal> plus room for other applications</entry>
        </row>
 
        <row>
         <entry><varname>SEMMNS</varname></entry>
         <entry>Maximum number of semaphores system-wide</entry>
-        <entry><literal>ceil((max_connections + autovacuum_max_workers + max_worker_processes + 5) / 16) * 17</literal> plus room for other applications</entry>
+        <entry><literal>ceil((max_connections + autovacuum_max_workers + max_wal_senders + max_worker_processes + 5) / 16) * 17</literal> plus room for other applications</entry>
        </row>
 
        <row>
@@ -752,8 +755,10 @@ psql: could not connect to server: No such file or directory
     <productname>PostgreSQL</productname> requires a few bytes of System V shared memory
     (typically 48 bytes, on 64-bit platforms) for each copy of the server.
     On most modern operating systems, this amount can easily be allocated.
-    However, if you are running many copies of the server, or if other
-    applications are also using System V shared memory, it may be necessary to
+    However, if you are running many copies of the server or you explicitly
+    configure the server to use large amounts of System V shared memory (see
+    <xref linkend="guc-shared-memory-type"/> and <xref
+    linkend="guc-dynamic-shared-memory-type"/>), it may be necessary to
     increase <varname>SHMALL</varname>, which is the total amount of System V shared
     memory system-wide.  Note that <varname>SHMALL</varname> is measured in pages
     rather than bytes on many systems.
@@ -780,13 +785,13 @@ psql: could not connect to server: No such file or directory
     other applications. The maximum number of semaphores in the system
     is set by <varname>SEMMNS</varname>, which consequently must be at least
     as high as <varname>max_connections</varname> plus
-    <varname>autovacuum_max_workers</varname> plus <varname>max_worker_processes</varname>,
-    plus one extra for each 16
+    <varname>autovacuum_max_workers</varname> plus <varname>max_wal_senders</varname>,
+    plus <varname>max_worker_processes</varname>, plus one extra for each 16
     allowed connections plus workers (see the formula in <xref
     linkend="sysvipc-parameters"/>).  The parameter <varname>SEMMNI</varname>
     determines the limit on the number of semaphore sets that can
     exist on the system at one time.  Hence this parameter must be at
-    least <literal>ceil((max_connections + autovacuum_max_workers + max_worker_processes + 5) / 16)</literal>.
+    least <literal>ceil((max_connections + autovacuum_max_workers + max_wal_senders + max_worker_processes + 5) / 16)</literal>.
     Lowering the number
     of allowed connections is a temporary workaround for failures,
     which are usually confusingly worded <quote>No space
@@ -796,7 +801,8 @@ psql: could not connect to server: No such file or directory
    <para>
     In some cases it might also be necessary to increase
     <varname>SEMMAP</varname> to be at least on the order of
-    <varname>SEMMNS</varname>. This parameter defines the size of the semaphore
+    <varname>SEMMNS</varname>.  If the system has this parameter
+    (many do not), it defines the size of the semaphore
     resource map, in which each contiguous block of available semaphores
     needs an entry. When a semaphore set is freed it is either added to
     an existing entry that is adjacent to the freed block or it is
@@ -853,7 +859,7 @@ psql: could not connect to server: No such file or directory
       </term>
       <listitem>
        <para>
-        The default settings can be changed using
+        The default IPC settings can be changed using
         the <command>sysctl</command> or
         <command>loader</command> interfaces.  The following
         parameters can be set using <command>sysctl</command>:
@@ -872,17 +878,13 @@ psql: could not connect to server: No such file or directory
 <programlisting>
 kern.ipc.semmni=256
 kern.ipc.semmns=512
-kern.ipc.semmnu=256
 </programlisting>
-        After modifying these values a reboot is required for the new
+        After modifying that file, a reboot is required for the new
         settings to take effect.
-        (Note: FreeBSD does not use <varname>SEMMAP</varname>.  Older versions
-        would accept but ignore a setting for <literal>kern.ipc.semmap</literal>;
-        newer versions reject it altogether.)
        </para>
 
        <para>
-        You might also want to configure your kernel to lock shared
+        You might also want to configure your kernel to lock System V shared
         memory into RAM and prevent it from being paged out to swap.
         This can be accomplished using the <command>sysctl</command>
         setting <literal>kern.ipc.shm_use_phys</literal>.
@@ -902,7 +904,7 @@ kern.ipc.semmnu=256
 
        <para>
         <systemitem class="osname">FreeBSD</systemitem> versions before 4.0 work like
-        <systemitem class="osname">OpenBSD</systemitem> (see below).
+        old <systemitem class="osname">OpenBSD</systemitem> (see below).
        </para>
       </listitem>
      </varlistentry>
@@ -917,24 +919,31 @@ kern.ipc.semmnu=256
         IPC parameters can be adjusted using <command>sysctl</command>,
         for example:
 <screen>
-<prompt>$</prompt> <userinput>sysctl -w kern.ipc.shmmax=16777216</userinput>
+<prompt>#</prompt> <userinput>sysctl -w kern.ipc.semmni=100</userinput>
 </screen>
-        To have these settings persist over reboots, modify
+        To make these settings persist over reboots, modify
         <filename>/etc/sysctl.conf</filename>.
        </para>
 
        <para>
-        You might also want to configure your kernel to lock shared
+        You will usually want to increase <literal>kern.ipc.semmni</literal>
+        and <literal>kern.ipc.semmns</literal>,
+        as <systemitem class="osname">NetBSD</systemitem>'s default settings
+        for these are uncomfortably small.
+       </para>
+
+       <para>
+        You might also want to configure your kernel to lock System V shared
         memory into RAM and prevent it from being paged out to swap.
         This can be accomplished using the <command>sysctl</command>
         setting <literal>kern.ipc.shm_use_phys</literal>.
        </para>
 
        <para>
-        <systemitem class="osname">NetBSD</systemitem> versions before 5.0 work like
-        <systemitem class="osname">OpenBSD</systemitem> (see below), except that
-        parameters should be set with the keyword <literal>options</literal> not
-        <literal>option</literal>.
+        <systemitem class="osname">NetBSD</systemitem> versions before 5.0
+        work like old <systemitem class="osname">OpenBSD</systemitem>
+        (see below), except that kernel parameters should be set with the
+        keyword <literal>options</literal> not <literal>option</literal>.
        </para>
       </listitem>
      </varlistentry>
@@ -945,11 +954,31 @@ kern.ipc.semmnu=256
       </term>
       <listitem>
        <para>
-        The options <varname>SYSVSHM</varname> and <varname>SYSVSEM</varname> need
-        to be enabled when the kernel is compiled. (They are by
-        default.) The maximum size of shared memory is determined by
-        the option <varname>SHMMAXPGS</varname> (in pages). The following
-        shows an example of how to set the various parameters:
+        In <systemitem class="osname">OpenBSD</systemitem> 3.3 and later,
+        IPC parameters can be adjusted using <command>sysctl</command>,
+        for example:
+<screen>
+<prompt>#</prompt> <userinput>sysctl kern.seminfo.semmni=100</userinput>
+</screen>
+        To make these settings persist over reboots, modify
+        <filename>/etc/sysctl.conf</filename>.
+       </para>
+
+       <para>
+        You will usually want to
+        increase <literal>kern.seminfo.semmni</literal>
+        and <literal>kern.seminfo.semmns</literal>,
+        as <systemitem class="osname">OpenBSD</systemitem>'s default settings
+        for these are uncomfortably small.
+       </para>
+
+       <para>
+        In older <systemitem class="osname">OpenBSD</systemitem> versions,
+        you will need to build a custom kernel to change the IPC parameters.
+        Make sure that the options <varname>SYSVSHM</varname>
+        and <varname>SYSVSEM</varname> are enabled, too.  (They are by
+        default.)  The following shows an example of how to set the various
+        parameters in the kernel configuration file:
 <programlisting>
 option        SYSVSHM
 option        SHMMAXPGS=4096
@@ -2287,13 +2316,25 @@ pg_dumpall -p 5432 | psql -d postgres -p 5433
    (<acronym>CA</acronym>s) you trust in a file in the data
    directory, set the parameter <xref linkend="guc-ssl-ca-file"/> in
    <filename>postgresql.conf</filename> to the new file name, and add the
-   authentication option <literal>clientcert=1</literal> to the appropriate
+   authentication option <literal>clientcert=verify-ca</literal> or
+   <literal>clientcert=verify-full</literal> to the appropriate
    <literal>hostssl</literal> line(s) in <filename>pg_hba.conf</filename>.
    A certificate will then be requested from the client during SSL
    connection startup.  (See <xref linkend="libpq-ssl"/> for a description
-   of how to set up certificates on the client.)  The server will
-   verify that the client's certificate is signed by one of the trusted
-   certificate authorities.
+   of how to set up certificates on the client.)
+  </para>
+
+  <para>
+   For a <literal>hostssl</literal> entry with
+   <literal>clientcert=verify-ca</literal>, the server will verify
+   that the client's certificate is signed by one of the trusted
+   certificate authorities. If <literal>clientcert=verify-full</literal>
+   is specified, the server will not only verify the certificate
+   chain, but it will also check whether the username or its mapping
+   matches the <literal>cn</literal> (Common Name) of the provided certificate.
+   Note that certificate chain validation is always ensured when the
+   <literal>cert</literal> authentication method is used
+   (see <xref linkend="auth-cert"/>).
   </para>
 
   <para>
@@ -2312,18 +2353,34 @@ pg_dumpall -p 5432 | psql -d postgres -p 5433
    The <literal>clientcert</literal> authentication option is available for
    all authentication methods, but only in <filename>pg_hba.conf</filename> lines
    specified as <literal>hostssl</literal>.  When <literal>clientcert</literal> is
-   not specified or is set to 0, the server will still verify any presented
-   client certificates against its CA file, if one is configured &mdash; but
-   it will not insist that a client certificate be presented.
+   not specified or is set to <literal>no-verify</literal>, the server will still
+   verify any presented client certificates against its CA file, if one is
+   configured &mdash; but it will not insist that a client certificate be presented.
   </para>
 
   <para>
-   If you are setting up client certificates, you may wish to use
-   the <literal>cert</literal> authentication method, so that the certificates
-   control user authentication as well as providing connection security.
-   See <xref linkend="auth-cert"/> for details.  (It is not necessary to
-   specify <literal>clientcert=1</literal> explicitly when using
-   the <literal>cert</literal> authentication method.)
+   There are two approaches to enforce that users provide a certificate during login.
+  </para>
+
+  <para>
+   The first approach makes use of the <literal>cert</literal> authentication
+   method for <literal>hostssl</literal> entries in <filename>pg_hba.conf</filename>,
+   such that the certificate itself is used for authentication while also
+   providing ssl connection security. See <xref linkend="auth-cert"/> for details.
+   (It is not necessary to specify any <literal>clientcert</literal> options
+   explicitly when using the <literal>cert</literal> authentication method.)
+   In this case, the <literal>cn</literal> (Common Name) provided in
+   the certificate is checked against the user name or an applicable mapping.
+  </para>
+
+  <para>
+   The second approach combines any authentication method for <literal>hostssl</literal>
+   entries with the verification of client certificates by setting the
+   <literal>clientcert</literal> authentication option to <literal>verify-ca</literal>
+   or <literal>verify-full</literal>. The former option only enforces that
+   the certificate is valid, while the latter also ensures that the
+   <literal>cn</literal> (Common Name) in the certificate matches
+   the user name or an applicable mapping.
   </para>
   </sect2>
 

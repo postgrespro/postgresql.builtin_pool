@@ -129,6 +129,12 @@
 #maintenance_work_mem = 64MB		# min 1MB
 #autovacuum_work_mem = -1		# min 1MB, or -1 to use maintenance_work_mem
 #max_stack_depth = 2MB			# min 100kB
+#shared_memory_type = mmap		# the default is the first option
+					# supported by the operating system:
+					#   mmap
+					#   sysv
+					#   windows
+					# (change requires restart)
 #dynamic_shared_memory_type = posix	# the default is the first option
 					# supported by the operating system:
 					#   posix
@@ -149,7 +155,7 @@
 
 # - Cost-Based Vacuum Delay -
 
-#vacuum_cost_delay = 0			# 0-100 milliseconds
+#vacuum_cost_delay = 0			# 0-100 milliseconds (0 disables)
 #vacuum_cost_page_hit = 1		# 0-10000 credits
 #vacuum_cost_page_miss = 10		# 0-10000 credits
 #vacuum_cost_page_dirty = 20		# 0-10000 credits
@@ -238,9 +244,7 @@
 				# e.g. 'cp /mnt/server/archivedir/%f %p'
 				# (change requires restart)
 #archive_cleanup_command = ''	# command to execute at every restartpoint
-				# (change requires restart)
 #recovery_end_command = ''	# command to execute at completion of recovery
-				# (change requires restart)
 
 # - Recovery Target -
 
@@ -261,8 +265,7 @@
 				# just after the specified recovery target (on)
 				# just before the recovery target (off)
 				# (change requires restart)
-#recovery_target_timeline = ''	# unset means read from control file (default),
-				# or set to 'latest' or timeline ID
+#recovery_target_timeline = 'latest'	# 'current', 'latest', or timeline ID
 				# (change requires restart)
 #recovery_target_action = 'pause'	# 'pause', 'promote', 'shutdown'
 				# (change requires restart)
@@ -305,7 +308,6 @@
 #primary_slot_name = ''			# replication slot on sending server
 					# (change requires restart)
 #promote_trigger_file = ''		# file name whose presence ends recovery
-					# (change requires restart)
 #hot_standby = on			# "off" disallows queries during recovery
 					# (change requires restart)
 #max_standby_archive_delay = 30s	# max delay before canceling queries
@@ -324,7 +326,6 @@
 #wal_retrieve_retry_interval = 5s	# time to wait before retrying to
 					# retrieve WAL after a failed attempt
 #recovery_min_apply_delay = 0		# minimum delay for applying changes during recovery
-					# (change requires restart)
 
 # - Subscribers -
 
@@ -588,7 +589,7 @@
 #autovacuum_multixact_freeze_max_age = 400000000	# maximum multixact age
 					# before forced vacuum
 					# (change requires restart)
-#autovacuum_vacuum_cost_delay = 20ms	# default vacuum cost delay for
+#autovacuum_vacuum_cost_delay = 2ms	# default vacuum cost delay for
 					# autovacuum, in milliseconds;
 					# -1 means use vacuum_cost_delay
 #autovacuum_vacuum_cost_limit = -1	# default vacuum cost limit for
@@ -650,7 +651,8 @@
 					#   India
 					# You can create your own file in
 					# share/timezonesets/.
-#extra_float_digits = 0			# min -15, max 3
+#extra_float_digits = 1			# min -15, max 3; any value >0 actually
+					# selects precise output mode
 #client_encoding = sql_ascii		# actually, defaults to database
 					# encoding
 
@@ -717,7 +719,9 @@
 
 #exit_on_error = off			# terminate session on any error?
 #restart_after_crash = on		# reinitialize after backend crash?
-#data_sync_retry = off			# retry or panic on failure to fsync data?
+#data_sync_retry = off			# retry or panic on failure to fsync
+					# data?
+					# (change requires restart)
 
 
 #------------------------------------------------------------------------------

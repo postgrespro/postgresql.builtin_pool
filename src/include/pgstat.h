@@ -3,7 +3,7 @@
  *
  *	Definitions for the PostgreSQL statistics collector daemon.
  *
- *	Copyright (c) 2001-2018, PostgreSQL Global Development Group
+ *	Copyright (c) 2001-2019, PostgreSQL Global Development Group
  *
  *	src/include/pgstat.h
  * ----------
@@ -64,7 +64,8 @@ typedef enum StatMsgType
 	PGSTAT_MTYPE_FUNCPURGE,
 	PGSTAT_MTYPE_RECOVERYCONFLICT,
 	PGSTAT_MTYPE_TEMPFILE,
-	PGSTAT_MTYPE_DEADLOCK
+	PGSTAT_MTYPE_DEADLOCK,
+	PGSTAT_MTYPE_CHECKSUMFAILURE
 } StatMsgType;
 
 /* ----------
@@ -530,6 +531,18 @@ typedef struct PgStat_MsgDeadlock
 	Oid			m_databaseid;
 } PgStat_MsgDeadlock;
 
+/* ----------
+ * PgStat_MsgChecksumFailure	Sent by the backend to tell the collector
+ *								about checksum failures noticed.
+ * ----------
+ */
+typedef struct PgStat_MsgChecksumFailure
+{
+	PgStat_MsgHdr m_hdr;
+	Oid			m_databaseid;
+	int			m_failurecount;
+} PgStat_MsgChecksumFailure;
+
 
 /* ----------
  * PgStat_Msg					Union over all possible messages.
@@ -593,6 +606,7 @@ typedef struct PgStat_StatDBEntry
 	PgStat_Counter n_temp_files;
 	PgStat_Counter n_temp_bytes;
 	PgStat_Counter n_deadlocks;
+	PgStat_Counter n_checksum_failures;
 	PgStat_Counter n_block_read_time;	/* times in microseconds */
 	PgStat_Counter n_block_write_time;
 
@@ -803,6 +817,8 @@ typedef enum
 	WAIT_EVENT_BGWORKER_STARTUP,
 	WAIT_EVENT_BTREE_PAGE,
 	WAIT_EVENT_CLOG_GROUP_UPDATE,
+	WAIT_EVENT_CHECKPOINT_DONE,
+	WAIT_EVENT_CHECKPOINT_START,
 	WAIT_EVENT_EXECUTE_GATHER,
 	WAIT_EVENT_HASH_BATCH_ALLOCATING,
 	WAIT_EVENT_HASH_BATCH_ELECTING,
@@ -950,15 +966,25 @@ typedef enum ProgressCommandType
  *
  * For each backend, we keep the SSL status in a separate struct, that
  * is only filled in if SSL is enabled.
+ *
+ * All char arrays must be null-terminated.
  */
 typedef struct PgBackendSSLStatus
 {
 	/* Information about SSL connection */
 	int			ssl_bits;
 	bool		ssl_compression;
-	char		ssl_version[NAMEDATALEN];	/* MUST be null-terminated */
-	char		ssl_cipher[NAMEDATALEN];	/* MUST be null-terminated */
-	char		ssl_clientdn[NAMEDATALEN];	/* MUST be null-terminated */
+	char		ssl_version[NAMEDATALEN];
+	char		ssl_cipher[NAMEDATALEN];
+	char		ssl_client_dn[NAMEDATALEN];
+
+	/*
+	 * serial number is max "20 octets" per RFC 5280, so this size should be
+	 * fine
+	 */
+	char		ssl_client_serial[NAMEDATALEN];
+
+	char		ssl_issuer_dn[NAMEDATALEN];
 } PgBackendSSLStatus;
 
 
@@ -1190,6 +1216,8 @@ extern void pgstat_report_analyze(Relation rel,
 
 extern void pgstat_report_recovery_conflict(int reason);
 extern void pgstat_report_deadlock(void);
+extern void pgstat_report_checksum_failures_in_db(Oid dboid, int failurecount);
+extern void pgstat_report_checksum_failure(void);
 
 extern void pgstat_initialize(void);
 extern void pgstat_bestart(void);
@@ -1321,7 +1349,7 @@ extern void pgstat_count_heap_delete(Relation rel);
 extern void pgstat_count_truncate(Relation rel);
 extern void pgstat_update_heap_dead_tuples(Relation rel, int delta);
 
-extern void pgstat_init_function_usage(FunctionCallInfoData *fcinfo,
+extern void pgstat_init_function_usage(FunctionCallInfo fcinfo,
 						   PgStat_FunctionCallUsage *fcu);
 extern void pgstat_end_function_usage(PgStat_FunctionCallUsage *fcu,
 						  bool finalize);

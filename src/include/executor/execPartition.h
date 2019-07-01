@@ -2,7 +2,7 @@
  * execPartition.h
  *		POSTGRES partitioning executor interface
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -135,7 +135,8 @@ typedef struct PartitionPruneState
 	PartitionPruningData *partprunedata[FLEXIBLE_ARRAY_MEMBER];
 } PartitionPruneState;
 
-extern PartitionTupleRouting *ExecSetupPartitionTupleRouting(ModifyTableState *mtstate,
+extern PartitionTupleRouting *ExecSetupPartitionTupleRouting(EState *estate,
+							   ModifyTableState *mtstate,
 							   Relation rel);
 extern ResultRelInfo *ExecFindPartition(ModifyTableState *mtstate,
 				  ResultRelInfo *rootResultRelInfo,

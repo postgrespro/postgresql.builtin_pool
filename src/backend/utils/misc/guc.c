@@ -6,7 +6,7 @@
  * See src/backend/utils/misc/README for more information.
  *
  *
- * Copyright (c) 2000-2018, PostgreSQL Global Development Group
+ * Copyright (c) 2000-2019, PostgreSQL Global Development Group
  * Written by Peter Eisentraut <peter_e@gmx.net>.
  *
  * IDENTIFICATION
@@ -29,6 +29,7 @@
 #include "access/commit_ts.h"
 #include "access/gin.h"
 #include "access/rmgr.h"
+#include "access/tableam.h"
 #include "access/transam.h"
 #include "access/twophase.h"
 #include "access/xact.h"
@@ -50,6 +51,7 @@
 #include "miscadmin.h"
 #include "optimizer/cost.h"
 #include "optimizer/geqo.h"
+#include "optimizer/optimizer.h"
 #include "optimizer/paths.h"
 #include "optimizer/planmain.h"
 #include "parser/parse_expr.h"
@@ -186,6 +188,7 @@ static const char *show_tcp_keepalives_count(void);
 static bool check_maxconnections(int *newval, void **extra, GucSource source);
 static bool check_max_worker_processes(int *newval, void **extra, GucSource source);
 static bool check_autovacuum_max_workers(int *newval, void **extra, GucSource source);
+static bool check_max_wal_senders(int *newval, void **extra, GucSource source);
 static bool check_autovacuum_work_mem(int *newval, void **extra, GucSource source);
 static bool check_effective_io_concurrency(int *newval, void **extra, GucSource source);
 static void assign_effective_io_concurrency(int newval, void *extra);
@@ -209,6 +212,7 @@ static void assign_recovery_target_name(const char *newval, void *extra);
 static bool check_recovery_target_lsn(char **newval, void **extra, GucSource source);
 static void assign_recovery_target_lsn(const char *newval, void *extra);
 static bool check_primary_slot_name(char **newval, void **extra, GucSource source);
+static bool check_default_with_oids(bool *newval, void **extra, GucSource source);
 
 /* Private functions in guc-file.l that need to be called from guc.c */
 static ConfigVariable *ProcessConfigFileInternal(GucContext context,
@@ -459,6 +463,19 @@ static const struct config_enum_entry session_schedule_options[] = {
 };
 
 
+static struct config_enum_entry shared_memory_options[] = {
+#ifndef WIN32
+	{ "sysv", SHMEM_TYPE_SYSV, false},
+#endif
+#ifndef EXEC_BACKEND
+	{ "mmap", SHMEM_TYPE_MMAP, false},
+#endif
+#ifdef WIN32
+	{ "windows", SHMEM_TYPE_WINDOWS, false},
+#endif
+	{NULL, 0, false}
+};
+
 /*
  * Options for enum values stored in other modules
  */
@@ -487,6 +504,12 @@ char	   *event_source;
 
 bool		row_security;
 bool		check_function_bodies = true;
+
+/*
+ * This GUC exists solely for backward compatibility, check its definition for
+ * details.
+ */
+bool		default_with_oids = false;
 bool		session_auth_is_superuser;
 
 int			log_min_error_statement = ERROR;
@@ -740,13 +763,13 @@ const char *const config_type_names[] =
  * For each supported conversion from one unit to another, we have an entry
  * in the table.
  *
- * To keep things simple, and to avoid intermediate-value overflows,
+ * To keep things simple, and to avoid possible roundoff error,
  * conversions are never chained.  There needs to be a direct conversion
  * between all units (of the same type).
  *
- * The conversions from each base unit must be kept in order from greatest
- * to smallest unit; convert_from_base_unit() relies on that.  (The order of
- * the base units does not matter.)
+ * The conversions for each base unit must be kept in order from greatest to
+ * smallest human-friendly unit; convert_xxx_from_base_unit() rely on that.
+ * (The order of the base-unit groups does not matter.)
  */
 #define MAX_UNIT_LEN		3	/* length of longest recognized unit string */
 
@@ -755,9 +778,7 @@ typedef struct
 	char		unit[MAX_UNIT_LEN + 1]; /* unit, as a string, like "kB" or
 										 * "min" */
 	int			base_unit;		/* GUC_UNIT_XXX */
-	int64		multiplier;		/* If positive, multiply the value with this
-								 * for unit -> base_unit conversion.  If
-								 * negative, divide (with the absolute value) */
+	double		multiplier;		/* Factor for converting unit -> base_unit */
 } unit_conversion;
 
 /* Ensure that the constants in the tables don't overflow or underflow */
@@ -772,45 +793,40 @@ static const char *memory_units_hint = gettext_noop("Valid units for this parame
 
 static const unit_conversion memory_unit_conversion_table[] =
 {
-	/*
-	 * TB -> bytes conversion always overflows 32-bit integer, so this always
-	 * produces an error.  Include it nevertheless for completeness, and so
-	 * that you get an "out of range" error, rather than "invalid unit".
-	 */
-	{"TB", GUC_UNIT_BYTE, INT64CONST(1024) * 1024 * 1024 * 1024},
-	{"GB", GUC_UNIT_BYTE, 1024 * 1024 * 1024},
-	{"MB", GUC_UNIT_BYTE, 1024 * 1024},
-	{"kB", GUC_UNIT_BYTE, 1024},
-	{"B", GUC_UNIT_BYTE, 1},
+	{"TB", GUC_UNIT_BYTE, 1024.0 * 1024.0 * 1024.0 * 1024.0},
+	{"GB", GUC_UNIT_BYTE, 1024.0 * 1024.0 * 1024.0},
+	{"MB", GUC_UNIT_BYTE, 1024.0 * 1024.0},
+	{"kB", GUC_UNIT_BYTE, 1024.0},
+	{"B", GUC_UNIT_BYTE, 1.0},
 
-	{"TB", GUC_UNIT_KB, 1024 * 1024 * 1024},
-	{"GB", GUC_UNIT_KB, 1024 * 1024},
-	{"MB", GUC_UNIT_KB, 1024},
-	{"kB", GUC_UNIT_KB, 1},
-	{"B", GUC_UNIT_KB, -1024},
+	{"TB", GUC_UNIT_KB, 1024.0 * 1024.0 * 1024.0},
+	{"GB", GUC_UNIT_KB, 1024.0 * 1024.0},
+	{"MB", GUC_UNIT_KB, 1024.0},
+	{"kB", GUC_UNIT_KB, 1.0},
+	{"B", GUC_UNIT_KB, 1.0 / 1024.0},
 
-	{"TB", GUC_UNIT_MB, 1024 * 1024},
-	{"GB", GUC_UNIT_MB, 1024},
-	{"MB", GUC_UNIT_MB, 1},
-	{"kB", GUC_UNIT_MB, -1024},
-	{"B", GUC_UNIT_MB, -(1024 * 1024)},
+	{"TB", GUC_UNIT_MB, 1024.0 * 1024.0},
+	{"GB", GUC_UNIT_MB, 1024.0},
+	{"MB", GUC_UNIT_MB, 1.0},
+	{"kB", GUC_UNIT_MB, 1.0 / 1024.0},
+	{"B", GUC_UNIT_MB, 1.0 / (1024.0 * 1024.0)},
 
-	{"TB", GUC_UNIT_BLOCKS, (1024 * 1024 * 1024) / (BLCKSZ / 1024)},
-	{"GB", GUC_UNIT_BLOCKS, (1024 * 1024) / (BLCKSZ / 1024)},
-	{"MB", GUC_UNIT_BLOCKS, 1024 / (BLCKSZ / 1024)},
-	{"kB", GUC_UNIT_BLOCKS, -(BLCKSZ / 1024)},
-	{"B", GUC_UNIT_BLOCKS, -BLCKSZ},
+	{"TB", GUC_UNIT_BLOCKS, (1024.0 * 1024.0 * 1024.0) / (BLCKSZ / 1024)},
+	{"GB", GUC_UNIT_BLOCKS, (1024.0 * 1024.0) / (BLCKSZ / 1024)},
+	{"MB", GUC_UNIT_BLOCKS, 1024.0 / (BLCKSZ / 1024)},
+	{"kB", GUC_UNIT_BLOCKS, 1.0 / (BLCKSZ / 1024)},
+	{"B", GUC_UNIT_BLOCKS, 1.0 / BLCKSZ},
 
-	{"TB", GUC_UNIT_XBLOCKS, (1024 * 1024 * 1024) / (XLOG_BLCKSZ / 1024)},
-	{"GB", GUC_UNIT_XBLOCKS, (1024 * 1024) / (XLOG_BLCKSZ / 1024)},
-	{"MB", GUC_UNIT_XBLOCKS, 1024 / (XLOG_BLCKSZ / 1024)},
-	{"kB", GUC_UNIT_XBLOCKS, -(XLOG_BLCKSZ / 1024)},
-	{"B", GUC_UNIT_XBLOCKS, -XLOG_BLCKSZ},
+	{"TB", GUC_UNIT_XBLOCKS, (1024.0 * 1024.0 * 1024.0) / (XLOG_BLCKSZ / 1024)},
+	{"GB", GUC_UNIT_XBLOCKS, (1024.0 * 1024.0) / (XLOG_BLCKSZ / 1024)},
+	{"MB", GUC_UNIT_XBLOCKS, 1024.0 / (XLOG_BLCKSZ / 1024)},
+	{"kB", GUC_UNIT_XBLOCKS, 1.0 / (XLOG_BLCKSZ / 1024)},
+	{"B", GUC_UNIT_XBLOCKS, 1.0 / XLOG_BLCKSZ},
 
 	{""}						/* end of table marker */
 };
 
-static const char *time_units_hint = gettext_noop("Valid units for this parameter are \"ms\", \"s\", \"min\", \"h\", and \"d\".");
+static const char *time_units_hint = gettext_noop("Valid units for this parameter are \"us\", \"ms\", \"s\", \"min\", \"h\", and \"d\".");
 
 static const unit_conversion time_unit_conversion_table[] =
 {
@@ -819,18 +835,21 @@ static const unit_conversion time_unit_conversion_table[] =
 	{"min", GUC_UNIT_MS, 1000 * 60},
 	{"s", GUC_UNIT_MS, 1000},
 	{"ms", GUC_UNIT_MS, 1},
+	{"us", GUC_UNIT_MS, 1.0 / 1000},
 
 	{"d", GUC_UNIT_S, 60 * 60 * 24},
 	{"h", GUC_UNIT_S, 60 * 60},
 	{"min", GUC_UNIT_S, 60},
 	{"s", GUC_UNIT_S, 1},
-	{"ms", GUC_UNIT_S, -1000},
+	{"ms", GUC_UNIT_S, 1.0 / 1000},
+	{"us", GUC_UNIT_S, 1.0 / (1000 * 1000)},
 
 	{"d", GUC_UNIT_MIN, 60 * 24},
 	{"h", GUC_UNIT_MIN, 60},
 	{"min", GUC_UNIT_MIN, 1},
-	{"s", GUC_UNIT_MIN, -60},
-	{"ms", GUC_UNIT_MIN, -1000 * 60},
+	{"s", GUC_UNIT_MIN, 1.0 / 60},
+	{"ms", GUC_UNIT_MIN, 1.0 / (1000 * 60)},
+	{"us", GUC_UNIT_MIN, 1.0 / (1000 * 1000 * 60)},
 
 	{""}						/* end of table marker */
 };
@@ -1556,6 +1575,21 @@ static struct config_bool ConfigureNamesBool[] =
 		true,
 		NULL, NULL, NULL
 	},
+	/*
+	 * WITH OIDS support, and consequently default_with_oids, was removed in
+	 * PostgreSQL 12, but we tolerate the parameter being set to false to
+	 * avoid unnecessarily breaking older dump files.
+	 */
+	{
+		{"default_with_oids", PGC_USERSET, COMPAT_OPTIONS_PREVIOUS,
+			gettext_noop("WITH OIDS is no longer supported; this can only be false."),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NOT_IN_SAMPLE
+		},
+		&default_with_oids,
+		false,
+		check_default_with_oids, NULL, NULL
+	},
 	{
 		{"logging_collector", PGC_POSTMASTER, LOGGING_WHERE,
 			gettext_noop("Start a subprocess to capture stderr output and/or csvlogs into log files."),
@@ -2029,7 +2063,7 @@ static struct config_int ConfigureNamesInt[] =
 	},
 
 	{
-		{"recovery_min_apply_delay", PGC_POSTMASTER, REPLICATION_STANDBY,
+		{"recovery_min_apply_delay", PGC_SIGHUP, REPLICATION_STANDBY,
 			gettext_noop("Sets the minimum delay for applying changes during recovery."),
 			NULL,
 			GUC_UNIT_MS
@@ -2072,6 +2106,7 @@ static struct config_int ConfigureNamesInt[] =
 	},
 
 	{
+		/* see max_connections and max_wal_senders */
 		{"session_pool_size", PGC_POSTMASTER, CONN_POOLING,
 			gettext_noop("Sets number of backends serving client sessions."),
 			gettext_noop("If non-zero then session pooling will be used: "
@@ -2107,7 +2142,7 @@ static struct config_int ConfigureNamesInt[] =
 	},
 
 	{
-		/* see max_connections and max_wal_senders */
+		/* see max_connections */
 		{"superuser_reserved_connections", PGC_POSTMASTER, CONN_AUTH_SETTINGS,
 			gettext_noop("Sets the number of connection slots reserved for superusers."),
 			NULL
@@ -2295,28 +2330,6 @@ static struct config_int ConfigureNamesInt[] =
 		},
 		&VacuumCostLimit,
 		200, 1, 10000,
-		NULL, NULL, NULL
-	},
-
-	{
-		{"vacuum_cost_delay", PGC_USERSET, RESOURCES_VACUUM_DELAY,
-			gettext_noop("Vacuum cost delay in milliseconds."),
-			NULL,
-			GUC_UNIT_MS
-		},
-		&VacuumCostDelay,
-		0, 0, 100,
-		NULL, NULL, NULL
-	},
-
-	{
-		{"autovacuum_vacuum_cost_delay", PGC_SIGHUP, AUTOVACUUM,
-			gettext_noop("Vacuum cost delay in milliseconds, for autovacuum."),
-			NULL,
-			GUC_UNIT_MS
-		},
-		&autovacuum_vac_cost_delay,
-		20, -1, 100,
 		NULL, NULL, NULL
 	},
 
@@ -2635,14 +2648,13 @@ static struct config_int ConfigureNamesInt[] =
 	},
 
 	{
-		/* see max_connections and superuser_reserved_connections */
 		{"max_wal_senders", PGC_POSTMASTER, REPLICATION_SENDING,
 			gettext_noop("Sets the maximum number of simultaneously running WAL sender processes."),
 			NULL
 		},
 		&max_wal_senders,
 		10, 0, MAX_BACKENDS,
-		NULL, NULL, NULL
+		check_max_wal_senders, NULL, NULL
 	},
 
 	{
@@ -2694,11 +2706,12 @@ static struct config_int ConfigureNamesInt[] =
 		{"extra_float_digits", PGC_USERSET, CLIENT_CONN_LOCALE,
 			gettext_noop("Sets the number of digits displayed for floating-point values."),
 			gettext_noop("This affects real, double precision, and geometric data types. "
-						 "The parameter value is added to the standard number of digits "
-						 "(FLT_DIG or DBL_DIG as appropriate).")
+						 "A zero or negative parameter value is added to the standard "
+						 "number of digits (FLT_DIG or DBL_DIG as appropriate). "
+						 "Any value greater than zero selects precise output mode.")
 		},
 		&extra_float_digits,
-		0, -15, 3,
+		1, -15, 3,
 		NULL, NULL, NULL
 	},
 
@@ -3346,6 +3359,28 @@ static struct config_real ConfigureNamesReal[] =
 	},
 
 	{
+		{"vacuum_cost_delay", PGC_USERSET, RESOURCES_VACUUM_DELAY,
+			gettext_noop("Vacuum cost delay in milliseconds."),
+			NULL,
+			GUC_UNIT_MS
+		},
+		&VacuumCostDelay,
+		0, 0, 100,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"autovacuum_vacuum_cost_delay", PGC_SIGHUP, AUTOVACUUM,
+			gettext_noop("Vacuum cost delay in milliseconds, for autovacuum."),
+			NULL,
+			GUC_UNIT_MS
+		},
+		&autovacuum_vac_cost_delay,
+		2, -1, 100,
+		NULL, NULL, NULL
+	},
+
+	{
 		{"autovacuum_vacuum_scale_factor", PGC_SIGHUP, AUTOVACUUM,
 			gettext_noop("Number of tuple updates or deletes prior to vacuum as a fraction of reltuples."),
 			NULL
@@ -3425,7 +3460,7 @@ static struct config_string ConfigureNamesString[] =
 	},
 
 	{
-		{"archive_cleanup_command", PGC_POSTMASTER, WAL_ARCHIVE_RECOVERY,
+		{"archive_cleanup_command", PGC_SIGHUP, WAL_ARCHIVE_RECOVERY,
 			gettext_noop("Sets the shell command that will be executed at every restart point."),
 			NULL
 		},
@@ -3435,7 +3470,7 @@ static struct config_string ConfigureNamesString[] =
 	},
 
 	{
-		{"recovery_end_command", PGC_POSTMASTER, WAL_ARCHIVE_RECOVERY,
+		{"recovery_end_command", PGC_SIGHUP, WAL_ARCHIVE_RECOVERY,
 			gettext_noop("Sets the shell command that will be executed once at the end of recovery."),
 			NULL
 		},
@@ -3450,7 +3485,7 @@ static struct config_string ConfigureNamesString[] =
 			NULL
 		},
 		&recovery_target_timeline_string,
-		"",
+		"latest",
 		check_recovery_target_timeline, assign_recovery_target_timeline, NULL
 	},
 
@@ -3501,7 +3536,7 @@ static struct config_string ConfigureNamesString[] =
 	},
 
 	{
-		{"promote_trigger_file", PGC_POSTMASTER, REPLICATION_STANDBY,
+		{"promote_trigger_file", PGC_SIGHUP, REPLICATION_STANDBY,
 			gettext_noop("Specifies a file name whose presence ends recovery in the standby."),
 			NULL
 		},
@@ -3572,6 +3607,17 @@ static struct config_string ConfigureNamesString[] =
 		&datestyle_string,
 		"ISO, MDY",
 		check_datestyle, assign_datestyle, NULL
+	},
+
+	{
+		{"default_table_access_method", PGC_USERSET, CLIENT_CONN_STATEMENT,
+			gettext_noop("Sets the default table access method for new tables."),
+			NULL,
+			GUC_IS_NAME
+		},
+		&default_table_access_method,
+		DEFAULT_TABLE_ACCESS_METHOD,
+		check_default_table_access_method, NULL, NULL
 	},
 
 	{
@@ -4378,6 +4424,16 @@ static struct config_enum ConfigureNamesEnum[] =
 	},
 
 	{
+		{"shared_memory_type", PGC_POSTMASTER, RESOURCES_MEM,
+			gettext_noop("Selects the shared memory implementation used for the main shared memory region."),
+			NULL
+		},
+		&shared_memory_type,
+		DEFAULT_SHARED_MEMORY_TYPE, shared_memory_options,
+		NULL, NULL, NULL
+	},
+
+	{
 		{"wal_sync_method", PGC_SIGHUP, WAL_SETTINGS,
 			gettext_noop("Selects the method used for forcing WAL updates to disk."),
 			NULL
@@ -4934,7 +4990,7 @@ add_placeholder_variable(const char *name, int elevel)
 
 	if (!add_guc_variable((struct config_generic *) var, elevel))
 	{
-		free((void *) gen->name);
+		free(unconstify(char *, gen->name));
 		free(var);
 		return NULL;
 	}
@@ -5984,17 +6040,35 @@ ReportGUCOption(struct config_generic *record)
 /*
  * Convert a value from one of the human-friendly units ("kB", "min" etc.)
  * to the given base unit.  'value' and 'unit' are the input value and unit
- * to convert from.  The converted value is stored in *base_value.
+ * to convert from (there can be trailing spaces in the unit string).
+ * The converted value is stored in *base_value.
+ * It's caller's responsibility to round off the converted value as necessary
+ * and check for out-of-range.
  *
  * Returns true on success, false if the input unit is not recognized.
  */
 static bool
-convert_to_base_unit(int64 value, const char *unit,
-					 int base_unit, int64 *base_value)
+convert_to_base_unit(double value, const char *unit,
+					 int base_unit, double *base_value)
 {
+	char		unitstr[MAX_UNIT_LEN + 1];
+	int			unitlen;
 	const unit_conversion *table;
 	int			i;
 
+	/* extract unit string to compare to table entries */
+	unitlen = 0;
+	while (*unit != '\0' && !isspace((unsigned char) *unit) &&
+		   unitlen < MAX_UNIT_LEN)
+		unitstr[unitlen++] = *(unit++);
+	unitstr[unitlen] = '\0';
+	/* allow whitespace after unit */
+	while (isspace((unsigned char) *unit))
+		unit++;
+	if (*unit != '\0')
+		return false;			/* unit too long, or garbage after it */
+
+	/* now search the appropriate table */
 	if (base_unit & GUC_UNIT_MEMORY)
 		table = memory_unit_conversion_table;
 	else
@@ -6003,12 +6077,21 @@ convert_to_base_unit(int64 value, const char *unit,
 	for (i = 0; *table[i].unit; i++)
 	{
 		if (base_unit == table[i].base_unit &&
-			strcmp(unit, table[i].unit) == 0)
+			strcmp(unitstr, table[i].unit) == 0)
 		{
-			if (table[i].multiplier < 0)
-				*base_value = value / (-table[i].multiplier);
-			else
-				*base_value = value * table[i].multiplier;
+			double		cvalue = value * table[i].multiplier;
+
+			/*
+			 * If the user gave a fractional value such as "30.1GB", round it
+			 * off to the nearest multiple of the next smaller unit, if there
+			 * is one.
+			 */
+			if (*table[i + 1].unit &&
+				base_unit == table[i + 1].base_unit)
+				cvalue = rint(cvalue / table[i + 1].multiplier) *
+					table[i + 1].multiplier;
+
+			*base_value = cvalue;
 			return true;
 		}
 	}
@@ -6016,14 +6099,15 @@ convert_to_base_unit(int64 value, const char *unit,
 }
 
 /*
- * Convert a value in some base unit to a human-friendly unit.  The output
- * unit is chosen so that it's the greatest unit that can represent the value
- * without loss.  For example, if the base unit is GUC_UNIT_KB, 1024 is
- * converted to 1 MB, but 1025 is represented as 1025 kB.
+ * Convert an integer value in some base unit to a human-friendly unit.
+ *
+ * The output unit is chosen so that it's the greatest unit that can represent
+ * the value without loss.  For example, if the base unit is GUC_UNIT_KB, 1024
+ * is converted to 1 MB, but 1025 is represented as 1025 kB.
  */
 static void
-convert_from_base_unit(int64 base_value, int base_unit,
-					   int64 *value, const char **unit)
+convert_int_from_base_unit(int64 base_value, int base_unit,
+						   int64 *value, const char **unit)
 {
 	const unit_conversion *table;
 	int			i;
@@ -6040,19 +6124,14 @@ convert_from_base_unit(int64 base_value, int base_unit,
 		if (base_unit == table[i].base_unit)
 		{
 			/*
-			 * Accept the first conversion that divides the value evenly. We
+			 * Accept the first conversion that divides the value evenly.  We
 			 * assume that the conversions for each base unit are ordered from
 			 * greatest unit to the smallest!
 			 */
-			if (table[i].multiplier < 0)
+			if (table[i].multiplier <= 1.0 ||
+				base_value % (int64) table[i].multiplier == 0)
 			{
-				*value = base_value * (-table[i].multiplier);
-				*unit = table[i].unit;
-				break;
-			}
-			else if (base_value % table[i].multiplier == 0)
-			{
-				*value = base_value / table[i].multiplier;
+				*value = (int64) rint(base_value / table[i].multiplier);
 				*unit = table[i].unit;
 				break;
 			}
@@ -6062,21 +6141,120 @@ convert_from_base_unit(int64 base_value, int base_unit,
 	Assert(*unit != NULL);
 }
 
+/*
+ * Convert a floating-point value in some base unit to a human-friendly unit.
+ *
+ * Same as above, except we have to do the math a bit differently, and
+ * there's a possibility that we don't find any exact divisor.
+ */
+static void
+convert_real_from_base_unit(double base_value, int base_unit,
+							double *value, const char **unit)
+{
+	const unit_conversion *table;
+	int			i;
+
+	*unit = NULL;
+
+	if (base_unit & GUC_UNIT_MEMORY)
+		table = memory_unit_conversion_table;
+	else
+		table = time_unit_conversion_table;
+
+	for (i = 0; *table[i].unit; i++)
+	{
+		if (base_unit == table[i].base_unit)
+		{
+			/*
+			 * Accept the first conversion that divides the value evenly; or
+			 * if there is none, use the smallest (last) target unit.
+			 *
+			 * What we actually care about here is whether snprintf with "%g"
+			 * will print the value as an integer, so the obvious test of
+			 * "*value == rint(*value)" is too strict; roundoff error might
+			 * make us choose an unreasonably small unit.  As a compromise,
+			 * accept a divisor that is within 1e-8 of producing an integer.
+			 */
+			*value = base_value / table[i].multiplier;
+			*unit = table[i].unit;
+			if (*value > 0 &&
+				fabs((rint(*value) / *value) - 1.0) <= 1e-8)
+				break;
+		}
+	}
+
+	Assert(*unit != NULL);
+}
+
+/*
+ * Return the name of a GUC's base unit (e.g. "ms") given its flags.
+ * Return NULL if the GUC is unitless.
+ */
+static const char *
+get_config_unit_name(int flags)
+{
+	switch (flags & (GUC_UNIT_MEMORY | GUC_UNIT_TIME))
+	{
+		case 0:
+			return NULL;		/* GUC has no units */
+		case GUC_UNIT_BYTE:
+			return "B";
+		case GUC_UNIT_KB:
+			return "kB";
+		case GUC_UNIT_MB:
+			return "MB";
+		case GUC_UNIT_BLOCKS:
+			{
+				static char bbuf[8];
+
+				/* initialize if first time through */
+				if (bbuf[0] == '\0')
+					snprintf(bbuf, sizeof(bbuf), "%dkB", BLCKSZ / 1024);
+				return bbuf;
+			}
+		case GUC_UNIT_XBLOCKS:
+			{
+				static char xbuf[8];
+
+				/* initialize if first time through */
+				if (xbuf[0] == '\0')
+					snprintf(xbuf, sizeof(xbuf), "%dkB", XLOG_BLCKSZ / 1024);
+				return xbuf;
+			}
+		case GUC_UNIT_MS:
+			return "ms";
+		case GUC_UNIT_S:
+			return "s";
+		case GUC_UNIT_MIN:
+			return "min";
+		default:
+			elog(ERROR, "unrecognized GUC units value: %d",
+				 flags & (GUC_UNIT_MEMORY | GUC_UNIT_TIME));
+			return NULL;
+	}
+}
+
 
 /*
  * Try to parse value as an integer.  The accepted formats are the
- * usual decimal, octal, or hexadecimal formats, optionally followed by
- * a unit name if "flags" indicates a unit is allowed.
+ * usual decimal, octal, or hexadecimal formats, as well as floating-point
+ * formats (which will be rounded to integer after any units conversion).
+ * Optionally, the value can be followed by a unit name if "flags" indicates
+ * a unit is allowed.
  *
  * If the string parses okay, return true, else false.
  * If okay and result is not NULL, return the value in *result.
  * If not okay and hintmsg is not NULL, *hintmsg is set to a suitable
- *	HINT message, or NULL if no hint provided.
+ * HINT message, or NULL if no hint provided.
  */
 bool
 parse_int(const char *value, int *result, int flags, const char **hintmsg)
 {
-	int64		val;
+	/*
+	 * We assume here that double is wide enough to represent any integer
+	 * value with adequate precision.
+	 */
+	double		val;
 	char	   *endptr;
 
 	/* To suppress compiler warnings, always set output params */
@@ -6085,47 +6263,42 @@ parse_int(const char *value, int *result, int flags, const char **hintmsg)
 	if (hintmsg)
 		*hintmsg = NULL;
 
-	/* We assume here that int64 is at least as wide as long */
+	/*
+	 * Try to parse as an integer (allowing octal or hex input).  If the
+	 * conversion stops at a decimal point or 'e', or overflows, re-parse as
+	 * float.  This should work fine as long as we have no unit names starting
+	 * with 'e'.  If we ever do, the test could be extended to check for a
+	 * sign or digit after 'e', but for now that's unnecessary.
+	 */
 	errno = 0;
 	val = strtol(value, &endptr, 0);
-
-	if (endptr == value)
-		return false;			/* no HINT for integer syntax error */
-
-	if (errno == ERANGE || val != (int64) ((int32) val))
+	if (*endptr == '.' || *endptr == 'e' || *endptr == 'E' ||
+		errno == ERANGE)
 	{
-		if (hintmsg)
-			*hintmsg = gettext_noop("Value exceeds integer range.");
-		return false;
+		errno = 0;
+		val = strtod(value, &endptr);
 	}
 
-	/* allow whitespace between integer and unit */
+	if (endptr == value || errno == ERANGE)
+		return false;			/* no HINT for these cases */
+
+	/* reject NaN (infinities will fail range check below) */
+	if (isnan(val))
+		return false;			/* treat same as syntax error; no HINT */
+
+	/* allow whitespace between number and unit */
 	while (isspace((unsigned char) *endptr))
 		endptr++;
 
 	/* Handle possible unit */
 	if (*endptr != '\0')
 	{
-		char		unit[MAX_UNIT_LEN + 1];
-		int			unitlen;
-		bool		converted = false;
-
 		if ((flags & GUC_UNIT) == 0)
 			return false;		/* this setting does not accept a unit */
 
-		unitlen = 0;
-		while (*endptr != '\0' && !isspace((unsigned char) *endptr) &&
-			   unitlen < MAX_UNIT_LEN)
-			unit[unitlen++] = *(endptr++);
-		unit[unitlen] = '\0';
-		/* allow whitespace after unit */
-		while (isspace((unsigned char) *endptr))
-			endptr++;
-
-		if (*endptr == '\0')
-			converted = convert_to_base_unit(val, unit, (flags & GUC_UNIT),
-											 &val);
-		if (!converted)
+		if (!convert_to_base_unit(val,
+								  endptr, (flags & GUC_UNIT),
+								  &val))
 		{
 			/* invalid unit, or garbage after the unit; set hint and fail. */
 			if (hintmsg)
@@ -6137,14 +6310,16 @@ parse_int(const char *value, int *result, int flags, const char **hintmsg)
 			}
 			return false;
 		}
+	}
 
-		/* Check for overflow due to units conversion */
-		if (val != (int64) ((int32) val))
-		{
-			if (hintmsg)
-				*hintmsg = gettext_noop("Value exceeds integer range.");
-			return false;
-		}
+	/* Round to int, then check for overflow */
+	val = rint(val);
+
+	if (val > INT_MAX || val < INT_MIN)
+	{
+		if (hintmsg)
+			*hintmsg = gettext_noop("Value exceeds integer range.");
+		return false;
 	}
 
 	if (result)
@@ -6152,32 +6327,63 @@ parse_int(const char *value, int *result, int flags, const char **hintmsg)
 	return true;
 }
 
-
-
 /*
  * Try to parse value as a floating point number in the usual format.
+ * Optionally, the value can be followed by a unit name if "flags" indicates
+ * a unit is allowed.
+ *
  * If the string parses okay, return true, else false.
  * If okay and result is not NULL, return the value in *result.
+ * If not okay and hintmsg is not NULL, *hintmsg is set to a suitable
+ * HINT message, or NULL if no hint provided.
  */
 bool
-parse_real(const char *value, double *result)
+parse_real(const char *value, double *result, int flags, const char **hintmsg)
 {
 	double		val;
 	char	   *endptr;
 
+	/* To suppress compiler warnings, always set output params */
 	if (result)
-		*result = 0;			/* suppress compiler warning */
+		*result = 0;
+	if (hintmsg)
+		*hintmsg = NULL;
 
 	errno = 0;
 	val = strtod(value, &endptr);
-	if (endptr == value || errno == ERANGE)
-		return false;
 
-	/* allow whitespace after number */
+	if (endptr == value || errno == ERANGE)
+		return false;			/* no HINT for these cases */
+
+	/* reject NaN (infinities will fail range checks later) */
+	if (isnan(val))
+		return false;			/* treat same as syntax error; no HINT */
+
+	/* allow whitespace between number and unit */
 	while (isspace((unsigned char) *endptr))
 		endptr++;
+
+	/* Handle possible unit */
 	if (*endptr != '\0')
-		return false;
+	{
+		if ((flags & GUC_UNIT) == 0)
+			return false;		/* this setting does not accept a unit */
+
+		if (!convert_to_base_unit(val,
+								  endptr, (flags & GUC_UNIT),
+								  &val))
+		{
+			/* invalid unit, or garbage after the unit; set hint and fail. */
+			if (hintmsg)
+			{
+				if (flags & GUC_UNIT_MEMORY)
+					*hintmsg = memory_units_hint;
+				else
+					*hintmsg = time_units_hint;
+			}
+			return false;
+		}
+	}
 
 	if (result)
 		*result = val;
@@ -6344,10 +6550,15 @@ parse_and_validate_value(struct config_generic *record,
 
 				if (newval->intval < conf->min || newval->intval > conf->max)
 				{
+					const char *unit = get_config_unit_name(conf->gen.flags);
+
 					ereport(elevel,
 							(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-							 errmsg("%d is outside the valid range for parameter \"%s\" (%d .. %d)",
-									newval->intval, name,
+							 errmsg("%d%s%s is outside the valid range for parameter \"%s\" (%d .. %d)",
+									newval->intval,
+									unit ? " " : "",
+									unit ? unit : "",
+									name,
 									conf->min, conf->max)));
 					return false;
 				}
@@ -6360,22 +6571,30 @@ parse_and_validate_value(struct config_generic *record,
 		case PGC_REAL:
 			{
 				struct config_real *conf = (struct config_real *) record;
+				const char *hintmsg;
 
-				if (!parse_real(value, &newval->realval))
+				if (!parse_real(value, &newval->realval,
+								conf->gen.flags, &hintmsg))
 				{
 					ereport(elevel,
 							(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-							 errmsg("parameter \"%s\" requires a numeric value",
-									name)));
+							 errmsg("invalid value for parameter \"%s\": \"%s\"",
+									name, value),
+							 hintmsg ? errhint("%s", _(hintmsg)) : 0));
 					return false;
 				}
 
 				if (newval->realval < conf->min || newval->realval > conf->max)
 				{
+					const char *unit = get_config_unit_name(conf->gen.flags);
+
 					ereport(elevel,
 							(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-							 errmsg("%g is outside the valid range for parameter \"%s\" (%g .. %g)",
-									newval->realval, name,
+							 errmsg("%g%s%s is outside the valid range for parameter \"%s\" (%g .. %g)",
+									newval->realval,
+									unit ? " " : "",
+									unit ? unit : "",
+									name,
 									conf->min, conf->max)));
 					return false;
 				}
@@ -8708,52 +8927,11 @@ GetConfigOptionByNum(int varnum, const char **values, bool *noshow)
 	/* name */
 	values[0] = conf->name;
 
-	/* setting : use _ShowOption in order to avoid duplicating the logic */
+	/* setting: use _ShowOption in order to avoid duplicating the logic */
 	values[1] = _ShowOption(conf, false);
 
-	/* unit */
-	if (conf->vartype == PGC_INT)
-	{
-		switch (conf->flags & (GUC_UNIT_MEMORY | GUC_UNIT_TIME))
-		{
-			case GUC_UNIT_BYTE:
-				values[2] = "B";
-				break;
-			case GUC_UNIT_KB:
-				values[2] = "kB";
-				break;
-			case GUC_UNIT_MB:
-				values[2] = "MB";
-				break;
-			case GUC_UNIT_BLOCKS:
-				snprintf(buffer, sizeof(buffer), "%dkB", BLCKSZ / 1024);
-				values[2] = pstrdup(buffer);
-				break;
-			case GUC_UNIT_XBLOCKS:
-				snprintf(buffer, sizeof(buffer), "%dkB", XLOG_BLCKSZ / 1024);
-				values[2] = pstrdup(buffer);
-				break;
-			case GUC_UNIT_MS:
-				values[2] = "ms";
-				break;
-			case GUC_UNIT_S:
-				values[2] = "s";
-				break;
-			case GUC_UNIT_MIN:
-				values[2] = "min";
-				break;
-			case 0:
-				values[2] = NULL;
-				break;
-			default:
-				elog(ERROR, "unrecognized GUC units value: %d",
-					 conf->flags & (GUC_UNIT_MEMORY | GUC_UNIT_TIME));
-				values[2] = NULL;
-				break;
-		}
-	}
-	else
-		values[2] = NULL;
+	/* unit, if any (NULL is fine) */
+	values[2] = get_config_unit_name(conf->flags);
 
 	/* group */
 	values[3] = _(config_group_names[conf->group]);
@@ -9282,10 +9460,9 @@ _ShowOption(struct config_generic *record, bool use_units)
 					const char *unit;
 
 					if (use_units && result > 0 && (record->flags & GUC_UNIT))
-					{
-						convert_from_base_unit(result, record->flags & GUC_UNIT,
-											   &result, &unit);
-					}
+						convert_int_from_base_unit(result,
+												   record->flags & GUC_UNIT,
+												   &result, &unit);
 					else
 						unit = "";
 
@@ -9304,8 +9481,18 @@ _ShowOption(struct config_generic *record, bool use_units)
 					val = conf->show_hook();
 				else
 				{
-					snprintf(buffer, sizeof(buffer), "%g",
-							 *conf->variable);
+					double		result = *conf->variable;
+					const char *unit;
+
+					if (use_units && result > 0 && (record->flags & GUC_UNIT))
+						convert_real_from_base_unit(result,
+													record->flags & GUC_UNIT,
+													&result, &unit);
+					else
+						unit = "";
+
+					snprintf(buffer, sizeof(buffer), "%g%s",
+							 result, unit);
 					val = buffer;
 				}
 			}
@@ -10949,7 +11136,7 @@ static bool
 check_maxconnections(int *newval, void **extra, GucSource source)
 {
 	if (*newval + autovacuum_max_workers + 1 +
-		max_worker_processes > MAX_BACKENDS)
+		max_worker_processes + max_wal_senders > MAX_BACKENDS)
 		return false;
 	return true;
 }
@@ -10957,7 +11144,17 @@ check_maxconnections(int *newval, void **extra, GucSource source)
 static bool
 check_autovacuum_max_workers(int *newval, void **extra, GucSource source)
 {
-	if (MaxConnections + *newval + 1 + max_worker_processes > MAX_BACKENDS)
+	if (MaxConnections + *newval + 1 +
+		max_worker_processes + max_wal_senders > MAX_BACKENDS)
+		return false;
+	return true;
+}
+
+static bool
+check_max_wal_senders(int *newval, void **extra, GucSource source)
+{
+	if (MaxConnections + autovacuum_max_workers + 1 +
+		max_worker_processes + *newval > MAX_BACKENDS)
 		return false;
 	return true;
 }
@@ -10988,7 +11185,8 @@ check_autovacuum_work_mem(int *newval, void **extra, GucSource source)
 static bool
 check_max_worker_processes(int *newval, void **extra, GucSource source)
 {
-	if (MaxConnections + autovacuum_max_workers + 1 + *newval > MAX_BACKENDS)
+	if (MaxConnections + autovacuum_max_workers + 1 +
+		*newval + max_wal_senders > MAX_BACKENDS)
 		return false;
 	return true;
 }
@@ -11112,15 +11310,17 @@ show_data_directory_mode(void)
 static bool
 check_recovery_target_timeline(char **newval, void **extra, GucSource source)
 {
-	RecoveryTargetTimeLineGoal rttg = RECOVERY_TARGET_TIMELINE_CONTROLFILE;
+	RecoveryTargetTimeLineGoal rttg;
 	RecoveryTargetTimeLineGoal *myextra;
 
-	if (strcmp(*newval, "") == 0)
+	if (strcmp(*newval, "current") == 0)
 		rttg = RECOVERY_TARGET_TIMELINE_CONTROLFILE;
 	else if (strcmp(*newval, "latest") == 0)
 		rttg = RECOVERY_TARGET_TIMELINE_LATEST;
 	else
 	{
+		rttg = RECOVERY_TARGET_TIMELINE_NUMERIC;
+
 		errno = 0;
 		strtoul(*newval, NULL, 0);
 		if (errno == EINVAL || errno == ERANGE)
@@ -11128,7 +11328,6 @@ check_recovery_target_timeline(char **newval, void **extra, GucSource source)
 			GUC_check_errdetail("recovery_target_timeline is not a valid number.");
 			return false;
 		}
-		rttg = RECOVERY_TARGET_TIMELINE_NUMERIC;
 	}
 
 	myextra = (RecoveryTargetTimeLineGoal *) guc_malloc(ERROR, sizeof(RecoveryTargetTimeLineGoal));
@@ -11390,6 +11589,21 @@ check_primary_slot_name(char **newval, void **extra, GucSource source)
 	if (*newval && strcmp(*newval, "") != 0 &&
 		!ReplicationSlotValidateName(*newval, WARNING))
 		return false;
+
+	return true;
+}
+
+static bool
+check_default_with_oids(bool *newval, void **extra, GucSource source)
+{
+	if (*newval)
+	{
+		/* check the GUC's definition for an explanation */
+		GUC_check_errcode(ERRCODE_FEATURE_NOT_SUPPORTED);
+		GUC_check_errmsg("tables declared WITH OIDS are not supported");
+
+		return false;
+	}
 
 	return true;
 }

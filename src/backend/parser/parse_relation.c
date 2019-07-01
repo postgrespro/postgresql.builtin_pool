@@ -3,7 +3,7 @@
  * parse_relation.c
  *	  parser support routines dealing with relations
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -17,7 +17,9 @@
 #include <ctype.h>
 
 #include "access/htup_details.h"
+#include "access/relation.h"
 #include "access/sysattr.h"
+#include "access/table.h"
 #include "catalog/heap.h"
 #include "catalog/namespace.h"
 #include "catalog/pg_type.h"
@@ -1135,7 +1137,7 @@ chooseScalarFunctionAlias(Node *funcexpr, char *funcname,
 /*
  * Open a table during parse analysis
  *
- * This is essentially just the same as heap_openrv(), except that it caters
+ * This is essentially just the same as table_openrv(), except that it caters
  * to some parser-specific error reporting needs, notably that it arranges
  * to include the RangeVar's parse location in any resulting error.
  *
@@ -1150,7 +1152,7 @@ parserOpenTable(ParseState *pstate, const RangeVar *relation, int lockmode)
 	ParseCallbackState pcbstate;
 
 	setup_parser_errposition_callback(&pcbstate, pstate, relation->location);
-	rel = heap_openrv_extended(relation, lockmode, true);
+	rel = table_openrv_extended(relation, lockmode, true);
 	if (rel == NULL)
 	{
 		if (relation->schemaname)
@@ -1238,7 +1240,7 @@ addRangeTableEntry(ParseState *pstate,
 	 * so that the table can't be deleted or have its schema modified
 	 * underneath us.
 	 */
-	heap_close(rel, NoLock);
+	table_close(rel, NoLock);
 
 	/*
 	 * Set flags and access permissions.
@@ -1588,9 +1590,15 @@ addRangeTableEntryForFunction(ParseState *pstate,
 
 			/*
 			 * Ensure that the coldeflist defines a legal set of names (no
-			 * duplicates) and datatypes (no pseudo-types, for instance).
+			 * duplicates, but we needn't worry about system column names) and
+			 * datatypes.  Although we mostly can't allow pseudo-types, it
+			 * seems safe to allow RECORD and RECORD[], since values within
+			 * those type classes are self-identifying at runtime, and the
+			 * coldeflist doesn't represent anything that will be visible to
+			 * other sessions.
 			 */
-			CheckAttributeNamesTypes(tupdesc, RELKIND_COMPOSITE_TYPE, false);
+			CheckAttributeNamesTypes(tupdesc, RELKIND_COMPOSITE_TYPE,
+									 CHKATYPE_ANYRECORD);
 		}
 		else
 			ereport(ERROR,
@@ -2517,6 +2525,9 @@ expandRTE(RangeTblEntry *rte, int rtindex, int sublevels_up,
 				}
 			}
 			break;
+		case RTE_RESULT:
+			/* These expose no columns, so nothing to do */
+			break;
 		default:
 			elog(ERROR, "unrecognized RTE kind: %d", (int) rte->rtekind);
 	}
@@ -2909,6 +2920,14 @@ get_rte_attribute_type(RangeTblEntry *rte, AttrNumber attnum,
 									rte->eref->aliasname)));
 			}
 			break;
+		case RTE_RESULT:
+			/* this probably can't happen ... */
+			ereport(ERROR,
+					(errcode(ERRCODE_UNDEFINED_COLUMN),
+					 errmsg("column %d of relation \"%s\" does not exist",
+							attnum,
+							rte->eref->aliasname)));
+			break;
 		default:
 			elog(ERROR, "unrecognized RTE kind: %d", (int) rte->rtekind);
 	}
@@ -3037,6 +3056,15 @@ get_rte_attribute_is_dropped(RangeTblEntry *rte, AttrNumber attnum)
 				result = false; /* keep compiler quiet */
 			}
 			break;
+		case RTE_RESULT:
+			/* this probably can't happen ... */
+			ereport(ERROR,
+					(errcode(ERRCODE_UNDEFINED_COLUMN),
+					 errmsg("column %d of relation \"%s\" does not exist",
+							attnum,
+							rte->eref->aliasname)));
+			result = false;		/* keep compiler quiet */
+			break;
 		default:
 			elog(ERROR, "unrecognized RTE kind: %d", (int) rte->rtekind);
 			result = false;		/* keep compiler quiet */
@@ -3094,7 +3122,7 @@ get_parse_rowmark(Query *qry, Index rtindex)
  *	Returns InvalidAttrNumber if the attr doesn't exist (or is dropped).
  *
  *	This should only be used if the relation is already
- *	heap_open()'ed.  Use the cache version get_attnum()
+ *	table_open()'ed.  Use the cache version get_attnum()
  *	for access to non-opened relations.
  */
 int
@@ -3144,7 +3172,7 @@ specialAttNum(const char *attname)
  * given attribute id, return name of that attribute
  *
  *	This should only be used if the relation is already
- *	heap_open()'ed.  Use the cache version get_atttype()
+ *	table_open()'ed.  Use the cache version get_atttype()
  *	for access to non-opened relations.
  */
 const NameData *
@@ -3166,7 +3194,7 @@ attnumAttName(Relation rd, int attid)
  * given attribute id, return type of that attribute
  *
  *	This should only be used if the relation is already
- *	heap_open()'ed.  Use the cache version get_atttype()
+ *	table_open()'ed.  Use the cache version get_atttype()
  *	for access to non-opened relations.
  */
 Oid
@@ -3187,7 +3215,7 @@ attnumTypeId(Relation rd, int attid)
 /*
  * given attribute id, return collation of that attribute
  *
- *	This should only be used if the relation is already heap_open()'ed.
+ *	This should only be used if the relation is already table_open()'ed.
  */
 Oid
 attnumCollationId(Relation rd, int attid)
@@ -3359,10 +3387,10 @@ isQueryUsingTempRelation_walker(Node *node, void *context)
 
 			if (rte->rtekind == RTE_RELATION)
 			{
-				Relation	rel = heap_open(rte->relid, AccessShareLock);
+				Relation	rel = table_open(rte->relid, AccessShareLock);
 				char		relpersistence = rel->rd_rel->relpersistence;
 
-				heap_close(rel, AccessShareLock);
+				table_close(rel, AccessShareLock);
 				if (relpersistence == RELPERSISTENCE_TEMP)
 					return true;
 			}

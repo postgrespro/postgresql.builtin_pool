@@ -3,7 +3,7 @@
  * reloptions.c
  *	  Core support for relation options (pg_class.reloptions)
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -126,15 +126,6 @@ static relopt_bool boolRelOpts[] =
 			"Enables \"fast update\" feature for this GIN index",
 			RELOPT_KIND_GIN,
 			AccessExclusiveLock
-		},
-		true
-	},
-	{
-		{
-			"recheck_on_update",
-			"Recheck functional index expression for changed value after update",
-			RELOPT_KIND_INDEX,
-			ShareUpdateExclusiveLock	/* since only applies to later UPDATEs */
 		},
 		true
 	},
@@ -1207,7 +1198,7 @@ parse_one_reloption(relopt_value *option, char *text_str, int text_len,
 			{
 				relopt_real *optreal = (relopt_real *) option->gen;
 
-				parsed = parse_real(value, &option->values.real_val);
+				parsed = parse_real(value, &option->values.real_val, 0, NULL);
 				if (validate && !parsed)
 					ereport(ERROR,
 							(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
@@ -1343,7 +1334,7 @@ fillRelOptions(void *rdopts, Size basesize,
 				break;
 			}
 		}
-		if (validate && !found && options[i].gen->kinds != RELOPT_KIND_INDEX)
+		if (validate && !found)
 			elog(ERROR, "reloption \"%s\" not found in parse table",
 				 options[i].gen->name);
 	}
@@ -1368,8 +1359,6 @@ default_reloptions(Datum reloptions, bool validate, relopt_kind kind)
 		offsetof(StdRdOptions, autovacuum) + offsetof(AutoVacOpts, vacuum_threshold)},
 		{"autovacuum_analyze_threshold", RELOPT_TYPE_INT,
 		offsetof(StdRdOptions, autovacuum) + offsetof(AutoVacOpts, analyze_threshold)},
-		{"autovacuum_vacuum_cost_delay", RELOPT_TYPE_INT,
-		offsetof(StdRdOptions, autovacuum) + offsetof(AutoVacOpts, vacuum_cost_delay)},
 		{"autovacuum_vacuum_cost_limit", RELOPT_TYPE_INT,
 		offsetof(StdRdOptions, autovacuum) + offsetof(AutoVacOpts, vacuum_cost_limit)},
 		{"autovacuum_freeze_min_age", RELOPT_TYPE_INT,
@@ -1388,6 +1377,8 @@ default_reloptions(Datum reloptions, bool validate, relopt_kind kind)
 		offsetof(StdRdOptions, autovacuum) + offsetof(AutoVacOpts, log_min_duration)},
 		{"toast_tuple_target", RELOPT_TYPE_INT,
 		offsetof(StdRdOptions, toast_tuple_target)},
+		{"autovacuum_vacuum_cost_delay", RELOPT_TYPE_REAL,
+		offsetof(StdRdOptions, autovacuum) + offsetof(AutoVacOpts, vacuum_cost_delay)},
 		{"autovacuum_vacuum_scale_factor", RELOPT_TYPE_REAL,
 		offsetof(StdRdOptions, autovacuum) + offsetof(AutoVacOpts, vacuum_scale_factor)},
 		{"autovacuum_analyze_scale_factor", RELOPT_TYPE_REAL,
@@ -1499,40 +1490,6 @@ index_reloptions(amoptions_function amoptions, Datum reloptions, bool validate)
 		return NULL;
 
 	return amoptions(reloptions, validate);
-}
-
-/*
- * Parse generic options for all indexes.
- *
- *	reloptions	options as text[] datum
- *	validate	error flag
- */
-bytea *
-index_generic_reloptions(Datum reloptions, bool validate)
-{
-	int			numoptions;
-	GenericIndexOpts *idxopts;
-	relopt_value *options;
-	static const relopt_parse_elt tab[] = {
-		{"recheck_on_update", RELOPT_TYPE_BOOL, offsetof(GenericIndexOpts, recheck_on_update)}
-	};
-
-	options = parseRelOptions(reloptions, validate,
-							  RELOPT_KIND_INDEX,
-							  &numoptions);
-
-	/* if none set, we're done */
-	if (numoptions == 0)
-		return NULL;
-
-	idxopts = allocateReloptStruct(sizeof(GenericIndexOpts), options, numoptions);
-
-	fillRelOptions((void *) idxopts, sizeof(GenericIndexOpts), options, numoptions,
-				   validate, tab, lengthof(tab));
-
-	pfree(options);
-
-	return (bytea *) idxopts;
 }
 
 /*

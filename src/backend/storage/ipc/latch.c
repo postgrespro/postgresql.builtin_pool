@@ -22,7 +22,7 @@
  * The Windows implementation uses Windows events that are inherited by all
  * postmaster child processes. There's no need for the self-pipe trick there.
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -226,7 +226,7 @@ InitializeLatchSupport(void)
  * Initialize a process-local latch.
  */
 void
-InitLatch(volatile Latch *latch)
+InitLatch(Latch *latch)
 {
 	latch->is_set = false;
 	latch->owner_pid = MyProcPid;
@@ -258,7 +258,7 @@ InitLatch(volatile Latch *latch)
  * process references to postmaster-private latches or WaitEventSets.
  */
 void
-InitSharedLatch(volatile Latch *latch)
+InitSharedLatch(Latch *latch)
 {
 #ifdef WIN32
 	SECURITY_ATTRIBUTES sa;
@@ -294,7 +294,7 @@ InitSharedLatch(volatile Latch *latch)
  * as shared latches use SIGUSR1 for inter-process communication.
  */
 void
-OwnLatch(volatile Latch *latch)
+OwnLatch(Latch *latch)
 {
 	/* Sanity checks */
 	Assert(latch->is_shared);
@@ -314,7 +314,7 @@ OwnLatch(volatile Latch *latch)
  * Disown a shared latch currently owned by the current process.
  */
 void
-DisownLatch(volatile Latch *latch)
+DisownLatch(Latch *latch)
 {
 	Assert(latch->is_shared);
 	Assert(latch->owner_pid == MyProcPid);
@@ -342,7 +342,7 @@ DisownLatch(volatile Latch *latch)
  * we return all of them in one call, but we will return at least one.
  */
 int
-WaitLatch(volatile Latch *latch, int wakeEvents, long timeout,
+WaitLatch(Latch *latch, int wakeEvents, long timeout,
 		  uint32 wait_event_info)
 {
 	return WaitLatchOrSocket(latch, wakeEvents, PGINVALID_SOCKET, timeout,
@@ -367,7 +367,7 @@ WaitLatch(volatile Latch *latch, int wakeEvents, long timeout,
  * WaitEventSet instead; that's more efficient.
  */
 int
-WaitLatchOrSocket(volatile Latch *latch, int wakeEvents, pgsocket sock,
+WaitLatchOrSocket(Latch *latch, int wakeEvents, pgsocket sock,
 				  long timeout, uint32 wait_event_info)
 {
 	int			ret = 0;
@@ -382,7 +382,7 @@ WaitLatchOrSocket(volatile Latch *latch, int wakeEvents, pgsocket sock,
 
 	if (wakeEvents & WL_LATCH_SET)
 		AddWaitEventToSet(set, WL_LATCH_SET, PGINVALID_SOCKET,
-						  (Latch *) latch, NULL);
+						  latch, NULL);
 
 	/* Postmaster-managed callers must handle postmaster death somehow. */
 	Assert(!IsUnderPostmaster ||
@@ -434,7 +434,7 @@ WaitLatchOrSocket(volatile Latch *latch, int wakeEvents, pgsocket sock,
  * throwing an error is not a good idea.
  */
 void
-SetLatch(volatile Latch *latch)
+SetLatch(Latch *latch)
 {
 #ifndef WIN32
 	pid_t		owner_pid;
@@ -517,7 +517,7 @@ SetLatch(volatile Latch *latch)
  * the latch is set again before the WaitLatch call.
  */
 void
-ResetLatch(volatile Latch *latch)
+ResetLatch(Latch *latch)
 {
 	/* Only the owner should reset the latch */
 	Assert(latch->owner_pid == MyProcPid);

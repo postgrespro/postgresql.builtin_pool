@@ -8,7 +8,7 @@
  *	  This file contains only the public interface routines.
  *
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -310,7 +310,7 @@ btgetbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 		if (_bt_first(scan, ForwardScanDirection))
 		{
 			/* Save tuple ID, and continue scanning */
-			heapTid = &scan->xs_ctup.t_self;
+			heapTid = &scan->xs_heaptid;
 			tbm_add_tuples(tbm, heapTid, 1, false);
 			ntids++;
 

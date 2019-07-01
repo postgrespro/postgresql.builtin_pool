@@ -50,7 +50,7 @@
  * there is a window (caused by pgstat delay) on which a worker may choose a
  * table that was already vacuumed; this is a bug in the current design.
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -69,6 +69,7 @@
 #include "access/htup_details.h"
 #include "access/multixact.h"
 #include "access/reloptions.h"
+#include "access/tableam.h"
 #include "access/transam.h"
 #include "access/xact.h"
 #include "catalog/dependency.h"
@@ -104,7 +105,6 @@
 #include "utils/syscache.h"
 #include "utils/timeout.h"
 #include "utils/timestamp.h"
-#include "utils/tqual.h"
 
 
 /*
@@ -121,7 +121,7 @@ double		autovacuum_anl_scale;
 int			autovacuum_freeze_max_age;
 int			autovacuum_multixact_freeze_max_age;
 
-int			autovacuum_vac_cost_delay;
+double		autovacuum_vac_cost_delay;
 int			autovacuum_vac_cost_limit;
 
 int			Log_autovacuum_min_duration = -1;
@@ -190,7 +190,7 @@ typedef struct autovac_table
 	Oid			at_relid;
 	int			at_vacoptions;	/* bitmask of VacuumOption */
 	VacuumParams at_params;
-	int			at_vacuum_cost_delay;
+	double		at_vacuum_cost_delay;
 	int			at_vacuum_cost_limit;
 	bool		at_dobalance;
 	bool		at_sharedrel;
@@ -226,7 +226,7 @@ typedef struct WorkerInfoData
 	TimestampTz wi_launchtime;
 	bool		wi_dobalance;
 	bool		wi_sharedrel;
-	int			wi_cost_delay;
+	double		wi_cost_delay;
 	int			wi_cost_limit;
 	int			wi_cost_limit_base;
 } WorkerInfoData;
@@ -1786,7 +1786,7 @@ autovac_balance_cost(void)
 	 */
 	int			vac_cost_limit = (autovacuum_vac_cost_limit > 0 ?
 								  autovacuum_vac_cost_limit : VacuumCostLimit);
-	int			vac_cost_delay = (autovacuum_vac_cost_delay >= 0 ?
+	double		vac_cost_delay = (autovacuum_vac_cost_delay >= 0 ?
 								  autovacuum_vac_cost_delay : VacuumCostDelay);
 	double		cost_total;
 	double		cost_avail;
@@ -1841,7 +1841,7 @@ autovac_balance_cost(void)
 		}
 
 		if (worker->wi_proc != NULL)
-			elog(DEBUG2, "autovac_balance_cost(pid=%u db=%u, rel=%u, dobalance=%s cost_limit=%d, cost_limit_base=%d, cost_delay=%d)",
+			elog(DEBUG2, "autovac_balance_cost(pid=%u db=%u, rel=%u, dobalance=%s cost_limit=%d, cost_limit_base=%d, cost_delay=%g)",
 				 worker->wi_proc->pid, worker->wi_dboid, worker->wi_tableoid,
 				 worker->wi_dobalance ? "yes" : "no",
 				 worker->wi_cost_limit, worker->wi_cost_limit_base,
@@ -1866,7 +1866,7 @@ get_database_list(void)
 {
 	List	   *dblist = NIL;
 	Relation	rel;
-	HeapScanDesc scan;
+	TableScanDesc scan;
 	HeapTuple	tup;
 	MemoryContext resultcxt;
 
@@ -1883,8 +1883,8 @@ get_database_list(void)
 	StartTransactionCommand();
 	(void) GetTransactionSnapshot();
 
-	rel = heap_open(DatabaseRelationId, AccessShareLock);
-	scan = heap_beginscan_catalog(rel, 0, NULL);
+	rel = table_open(DatabaseRelationId, AccessShareLock);
+	scan = table_beginscan_catalog(rel, 0, NULL);
 
 	while (HeapTupleIsValid(tup = heap_getnext(scan, ForwardScanDirection)))
 	{
@@ -1913,8 +1913,8 @@ get_database_list(void)
 		MemoryContextSwitchTo(oldcxt);
 	}
 
-	heap_endscan(scan);
-	heap_close(rel, AccessShareLock);
+	table_endscan(scan);
+	table_close(rel, AccessShareLock);
 
 	CommitTransactionCommand();
 
@@ -1932,7 +1932,7 @@ do_autovacuum(void)
 {
 	Relation	classRel;
 	HeapTuple	tuple;
-	HeapScanDesc relScan;
+	TableScanDesc relScan;
 	Form_pg_database dbForm;
 	List	   *table_oids = NIL;
 	List	   *orphan_oids = NIL;
@@ -2015,7 +2015,7 @@ do_autovacuum(void)
 	/* The database hash where pgstat keeps shared relations */
 	shared = pgstat_fetch_stat_dbentry(InvalidOid);
 
-	classRel = heap_open(RelationRelationId, AccessShareLock);
+	classRel = table_open(RelationRelationId, AccessShareLock);
 
 	/* create a copy so we can use it after closing pg_class */
 	pg_class_desc = CreateTupleDescCopy(RelationGetDescr(classRel));
@@ -2044,7 +2044,7 @@ do_autovacuum(void)
 	 * wide tables there might be proportionally much more activity in the
 	 * TOAST table than in its parent.
 	 */
-	relScan = heap_beginscan_catalog(classRel, 0, NULL);
+	relScan = table_beginscan_catalog(classRel, 0, NULL);
 
 	/*
 	 * On the first pass, we collect main tables to vacuum, and also the main
@@ -2133,7 +2133,7 @@ do_autovacuum(void)
 		}
 	}
 
-	heap_endscan(relScan);
+	table_endscan(relScan);
 
 	/* second pass: check TOAST tables */
 	ScanKeyInit(&key,
@@ -2141,7 +2141,7 @@ do_autovacuum(void)
 				BTEqualStrategyNumber, F_CHAREQ,
 				CharGetDatum(RELKIND_TOASTVALUE));
 
-	relScan = heap_beginscan_catalog(classRel, 1, &key);
+	relScan = table_beginscan_catalog(classRel, 1, &key);
 	while ((tuple = heap_getnext(relScan, ForwardScanDirection)) != NULL)
 	{
 		Form_pg_class classForm = (Form_pg_class) GETSTRUCT(tuple);
@@ -2188,8 +2188,8 @@ do_autovacuum(void)
 			table_oids = lappend_oid(table_oids, relid);
 	}
 
-	heap_endscan(relScan);
-	heap_close(classRel, AccessShareLock);
+	table_endscan(relScan);
+	table_close(classRel, AccessShareLock);
 
 	/*
 	 * Recheck orphan temporary tables, and if they still seem orphaned, drop
@@ -2303,7 +2303,7 @@ do_autovacuum(void)
 		autovac_table *tab;
 		bool		isshared;
 		bool		skipit;
-		int			stdVacuumCostDelay;
+		double		stdVacuumCostDelay;
 		int			stdVacuumCostLimit;
 		dlist_iter	iter;
 
@@ -2634,7 +2634,7 @@ perform_work_item(AutoVacuumWorkItem *workitem)
 	if (!cur_relname || !cur_nspname || !cur_datname)
 		goto deleted2;
 
-	autovac_report_workitem(workitem, cur_nspname, cur_datname);
+	autovac_report_workitem(workitem, cur_nspname, cur_relname);
 
 	/* clean up memory before each work item */
 	MemoryContextResetAndDeleteChildren(PortalContext);
@@ -2832,7 +2832,7 @@ table_recheck_autovac(Oid relid, HTAB *table_toast_map,
 		int			multixact_freeze_min_age;
 		int			multixact_freeze_table_age;
 		int			vac_cost_limit;
-		int			vac_cost_delay;
+		double		vac_cost_delay;
 		int			log_min_duration;
 
 		/*
@@ -2994,7 +2994,7 @@ relation_needs_vacanalyze(Oid relid,
 	 * table), or the autovacuum GUC variables.
 	 */
 
-	/* -1 in autovac setting means use plain vacuum_cost_delay */
+	/* -1 in autovac setting means use plain vacuum_scale_factor */
 	vac_scale_factor = (relopts && relopts->vacuum_scale_factor >= 0)
 		? relopts->vacuum_scale_factor
 		: autovacuum_vac_scale;

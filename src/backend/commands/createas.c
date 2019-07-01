@@ -13,7 +13,7 @@
  * we must return a tuples-processed count in the completionTag.  (We no
  * longer do that for CTAS ... WITH NO DATA, however.)
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -24,6 +24,7 @@
  */
 #include "postgres.h"
 
+#include "access/heapam.h"
 #include "access/reloptions.h"
 #include "access/htup_details.h"
 #include "access/sysattr.h"
@@ -107,6 +108,7 @@ create_ctas_internal(List *attrList, IntoClause *into)
 	create->oncommit = into->onCommit;
 	create->tablespacename = into->tableSpaceName;
 	create->if_not_exists = false;
+	create->accessMethod = into->accessMethod;
 
 	/*
 	 * Create the relation.  (This will error out if there's an existing view,
@@ -503,7 +505,7 @@ intorel_startup(DestReceiver *self, int operation, TupleDesc typeinfo)
 	/*
 	 * Finally we can open the target table
 	 */
-	intoRelationDesc = heap_open(intoRelationAddr.objectId, AccessExclusiveLock);
+	intoRelationDesc = table_open(intoRelationAddr.objectId, AccessExclusiveLock);
 
 	/*
 	 * Check INSERT permission on the constructed table.
@@ -586,6 +588,9 @@ intorel_receive(TupleTableSlot *slot, DestReceiver *self)
 
 	/* We know this is a newly created relation, so there are no indexes */
 
+	/* Free the copied tuple. */
+	heap_freetuple(tuple);
+
 	return true;
 }
 
@@ -604,7 +609,7 @@ intorel_shutdown(DestReceiver *self)
 		heap_sync(myState->rel);
 
 	/* close rel, but keep lock until commit */
-	heap_close(myState->rel, NoLock);
+	table_close(myState->rel, NoLock);
 	myState->rel = NULL;
 }
 

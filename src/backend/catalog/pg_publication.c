@@ -3,7 +3,7 @@
  * pg_publication.c
  *		publication C API manipulation
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -18,9 +18,9 @@
 #include "miscadmin.h"
 
 #include "access/genam.h"
-#include "access/hash.h"
 #include "access/heapam.h"
 #include "access/htup_details.h"
+#include "access/tableam.h"
 #include "access/xact.h"
 
 #include "catalog/catalog.h"
@@ -155,7 +155,7 @@ publication_add_relation(Oid pubid, Relation targetrel,
 	ObjectAddress myself,
 				referenced;
 
-	rel = heap_open(PublicationRelRelationId, RowExclusiveLock);
+	rel = table_open(PublicationRelRelationId, RowExclusiveLock);
 
 	/*
 	 * Check for duplicates. Note that this does not really prevent
@@ -165,7 +165,7 @@ publication_add_relation(Oid pubid, Relation targetrel,
 	if (SearchSysCacheExists2(PUBLICATIONRELMAP, ObjectIdGetDatum(relid),
 							  ObjectIdGetDatum(pubid)))
 	{
-		heap_close(rel, RowExclusiveLock);
+		table_close(rel, RowExclusiveLock);
 
 		if (if_not_exists)
 			return InvalidObjectAddress;
@@ -207,7 +207,7 @@ publication_add_relation(Oid pubid, Relation targetrel,
 	recordDependencyOn(&myself, &referenced, DEPENDENCY_AUTO);
 
 	/* Close the table. */
-	heap_close(rel, RowExclusiveLock);
+	table_close(rel, RowExclusiveLock);
 
 	/* Invalidate relcache so that publication info is rebuilt. */
 	CacheInvalidateRelcache(targetrel);
@@ -258,7 +258,7 @@ GetPublicationRelations(Oid pubid)
 	HeapTuple	tup;
 
 	/* Find all publications associated with the relation. */
-	pubrelsrel = heap_open(PublicationRelRelationId, AccessShareLock);
+	pubrelsrel = table_open(PublicationRelRelationId, AccessShareLock);
 
 	ScanKeyInit(&scankey,
 				Anum_pg_publication_rel_prpubid,
@@ -279,7 +279,7 @@ GetPublicationRelations(Oid pubid)
 	}
 
 	systable_endscan(scan);
-	heap_close(pubrelsrel, AccessShareLock);
+	table_close(pubrelsrel, AccessShareLock);
 
 	return result;
 }
@@ -297,7 +297,7 @@ GetAllTablesPublications(void)
 	HeapTuple	tup;
 
 	/* Find all publications that are marked as for all tables. */
-	rel = heap_open(PublicationRelationId, AccessShareLock);
+	rel = table_open(PublicationRelationId, AccessShareLock);
 
 	ScanKeyInit(&scankey,
 				Anum_pg_publication_puballtables,
@@ -316,7 +316,7 @@ GetAllTablesPublications(void)
 	}
 
 	systable_endscan(scan);
-	heap_close(rel, AccessShareLock);
+	table_close(rel, AccessShareLock);
 
 	return result;
 }
@@ -329,18 +329,18 @@ GetAllTablesPublicationRelations(void)
 {
 	Relation	classRel;
 	ScanKeyData key[1];
-	HeapScanDesc scan;
+	TableScanDesc scan;
 	HeapTuple	tuple;
 	List	   *result = NIL;
 
-	classRel = heap_open(RelationRelationId, AccessShareLock);
+	classRel = table_open(RelationRelationId, AccessShareLock);
 
 	ScanKeyInit(&key[0],
 				Anum_pg_class_relkind,
 				BTEqualStrategyNumber, F_CHAREQ,
 				CharGetDatum(RELKIND_RELATION));
 
-	scan = heap_beginscan_catalog(classRel, 1, key);
+	scan = table_beginscan_catalog(classRel, 1, key);
 
 	while ((tuple = heap_getnext(scan, ForwardScanDirection)) != NULL)
 	{
@@ -351,8 +351,8 @@ GetAllTablesPublicationRelations(void)
 			result = lappend_oid(result, relid);
 	}
 
-	heap_endscan(scan);
-	heap_close(classRel, AccessShareLock);
+	table_endscan(scan);
+	table_close(classRel, AccessShareLock);
 
 	return result;
 }

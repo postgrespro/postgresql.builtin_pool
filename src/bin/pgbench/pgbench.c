@@ -5,7 +5,7 @@
  * Originally written by Tatsuo Ishii and enhanced by many contributors.
  *
  * src/bin/pgbench/pgbench.c
- * Copyright (c) 2000-2018, PostgreSQL Global Development Group
+ * Copyright (c) 2000-2019, PostgreSQL Global Development Group
  * ALL RIGHTS RESERVED;
  *
  * Permission to use, copy, modify, and distribute this software and its
@@ -185,7 +185,7 @@ int64		latency_limit = 0;
 char	   *tablespace = NULL;
 char	   *index_tablespace = NULL;
 
-/* random seed used when calling srandom() */
+/* random seed used to initialize base_random_sequence */
 int64		random_seed = -1;
 
 /*
@@ -286,6 +286,9 @@ typedef struct RandomState
 {
 	unsigned short xseed[3];
 } RandomState;
+
+/* Various random sequences are initialized from this one. */
+static RandomState base_random_sequence;
 
 /*
  * Connection state machine states.
@@ -407,12 +410,12 @@ typedef struct
 } CState;
 
 /*
- * Cache cell for zipfian_random call
+ * Cache cell for random_zipfian call
  */
 typedef struct
 {
 	/* cell keys */
-	double		s;				/* s - parameter of zipfan_random function */
+	double		s;				/* s - parameter of random_zipfian function */
 	int64		n;				/* number of elements in range (max - min + 1) */
 
 	double		harmonicn;		/* generalizedHarmonicNumber(n, s) */
@@ -473,7 +476,12 @@ typedef struct
  */
 #define SQL_COMMAND		1
 #define META_COMMAND	2
-#define MAX_ARGS		10
+
+/*
+ * max number of backslash command arguments or SQL variables,
+ * including the command or SQL statement itself
+ */
+#define MAX_ARGS		256
 
 typedef enum MetaCommand
 {
@@ -482,6 +490,8 @@ typedef enum MetaCommand
 	META_SETSHELL,				/* \setshell */
 	META_SHELL,					/* \shell */
 	META_SLEEP,					/* \sleep */
+	META_CSET,					/* \cset */
+	META_GSET,					/* \gset */
 	META_IF,					/* \if */
 	META_ELIF,					/* \elif */
 	META_ELSE,					/* \else */
@@ -499,16 +509,39 @@ typedef enum QueryMode
 static QueryMode querymode = QUERY_SIMPLE;
 static const char *QUERYMODE[] = {"simple", "extended", "prepared"};
 
-typedef struct
+/*
+ * struct Command represents one command in a script.
+ *
+ * lines		The raw, possibly multi-line command text.  Variable substitution
+ *				not applied.
+ * first_line	A short, single-line extract of 'lines', for error reporting.
+ * type			SQL_COMMAND or META_COMMAND
+ * meta			The type of meta-command, or META_NONE if command is SQL
+ * argc			Number of arguments of the command, 0 if not yet processed.
+ * argv			Command arguments, the first of which is the command or SQL
+ *				string itself.  For SQL commands, after post-processing
+ *				argv[0] is the same as 'lines' with variables substituted.
+ * nqueries		In a multi-command SQL line, the number of queries.
+ * varprefix 	SQL commands terminated with \gset or \cset have this set
+ *				to a non NULL value.  If nonempty, it's used to prefix the
+ *				variable name that receives the value.
+ * varprefix_max Allocated size of the varprefix array.
+ * expr			Parsed expression, if needed.
+ * stats		Time spent in this command.
+ */
+typedef struct Command
 {
-	char	   *line;			/* text of command line */
-	int			command_num;	/* unique index of this Command struct */
-	int			type;			/* command type (SQL_COMMAND or META_COMMAND) */
-	MetaCommand meta;			/* meta command identifier, or META_NONE */
-	int			argc;			/* number of command words */
-	char	   *argv[MAX_ARGS]; /* command word list */
-	PgBenchExpr *expr;			/* parsed expression, if needed */
-	SimpleStats stats;			/* time spent in this command */
+	PQExpBufferData lines;
+	char	   *first_line;
+	int			type;
+	MetaCommand meta;
+	int			argc;
+	char	   *argv[MAX_ARGS];
+	int			nqueries;
+	char	  **varprefix;
+	int			varprefix_max;
+	PgBenchExpr *expr;
+	SimpleStats stats;
 } Command;
 
 typedef struct ParsedScript
@@ -521,7 +554,6 @@ typedef struct ParsedScript
 
 static ParsedScript sql_script[MAX_SCRIPTS];	/* SQL script files */
 static int	num_scripts;		/* number of scripts in sql_script[] */
-static int	num_commands = 0;	/* total number of Command structs */
 static int64 total_weight = 0;
 
 static int	debug = 0;			/* debug flag */
@@ -587,6 +619,7 @@ static void doLog(TState *thread, CState *st,
 static void processXactStats(TState *thread, CState *st, instr_time *now,
 				 bool skipped, StatsData *agg);
 static void pgbench_error(const char *fmt,...) pg_attribute_printf(1, 2);
+static void allocate_command_varprefix(Command *cmd, int totalqueries);
 static void addScript(ParsedScript script);
 static void *threadRun(void *arg);
 static void finishCon(CState *st);
@@ -665,7 +698,7 @@ usage(void)
 		   "  -V, --version            output version information, then exit\n"
 		   "  -?, --help               show this help, then exit\n"
 		   "\n"
-		   "Report bugs to <pgsql-bugs@postgresql.org>.\n",
+		   "Report bugs to <pgsql-bugs@lists.postgresql.org>.\n",
 		   progname, progname);
 }
 
@@ -808,16 +841,28 @@ strtodouble(const char *str, bool errorOK, double *dv)
 
 /*
  * Initialize a random state struct.
+ *
+ * We derive the seed from base_random_sequence, which must be set up already.
  */
 static void
 initRandomState(RandomState *random_state)
 {
-	random_state->xseed[0] = random();
-	random_state->xseed[1] = random();
-	random_state->xseed[2] = random();
+	random_state->xseed[0] = (unsigned short)
+		(pg_jrand48(base_random_sequence.xseed) & 0xFFFF);
+	random_state->xseed[1] = (unsigned short)
+		(pg_jrand48(base_random_sequence.xseed) & 0xFFFF);
+	random_state->xseed[2] = (unsigned short)
+		(pg_jrand48(base_random_sequence.xseed) & 0xFFFF);
 }
 
-/* random number generator: uniform distribution from min to max inclusive */
+/*
+ * Random number generator: uniform distribution from min to max inclusive.
+ *
+ * Although the limits are expressed as int64, you can't generate the full
+ * int64 range in one call, because the difference of the limits mustn't
+ * overflow int64.  In practice it's unwise to ask for more than an int32
+ * range, because of the limited precision of pg_erand48().
+ */
 static int64
 getrand(RandomState *random_state, int64 min, int64 max)
 {
@@ -2569,6 +2614,10 @@ getMetaCommand(const char *cmd)
 		mc = META_ELSE;
 	else if (pg_strcasecmp(cmd, "endif") == 0)
 		mc = META_ENDIF;
+	else if (pg_strcasecmp(cmd, "cset") == 0)
+		mc = META_CSET;
+	else if (pg_strcasecmp(cmd, "gset") == 0)
+		mc = META_GSET;
 	else
 		mc = META_NONE;
 	return mc;
@@ -2797,6 +2846,109 @@ sendCommand(CState *st, Command *command)
 }
 
 /*
+ * Process query response from the backend.
+ *
+ * If varprefix is not NULL, it's the array of variable prefix names where to
+ * store the results.
+ *
+ * Returns true if everything is A-OK, false if any error occurs.
+ */
+static bool
+readCommandResponse(CState *st, char **varprefix)
+{
+	PGresult   *res;
+	int			qrynum = 0;
+
+	while ((res = PQgetResult(st->con)) != NULL)
+	{
+		switch (PQresultStatus(res))
+		{
+			case PGRES_COMMAND_OK:	/* non-SELECT commands */
+			case PGRES_EMPTY_QUERY: /* may be used for testing no-op overhead */
+				if (varprefix && varprefix[qrynum] != NULL)
+				{
+					fprintf(stderr,
+							"client %d script %d command %d query %d: expected one row, got %d\n",
+							st->id, st->use_file, st->command, qrynum, 0);
+					st->ecnt++;
+					return false;
+				}
+				break;
+
+			case PGRES_TUPLES_OK:
+				if (varprefix && varprefix[qrynum] != NULL)
+				{
+					if (PQntuples(res) != 1)
+					{
+						fprintf(stderr,
+								"client %d script %d command %d query %d: expected one row, got %d\n",
+								st->id, st->use_file, st->command, qrynum, PQntuples(res));
+						st->ecnt++;
+						PQclear(res);
+						discard_response(st);
+						return false;
+					}
+
+					/* store results into variables */
+					for (int fld = 0; fld < PQnfields(res); fld++)
+					{
+						char	   *varname = PQfname(res, fld);
+
+						/* allocate varname only if necessary, freed below */
+						if (*varprefix[qrynum] != '\0')
+							varname =
+								psprintf("%s%s", varprefix[qrynum], varname);
+
+						/* store result as a string */
+						if (!putVariable(st, "gset", varname,
+										 PQgetvalue(res, 0, fld)))
+						{
+							/* internal error */
+							fprintf(stderr,
+									"client %d script %d command %d query %d: error storing into variable %s\n",
+									st->id, st->use_file, st->command, qrynum,
+									varname);
+							st->ecnt++;
+							PQclear(res);
+							discard_response(st);
+							return false;
+						}
+
+						if (*varprefix[qrynum] != '\0')
+							pg_free(varname);
+					}
+				}
+				/* otherwise the result is simply thrown away by PQclear below */
+				break;
+
+			default:
+				/* anything else is unexpected */
+				fprintf(stderr,
+						"client %d script %d aborted in command %d query %d: %s",
+						st->id, st->use_file, st->command, qrynum,
+						PQerrorMessage(st->con));
+				st->ecnt++;
+				PQclear(res);
+				discard_response(st);
+				return false;
+		}
+
+		PQclear(res);
+		qrynum++;
+	}
+
+	if (qrynum == 0)
+	{
+		fprintf(stderr, "client %d command %d: no results\n", st->id, st->command);
+		st->ecnt++;
+		return false;
+	}
+
+	return true;
+}
+
+
+/*
  * Parse the argument to a \sleep command, and return the requested amount
  * of delay, in microseconds.  Returns true on success, false on error.
  */
@@ -2862,8 +3014,6 @@ advanceConnectionState(TState *thread, CState *st, StatsData *agg)
 	 */
 	for (;;)
 	{
-		PGresult   *res;
-
 		switch (st->state)
 		{
 				/* Select transaction (script) to run.  */
@@ -3141,24 +3291,11 @@ advanceConnectionState(TState *thread, CState *st, StatsData *agg)
 				if (PQisBusy(st->con))
 					return;		/* don't have the whole result yet */
 
-				/* Read and discard the query result */
-				res = PQgetResult(st->con);
-				switch (PQresultStatus(res))
-				{
-					case PGRES_COMMAND_OK:
-					case PGRES_TUPLES_OK:
-					case PGRES_EMPTY_QUERY:
-						/* OK */
-						PQclear(res);
-						discard_response(st);
-						st->state = CSTATE_END_COMMAND;
-						break;
-					default:
-						commandFailed(st, "SQL", PQerrorMessage(st->con));
-						PQclear(res);
-						st->state = CSTATE_ABORTED;
-						break;
-				}
+				/* store or discard the query results */
+				if (readCommandResponse(st, sql_script[st->use_file].commands[st->command]->varprefix))
+					st->state = CSTATE_END_COMMAND;
+				else
+					st->state = CSTATE_ABORTED;
 				break;
 
 				/*
@@ -3191,7 +3328,7 @@ advanceConnectionState(TState *thread, CState *st, StatsData *agg)
 
 					INSTR_TIME_SET_CURRENT_LAZY(now);
 
-					command	= sql_script[st->use_file].commands[st->command];
+					command = sql_script[st->use_file].commands[st->command];
 					/* XXX could use a mutex here, but we choose not to */
 					addToSimpleStats(&command->stats,
 									 INSTR_TIME_GET_DOUBLE(now) -
@@ -3235,9 +3372,8 @@ advanceConnectionState(TState *thread, CState *st, StatsData *agg)
 				st->state = CSTATE_CHOOSE_SCRIPT;
 
 				/*
-				 * Ensure that we always return on this point, so as to
-				 * avoid an infinite loop if the script only contains meta
-				 * commands.
+				 * Ensure that we always return on this point, so as to avoid
+				 * an infinite loop if the script only contains meta commands.
 				 */
 				return;
 
@@ -3597,16 +3733,6 @@ initDropTables(PGconn *con)
 static void
 initCreateTables(PGconn *con)
 {
-	/*
-	 * The scale factor at/beyond which 32-bit integers are insufficient for
-	 * storing TPC-B account IDs.
-	 *
-	 * Although the actual threshold is 21474, we use 20000 because it is
-	 * easier to document and remember, and isn't that far away from the real
-	 * threshold.
-	 */
-#define SCALE_32BIT_THRESHOLD 20000
-
 	/*
 	 * Note: TPC-B requires at least 100 bytes per row, and the "filler"
 	 * fields in these table declarations were intended to comply with that.
@@ -3976,7 +4102,7 @@ runInitSteps(const char *initialize_steps)
 
 /*
  * Replace :param with $n throughout the command's SQL text, which
- * is a modifiable string in cmd->argv[0].
+ * is a modifiable string in cmd->lines.
  */
 static bool
 parseQuery(Command *cmd)
@@ -3984,12 +4110,9 @@ parseQuery(Command *cmd)
 	char	   *sql,
 			   *p;
 
-	/* We don't want to scribble on cmd->argv[0] until done */
-	sql = pg_strdup(cmd->argv[0]);
-
 	cmd->argc = 1;
 
-	p = sql;
+	p = sql = pg_strdup(cmd->lines.data);
 	while ((p = strchr(p, ':')) != NULL)
 	{
 		char		var[13];
@@ -4006,10 +4129,14 @@ parseQuery(Command *cmd)
 			continue;
 		}
 
+		/*
+		 * cmd->argv[0] is the SQL statement itself, so the max number of
+		 * arguments is one less than MAX_ARGS
+		 */
 		if (cmd->argc >= MAX_ARGS)
 		{
 			fprintf(stderr, "statement has too many arguments (maximum is %d): %s\n",
-					MAX_ARGS - 1, cmd->argv[0]);
+					MAX_ARGS - 1, cmd->lines.data);
 			pg_free(name);
 			return false;
 		}
@@ -4021,7 +4148,7 @@ parseQuery(Command *cmd)
 		cmd->argc++;
 	}
 
-	pg_free(cmd->argv[0]);
+	Assert(cmd->argv[0] == NULL);
 	cmd->argv[0] = sql;
 	return true;
 }
@@ -4081,21 +4208,16 @@ syntax_error(const char *source, int lineno,
 }
 
 /*
- * Parse a SQL command; return a Command struct, or NULL if it's a comment
- *
- * On entry, psqlscan.l has collected the command into "buf", so we don't
- * really need to do much here except check for comment and set up a
- * Command struct.
+ * Return a pointer to the start of the SQL command, after skipping over
+ * whitespace and "--" comments.
+ * If the end of the string is reached, return NULL.
  */
-static Command *
-process_sql_command(PQExpBuffer buf, const char *source)
+static char *
+skip_sql_comments(char *sql_command)
 {
-	Command    *my_command;
-	char	   *p;
-	char	   *nlpos;
+	char	   *p = sql_command;
 
 	/* Skip any leading whitespace, as well as "--" style comments */
-	p = buf->data;
 	for (;;)
 	{
 		if (isspace((unsigned char) *p))
@@ -4111,39 +4233,150 @@ process_sql_command(PQExpBuffer buf, const char *source)
 			break;
 	}
 
-	/* If there's nothing but whitespace and comments, we're done */
+	/* NULL if there's nothing but whitespace and comments */
 	if (*p == '\0')
 		return NULL;
 
+	return p;
+}
+
+/*
+ * Parse a SQL command; return a Command struct, or NULL if it's a comment
+ *
+ * On entry, psqlscan.l has collected the command into "buf", so we don't
+ * really need to do much here except check for comments and set up a Command
+ * struct.
+ */
+static Command *
+create_sql_command(PQExpBuffer buf, const char *source, int numqueries)
+{
+	Command    *my_command;
+	char	   *p = skip_sql_comments(buf->data);
+
+	if (p == NULL)
+		return NULL;
+
 	/* Allocate and initialize Command structure */
-	my_command = (Command *) pg_malloc0(sizeof(Command));
-	my_command->command_num = num_commands++;
+	my_command = (Command *) pg_malloc(sizeof(Command));
+	initPQExpBuffer(&my_command->lines);
+	appendPQExpBufferStr(&my_command->lines, p);
+	my_command->first_line = NULL;	/* this is set later */
 	my_command->type = SQL_COMMAND;
 	my_command->meta = META_NONE;
+	my_command->argc = 0;
+	memset(my_command->argv, 0, sizeof(my_command->argv));
+	my_command->nqueries = numqueries;
+	my_command->varprefix = NULL;	/* allocated later, if needed */
+	my_command->varprefix_max = 0;
+	my_command->expr = NULL;
 	initSimpleStats(&my_command->stats);
 
-	/*
-	 * Install query text as the sole argv string.  If we are using a
-	 * non-simple query mode, we'll extract parameters from it later.
-	 */
-	my_command->argv[0] = pg_strdup(p);
-	my_command->argc = 1;
-
-	/*
-	 * If SQL command is multi-line, we only want to save the first line as
-	 * the "line" label.
-	 */
-	nlpos = strchr(p, '\n');
-	if (nlpos)
-	{
-		my_command->line = pg_malloc(nlpos - p + 1);
-		memcpy(my_command->line, p, nlpos - p);
-		my_command->line[nlpos - p] = '\0';
-	}
-	else
-		my_command->line = pg_strdup(p);
-
 	return my_command;
+}
+
+/* Free a Command structure and associated data */
+static void
+free_command(Command *command)
+{
+	termPQExpBuffer(&command->lines);
+	if (command->first_line)
+		pg_free(command->first_line);
+	for (int i = 0; i < command->argc; i++)
+		pg_free(command->argv[i]);
+	if (command->varprefix)
+	{
+		for (int i = 0; i < command->varprefix_max; i++)
+			if (command->varprefix[i] &&
+				command->varprefix[i][0] != '\0')	/* see ParseScript */
+				pg_free(command->varprefix[i]);
+		pg_free(command->varprefix);
+	}
+	/*
+	 * It should also free expr recursively, but this is currently not needed
+	 * as only \{g,c}set commands (which do not have an expression) are freed.
+	 */
+	pg_free(command);
+}
+
+/*
+ * append "more" text to current compound command which had been interrupted
+ * by \cset.
+ */
+static void
+append_sql_command(Command *my_command, char *more, int numqueries)
+{
+	Assert(my_command->type == SQL_COMMAND && my_command->lines.len > 0);
+
+	more = skip_sql_comments(more);
+	if (more == NULL)
+		return;
+
+	/* append command text, embedding a ';' in place of the \cset */
+	appendPQExpBuffer(&my_command->lines, ";\n%s", more);
+
+	my_command->nqueries += numqueries;
+}
+
+/*
+ * Once an SQL command is fully parsed, possibly by accumulating several
+ * parts, complete other fields of the Command structure.
+ */
+static void
+postprocess_sql_command(Command *my_command)
+{
+	char		buffer[128];
+
+	Assert(my_command->type == SQL_COMMAND);
+
+	/* Save the first line for error display. */
+	strlcpy(buffer, my_command->lines.data, sizeof(buffer));
+	buffer[strcspn(buffer, "\n\r")] = '\0';
+	my_command->first_line = pg_strdup(buffer);
+
+	/* parse query if necessary */
+	switch (querymode)
+	{
+		case QUERY_SIMPLE:
+			my_command->argv[0] = my_command->lines.data;
+			my_command->argc++;
+			break;
+		case QUERY_EXTENDED:
+		case QUERY_PREPARED:
+			if (!parseQuery(my_command))
+				exit(1);
+			break;
+		default:
+			exit(1);
+	}
+}
+
+/*
+ * Determine the command's varprefix size needed and allocate memory for it
+ */
+static void
+allocate_command_varprefix(Command *cmd, int totalqueries)
+{
+	int			new_max;
+
+	/* sufficient space already allocated? */
+	if (totalqueries <= cmd->varprefix_max)
+		return;
+
+	/* determine the new array size */
+	new_max = Max(cmd->varprefix_max, 2);
+	while (new_max < totalqueries)
+		new_max *= 2;
+
+	/* enlarge the array, zero-initializing the allocated space */
+	if (cmd->varprefix == NULL)
+		cmd->varprefix = pg_malloc0(sizeof(char *) * new_max);
+	else
+	{
+		cmd->varprefix = pg_realloc(cmd->varprefix, sizeof(char *) * new_max);
+		memset(cmd->varprefix + cmd->varprefix_max, 0,
+			   sizeof(char *) * (new_max - cmd->varprefix_max));
+	}
+	cmd->varprefix_max = new_max;
 }
 
 /*
@@ -4177,7 +4410,6 @@ process_backslash_command(PsqlScanState sstate, const char *source)
 
 	/* Allocate and initialize Command structure */
 	my_command = (Command *) pg_malloc0(sizeof(Command));
-	my_command->command_num = num_commands++;
 	my_command->type = META_COMMAND;
 	my_command->argc = 0;
 	initSimpleStats(&my_command->stats);
@@ -4201,7 +4433,7 @@ process_backslash_command(PsqlScanState sstate, const char *source)
 		if (my_command->meta == META_SET)
 		{
 			if (!expr_lex_one_word(sstate, &word_buf, &word_offset))
-				syntax_error(source, lineno, my_command->line, my_command->argv[0],
+				syntax_error(source, lineno, my_command->first_line, my_command->argv[0],
 							 "missing argument", NULL, -1);
 
 			offsets[j] = word_offset;
@@ -4222,10 +4454,11 @@ process_backslash_command(PsqlScanState sstate, const char *source)
 		my_command->expr = expr_parse_result;
 
 		/* Save line, trimming any trailing newline */
-		my_command->line = expr_scanner_get_substring(sstate,
-													  start_offset,
-													  expr_scanner_offset(sstate),
-													  true);
+		my_command->first_line =
+			expr_scanner_get_substring(sstate,
+									   start_offset,
+									   expr_scanner_offset(sstate),
+									   true);
 
 		expr_scanner_finish(yyscanner);
 
@@ -4237,8 +4470,12 @@ process_backslash_command(PsqlScanState sstate, const char *source)
 	/* For all other commands, collect remaining words. */
 	while (expr_lex_one_word(sstate, &word_buf, &word_offset))
 	{
+		/*
+		 * my_command->argv[0] is the command itself, so the max number of
+		 * arguments is one less than MAX_ARGS
+		 */
 		if (j >= MAX_ARGS)
-			syntax_error(source, lineno, my_command->line, my_command->argv[0],
+			syntax_error(source, lineno, my_command->first_line, my_command->argv[0],
 						 "too many arguments", NULL, -1);
 
 		offsets[j] = word_offset;
@@ -4247,19 +4484,20 @@ process_backslash_command(PsqlScanState sstate, const char *source)
 	}
 
 	/* Save line, trimming any trailing newline */
-	my_command->line = expr_scanner_get_substring(sstate,
-												  start_offset,
-												  expr_scanner_offset(sstate),
-												  true);
+	my_command->first_line =
+		expr_scanner_get_substring(sstate,
+								   start_offset,
+								   expr_scanner_offset(sstate),
+								   true);
 
 	if (my_command->meta == META_SLEEP)
 	{
 		if (my_command->argc < 2)
-			syntax_error(source, lineno, my_command->line, my_command->argv[0],
+			syntax_error(source, lineno, my_command->first_line, my_command->argv[0],
 						 "missing argument", NULL, -1);
 
 		if (my_command->argc > 3)
-			syntax_error(source, lineno, my_command->line, my_command->argv[0],
+			syntax_error(source, lineno, my_command->first_line, my_command->argv[0],
 						 "too many arguments", NULL,
 						 offsets[3] - start_offset);
 
@@ -4288,7 +4526,7 @@ process_backslash_command(PsqlScanState sstate, const char *source)
 			if (pg_strcasecmp(my_command->argv[2], "us") != 0 &&
 				pg_strcasecmp(my_command->argv[2], "ms") != 0 &&
 				pg_strcasecmp(my_command->argv[2], "s") != 0)
-				syntax_error(source, lineno, my_command->line, my_command->argv[0],
+				syntax_error(source, lineno, my_command->first_line, my_command->argv[0],
 							 "unrecognized time unit, must be us, ms or s",
 							 my_command->argv[2], offsets[2] - start_offset);
 		}
@@ -4296,25 +4534,31 @@ process_backslash_command(PsqlScanState sstate, const char *source)
 	else if (my_command->meta == META_SETSHELL)
 	{
 		if (my_command->argc < 3)
-			syntax_error(source, lineno, my_command->line, my_command->argv[0],
+			syntax_error(source, lineno, my_command->first_line, my_command->argv[0],
 						 "missing argument", NULL, -1);
 	}
 	else if (my_command->meta == META_SHELL)
 	{
 		if (my_command->argc < 2)
-			syntax_error(source, lineno, my_command->line, my_command->argv[0],
+			syntax_error(source, lineno, my_command->first_line, my_command->argv[0],
 						 "missing command", NULL, -1);
 	}
 	else if (my_command->meta == META_ELSE || my_command->meta == META_ENDIF)
 	{
 		if (my_command->argc != 1)
-			syntax_error(source, lineno, my_command->line, my_command->argv[0],
+			syntax_error(source, lineno, my_command->first_line, my_command->argv[0],
 						 "unexpected argument", NULL, -1);
+	}
+	else if (my_command->meta == META_CSET || my_command->meta == META_GSET)
+	{
+		if (my_command->argc > 2)
+			syntax_error(source, lineno, my_command->first_line, my_command->argv[0],
+						 "too many arguments", NULL, -1);
 	}
 	else
 	{
 		/* my_command->meta == META_NONE */
-		syntax_error(source, lineno, my_command->line, my_command->argv[0],
+		syntax_error(source, lineno, my_command->first_line, my_command->argv[0],
 					 "invalid command", NULL, -1);
 	}
 
@@ -4393,6 +4637,9 @@ ParseScript(const char *script, const char *desc, int weight)
 	PQExpBufferData line_buf;
 	int			alloc_num;
 	int			index;
+	bool		saw_cset = false;
+	int			lineno;
+	int			start_offset;
 
 #define COMMANDS_ALLOC_NUM 128
 	alloc_num = COMMANDS_ALLOC_NUM;
@@ -4416,6 +4663,7 @@ ParseScript(const char *script, const char *desc, int weight)
 	 * stdstrings should be true, which is a bit riskier.
 	 */
 	psql_scan_setup(sstate, script, strlen(script), 0, true);
+	start_offset = expr_scanner_offset(sstate) - 1;
 
 	initPQExpBuffer(&line_buf);
 
@@ -4425,43 +4673,113 @@ ParseScript(const char *script, const char *desc, int weight)
 	{
 		PsqlScanResult sr;
 		promptStatus_t prompt;
-		Command    *command;
+		Command    *command = NULL;
+		int			semicolons;
 
 		resetPQExpBuffer(&line_buf);
+		lineno = expr_scanner_get_lineno(sstate, start_offset);
 
 		sr = psql_scan(sstate, &line_buf, &prompt);
 
-		/* If we collected a SQL command, process that */
-		command = process_sql_command(&line_buf, desc);
-		if (command)
-		{
-			ps.commands[index] = command;
-			index++;
+		semicolons = psql_scan_get_escaped_semicolons(sstate);
 
-			if (index >= alloc_num)
-			{
-				alloc_num += COMMANDS_ALLOC_NUM;
-				ps.commands = (Command **)
-					pg_realloc(ps.commands, sizeof(Command *) * alloc_num);
-			}
+		if (saw_cset)
+		{
+			/* the previous multi-line command ended with \cset */
+			append_sql_command(ps.commands[index - 1], line_buf.data,
+							   semicolons + 1);
+			saw_cset = false;
+		}
+		else
+		{
+			/* If we collected a new SQL command, process that */
+			command = create_sql_command(&line_buf, desc, semicolons + 1);
+
+			/* store new command */
+			if (command)
+				ps.commands[index++] = command;
 		}
 
 		/* If we reached a backslash, process that */
 		if (sr == PSCAN_BACKSLASH)
 		{
 			command = process_backslash_command(sstate, desc);
+
 			if (command)
 			{
-				ps.commands[index] = command;
-				index++;
-
-				if (index >= alloc_num)
+				/*
+				 * If this is gset/cset, merge into the preceding command. (We
+				 * don't use a command slot in this case).
+				 */
+				if (command->meta == META_CSET ||
+					command->meta == META_GSET)
 				{
-					alloc_num += COMMANDS_ALLOC_NUM;
-					ps.commands = (Command **)
-						pg_realloc(ps.commands, sizeof(Command *) * alloc_num);
+					int			cindex;
+					Command    *cmd;
+
+					/*
+					 * If \cset is seen, set flag to leave the command pending
+					 * for the next iteration to process.
+					 */
+					saw_cset = command->meta == META_CSET;
+
+					if (index == 0)
+						syntax_error(desc, lineno, NULL, NULL,
+									 "\\gset/cset cannot start a script",
+									 NULL, -1);
+
+					cmd = ps.commands[index - 1];
+
+					if (cmd->type != SQL_COMMAND)
+						syntax_error(desc, lineno, NULL, NULL,
+									 "\\gset/cset must follow a SQL command",
+									 cmd->first_line, -1);
+
+					/* this {g,c}set applies to the previous query */
+					cindex = cmd->nqueries - 1;
+
+					/*
+					 * now that we know there's a {g,c}set in this command,
+					 * allocate space for the variable name prefix array.
+					 */
+					allocate_command_varprefix(cmd, cmd->nqueries);
+
+					/*
+					 * Don't allow the previous command be a gset/cset; that
+					 * would make no sense.
+					 */
+					if (cmd->varprefix[cindex] != NULL)
+						syntax_error(desc, lineno, NULL, NULL,
+									 "\\gset/cset cannot follow one another",
+									 NULL, -1);
+
+					/* get variable prefix */
+					if (command->argc <= 1 || command->argv[1][0] == '\0')
+						cmd->varprefix[cindex] = "";	/* avoid strdup */
+					else
+						cmd->varprefix[cindex] = pg_strdup(command->argv[1]);
+
+					/* cleanup unused command */
+					free_command(command);
+
+					continue;
 				}
+
+				/* Attach any other backslash command as a new command */
+				ps.commands[index++] = command;
 			}
+		}
+
+		/*
+		 * Since we used a command slot, allocate more if needed.  Note we
+		 * always allocate one more in order to accommodate the NULL
+		 * terminator below.
+		 */
+		if (index >= alloc_num)
+		{
+			alloc_num += COMMANDS_ALLOC_NUM;
+			ps.commands = (Command **)
+				pg_realloc(ps.commands, sizeof(Command *) * alloc_num);
 		}
 
 		/* Done if we reached EOF */
@@ -4819,19 +5137,21 @@ printResults(TState *threads, StatsData *total, instr_time total_time,
 					printf("   %11.3f  %s\n",
 						   (cstats->count > 0) ?
 						   1000.0 * cstats->sum / cstats->count : 0.0,
-						   (*commands)->line);
+						   (*commands)->first_line);
 				}
 			}
 		}
 	}
 }
 
-/* call srandom based on some seed. NULL triggers the default behavior. */
+/*
+ * Set up a random seed according to seed parameter (NULL means default),
+ * and initialize base_random_sequence for use in initializing other sequences.
+ */
 static bool
 set_random_seed(const char *seed)
 {
-	/* srandom expects an unsigned int */
-	unsigned int iseed;
+	uint64		iseed;
 
 	if (seed == NULL || strcmp(seed, "time") == 0)
 	{
@@ -4839,18 +5159,14 @@ set_random_seed(const char *seed)
 		instr_time	now;
 
 		INSTR_TIME_SET_CURRENT(now);
-		iseed = (unsigned int) INSTR_TIME_GET_MICROSEC(now);
+		iseed = (uint64) INSTR_TIME_GET_MICROSEC(now);
 	}
 	else if (strcmp(seed, "rand") == 0)
 	{
 		/* use some "strong" random source */
-#ifdef HAVE_STRONG_RANDOM
 		if (!pg_strong_random(&iseed, sizeof(iseed)))
-#endif
 		{
-			fprintf(stderr,
-					"cannot seed random from a strong source, none available: "
-					"use \"time\" or an unsigned integer value.\n");
+			fprintf(stderr, "could not generate random seed.\n");
 			return false;
 		}
 	}
@@ -4859,7 +5175,7 @@ set_random_seed(const char *seed)
 		/* parse seed unsigned int value */
 		char		garbage;
 
-		if (sscanf(seed, "%u%c", &iseed, &garbage) != 1)
+		if (sscanf(seed, UINT64_FORMAT "%c", &iseed, &garbage) != 1)
 		{
 			fprintf(stderr,
 					"unrecognized random seed option \"%s\": expecting an unsigned integer, \"time\" or \"rand\"\n",
@@ -4869,10 +5185,14 @@ set_random_seed(const char *seed)
 	}
 
 	if (seed != NULL)
-		fprintf(stderr, "setting random seed to %u\n", iseed);
-	srandom(iseed);
-	/* no precision loss: 32 bit unsigned int cast to 64 bit int */
+		fprintf(stderr, "setting random seed to " UINT64_FORMAT "\n", iseed);
 	random_seed = iseed;
+
+	/* Fill base_random_sequence with low-order bits of seed */
+	base_random_sequence.xseed[0] = iseed & 0xFFFF;
+	base_random_sequence.xseed[1] = (iseed >> 16) & 0xFFFF;
+	base_random_sequence.xseed[2] = (iseed >> 32) & 0xFFFF;
+
 	return true;
 }
 
@@ -5290,28 +5610,18 @@ main(int argc, char **argv)
 		internal_script_used = true;
 	}
 
-	/* if not simple query mode, parse the script(s) to find parameters */
-	if (querymode != QUERY_SIMPLE)
-	{
-		for (i = 0; i < num_scripts; i++)
-		{
-			Command   **commands = sql_script[i].commands;
-			int			j;
-
-			for (j = 0; commands[j] != NULL; j++)
-			{
-				if (commands[j]->type != SQL_COMMAND)
-					continue;
-				if (!parseQuery(commands[j]))
-					exit(1);
-			}
-		}
-	}
-
-	/* compute total_weight */
+	/* complete SQL command initialization and compute total weight */
 	for (i = 0; i < num_scripts; i++)
+	{
+		Command   **commands = sql_script[i].commands;
+
+		for (int j = 0; commands[j] != NULL; j++)
+			if (commands[j]->type == SQL_COMMAND)
+				postprocess_sql_command(commands[j]);
+
 		/* cannot overflow: weight is 32b, total_weight 64b */
 		total_weight += sql_script[i].weight;
+	}
 
 	if (total_weight == 0 && !is_init_mode)
 	{
@@ -5576,10 +5886,9 @@ main(int argc, char **argv)
 	/* set default seed for hash functions */
 	if (lookupVariable(&state[0], "default_seed") == NULL)
 	{
-		uint64		seed = ((uint64) (random() & 0xFFFF) << 48) |
-		((uint64) (random() & 0xFFFF) << 32) |
-		((uint64) (random() & 0xFFFF) << 16) |
-		(uint64) (random() & 0xFFFF);
+		uint64		seed =
+		((uint64) pg_jrand48(base_random_sequence.xseed) & 0xFFFFFFFF) |
+		(((uint64) pg_jrand48(base_random_sequence.xseed) & 0xFFFFFFFF) << 32);
 
 		for (i = 0; i < nclients; i++)
 			if (!putVariableInt(&state[i], "startup", "default_seed", (int64) seed))

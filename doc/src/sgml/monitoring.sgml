@@ -268,6 +268,18 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
    stated above; instead they update continuously throughout the transaction.
   </para>
 
+  <para>
+   Some of the information in the dynamic statistics views shown in <xref
+   linkend="monitoring-stats-dynamic-views-table"/> is security restricted.
+   Ordinary users can only see all the information about their own sessions
+   (sessions belonging to a role that they are a member of).  In rows about
+   other sessions, many columns will be null.  Note, however, that the
+   existence of a session and its general properties such as its sessions user
+   and database are visible to all users.  Superusers and members of the
+   built-in role <literal>pg_read_all_stats</literal> (see also <xref
+   linkend="default-roles"/>) can see all the information about all sessions.
+  </para>
+
   <table id="monitoring-stats-dynamic-views-table">
    <title>Dynamic Statistics Views</title>
 
@@ -1035,16 +1047,13 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
          <entry>Waiting to read or update old snapshot control information.</entry>
         </row>
         <row>
-         <entry><literal>BackendRandomLock</literal></entry>
-         <entry>Waiting to generate a random number.</entry>
-        </row>
-        <row>
          <entry><literal>LogicalRepWorkerLock</literal></entry>
          <entry>Waiting for action on logical replication worker to finish.</entry>
         </row>
         <row>
          <entry><literal>CLogTruncationLock</literal></entry>
-         <entry>Waiting to truncate the write-ahead log or waiting for write-ahead log truncation to finish.</entry>
+         <entry>Waiting to execute <function>txid_status</function> or update
+         the oldest transaction id available to it.</entry>
         </row>
         <row>
          <entry><literal>clog</literal></entry>
@@ -1111,6 +1120,11 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
         <row>
          <entry><literal>predicate_lock_manager</literal></entry>
          <entry>Waiting to add or examine predicate lock information.</entry>
+        </row>
+        <row>
+         <entry><literal>serializable_xact</literal></entry>
+         <entry>Waiting to perform an operation on a serializable transaction
+         in a parallel query.</entry>
         </row>
         <row>
          <entry><literal>parallel_query_dsa</literal></entry>
@@ -1272,7 +1286,7 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
          <entry>Waiting in an extension.</entry>
         </row>
         <row>
-         <entry morerows="34"><literal>IPC</literal></entry>
+         <entry morerows="36"><literal>IPC</literal></entry>
          <entry><literal>BgWorkerShutdown</literal></entry>
          <entry>Waiting for background worker to shut down.</entry>
         </row>
@@ -1283,6 +1297,14 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
         <row>
          <entry><literal>BtreePage</literal></entry>
          <entry>Waiting for the page number needed to continue a parallel B-tree scan to become available.</entry>
+        </row>
+        <row>
+         <entry><literal>CheckpointDone</literal></entry>
+         <entry>Waiting for a checkpoint to complete.</entry>
+        </row>
+        <row>
+         <entry><literal>CheckpointStart</literal></entry>
+         <entry>Waiting for a checkpoint to start.</entry>
         </row>
         <row>
          <entry><literal>ClogGroupUpdate</literal></entry>
@@ -2205,14 +2227,30 @@ SELECT pid, wait_event_type, wait_event FROM pg_stat_activity WHERE wait_event i
       or NULL if SSL is not in use on this connection</entry>
     </row>
     <row>
-     <entry><structfield>clientdn</structfield></entry>
+     <entry><structfield>client_dn</structfield></entry>
      <entry><type>text</type></entry>
      <entry>Distinguished Name (DN) field from the client certificate
       used, or NULL if no client certificate was supplied or if SSL
       is not in use on this connection. This field is truncated if the
       DN field is longer than <symbol>NAMEDATALEN</symbol> (64 characters
-      in a standard build)
+      in a standard build).
      </entry>
+    </row>
+    <row>
+     <entry><structfield>client_serial</structfield></entry>
+     <entry><type>numeric</type></entry>
+     <entry>Serial number of the client certificate, or NULL if no client
+     certificate was supplied or if SSL is not in use on this connection.  The
+     combination of certificate serial number and certificate issuer uniquely
+     identifies a certificate (unless the issuer erroneously reuses serial
+     numbers).</entry>
+    </row>
+    <row>
+     <entry><structfield>issuer_dn</structfield></entry>
+     <entry><type>text</type></entry>
+     <entry>DN of the issuer of the client certificate, or NULL if no client
+     certificate was supplied or if SSL is not in use on this connection.
+     This field is truncated like <structfield>client_dn</structfield>.</entry>
     </row>
    </tbody>
    </tgroup>
@@ -2482,6 +2520,11 @@ SELECT pid, wait_event_type, wait_event FROM pg_stat_activity WHERE wait_event i
      <entry><structfield>deadlocks</structfield></entry>
      <entry><type>bigint</type></entry>
      <entry>Number of deadlocks detected in this database</entry>
+    </row>
+    <row>
+     <entry><structfield>checksum_failures</structfield></entry>
+     <entry><type>bigint</type></entry>
+     <entry>Number of data page checksum failures detected in this database</entry>
     </row>
     <row>
      <entry><structfield>blk_read_time</structfield></entry>

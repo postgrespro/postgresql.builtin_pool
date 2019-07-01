@@ -13,7 +13,7 @@
  * However, we do what we can to reduce surprising behavior by selecting
  * the sampling pattern just once per query, much as in tsm_system_rows.
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -26,12 +26,12 @@
 
 #include <math.h>
 
+#include "access/heapam.h"
 #include "access/relscan.h"
 #include "access/tsmapi.h"
 #include "catalog/pg_type.h"
 #include "miscadmin.h"
-#include "optimizer/clauses.h"
-#include "optimizer/cost.h"
+#include "optimizer/optimizer.h"
 #include "utils/sampling.h"
 #include "utils/spccache.h"
 
@@ -216,7 +216,8 @@ static BlockNumber
 system_time_nextsampleblock(SampleScanState *node)
 {
 	SystemTimeSamplerData *sampler = (SystemTimeSamplerData *) node->tsm_state;
-	HeapScanDesc scan = node->ss.ss_currentScanDesc;
+	TableScanDesc scan = node->ss.ss_currentScanDesc;
+	HeapScanDesc hscan = (HeapScanDesc) scan;
 	instr_time	cur_time;
 
 	/* First call within scan? */
@@ -229,14 +230,14 @@ system_time_nextsampleblock(SampleScanState *node)
 			SamplerRandomState randstate;
 
 			/* If relation is empty, there's nothing to scan */
-			if (scan->rs_nblocks == 0)
+			if (hscan->rs_nblocks == 0)
 				return InvalidBlockNumber;
 
 			/* We only need an RNG during this setup step */
 			sampler_random_init_state(sampler->seed, randstate);
 
 			/* Compute nblocks/firstblock/step only once per query */
-			sampler->nblocks = scan->rs_nblocks;
+			sampler->nblocks = hscan->rs_nblocks;
 
 			/* Choose random starting block within the relation */
 			/* (Actually this is the predecessor of the first block visited) */
@@ -272,7 +273,7 @@ system_time_nextsampleblock(SampleScanState *node)
 	{
 		/* Advance lb, using uint64 arithmetic to forestall overflow */
 		sampler->lb = ((uint64) sampler->lb + sampler->step) % sampler->nblocks;
-	} while (sampler->lb >= scan->rs_nblocks);
+	} while (sampler->lb >= hscan->rs_nblocks);
 
 	return sampler->lb;
 }

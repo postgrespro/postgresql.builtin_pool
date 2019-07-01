@@ -3,7 +3,7 @@
  * typecmds.c
  *	  Routines for SQL commands that manipulate types (and domains).
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -31,7 +31,10 @@
  */
 #include "postgres.h"
 
+#include "access/genam.h"
+#include "access/heapam.h"
 #include "access/htup_details.h"
+#include "access/tableam.h"
 #include "access/xact.h"
 #include "catalog/binary_upgrade.h"
 #include "catalog/catalog.h"
@@ -54,7 +57,7 @@
 #include "executor/executor.h"
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
-#include "optimizer/var.h"
+#include "optimizer/optimizer.h"
 #include "parser/parse_coerce.h"
 #include "parser/parse_collate.h"
 #include "parser/parse_expr.h"
@@ -689,7 +692,7 @@ RemoveTypeById(Oid typeOid)
 	Relation	relation;
 	HeapTuple	tup;
 
-	relation = heap_open(TypeRelationId, RowExclusiveLock);
+	relation = table_open(TypeRelationId, RowExclusiveLock);
 
 	tup = SearchSysCache1(TYPEOID, ObjectIdGetDatum(typeOid));
 	if (!HeapTupleIsValid(tup))
@@ -715,7 +718,7 @@ RemoveTypeById(Oid typeOid)
 
 	ReleaseSysCache(tup);
 
-	heap_close(relation, RowExclusiveLock);
+	table_close(relation, RowExclusiveLock);
 }
 
 
@@ -1662,6 +1665,7 @@ makeRangeConstructors(const char *name, Oid namespace,
 								 NIL,	/* parameterDefaults */
 								 PointerGetDatum(NULL), /* trftypes */
 								 PointerGetDatum(NULL), /* proconfig */
+								 InvalidOid,	/* prosupport */
 								 1.0,	/* procost */
 								 0.0);	/* prorows */
 
@@ -2089,11 +2093,11 @@ AssignTypeArrayOid(void)
 	}
 	else
 	{
-		Relation	pg_type = heap_open(TypeRelationId, AccessShareLock);
+		Relation	pg_type = table_open(TypeRelationId, AccessShareLock);
 
 		type_array_oid = GetNewOidWithIndex(pg_type, TypeOidIndexId,
 											Anum_pg_type_oid);
-		heap_close(pg_type, AccessShareLock);
+		table_close(pg_type, AccessShareLock);
 	}
 
 	return type_array_oid;
@@ -2196,7 +2200,7 @@ AlterDomainDefault(List *names, Node *defaultRaw)
 	domainoid = typenameTypeId(NULL, typename);
 
 	/* Look up the domain in the type table */
-	rel = heap_open(TypeRelationId, RowExclusiveLock);
+	rel = table_open(TypeRelationId, RowExclusiveLock);
 
 	tup = SearchSysCacheCopy1(TYPEOID, ObjectIdGetDatum(domainoid));
 	if (!HeapTupleIsValid(tup))
@@ -2298,7 +2302,7 @@ AlterDomainDefault(List *names, Node *defaultRaw)
 	ObjectAddressSet(address, TypeRelationId, domainoid);
 
 	/* Clean up */
-	heap_close(rel, RowExclusiveLock);
+	table_close(rel, RowExclusiveLock);
 	heap_freetuple(newtuple);
 
 	return address;
@@ -2326,7 +2330,7 @@ AlterDomainNotNull(List *names, bool notNull)
 	domainoid = typenameTypeId(NULL, typename);
 
 	/* Look up the domain in the type table */
-	typrel = heap_open(TypeRelationId, RowExclusiveLock);
+	typrel = table_open(TypeRelationId, RowExclusiveLock);
 
 	tup = SearchSysCacheCopy1(TYPEOID, ObjectIdGetDatum(domainoid));
 	if (!HeapTupleIsValid(tup))
@@ -2339,7 +2343,7 @@ AlterDomainNotNull(List *names, bool notNull)
 	/* Is the domain already set to the desired constraint? */
 	if (typTup->typnotnull == notNull)
 	{
-		heap_close(typrel, RowExclusiveLock);
+		table_close(typrel, RowExclusiveLock);
 		return address;
 	}
 
@@ -2359,14 +2363,15 @@ AlterDomainNotNull(List *names, bool notNull)
 			RelToCheck *rtc = (RelToCheck *) lfirst(rt);
 			Relation	testrel = rtc->rel;
 			TupleDesc	tupdesc = RelationGetDescr(testrel);
-			HeapScanDesc scan;
-			HeapTuple	tuple;
+			TupleTableSlot *slot;
+			TableScanDesc scan;
 			Snapshot	snapshot;
 
 			/* Scan all tuples in this relation */
 			snapshot = RegisterSnapshot(GetLatestSnapshot());
-			scan = heap_beginscan(testrel, snapshot, 0, NULL);
-			while ((tuple = heap_getnext(scan, ForwardScanDirection)) != NULL)
+			scan = table_beginscan(testrel, snapshot, 0, NULL);
+			slot = table_slot_create(testrel, NULL);
+			while (table_scan_getnextslot(scan, ForwardScanDirection, slot))
 			{
 				int			i;
 
@@ -2376,7 +2381,7 @@ AlterDomainNotNull(List *names, bool notNull)
 					int			attnum = rtc->atts[i];
 					Form_pg_attribute attr = TupleDescAttr(tupdesc, attnum - 1);
 
-					if (heap_attisnull(tuple, attnum, tupdesc))
+					if (slot_attisnull(slot, attnum))
 					{
 						/*
 						 * In principle the auxiliary information for this
@@ -2395,11 +2400,12 @@ AlterDomainNotNull(List *names, bool notNull)
 					}
 				}
 			}
-			heap_endscan(scan);
+			ExecDropSingleTupleTableSlot(slot);
+			table_endscan(scan);
 			UnregisterSnapshot(snapshot);
 
 			/* Close each rel after processing, but keep lock */
-			heap_close(testrel, NoLock);
+			table_close(testrel, NoLock);
 		}
 	}
 
@@ -2417,7 +2423,7 @@ AlterDomainNotNull(List *names, bool notNull)
 
 	/* Clean up */
 	heap_freetuple(tup);
-	heap_close(typrel, RowExclusiveLock);
+	table_close(typrel, RowExclusiveLock);
 
 	return address;
 }
@@ -2449,7 +2455,7 @@ AlterDomainDropConstraint(List *names, const char *constrName,
 	domainoid = typenameTypeId(NULL, typename);
 
 	/* Look up the domain in the type table */
-	rel = heap_open(TypeRelationId, RowExclusiveLock);
+	rel = table_open(TypeRelationId, RowExclusiveLock);
 
 	tup = SearchSysCacheCopy1(TYPEOID, ObjectIdGetDatum(domainoid));
 	if (!HeapTupleIsValid(tup))
@@ -2459,7 +2465,7 @@ AlterDomainDropConstraint(List *names, const char *constrName,
 	checkDomainOwner(tup);
 
 	/* Grab an appropriate lock on the pg_constraint relation */
-	conrel = heap_open(ConstraintRelationId, RowExclusiveLock);
+	conrel = table_open(ConstraintRelationId, RowExclusiveLock);
 
 	/* Find and remove the target constraint */
 	ScanKeyInit(&skey[0],
@@ -2493,7 +2499,7 @@ AlterDomainDropConstraint(List *names, const char *constrName,
 
 	/* Clean up after the scan */
 	systable_endscan(conscan);
-	heap_close(conrel, RowExclusiveLock);
+	table_close(conrel, RowExclusiveLock);
 
 	if (!found)
 	{
@@ -2518,7 +2524,7 @@ AlterDomainDropConstraint(List *names, const char *constrName,
 	ObjectAddressSet(address, TypeRelationId, domainoid);
 
 	/* Clean up */
-	heap_close(rel, RowExclusiveLock);
+	table_close(rel, RowExclusiveLock);
 
 	return address;
 }
@@ -2546,7 +2552,7 @@ AlterDomainAddConstraint(List *names, Node *newConstraint,
 	domainoid = typenameTypeId(NULL, typename);
 
 	/* Look up the domain in the type table */
-	typrel = heap_open(TypeRelationId, RowExclusiveLock);
+	typrel = table_open(TypeRelationId, RowExclusiveLock);
 
 	tup = SearchSysCacheCopy1(TYPEOID, ObjectIdGetDatum(domainoid));
 	if (!HeapTupleIsValid(tup))
@@ -2634,7 +2640,7 @@ AlterDomainAddConstraint(List *names, Node *newConstraint,
 	ObjectAddressSet(address, TypeRelationId, domainoid);
 
 	/* Clean up */
-	heap_close(typrel, RowExclusiveLock);
+	table_close(typrel, RowExclusiveLock);
 
 	return address;
 }
@@ -2668,7 +2674,7 @@ AlterDomainValidateConstraint(List *names, const char *constrName)
 	domainoid = typenameTypeId(NULL, typename);
 
 	/* Look up the domain in the type table */
-	typrel = heap_open(TypeRelationId, AccessShareLock);
+	typrel = table_open(TypeRelationId, AccessShareLock);
 
 	tup = SearchSysCache1(TYPEOID, ObjectIdGetDatum(domainoid));
 	if (!HeapTupleIsValid(tup))
@@ -2680,7 +2686,7 @@ AlterDomainValidateConstraint(List *names, const char *constrName)
 	/*
 	 * Find and check the target constraint
 	 */
-	conrel = heap_open(ConstraintRelationId, RowExclusiveLock);
+	conrel = table_open(ConstraintRelationId, RowExclusiveLock);
 
 	ScanKeyInit(&skey[0],
 				Anum_pg_constraint_conrelid,
@@ -2738,8 +2744,8 @@ AlterDomainValidateConstraint(List *names, const char *constrName)
 
 	systable_endscan(scan);
 
-	heap_close(typrel, AccessShareLock);
-	heap_close(conrel, RowExclusiveLock);
+	table_close(typrel, AccessShareLock);
+	table_close(conrel, RowExclusiveLock);
 
 	ReleaseSysCache(tup);
 
@@ -2773,14 +2779,15 @@ validateDomainConstraint(Oid domainoid, char *ccbin)
 		RelToCheck *rtc = (RelToCheck *) lfirst(rt);
 		Relation	testrel = rtc->rel;
 		TupleDesc	tupdesc = RelationGetDescr(testrel);
-		HeapScanDesc scan;
-		HeapTuple	tuple;
+		TupleTableSlot *slot;
+		TableScanDesc scan;
 		Snapshot	snapshot;
 
 		/* Scan all tuples in this relation */
 		snapshot = RegisterSnapshot(GetLatestSnapshot());
-		scan = heap_beginscan(testrel, snapshot, 0, NULL);
-		while ((tuple = heap_getnext(scan, ForwardScanDirection)) != NULL)
+		scan = table_beginscan(testrel, snapshot, 0, NULL);
+		slot = table_slot_create(testrel, NULL);
+		while (table_scan_getnextslot(scan, ForwardScanDirection, slot))
 		{
 			int			i;
 
@@ -2793,7 +2800,7 @@ validateDomainConstraint(Oid domainoid, char *ccbin)
 				Datum		conResult;
 				Form_pg_attribute attr = TupleDescAttr(tupdesc, attnum - 1);
 
-				d = heap_getattr(tuple, attnum, tupdesc, &isNull);
+				d = slot_getattr(slot, attnum, &isNull);
 
 				econtext->domainValue_datum = d;
 				econtext->domainValue_isNull = isNull;
@@ -2823,11 +2830,12 @@ validateDomainConstraint(Oid domainoid, char *ccbin)
 
 			ResetExprContext(econtext);
 		}
-		heap_endscan(scan);
+		ExecDropSingleTupleTableSlot(slot);
+		table_endscan(scan);
 		UnregisterSnapshot(snapshot);
 
 		/* Hold relation lock till commit (XXX bad for concurrency) */
-		heap_close(testrel, NoLock);
+		table_close(testrel, NoLock);
 	}
 
 	FreeExecutorState(estate);
@@ -2883,7 +2891,7 @@ get_rels_with_domain(Oid domainOid, LOCKMODE lockmode)
 	 * We scan pg_depend to find those things that depend on the domain. (We
 	 * assume we can ignore refobjsubid for a domain.)
 	 */
-	depRel = heap_open(DependRelationId, AccessShareLock);
+	depRel = table_open(DependRelationId, AccessShareLock);
 
 	ScanKeyInit(&key[0],
 				Anum_pg_depend_refclassid,
@@ -3225,7 +3233,7 @@ RenameType(RenameStmt *stmt)
 	typeOid = typenameTypeId(NULL, typename);
 
 	/* Look up the type in the type table */
-	rel = heap_open(TypeRelationId, RowExclusiveLock);
+	rel = table_open(TypeRelationId, RowExclusiveLock);
 
 	tup = SearchSysCacheCopy1(TYPEOID, ObjectIdGetDatum(typeOid));
 	if (!HeapTupleIsValid(tup))
@@ -3278,7 +3286,7 @@ RenameType(RenameStmt *stmt)
 
 	ObjectAddressSet(address, TypeRelationId, typeOid);
 	/* Clean up */
-	heap_close(rel, RowExclusiveLock);
+	table_close(rel, RowExclusiveLock);
 
 	return address;
 }
@@ -3298,7 +3306,7 @@ AlterTypeOwner(List *names, Oid newOwnerId, ObjectType objecttype)
 	AclResult	aclresult;
 	ObjectAddress address;
 
-	rel = heap_open(TypeRelationId, RowExclusiveLock);
+	rel = table_open(TypeRelationId, RowExclusiveLock);
 
 	/* Make a TypeName so we can use standard type lookup machinery */
 	typename = makeTypeNameFromNameList(names);
@@ -3379,7 +3387,7 @@ AlterTypeOwner(List *names, Oid newOwnerId, ObjectType objecttype)
 	ObjectAddressSet(address, TypeRelationId, typeOid);
 
 	/* Clean up */
-	heap_close(rel, RowExclusiveLock);
+	table_close(rel, RowExclusiveLock);
 
 	return address;
 }
@@ -3402,7 +3410,7 @@ AlterTypeOwner_oid(Oid typeOid, Oid newOwnerId, bool hasDependEntry)
 	HeapTuple	tup;
 	Form_pg_type typTup;
 
-	rel = heap_open(TypeRelationId, RowExclusiveLock);
+	rel = table_open(TypeRelationId, RowExclusiveLock);
 
 	tup = SearchSysCache1(TYPEOID, ObjectIdGetDatum(typeOid));
 	if (!HeapTupleIsValid(tup))
@@ -3426,7 +3434,7 @@ AlterTypeOwner_oid(Oid typeOid, Oid newOwnerId, bool hasDependEntry)
 	InvokeObjectPostAlterHook(TypeRelationId, typeOid, 0);
 
 	ReleaseSysCache(tup);
-	heap_close(rel, RowExclusiveLock);
+	table_close(rel, RowExclusiveLock);
 }
 
 /*
@@ -3448,7 +3456,7 @@ AlterTypeOwnerInternal(Oid typeOid, Oid newOwnerId)
 	Datum		aclDatum;
 	bool		isNull;
 
-	rel = heap_open(TypeRelationId, RowExclusiveLock);
+	rel = table_open(TypeRelationId, RowExclusiveLock);
 
 	tup = SearchSysCacheCopy1(TYPEOID, ObjectIdGetDatum(typeOid));
 	if (!HeapTupleIsValid(tup))
@@ -3484,7 +3492,7 @@ AlterTypeOwnerInternal(Oid typeOid, Oid newOwnerId)
 		AlterTypeOwnerInternal(typTup->typarray, newOwnerId);
 
 	/* Clean up */
-	heap_close(rel, RowExclusiveLock);
+	table_close(rel, RowExclusiveLock);
 }
 
 /*
@@ -3589,7 +3597,7 @@ AlterTypeNamespaceInternal(Oid typeOid, Oid nspOid,
 	if (object_address_present(&thisobj, objsMoved))
 		return InvalidOid;
 
-	rel = heap_open(TypeRelationId, RowExclusiveLock);
+	rel = table_open(TypeRelationId, RowExclusiveLock);
 
 	tup = SearchSysCacheCopy1(TYPEOID, ObjectIdGetDatum(typeOid));
 	if (!HeapTupleIsValid(tup))
@@ -3650,13 +3658,13 @@ AlterTypeNamespaceInternal(Oid typeOid, Oid nspOid,
 	{
 		Relation	classRel;
 
-		classRel = heap_open(RelationRelationId, RowExclusiveLock);
+		classRel = table_open(RelationRelationId, RowExclusiveLock);
 
 		AlterRelationNamespaceInternal(classRel, typform->typrelid,
 									   oldNspOid, nspOid,
 									   false, objsMoved);
 
-		heap_close(classRel, RowExclusiveLock);
+		table_close(classRel, RowExclusiveLock);
 
 		/*
 		 * Check for constraints associated with the composite type (we don't
@@ -3689,7 +3697,7 @@ AlterTypeNamespaceInternal(Oid typeOid, Oid nspOid,
 
 	heap_freetuple(tup);
 
-	heap_close(rel, RowExclusiveLock);
+	table_close(rel, RowExclusiveLock);
 
 	add_exact_object_address(&thisobj, objsMoved);
 

@@ -3,7 +3,7 @@
  * dropcmds.c
  *	  handle various "DROP" operations
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -14,8 +14,9 @@
  */
 #include "postgres.h"
 
-#include "access/heapam.h"
 #include "access/htup_details.h"
+#include "access/table.h"
+#include "access/xact.h"
 #include "catalog/dependency.h"
 #include "catalog/namespace.h"
 #include "catalog/objectaddress.h"
@@ -107,9 +108,16 @@ RemoveObjects(DropStmt *stmt)
 			check_object_ownership(GetUserId(), stmt->removeType, address,
 								   object, relation);
 
+		/*
+		 * Make note if a temporary namespace has been accessed in this
+		 * transaction.
+		 */
+		if (OidIsValid(namespaceId) && isTempNamespace(namespaceId))
+			MyXactFlags |= XACT_FLAGS_ACCESSEDTEMPNAMESPACE;
+
 		/* Release any relcache reference count, but keep lock until commit. */
 		if (relation)
-			heap_close(relation, NoLock);
+			table_close(relation, NoLock);
 
 		add_exact_object_address(&address, objects);
 	}

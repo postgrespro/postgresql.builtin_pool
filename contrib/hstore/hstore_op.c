@@ -3,11 +3,11 @@
  */
 #include "postgres.h"
 
-#include "access/hash.h"
 #include "access/htup_details.h"
 #include "catalog/pg_type.h"
 #include "funcapi.h"
 #include "utils/builtins.h"
+#include "utils/hashutils.h"
 #include "utils/memutils.h"
 
 #include "hstore.h"
@@ -854,7 +854,7 @@ hstore_to_matrix(PG_FUNCTION_ARGS)
 
 static void
 setup_firstcall(FuncCallContext *funcctx, HStore *hs,
-				FunctionCallInfoData *fcinfo)
+				FunctionCallInfo fcinfo)
 {
 	MemoryContext oldcontext;
 	HStore	   *st;

@@ -804,7 +804,7 @@ FuncExpr
 FuncInfo
 Function
 FunctionCallInfo
-FunctionCallInfoData
+FunctionCallInfoBaseData
 FunctionParameter
 FunctionParameterMode
 FunctionScan
@@ -1018,6 +1018,8 @@ IndexBulkDeleteCallback
 IndexBulkDeleteResult
 IndexClauseSet
 IndexElem
+IndexFetchHeapData
+IndexFetchTableData
 IndexInfo
 IndexList
 IndexOnlyScan
@@ -1328,6 +1330,7 @@ NonEmptyRange
 Notification
 NotifyStmt
 Nsrt
+NullableDatum
 NullIfExpr
 NullTest
 NullTestType
@@ -1601,6 +1604,8 @@ PagetableEntry
 Pairs
 ParallelAppendState
 ParallelBitmapHeapState
+ParallelBlockTableScanDesc
+ParallelBlockTableScanDescData
 ParallelCompletionPtr
 ParallelContext
 ParallelExecutorInfo
@@ -1608,8 +1613,8 @@ ParallelHashGrowth
 ParallelHashJoinBatch
 ParallelHashJoinBatchAccessor
 ParallelHashJoinState
-ParallelHeapScanDesc
-ParallelHeapScanDescData
+ParallelTableScanDesc
+ParallelTableScanDescData
 ParallelIndexScanDesc
 ParallelSlot
 ParallelState
@@ -2167,7 +2172,7 @@ SnapBuildOnDisk
 SnapBuildState
 Snapshot
 SnapshotData
-SnapshotSatisfiesFunc
+SnapshotType
 SockAddr
 Sort
 SortBy
@@ -2306,6 +2311,7 @@ T_Action
 T_WorkerStatus
 TabStatHashEntry
 TabStatusArray
+TableAmRoutine
 TableDataInfo
 TableFunc
 TableFuncRoutine
@@ -2314,6 +2320,8 @@ TableFuncScanState
 TableInfo
 TableLikeClause
 TableSampleClause
+TableScanDesc
+TableScanDescData
 TableSpaceCacheEntry
 TableSpaceOpts
 TablespaceList
@@ -2408,6 +2416,7 @@ TupleHashIterator
 TupleHashTable
 TupleQueueReader
 TupleTableSlot
+TupleTableSlotOps
 TuplesortInstrumentation
 TuplesortMethod
 TuplesortSpaceType

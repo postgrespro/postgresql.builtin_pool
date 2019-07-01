@@ -4,7 +4,7 @@
  *	  routines to support running postgres in 'bootstrap' mode
  *	bootstrap mode is used to create the initial template database
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -17,7 +17,10 @@
 #include <unistd.h>
 #include <signal.h>
 
+#include "access/genam.h"
+#include "access/heapam.h"
 #include "access/htup_details.h"
+#include "access/tableam.h"
 #include "access/xact.h"
 #include "access/xlog_internal.h"
 #include "bootstrap/bootstrap.h"
@@ -46,7 +49,6 @@
 #include "utils/ps_status.h"
 #include "utils/rel.h"
 #include "utils/relmapper.h"
-#include "utils/tqual.h"
 
 uint32		bootstrap_data_checksum_version = 0;	/* No checksum */
 
@@ -593,7 +595,7 @@ boot_openrel(char *relname)
 	int			i;
 	struct typmap **app;
 	Relation	rel;
-	HeapScanDesc scan;
+	TableScanDesc scan;
 	HeapTuple	tup;
 
 	if (strlen(relname) >= NAMEDATALEN)
@@ -602,17 +604,17 @@ boot_openrel(char *relname)
 	if (Typ == NULL)
 	{
 		/* We can now load the pg_type data */
-		rel = heap_open(TypeRelationId, NoLock);
-		scan = heap_beginscan_catalog(rel, 0, NULL);
+		rel = table_open(TypeRelationId, NoLock);
+		scan = table_beginscan_catalog(rel, 0, NULL);
 		i = 0;
 		while ((tup = heap_getnext(scan, ForwardScanDirection)) != NULL)
 			++i;
-		heap_endscan(scan);
+		table_endscan(scan);
 		app = Typ = ALLOC(struct typmap *, i + 1);
 		while (i-- > 0)
 			*app++ = ALLOC(struct typmap, 1);
 		*app = NULL;
-		scan = heap_beginscan_catalog(rel, 0, NULL);
+		scan = table_beginscan_catalog(rel, 0, NULL);
 		app = Typ;
 		while ((tup = heap_getnext(scan, ForwardScanDirection)) != NULL)
 		{
@@ -622,8 +624,8 @@ boot_openrel(char *relname)
 				   sizeof((*app)->am_typ));
 			app++;
 		}
-		heap_endscan(scan);
-		heap_close(rel, NoLock);
+		table_endscan(scan);
+		table_close(rel, NoLock);
 	}
 
 	if (boot_reldesc != NULL)
@@ -632,7 +634,7 @@ boot_openrel(char *relname)
 	elog(DEBUG4, "open relation %s, attrsize %d",
 		 relname, (int) ATTRIBUTE_FIXED_PART_SIZE);
 
-	boot_reldesc = heap_openrv(makeRangeVar(NULL, relname, -1), NoLock);
+	boot_reldesc = table_openrv(makeRangeVar(NULL, relname, -1), NoLock);
 	numattr = RelationGetNumberOfAttributes(boot_reldesc);
 	for (i = 0; i < numattr; i++)
 	{
@@ -678,7 +680,7 @@ closerel(char *name)
 	{
 		elog(DEBUG4, "close relation %s",
 			 RelationGetRelationName(boot_reldesc));
-		heap_close(boot_reldesc, NoLock);
+		table_close(boot_reldesc, NoLock);
 		boot_reldesc = NULL;
 	}
 }
@@ -914,7 +916,7 @@ gettype(char *type)
 {
 	int			i;
 	Relation	rel;
-	HeapScanDesc scan;
+	TableScanDesc scan;
 	HeapTuple	tup;
 	struct typmap **app;
 
@@ -937,17 +939,17 @@ gettype(char *type)
 				return i;
 		}
 		elog(DEBUG4, "external type: %s", type);
-		rel = heap_open(TypeRelationId, NoLock);
-		scan = heap_beginscan_catalog(rel, 0, NULL);
+		rel = table_open(TypeRelationId, NoLock);
+		scan = table_beginscan_catalog(rel, 0, NULL);
 		i = 0;
 		while ((tup = heap_getnext(scan, ForwardScanDirection)) != NULL)
 			++i;
-		heap_endscan(scan);
+		table_endscan(scan);
 		app = Typ = ALLOC(struct typmap *, i + 1);
 		while (i-- > 0)
 			*app++ = ALLOC(struct typmap, 1);
 		*app = NULL;
-		scan = heap_beginscan_catalog(rel, 0, NULL);
+		scan = table_beginscan_catalog(rel, 0, NULL);
 		app = Typ;
 		while ((tup = heap_getnext(scan, ForwardScanDirection)) != NULL)
 		{
@@ -956,8 +958,8 @@ gettype(char *type)
 					(char *) GETSTRUCT(tup),
 					sizeof((*app)->am_typ));
 		}
-		heap_endscan(scan);
-		heap_close(rel, NoLock);
+		table_endscan(scan);
+		table_close(rel, NoLock);
 		return gettype(type);
 	}
 	elog(ERROR, "unrecognized type \"%s\"", type);
@@ -1126,12 +1128,12 @@ build_indices(void)
 		Relation	ind;
 
 		/* need not bother with locks during bootstrap */
-		heap = heap_open(ILHead->il_heap, NoLock);
+		heap = table_open(ILHead->il_heap, NoLock);
 		ind = index_open(ILHead->il_ind, NoLock);
 
-		index_build(heap, ind, ILHead->il_info, false, false, false);
+		index_build(heap, ind, ILHead->il_info, false, false);
 
 		index_close(ind, NoLock);
-		heap_close(heap, NoLock);
+		table_close(heap, NoLock);
 	}
 }

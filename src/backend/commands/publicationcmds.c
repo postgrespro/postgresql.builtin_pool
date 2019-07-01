@@ -3,7 +3,7 @@
  * publicationcmds.c
  *		publication manipulation
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -18,9 +18,8 @@
 #include "miscadmin.h"
 
 #include "access/genam.h"
-#include "access/hash.h"
-#include "access/heapam.h"
 #include "access/htup_details.h"
+#include "access/table.h"
 #include "access/xact.h"
 
 #include "catalog/catalog.h"
@@ -165,7 +164,7 @@ CreatePublication(CreatePublicationStmt *stmt)
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
 				 (errmsg("must be superuser to create FOR ALL TABLES publication"))));
 
-	rel = heap_open(PublicationRelationId, RowExclusiveLock);
+	rel = table_open(PublicationRelationId, RowExclusiveLock);
 
 	/* Check if name is used */
 	puboid = GetSysCacheOid1(PUBLICATIONNAME, Anum_pg_publication_oid,
@@ -229,7 +228,7 @@ CreatePublication(CreatePublicationStmt *stmt)
 		CloseTableList(rels);
 	}
 
-	heap_close(rel, RowExclusiveLock);
+	table_close(rel, RowExclusiveLock);
 
 	InvokeObjectPostCreateHook(PublicationRelationId, puboid, 0);
 
@@ -377,8 +376,8 @@ AlterPublicationTables(AlterPublicationStmt *stmt, Relation rel,
 
 			if (!found)
 			{
-				Relation	oldrel = heap_open(oldrelid,
-											   ShareUpdateExclusiveLock);
+				Relation	oldrel = table_open(oldrelid,
+												ShareUpdateExclusiveLock);
 
 				delrels = lappend(delrels, oldrel);
 			}
@@ -412,7 +411,7 @@ AlterPublication(AlterPublicationStmt *stmt)
 	HeapTuple	tup;
 	Form_pg_publication pubform;
 
-	rel = heap_open(PublicationRelationId, RowExclusiveLock);
+	rel = table_open(PublicationRelationId, RowExclusiveLock);
 
 	tup = SearchSysCacheCopy1(PUBLICATIONNAME,
 							  CStringGetDatum(stmt->pubname));
@@ -437,7 +436,7 @@ AlterPublication(AlterPublicationStmt *stmt)
 
 	/* Cleanup. */
 	heap_freetuple(tup);
-	heap_close(rel, RowExclusiveLock);
+	table_close(rel, RowExclusiveLock);
 }
 
 /*
@@ -449,7 +448,7 @@ RemovePublicationById(Oid pubid)
 	Relation	rel;
 	HeapTuple	tup;
 
-	rel = heap_open(PublicationRelationId, RowExclusiveLock);
+	rel = table_open(PublicationRelationId, RowExclusiveLock);
 
 	tup = SearchSysCache1(PUBLICATIONOID, ObjectIdGetDatum(pubid));
 
@@ -460,7 +459,7 @@ RemovePublicationById(Oid pubid)
 
 	ReleaseSysCache(tup);
 
-	heap_close(rel, RowExclusiveLock);
+	table_close(rel, RowExclusiveLock);
 }
 
 /*
@@ -473,7 +472,7 @@ RemovePublicationRelById(Oid proid)
 	HeapTuple	tup;
 	Form_pg_publication_rel pubrel;
 
-	rel = heap_open(PublicationRelRelationId, RowExclusiveLock);
+	rel = table_open(PublicationRelRelationId, RowExclusiveLock);
 
 	tup = SearchSysCache1(PUBLICATIONREL, ObjectIdGetDatum(proid));
 
@@ -490,7 +489,7 @@ RemovePublicationRelById(Oid proid)
 
 	ReleaseSysCache(tup);
 
-	heap_close(rel, RowExclusiveLock);
+	table_close(rel, RowExclusiveLock);
 }
 
 /*
@@ -517,7 +516,7 @@ OpenTableList(List *tables)
 		/* Allow query cancel in case this takes a long time */
 		CHECK_FOR_INTERRUPTS();
 
-		rel = heap_openrv(rv, ShareUpdateExclusiveLock);
+		rel = table_openrv(rv, ShareUpdateExclusiveLock);
 		myrelid = RelationGetRelid(rel);
 
 		/*
@@ -529,7 +528,7 @@ OpenTableList(List *tables)
 		 */
 		if (list_member_oid(relids, myrelid))
 		{
-			heap_close(rel, ShareUpdateExclusiveLock);
+			table_close(rel, ShareUpdateExclusiveLock);
 			continue;
 		}
 
@@ -560,7 +559,7 @@ OpenTableList(List *tables)
 					continue;
 
 				/* find_all_inheritors already got lock */
-				rel = heap_open(childrelid, NoLock);
+				rel = table_open(childrelid, NoLock);
 				rels = lappend(rels, rel);
 				relids = lappend_oid(relids, childrelid);
 			}
@@ -584,7 +583,7 @@ CloseTableList(List *rels)
 	{
 		Relation	rel = (Relation) lfirst(lc);
 
-		heap_close(rel, NoLock);
+		table_close(rel, NoLock);
 	}
 }
 
@@ -718,7 +717,7 @@ AlterPublicationOwner(const char *name, Oid newOwnerId)
 	ObjectAddress address;
 	Form_pg_publication pubform;
 
-	rel = heap_open(PublicationRelationId, RowExclusiveLock);
+	rel = table_open(PublicationRelationId, RowExclusiveLock);
 
 	tup = SearchSysCacheCopy1(PUBLICATIONNAME, CStringGetDatum(name));
 
@@ -736,7 +735,7 @@ AlterPublicationOwner(const char *name, Oid newOwnerId)
 
 	heap_freetuple(tup);
 
-	heap_close(rel, RowExclusiveLock);
+	table_close(rel, RowExclusiveLock);
 
 	return address;
 }
@@ -750,7 +749,7 @@ AlterPublicationOwner_oid(Oid subid, Oid newOwnerId)
 	HeapTuple	tup;
 	Relation	rel;
 
-	rel = heap_open(PublicationRelationId, RowExclusiveLock);
+	rel = table_open(PublicationRelationId, RowExclusiveLock);
 
 	tup = SearchSysCacheCopy1(PUBLICATIONOID, ObjectIdGetDatum(subid));
 
@@ -763,5 +762,5 @@ AlterPublicationOwner_oid(Oid subid, Oid newOwnerId)
 
 	heap_freetuple(tup);
 
-	heap_close(rel, RowExclusiveLock);
+	table_close(rel, RowExclusiveLock);
 }

@@ -87,7 +87,6 @@ pg_send_sock(pgsocket chan, pgsocket sock, pid_t pid)
 		if (errno != EINTR)
 			return PGINVALID_SOCKET;
 	}
-
 	return 0;
 #endif
 }
@@ -153,10 +152,12 @@ pg_recv_sock(pgsocket chan)
 
     cmsg = CMSG_FIRSTHDR(&msg);
 	if (!cmsg)
+	{
+		elog(WARNING, "Failed to transfer socket");
 		return PGINVALID_SOCKET;
+	}
 
     memcpy(&sock, CMSG_DATA(cmsg), sizeof(sock));
-
 	pg_set_noblock(sock);
 
     return sock;

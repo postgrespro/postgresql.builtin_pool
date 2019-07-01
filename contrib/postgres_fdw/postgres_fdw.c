@@ -3,7 +3,7 @@
  * postgres_fdw.c
  *		  Foreign-data wrapper for remote PostgreSQL servers
  *
- * Portions Copyright (c) 2012-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 2012-2019, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *		  contrib/postgres_fdw/postgres_fdw.c
@@ -16,6 +16,7 @@
 
 #include "access/htup_details.h"
 #include "access/sysattr.h"
+#include "access/table.h"
 #include "catalog/pg_class.h"
 #include "commands/defrem.h"
 #include "commands/explain.h"
@@ -27,11 +28,11 @@
 #include "nodes/nodeFuncs.h"
 #include "optimizer/cost.h"
 #include "optimizer/clauses.h"
+#include "optimizer/optimizer.h"
 #include "optimizer/pathnode.h"
 #include "optimizer/paths.h"
 #include "optimizer/planmain.h"
 #include "optimizer/restrictinfo.h"
-#include "optimizer/var.h"
 #include "optimizer/tlist.h"
 #include "parser/parsetree.h"
 #include "utils/builtins.h"
@@ -390,6 +391,11 @@ static PgFdwModifyState *create_foreign_modify(EState *estate,
 					  List *target_attrs,
 					  bool has_returning,
 					  List *retrieved_attrs);
+static TupleTableSlot *execute_foreign_modify(EState *estate,
+					   ResultRelInfo *resultRelInfo,
+					   CmdType operation,
+					   TupleTableSlot *slot,
+					   TupleTableSlot *planSlot);
 static void prepare_foreign_modify(PgFdwModifyState *fmstate);
 static const char **convert_prep_stmt_params(PgFdwModifyState *fmstate,
 						 ItemPointer tupleid,
@@ -931,6 +937,9 @@ postgresGetForeignPaths(PlannerInfo *root,
 	 * baserestrict conditions we were able to send to remote, there might
 	 * actually be an indexscan happening there).  We already did all the work
 	 * to estimate cost and size of this path.
+	 *
+	 * Although this path uses no join clauses, it could still have required
+	 * parameterization due to LATERAL refs in its tlist.
 	 */
 	path = create_foreignscan_path(root, baserel,
 								   NULL,	/* default pathtarget */
@@ -938,7 +947,7 @@ postgresGetForeignPaths(PlannerInfo *root,
 								   fpinfo->startup_cost,
 								   fpinfo->total_cost,
 								   NIL, /* no pathkeys */
-								   NULL,	/* no outer rel either */
+								   baserel->lateral_relids,
 								   NULL,	/* no extra plan */
 								   NIL);	/* no fdw_private list */
 	add_path(baserel, (Path *) path);
@@ -1610,7 +1619,7 @@ postgresPlanForeignModify(PlannerInfo *root,
 	 * Core code already has some lock on each rel being planned, so we can
 	 * use NoLock here.
 	 */
-	rel = heap_open(rte->relid, NoLock);
+	rel = table_open(rte->relid, NoLock);
 
 	/*
 	 * In an INSERT, we transmit all columns that are defined in the foreign
@@ -1700,7 +1709,7 @@ postgresPlanForeignModify(PlannerInfo *root,
 			break;
 	}
 
-	heap_close(rel, NoLock);
+	table_close(rel, NoLock);
 
 	/*
 	 * Build the fdw_private list that will be available to the executor.
@@ -1775,58 +1784,8 @@ postgresExecForeignInsert(EState *estate,
 						  TupleTableSlot *slot,
 						  TupleTableSlot *planSlot)
 {
-	PgFdwModifyState *fmstate = (PgFdwModifyState *) resultRelInfo->ri_FdwState;
-	const char **p_values;
-	PGresult   *res;
-	int			n_rows;
-
-	/* Set up the prepared statement on the remote server, if we didn't yet */
-	if (!fmstate->p_name)
-		prepare_foreign_modify(fmstate);
-
-	/* Convert parameters needed by prepared statement to text form */
-	p_values = convert_prep_stmt_params(fmstate, NULL, slot);
-
-	/*
-	 * Execute the prepared statement.
-	 */
-	if (!PQsendQueryPrepared(fmstate->conn,
-							 fmstate->p_name,
-							 fmstate->p_nums,
-							 p_values,
-							 NULL,
-							 NULL,
-							 0))
-		pgfdw_report_error(ERROR, NULL, fmstate->conn, false, fmstate->query);
-
-	/*
-	 * Get the result, and check for success.
-	 *
-	 * We don't use a PG_TRY block here, so be careful not to throw error
-	 * without releasing the PGresult.
-	 */
-	res = pgfdw_get_result(fmstate->conn, fmstate->query);
-	if (PQresultStatus(res) !=
-		(fmstate->has_returning ? PGRES_TUPLES_OK : PGRES_COMMAND_OK))
-		pgfdw_report_error(ERROR, res, fmstate->conn, true, fmstate->query);
-
-	/* Check number of rows affected, and fetch RETURNING tuple if any */
-	if (fmstate->has_returning)
-	{
-		n_rows = PQntuples(res);
-		if (n_rows > 0)
-			store_returning_result(fmstate, slot, res);
-	}
-	else
-		n_rows = atoi(PQcmdTuples(res));
-
-	/* And clean up */
-	PQclear(res);
-
-	MemoryContextReset(fmstate->temp_cxt);
-
-	/* Return NULL if nothing was inserted on the remote end */
-	return (n_rows > 0) ? slot : NULL;
+	return execute_foreign_modify(estate, resultRelInfo, CMD_INSERT,
+								  slot, planSlot);
 }
 
 /*
@@ -1839,70 +1798,8 @@ postgresExecForeignUpdate(EState *estate,
 						  TupleTableSlot *slot,
 						  TupleTableSlot *planSlot)
 {
-	PgFdwModifyState *fmstate = (PgFdwModifyState *) resultRelInfo->ri_FdwState;
-	Datum		datum;
-	bool		isNull;
-	const char **p_values;
-	PGresult   *res;
-	int			n_rows;
-
-	/* Set up the prepared statement on the remote server, if we didn't yet */
-	if (!fmstate->p_name)
-		prepare_foreign_modify(fmstate);
-
-	/* Get the ctid that was passed up as a resjunk column */
-	datum = ExecGetJunkAttribute(planSlot,
-								 fmstate->ctidAttno,
-								 &isNull);
-	/* shouldn't ever get a null result... */
-	if (isNull)
-		elog(ERROR, "ctid is NULL");
-
-	/* Convert parameters needed by prepared statement to text form */
-	p_values = convert_prep_stmt_params(fmstate,
-										(ItemPointer) DatumGetPointer(datum),
-										slot);
-
-	/*
-	 * Execute the prepared statement.
-	 */
-	if (!PQsendQueryPrepared(fmstate->conn,
-							 fmstate->p_name,
-							 fmstate->p_nums,
-							 p_values,
-							 NULL,
-							 NULL,
-							 0))
-		pgfdw_report_error(ERROR, NULL, fmstate->conn, false, fmstate->query);
-
-	/*
-	 * Get the result, and check for success.
-	 *
-	 * We don't use a PG_TRY block here, so be careful not to throw error
-	 * without releasing the PGresult.
-	 */
-	res = pgfdw_get_result(fmstate->conn, fmstate->query);
-	if (PQresultStatus(res) !=
-		(fmstate->has_returning ? PGRES_TUPLES_OK : PGRES_COMMAND_OK))
-		pgfdw_report_error(ERROR, res, fmstate->conn, true, fmstate->query);
-
-	/* Check number of rows affected, and fetch RETURNING tuple if any */
-	if (fmstate->has_returning)
-	{
-		n_rows = PQntuples(res);
-		if (n_rows > 0)
-			store_returning_result(fmstate, slot, res);
-	}
-	else
-		n_rows = atoi(PQcmdTuples(res));
-
-	/* And clean up */
-	PQclear(res);
-
-	MemoryContextReset(fmstate->temp_cxt);
-
-	/* Return NULL if nothing was updated on the remote end */
-	return (n_rows > 0) ? slot : NULL;
+	return execute_foreign_modify(estate, resultRelInfo, CMD_UPDATE,
+								  slot, planSlot);
 }
 
 /*
@@ -1915,70 +1812,8 @@ postgresExecForeignDelete(EState *estate,
 						  TupleTableSlot *slot,
 						  TupleTableSlot *planSlot)
 {
-	PgFdwModifyState *fmstate = (PgFdwModifyState *) resultRelInfo->ri_FdwState;
-	Datum		datum;
-	bool		isNull;
-	const char **p_values;
-	PGresult   *res;
-	int			n_rows;
-
-	/* Set up the prepared statement on the remote server, if we didn't yet */
-	if (!fmstate->p_name)
-		prepare_foreign_modify(fmstate);
-
-	/* Get the ctid that was passed up as a resjunk column */
-	datum = ExecGetJunkAttribute(planSlot,
-								 fmstate->ctidAttno,
-								 &isNull);
-	/* shouldn't ever get a null result... */
-	if (isNull)
-		elog(ERROR, "ctid is NULL");
-
-	/* Convert parameters needed by prepared statement to text form */
-	p_values = convert_prep_stmt_params(fmstate,
-										(ItemPointer) DatumGetPointer(datum),
-										NULL);
-
-	/*
-	 * Execute the prepared statement.
-	 */
-	if (!PQsendQueryPrepared(fmstate->conn,
-							 fmstate->p_name,
-							 fmstate->p_nums,
-							 p_values,
-							 NULL,
-							 NULL,
-							 0))
-		pgfdw_report_error(ERROR, NULL, fmstate->conn, false, fmstate->query);
-
-	/*
-	 * Get the result, and check for success.
-	 *
-	 * We don't use a PG_TRY block here, so be careful not to throw error
-	 * without releasing the PGresult.
-	 */
-	res = pgfdw_get_result(fmstate->conn, fmstate->query);
-	if (PQresultStatus(res) !=
-		(fmstate->has_returning ? PGRES_TUPLES_OK : PGRES_COMMAND_OK))
-		pgfdw_report_error(ERROR, res, fmstate->conn, true, fmstate->query);
-
-	/* Check number of rows affected, and fetch RETURNING tuple if any */
-	if (fmstate->has_returning)
-	{
-		n_rows = PQntuples(res);
-		if (n_rows > 0)
-			store_returning_result(fmstate, slot, res);
-	}
-	else
-		n_rows = atoi(PQcmdTuples(res));
-
-	/* And clean up */
-	PQclear(res);
-
-	MemoryContextReset(fmstate->temp_cxt);
-
-	/* Return NULL if nothing was deleted on the remote end */
-	return (n_rows > 0) ? slot : NULL;
+	return execute_foreign_modify(estate, resultRelInfo, CMD_DELETE,
+								  slot, planSlot);
 }
 
 /*
@@ -2289,7 +2124,7 @@ postgresPlanDirectModify(PlannerInfo *root,
 	 * Core code already has some lock on each rel being planned, so we can
 	 * use NoLock here.
 	 */
-	rel = heap_open(rte->relid, NoLock);
+	rel = table_open(rte->relid, NoLock);
 
 	/*
 	 * Recall the qual clauses that must be evaluated remotely.  (These are
@@ -2375,7 +2210,7 @@ postgresPlanDirectModify(PlannerInfo *root,
 			rebuild_fdw_scan_tlist(fscan, returningList);
 	}
 
-	heap_close(rel, NoLock);
+	table_close(rel, NoLock);
 	return true;
 }
 
@@ -2667,6 +2502,9 @@ estimate_path_cost_size(PlannerInfo *root,
 	Cost		total_cost;
 	Cost		cpu_per_tuple;
 
+	/* Make sure the core code has set up the relation's reltarget */
+	Assert(foreignrel->reltarget);
+
 	/*
 	 * If the table or the server is configured to use remote estimates,
 	 * connect to the foreign server and execute EXPLAIN to estimate the
@@ -2744,6 +2582,24 @@ estimate_path_cost_size(PlannerInfo *root,
 		cost_qual_eval(&local_cost, local_param_join_conds, root);
 		startup_cost += local_cost.startup;
 		total_cost += local_cost.per_tuple * retrieved_rows;
+
+		/*
+		 * Add in tlist eval cost for each output row.  In case of an
+		 * aggregate, some of the tlist expressions such as grouping
+		 * expressions will be evaluated remotely, so adjust the costs.
+		 */
+		startup_cost += foreignrel->reltarget->cost.startup;
+		total_cost += foreignrel->reltarget->cost.startup;
+		total_cost += foreignrel->reltarget->cost.per_tuple * rows;
+		if (IS_UPPER_REL(foreignrel))
+		{
+			QualCost	tlist_cost;
+
+			cost_qual_eval(&tlist_cost, fdw_scan_tlist, root);
+			startup_cost -= tlist_cost.startup;
+			total_cost -= tlist_cost.startup;
+			total_cost -= tlist_cost.per_tuple * rows;
+		}
 	}
 	else
 	{
@@ -2772,7 +2628,7 @@ estimate_path_cost_size(PlannerInfo *root,
 		 * bare scan each time. Instead, use the costs if we have cached them
 		 * already.
 		 */
-		if (fpinfo->rel_startup_cost > 0 && fpinfo->rel_total_cost > 0)
+		if (fpinfo->rel_startup_cost >= 0 && fpinfo->rel_total_cost >= 0)
 		{
 			startup_cost = fpinfo->rel_startup_cost;
 			run_cost = fpinfo->rel_total_cost - fpinfo->rel_startup_cost;
@@ -2842,18 +2698,18 @@ estimate_path_cost_size(PlannerInfo *root,
 			nrows = clamp_row_est(nrows * fpinfo->joinclause_sel);
 			run_cost += nrows * remote_conds_cost.per_tuple;
 			run_cost += fpinfo->local_conds_cost.per_tuple * retrieved_rows;
+
+			/* Add in tlist eval cost for each output row */
+			startup_cost += foreignrel->reltarget->cost.startup;
+			run_cost += foreignrel->reltarget->cost.per_tuple * rows;
 		}
 		else if (IS_UPPER_REL(foreignrel))
 		{
 			PgFdwRelationInfo *ofpinfo;
-			PathTarget *ptarget = foreignrel->reltarget;
 			AggClauseCosts aggcosts;
 			double		input_rows;
 			int			numGroupCols;
 			double		numGroups = 1;
-
-			/* Make sure the core code set the pathtarget. */
-			Assert(ptarget != NULL);
 
 			/*
 			 * This cost model is mixture of costing done for sorted and
@@ -2918,28 +2774,25 @@ estimate_path_cost_size(PlannerInfo *root,
 			 * Startup cost includes:
 			 *	  1. Startup cost for underneath input relation
 			 *	  2. Cost of performing aggregation, per cost_agg()
-			 *	  3. Startup cost for PathTarget eval
 			 *-----
 			 */
 			startup_cost = ofpinfo->rel_startup_cost;
 			startup_cost += aggcosts.transCost.startup;
 			startup_cost += aggcosts.transCost.per_tuple * input_rows;
+			startup_cost += aggcosts.finalCost.startup;
 			startup_cost += (cpu_operator_cost * numGroupCols) * input_rows;
-			startup_cost += ptarget->cost.startup;
 
 			/*-----
 			 * Run time cost includes:
 			 *	  1. Run time cost of underneath input relation
 			 *	  2. Run time cost of performing aggregation, per cost_agg()
-			 *	  3. PathTarget eval cost for each output row
 			 *-----
 			 */
 			run_cost = ofpinfo->rel_total_cost - ofpinfo->rel_startup_cost;
-			run_cost += aggcosts.finalCost * numGroups;
+			run_cost += aggcosts.finalCost.per_tuple * numGroups;
 			run_cost += cpu_tuple_cost * numGroups;
-			run_cost += ptarget->cost.per_tuple * numGroups;
 
-			/* Accout for the eval cost of HAVING quals, if any */
+			/* Account for the eval cost of HAVING quals, if any */
 			if (root->parse->havingQual)
 			{
 				QualCost	remote_cost;
@@ -2952,6 +2805,10 @@ estimate_path_cost_size(PlannerInfo *root,
 				startup_cost += fpinfo->local_conds_cost.startup;
 				run_cost += fpinfo->local_conds_cost.per_tuple * retrieved_rows;
 			}
+
+			/* Add in tlist eval cost for each output row */
+			startup_cost += foreignrel->reltarget->cost.startup;
+			run_cost += foreignrel->reltarget->cost.per_tuple * rows;
 		}
 		else
 		{
@@ -2970,6 +2827,10 @@ estimate_path_cost_size(PlannerInfo *root,
 			startup_cost += foreignrel->baserestrictcost.startup;
 			cpu_per_tuple = cpu_tuple_cost + foreignrel->baserestrictcost.per_tuple;
 			run_cost += cpu_per_tuple * foreignrel->tuples;
+
+			/* Add in tlist eval cost for each output row */
+			startup_cost += foreignrel->reltarget->cost.startup;
+			run_cost += foreignrel->reltarget->cost.per_tuple * rows;
 		}
 
 		/*
@@ -3425,6 +3286,98 @@ create_foreign_modify(EState *estate,
 }
 
 /*
+ * execute_foreign_modify
+ *		Perform foreign-table modification as required, and fetch RETURNING
+ *		result if any.  (This is the shared guts of postgresExecForeignInsert,
+ *		postgresExecForeignUpdate, and postgresExecForeignDelete.)
+ */
+static TupleTableSlot *
+execute_foreign_modify(EState *estate,
+					   ResultRelInfo *resultRelInfo,
+					   CmdType operation,
+					   TupleTableSlot *slot,
+					   TupleTableSlot *planSlot)
+{
+	PgFdwModifyState *fmstate = (PgFdwModifyState *) resultRelInfo->ri_FdwState;
+	ItemPointer ctid = NULL;
+	const char **p_values;
+	PGresult   *res;
+	int			n_rows;
+
+	/* The operation should be INSERT, UPDATE, or DELETE */
+	Assert(operation == CMD_INSERT ||
+		   operation == CMD_UPDATE ||
+		   operation == CMD_DELETE);
+
+	/* Set up the prepared statement on the remote server, if we didn't yet */
+	if (!fmstate->p_name)
+		prepare_foreign_modify(fmstate);
+
+	/*
+	 * For UPDATE/DELETE, get the ctid that was passed up as a resjunk column
+	 */
+	if (operation == CMD_UPDATE || operation == CMD_DELETE)
+	{
+		Datum		datum;
+		bool		isNull;
+
+		datum = ExecGetJunkAttribute(planSlot,
+									 fmstate->ctidAttno,
+									 &isNull);
+		/* shouldn't ever get a null result... */
+		if (isNull)
+			elog(ERROR, "ctid is NULL");
+		ctid = (ItemPointer) DatumGetPointer(datum);
+	}
+
+	/* Convert parameters needed by prepared statement to text form */
+	p_values = convert_prep_stmt_params(fmstate, ctid, slot);
+
+	/*
+	 * Execute the prepared statement.
+	 */
+	if (!PQsendQueryPrepared(fmstate->conn,
+							 fmstate->p_name,
+							 fmstate->p_nums,
+							 p_values,
+							 NULL,
+							 NULL,
+							 0))
+		pgfdw_report_error(ERROR, NULL, fmstate->conn, false, fmstate->query);
+
+	/*
+	 * Get the result, and check for success.
+	 *
+	 * We don't use a PG_TRY block here, so be careful not to throw error
+	 * without releasing the PGresult.
+	 */
+	res = pgfdw_get_result(fmstate->conn, fmstate->query);
+	if (PQresultStatus(res) !=
+		(fmstate->has_returning ? PGRES_TUPLES_OK : PGRES_COMMAND_OK))
+		pgfdw_report_error(ERROR, res, fmstate->conn, true, fmstate->query);
+
+	/* Check number of rows affected, and fetch RETURNING tuple if any */
+	if (fmstate->has_returning)
+	{
+		n_rows = PQntuples(res);
+		if (n_rows > 0)
+			store_returning_result(fmstate, slot, res);
+	}
+	else
+		n_rows = atoi(PQcmdTuples(res));
+
+	/* And clean up */
+	PQclear(res);
+
+	MemoryContextReset(fmstate->temp_cxt);
+
+	/*
+	 * Return NULL if nothing was inserted/updated/deleted on the remote end
+	 */
+	return (n_rows > 0) ? slot : NULL;
+}
+
+/*
  * prepare_foreign_modify
  *		Establish a prepared statement for execution of INSERT/UPDATE/DELETE
  */
@@ -3554,8 +3507,13 @@ store_returning_result(PgFdwModifyState *fmstate,
 											fmstate->retrieved_attrs,
 											NULL,
 											fmstate->temp_cxt);
-		/* tuple will be deleted when it is cleared from the slot */
-		ExecStoreHeapTuple(newtup, slot, true);
+		/*
+		 * The returning slot will not necessarily be suitable to store
+		 * heaptuples directly, so allow for conversion.
+		 */
+		ExecForceStoreHeapTuple(newtup, slot);
+		ExecMaterializeSlot(slot);
+		pfree(newtup);
 	}
 	PG_CATCH();
 	{
@@ -3933,6 +3891,7 @@ apply_returning_filter(PgFdwDirectModifyState *dmstate,
 					   TupleTableSlot *slot,
 					   EState *estate)
 {
+	ResultRelInfo *relInfo = estate->es_result_relation_info;
 	TupleDesc	resultTupType = RelationGetDescr(dmstate->resultRel);
 	TupleTableSlot *resultSlot;
 	Datum	   *values;
@@ -3942,11 +3901,9 @@ apply_returning_filter(PgFdwDirectModifyState *dmstate,
 	int			i;
 
 	/*
-	 * Use the trigger tuple slot as a place to store the result tuple.
+	 * Use the return tuple slot as a place to store the result tuple.
 	 */
-	resultSlot = estate->es_trig_tuple_slot;
-	if (resultSlot->tts_tupleDescriptor != resultTupType)
-		ExecSetSlotDescriptor(resultSlot, resultTupType);
+	resultSlot = ExecGetReturningSlot(estate, relInfo);
 
 	/*
 	 * Extract all the values of the scan tuple.
@@ -3987,8 +3944,9 @@ apply_returning_filter(PgFdwDirectModifyState *dmstate,
 	ExecStoreVirtualTuple(resultSlot);
 
 	/*
-	 * If we have any system columns to return, materialize a heap tuple in the
-	 * slot from column values set above and install system columns in that tuple.
+	 * If we have any system columns to return, materialize a heap tuple in
+	 * the slot from column values set above and install system columns in
+	 * that tuple.
 	 */
 	if (dmstate->hasSystemCols)
 	{
@@ -4994,16 +4952,28 @@ add_paths_with_pathkeys_for_rel(PlannerInfo *root, RelOptInfo *rel,
 								 useful_pathkeys,
 								 -1.0);
 
-		add_path(rel, (Path *)
-				 create_foreignscan_path(root, rel,
-										 NULL,
-										 rows,
-										 startup_cost,
-										 total_cost,
-										 useful_pathkeys,
-										 NULL,
-										 sorted_epq_path,
-										 NIL));
+		if (IS_SIMPLE_REL(rel))
+			add_path(rel, (Path *)
+					 create_foreignscan_path(root, rel,
+											 NULL,
+											 rows,
+											 startup_cost,
+											 total_cost,
+											 useful_pathkeys,
+											 rel->lateral_relids,
+											 sorted_epq_path,
+											 NIL));
+		else
+			add_path(rel, (Path *)
+					 create_foreign_join_path(root, rel,
+											  NULL,
+											  rows,
+											  startup_cost,
+											  total_cost,
+											  useful_pathkeys,
+											  rel->lateral_relids,
+											  sorted_epq_path,
+											  NIL));
 	}
 }
 
@@ -5139,6 +5109,13 @@ postgresGetForeignJoinPaths(PlannerInfo *root,
 		return;
 
 	/*
+	 * This code does not work for joins with lateral references, since those
+	 * must have parameterized paths, which we don't generate yet.
+	 */
+	if (!bms_is_empty(joinrel->lateral_relids))
+		return;
+
+	/*
 	 * Create unfinished PgFdwRelationInfo entry which is used to indicate
 	 * that the join relation is already considered, so that we won't waste
 	 * time in judging safety of join pushdown and adding the same paths again
@@ -5222,16 +5199,16 @@ postgresGetForeignJoinPaths(PlannerInfo *root,
 	 * Create a new join path and add it to the joinrel which represents a
 	 * join between foreign tables.
 	 */
-	joinpath = create_foreignscan_path(root,
-									   joinrel,
-									   NULL,	/* default pathtarget */
-									   rows,
-									   startup_cost,
-									   total_cost,
-									   NIL, /* no pathkeys */
-									   NULL,	/* no required_outer */
-									   epq_path,
-									   NIL);	/* no fdw_private */
+	joinpath = create_foreign_join_path(root,
+										joinrel,
+										NULL,	/* default pathtarget */
+										rows,
+										startup_cost,
+										total_cost,
+										NIL,	/* no pathkeys */
+										joinrel->lateral_relids,
+										epq_path,
+										NIL);	/* no fdw_private */
 
 	/* Add generated path into joinrel by add_path(). */
 	add_path(joinrel, (Path *) joinpath);
@@ -5566,16 +5543,15 @@ add_foreign_grouping_paths(PlannerInfo *root, RelOptInfo *input_rel,
 	fpinfo->total_cost = total_cost;
 
 	/* Create and add foreign path to the grouping relation. */
-	grouppath = create_foreignscan_path(root,
-										grouped_rel,
-										grouped_rel->reltarget,
-										rows,
-										startup_cost,
-										total_cost,
-										NIL,	/* no pathkeys */
-										NULL,	/* no required_outer */
-										NULL,
-										NIL);	/* no fdw_private */
+	grouppath = create_foreign_upper_path(root,
+										  grouped_rel,
+										  grouped_rel->reltarget,
+										  rows,
+										  startup_cost,
+										  total_cost,
+										  NIL,	/* no pathkeys */
+										  NULL,
+										  NIL); /* no fdw_private */
 
 	/* Add generated path into grouped_rel by add_path(). */
 	add_path(grouped_rel, (Path *) grouppath);

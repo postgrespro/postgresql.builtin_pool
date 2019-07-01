@@ -10,7 +10,7 @@
  * It doesn't matter whether the bits are on spinning rust or some other
  * storage technology.
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -171,7 +171,7 @@ static CycleCtr mdckpt_cycle_ctr = 0;
 #define EXTENSION_CREATE_RECOVERY	(1 << 3)
 /*
  * Allow opening segments which are preceded by segments smaller than
- * RELSEG_SIZE, e.g. inactive segments (see above). Note that this is breaks
+ * RELSEG_SIZE, e.g. inactive segments (see above). Note that this breaks
  * mdnblocks() and related functionality henceforth - which currently is ok,
  * because this is only required in the checkpointer which never uses
  * mdnblocks().
@@ -310,13 +310,7 @@ mdcreate(SMgrRelation reln, ForkNumber forkNum, bool isRedo)
 	{
 		int			save_errno = errno;
 
-		/*
-		 * During bootstrap, there are cases where a system relation will be
-		 * accessed (by internal backend processes) before the bootstrap
-		 * script nominally creates it.  Therefore, allow the file to exist
-		 * already, even if isRedo is not set.  (See also mdopen)
-		 */
-		if (isRedo || IsBootstrapProcessingMode())
+		if (isRedo)
 			fd = PathNameOpenFile(path, O_RDWR | PG_BINARY);
 		if (fd < 0)
 		{
@@ -572,26 +566,15 @@ mdopen(SMgrRelation reln, ForkNumber forknum, int behavior)
 
 	if (fd < 0)
 	{
-		/*
-		 * During bootstrap, there are cases where a system relation will be
-		 * accessed (by internal backend processes) before the bootstrap
-		 * script nominally creates it.  Therefore, accept mdopen() as a
-		 * substitute for mdcreate() in bootstrap mode only. (See mdcreate)
-		 */
-		if (IsBootstrapProcessingMode())
-			fd = PathNameOpenFile(path, O_RDWR | O_CREAT | O_EXCL | PG_BINARY);
-		if (fd < 0)
+		if ((behavior & EXTENSION_RETURN_NULL) &&
+			FILE_POSSIBLY_DELETED(errno))
 		{
-			if ((behavior & EXTENSION_RETURN_NULL) &&
-				FILE_POSSIBLY_DELETED(errno))
-			{
-				pfree(path);
-				return NULL;
-			}
-			ereport(ERROR,
-					(errcode_for_file_access(),
-					 errmsg("could not open file \"%s\": %m", path)));
+			pfree(path);
+			return NULL;
 		}
+		ereport(ERROR,
+				(errcode_for_file_access(),
+				 errmsg("could not open file \"%s\": %m", path)));
 	}
 
 	pfree(path);
@@ -882,8 +865,8 @@ mdnblocks(SMgrRelation reln, ForkNumber forknum)
 		segno++;
 
 		/*
-		 * We used to pass O_CREAT here, but that's has the disadvantage that
-		 * it might create a segment which has vanished through some operating
+		 * We used to pass O_CREAT here, but that has the disadvantage that it
+		 * might create a segment which has vanished through some operating
 		 * system misadventure.  In such a case, creating the segment here
 		 * undermines _mdfd_getseg's attempts to notice and report an error
 		 * upon access to a missing segment.

@@ -3,7 +3,7 @@
  * hashinsert.c
  *	  Item insertion in hash tables for Postgres.
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -17,7 +17,6 @@
 
 #include "access/hash.h"
 #include "access/hash_xlog.h"
-#include "access/heapam.h"
 #include "miscadmin.h"
 #include "utils/rel.h"
 #include "storage/lwlock.h"

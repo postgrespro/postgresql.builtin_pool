@@ -3,7 +3,7 @@
  * allpaths.c
  *	  Routines to find possible search paths for processing a query
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -30,17 +30,18 @@
 #ifdef OPTIMIZER_DEBUG
 #include "nodes/print.h"
 #endif
+#include "optimizer/appendinfo.h"
 #include "optimizer/clauses.h"
 #include "optimizer/cost.h"
 #include "optimizer/geqo.h"
+#include "optimizer/inherit.h"
+#include "optimizer/optimizer.h"
 #include "optimizer/pathnode.h"
 #include "optimizer/paths.h"
 #include "optimizer/plancat.h"
 #include "optimizer/planner.h"
-#include "optimizer/prep.h"
 #include "optimizer/restrictinfo.h"
 #include "optimizer/tlist.h"
-#include "optimizer/var.h"
 #include "parser/parse_clause.h"
 #include "parser/parsetree.h"
 #include "partitioning/partprune.h"
@@ -104,6 +105,7 @@ static Path *get_cheapest_parameterized_child_path(PlannerInfo *root,
 									  Relids required_outer);
 static void accumulate_append_subpath(Path *path,
 						  List **subpaths, List **special_subpaths);
+static void set_dummy_rel_pathlist(RelOptInfo *rel);
 static void set_subquery_pathlist(PlannerInfo *root, RelOptInfo *rel,
 					  Index rti, RangeTblEntry *rte);
 static void set_function_pathlist(PlannerInfo *root, RelOptInfo *rel,
@@ -116,6 +118,8 @@ static void set_cte_pathlist(PlannerInfo *root, RelOptInfo *rel,
 				 RangeTblEntry *rte);
 static void set_namedtuplestore_pathlist(PlannerInfo *root, RelOptInfo *rel,
 							 RangeTblEntry *rte);
+static void set_result_pathlist(PlannerInfo *root, RelOptInfo *rel,
+					RangeTblEntry *rte);
 static void set_worktable_pathlist(PlannerInfo *root, RelOptInfo *rel,
 					   RangeTblEntry *rte);
 static RelOptInfo *make_rel_from_joinlist(PlannerInfo *root, List *joinlist);
@@ -135,6 +139,9 @@ static void subquery_push_qual(Query *subquery,
 static void recurse_push_qual(Node *setOp, Query *topquery,
 				  RangeTblEntry *rte, Index rti, Node *qual);
 static void remove_unused_subquery_outputs(Query *subquery, RelOptInfo *rel);
+static bool apply_child_basequals(PlannerInfo *root, RelOptInfo *rel,
+					  RelOptInfo *childrel,
+					  RangeTblEntry *childRTE, AppendRelInfo *appinfo);
 
 
 /*
@@ -436,7 +443,12 @@ set_rel_size(PlannerInfo *root, RelOptInfo *rel,
 					set_cte_pathlist(root, rel, rte);
 				break;
 			case RTE_NAMEDTUPLESTORE:
+				/* Might as well just build the path immediately */
 				set_namedtuplestore_pathlist(root, rel, rte);
+				break;
+			case RTE_RESULT:
+				/* Might as well just build the path immediately */
+				set_result_pathlist(root, rel, rte);
 				break;
 			default:
 				elog(ERROR, "unexpected rtekind: %d", (int) rel->rtekind);
@@ -509,6 +521,9 @@ set_rel_pathlist(PlannerInfo *root, RelOptInfo *rel,
 			case RTE_NAMEDTUPLESTORE:
 				/* tuplestore reference --- fully handled during set_rel_size */
 				break;
+			case RTE_RESULT:
+				/* simple Result --- fully handled during set_rel_size */
+				break;
 			default:
 				elog(ERROR, "unexpected rtekind: %d", (int) rel->rtekind);
 				break;
@@ -516,8 +531,19 @@ set_rel_pathlist(PlannerInfo *root, RelOptInfo *rel,
 	}
 
 	/*
+	 * Allow a plugin to editorialize on the set of Paths for this base
+	 * relation.  It could add new paths (such as CustomPaths) by calling
+	 * add_path(), or add_partial_path() if parallel aware.  It could also
+	 * delete or modify paths added by the core code.
+	 */
+	if (set_rel_pathlist_hook)
+		(*set_rel_pathlist_hook) (root, rel, rti, rte);
+
+	/*
 	 * If this is a baserel, we should normally consider gathering any partial
-	 * paths we may have created for it.
+	 * paths we may have created for it.  We have to do this after calling the
+	 * set_rel_pathlist_hook, else it cannot add partial paths to be included
+	 * here.
 	 *
 	 * However, if this is an inheritance child, skip it.  Otherwise, we could
 	 * end up with a very large number of gather nodes, each trying to grab
@@ -525,20 +551,12 @@ set_rel_pathlist(PlannerInfo *root, RelOptInfo *rel,
 	 * paths for the parent appendrel.
 	 *
 	 * Also, if this is the topmost scan/join rel (that is, the only baserel),
-	 * we postpone this until the final scan/join targelist is available (see
-	 * grouping_planner).
+	 * we postpone gathering until the final scan/join targetlist is available
+	 * (see grouping_planner).
 	 */
 	if (rel->reloptkind == RELOPT_BASEREL &&
 		bms_membership(root->all_baserels) != BMS_SINGLETON)
 		generate_gather_paths(root, rel, false);
-
-	/*
-	 * Allow a plugin to editorialize on the set of Paths for this base
-	 * relation.  It could add new paths (such as CustomPaths) by calling
-	 * add_path(), or delete or modify paths added by the core code.
-	 */
-	if (set_rel_pathlist_hook)
-		(*set_rel_pathlist_hook) (root, rel, rti, rte);
 
 	/* Now find the cheapest of the paths for this rel */
 	set_cheapest(rel);
@@ -711,6 +729,10 @@ set_rel_consider_parallel(PlannerInfo *root, RelOptInfo *rel,
 			 * infrastructure to support that.
 			 */
 			return;
+
+		case RTE_RESULT:
+			/* RESULT RTEs, in themselves, are no problem. */
+			break;
 	}
 
 	/*
@@ -995,12 +1017,8 @@ set_append_rel_size(PlannerInfo *root, RelOptInfo *rel,
 		int			childRTindex;
 		RangeTblEntry *childRTE;
 		RelOptInfo *childrel;
-		List	   *childquals;
-		Index		cq_min_security;
-		bool		have_const_false_cq;
 		ListCell   *parentvars;
 		ListCell   *childvars;
-		ListCell   *lc;
 
 		/* append_rel_list contains all append rels; ignore others */
 		if (appinfo->parent_relid != parentRTindex)
@@ -1016,162 +1034,26 @@ set_append_rel_size(PlannerInfo *root, RelOptInfo *rel,
 		childrel = find_base_rel(root, childRTindex);
 		Assert(childrel->reloptkind == RELOPT_OTHER_MEMBER_REL);
 
-		/*
-		 * Copy/Modify targetlist. Even if this child is deemed empty, we need
-		 * its targetlist in case it falls on nullable side in a child-join
-		 * because of partitionwise join.
-		 *
-		 * NB: the resulting childrel->reltarget->exprs may contain arbitrary
-		 * expressions, which otherwise would not occur in a rel's targetlist.
-		 * Code that might be looking at an appendrel child must cope with
-		 * such.  (Normally, a rel's targetlist would only include Vars and
-		 * PlaceHolderVars.)  XXX we do not bother to update the cost or width
-		 * fields of childrel->reltarget; not clear if that would be useful.
-		 */
-		childrel->reltarget->exprs = (List *)
-			adjust_appendrel_attrs(root,
-								   (Node *) rel->reltarget->exprs,
-								   1, &appinfo);
-
-		/*
-		 * We have to make child entries in the EquivalenceClass data
-		 * structures as well.  This is needed either if the parent
-		 * participates in some eclass joins (because we will want to consider
-		 * inner-indexscan joins on the individual children) or if the parent
-		 * has useful pathkeys (because we should try to build MergeAppend
-		 * paths that produce those sort orderings). Even if this child is
-		 * deemed dummy, it may fall on nullable side in a child-join, which
-		 * in turn may participate in a MergeAppend, where we will need the
-		 * EquivalenceClass data structures.
-		 */
-		if (rel->has_eclass_joins || has_useful_pathkeys(root, rel))
-			add_child_rel_equivalences(root, appinfo, rel, childrel);
-		childrel->has_eclass_joins = rel->has_eclass_joins;
-
-		/*
-		 * We have to copy the parent's quals to the child, with appropriate
-		 * substitution of variables.  However, only the baserestrictinfo
-		 * quals are needed before we can check for constraint exclusion; so
-		 * do that first and then check to see if we can disregard this child.
-		 *
-		 * The child rel's targetlist might contain non-Var expressions, which
-		 * means that substitution into the quals could produce opportunities
-		 * for const-simplification, and perhaps even pseudoconstant quals.
-		 * Therefore, transform each RestrictInfo separately to see if it
-		 * reduces to a constant or pseudoconstant.  (We must process them
-		 * separately to keep track of the security level of each qual.)
-		 */
-		childquals = NIL;
-		cq_min_security = UINT_MAX;
-		have_const_false_cq = false;
-		foreach(lc, rel->baserestrictinfo)
+		if (did_pruning && !bms_is_member(appinfo->child_relid, live_children))
 		{
-			RestrictInfo *rinfo = (RestrictInfo *) lfirst(lc);
-			Node	   *childqual;
-			ListCell   *lc2;
-
-			Assert(IsA(rinfo, RestrictInfo));
-			childqual = adjust_appendrel_attrs(root,
-											   (Node *) rinfo->clause,
-											   1, &appinfo);
-			childqual = eval_const_expressions(root, childqual);
-			/* check for flat-out constant */
-			if (childqual && IsA(childqual, Const))
-			{
-				if (((Const *) childqual)->constisnull ||
-					!DatumGetBool(((Const *) childqual)->constvalue))
-				{
-					/* Restriction reduces to constant FALSE or NULL */
-					have_const_false_cq = true;
-					break;
-				}
-				/* Restriction reduces to constant TRUE, so drop it */
-				continue;
-			}
-			/* might have gotten an AND clause, if so flatten it */
-			foreach(lc2, make_ands_implicit((Expr *) childqual))
-			{
-				Node	   *onecq = (Node *) lfirst(lc2);
-				bool		pseudoconstant;
-
-				/* check for pseudoconstant (no Vars or volatile functions) */
-				pseudoconstant =
-					!contain_vars_of_level(onecq, 0) &&
-					!contain_volatile_functions(onecq);
-				if (pseudoconstant)
-				{
-					/* tell createplan.c to check for gating quals */
-					root->hasPseudoConstantQuals = true;
-				}
-				/* reconstitute RestrictInfo with appropriate properties */
-				childquals = lappend(childquals,
-									 make_restrictinfo((Expr *) onecq,
-													   rinfo->is_pushed_down,
-													   rinfo->outerjoin_delayed,
-													   pseudoconstant,
-													   rinfo->security_level,
-													   NULL, NULL, NULL));
-				/* track minimum security level among child quals */
-				cq_min_security = Min(cq_min_security, rinfo->security_level);
-			}
+			/* This partition was pruned; skip it. */
+			set_dummy_rel_pathlist(childrel);
+			continue;
 		}
 
 		/*
-		 * In addition to the quals inherited from the parent, we might have
-		 * securityQuals associated with this particular child node.
-		 * (Currently this can only happen in appendrels originating from
-		 * UNION ALL; inheritance child tables don't have their own
-		 * securityQuals, see expand_inherited_rtentry().)	Pull any such
-		 * securityQuals up into the baserestrictinfo for the child.  This is
-		 * similar to process_security_barrier_quals() for the parent rel,
-		 * except that we can't make any general deductions from such quals,
-		 * since they don't hold for the whole appendrel.
+		 * We have to copy the parent's targetlist and quals to the child,
+		 * with appropriate substitution of variables.  If any constant false
+		 * or NULL clauses turn up, we can disregard the child right away.
+		 * If not, we can apply constraint exclusion with just the
+		 * baserestrictinfo quals.
 		 */
-		if (childRTE->securityQuals)
-		{
-			Index		security_level = 0;
-
-			foreach(lc, childRTE->securityQuals)
-			{
-				List	   *qualset = (List *) lfirst(lc);
-				ListCell   *lc2;
-
-				foreach(lc2, qualset)
-				{
-					Expr	   *qual = (Expr *) lfirst(lc2);
-
-					/* not likely that we'd see constants here, so no check */
-					childquals = lappend(childquals,
-										 make_restrictinfo(qual,
-														   true, false, false,
-														   security_level,
-														   NULL, NULL, NULL));
-					cq_min_security = Min(cq_min_security, security_level);
-				}
-				security_level++;
-			}
-			Assert(security_level <= root->qual_security_level);
-		}
-
-		/*
-		 * OK, we've got all the baserestrictinfo quals for this child.
-		 */
-		childrel->baserestrictinfo = childquals;
-		childrel->baserestrict_min_security = cq_min_security;
-
-		if (have_const_false_cq)
+		if (!apply_child_basequals(root, rel, childrel, childRTE, appinfo))
 		{
 			/*
 			 * Some restriction clause reduced to constant FALSE or NULL after
 			 * substitution, so this child need not be scanned.
 			 */
-			set_dummy_rel_pathlist(childrel);
-			continue;
-		}
-
-		if (did_pruning && !bms_is_member(appinfo->child_relid, live_children))
-		{
-			/* This partition was pruned; skip it. */
 			set_dummy_rel_pathlist(childrel);
 			continue;
 		}
@@ -1186,11 +1068,36 @@ set_append_rel_size(PlannerInfo *root, RelOptInfo *rel,
 			continue;
 		}
 
-		/* CE failed, so finish copying/modifying join quals. */
+		/*
+		 * CE failed, so finish copying/modifying targetlist and join quals.
+		 *
+		 * NB: the resulting childrel->reltarget->exprs may contain arbitrary
+		 * expressions, which otherwise would not occur in a rel's targetlist.
+		 * Code that might be looking at an appendrel child must cope with
+		 * such.  (Normally, a rel's targetlist would only include Vars and
+		 * PlaceHolderVars.)  XXX we do not bother to update the cost or width
+		 * fields of childrel->reltarget; not clear if that would be useful.
+		 */
 		childrel->joininfo = (List *)
 			adjust_appendrel_attrs(root,
 								   (Node *) rel->joininfo,
 								   1, &appinfo);
+		childrel->reltarget->exprs = (List *)
+			adjust_appendrel_attrs(root,
+								   (Node *) rel->reltarget->exprs,
+								   1, &appinfo);
+
+		/*
+		 * We have to make child entries in the EquivalenceClass data
+		 * structures as well.  This is needed either if the parent
+		 * participates in some eclass joins (because we will want to consider
+		 * inner-indexscan joins on the individual children) or if the parent
+		 * has useful pathkeys (because we should try to build MergeAppend
+		 * paths that produce those sort orderings).
+		 */
+		if (rel->has_eclass_joins || has_useful_pathkeys(root, rel))
+			add_child_rel_equivalences(root, appinfo, rel, childrel);
+		childrel->has_eclass_joins = rel->has_eclass_joins;
 
 		/*
 		 * Note: we could compute appropriate attr_needed data for the child's
@@ -1203,9 +1110,15 @@ set_append_rel_size(PlannerInfo *root, RelOptInfo *rel,
 		/*
 		 * If we consider partitionwise joins with the parent rel, do the same
 		 * for partitioned child rels.
+		 *
+		 * Note: here we abuse the consider_partitionwise_join flag by setting
+		 * it *even* for child rels that are not partitioned.  In that case,
+		 * we set it to tell try_partitionwise_join() that it doesn't need to
+		 * generate their targetlists and EC entries as they have already been
+		 * generated here, as opposed to the dummy child rels for which the
+		 * flag is left set to false so that it will generate them.
 		 */
-		if (rel->consider_partitionwise_join &&
-			childRTE->relkind == RELKIND_PARTITIONED_TABLE)
+		if (rel->consider_partitionwise_join)
 			childrel->consider_partitionwise_join = true;
 
 		/*
@@ -1645,7 +1558,7 @@ add_paths_to_append_rel(PlannerInfo *root, RelOptInfo *rel,
 	 * Consider an append of unordered, unparameterized partial paths.  Make
 	 * it parallel-aware if possible.
 	 */
-	if (partial_subpaths_valid)
+	if (partial_subpaths_valid && partial_subpaths != NIL)
 	{
 		AppendPath *appendpath;
 		ListCell   *lc;
@@ -2042,11 +1955,13 @@ accumulate_append_subpath(Path *path, List **subpaths, List **special_subpaths)
  *	  Build a dummy path for a relation that's been excluded by constraints
  *
  * Rather than inventing a special "dummy" path type, we represent this as an
- * AppendPath with no members (see also IS_DUMMY_PATH/IS_DUMMY_REL macros).
+ * AppendPath with no members (see also IS_DUMMY_APPEND/IS_DUMMY_REL macros).
  *
- * This is exported because inheritance_planner() has need for it.
+ * (See also mark_dummy_rel, which does basically the same thing, but is
+ * typically used to change a rel into dummy state after we already made
+ * paths for it.)
  */
-void
+static void
 set_dummy_rel_pathlist(RelOptInfo *rel)
 {
 	/* Set dummy size estimates --- we leave attr_widths[] as zeroes */
@@ -2057,14 +1972,16 @@ set_dummy_rel_pathlist(RelOptInfo *rel)
 	rel->pathlist = NIL;
 	rel->partial_pathlist = NIL;
 
-	add_path(rel, (Path *) create_append_path(NULL, rel, NIL, NIL, NULL,
+	/* Set up the dummy path */
+	add_path(rel, (Path *) create_append_path(NULL, rel, NIL, NIL,
+											  rel->lateral_relids,
 											  0, false, NIL, -1));
 
 	/*
-	 * We set the cheapest path immediately, to ensure that IS_DUMMY_REL()
-	 * will recognize the relation as dummy if anyone asks.  This is redundant
-	 * when we're called from set_rel_size(), but not when called from
-	 * elsewhere, and doing it twice is harmless anyway.
+	 * We set the cheapest-path fields immediately, just in case they were
+	 * pointing at some discarded path.  This is redundant when we're called
+	 * from set_rel_size(), but not when called from elsewhere, and doing it
+	 * twice is harmless anyway.
 	 */
 	set_cheapest(rel);
 }
@@ -2503,6 +2420,36 @@ set_namedtuplestore_pathlist(PlannerInfo *root, RelOptInfo *rel,
 
 	/* Generate appropriate path */
 	add_path(rel, create_namedtuplestorescan_path(root, rel, required_outer));
+
+	/* Select cheapest path (pretty easy in this case...) */
+	set_cheapest(rel);
+}
+
+/*
+ * set_result_pathlist
+ *		Build the (single) access path for an RTE_RESULT RTE
+ *
+ * There's no need for a separate set_result_size phase, since we
+ * don't support join-qual-parameterized paths for these RTEs.
+ */
+static void
+set_result_pathlist(PlannerInfo *root, RelOptInfo *rel,
+					RangeTblEntry *rte)
+{
+	Relids		required_outer;
+
+	/* Mark rel with estimated output rows, width, etc */
+	set_result_size_estimates(root, rel);
+
+	/*
+	 * We don't support pushing join clauses into the quals of a Result scan,
+	 * but it could still have required parameterization due to LATERAL refs
+	 * in its tlist.
+	 */
+	required_outer = rel->lateral_relids;
+
+	/* Generate appropriate path */
+	add_path(rel, create_resultscan_path(root, rel, required_outer));
 
 	/* Select cheapest path (pretty easy in this case...) */
 	set_cheapest(rel);
@@ -3590,11 +3537,11 @@ generate_partitionwise_join_paths(PlannerInfo *root, RelOptInfo *rel)
 		/* Add partitionwise join paths for partitioned child-joins. */
 		generate_partitionwise_join_paths(root, child_rel);
 
+		set_cheapest(child_rel);
+
 		/* Dummy children will not be scanned, so ignore those. */
 		if (IS_DUMMY_REL(child_rel))
 			continue;
-
-		set_cheapest(child_rel);
 
 #ifdef OPTIMIZER_DEBUG
 		debug_print_rel(root, child_rel);
@@ -3615,6 +3562,133 @@ generate_partitionwise_join_paths(PlannerInfo *root, RelOptInfo *rel)
 	list_free(live_children);
 }
 
+/*
+ * apply_child_basequals
+ *		Populate childrel's quals based on rel's quals, translating them using
+ *		appinfo.
+ *
+ * If any of the resulting clauses evaluate to false or NULL, we return false
+ * and don't apply any quals.  Caller can mark the relation as a dummy rel in
+ * this case, since it needn't be scanned.
+ *
+ * If any resulting clauses evaluate to true, they're unnecessary and we don't
+ * apply then.
+ */
+static bool
+apply_child_basequals(PlannerInfo *root, RelOptInfo *rel,
+					  RelOptInfo *childrel, RangeTblEntry *childRTE,
+					  AppendRelInfo *appinfo)
+{
+	List	   *childquals;
+	Index		cq_min_security;
+	ListCell   *lc;
+
+	/*
+	 * The child rel's targetlist might contain non-Var expressions, which
+	 * means that substitution into the quals could produce opportunities for
+	 * const-simplification, and perhaps even pseudoconstant quals. Therefore,
+	 * transform each RestrictInfo separately to see if it reduces to a
+	 * constant or pseudoconstant.  (We must process them separately to keep
+	 * track of the security level of each qual.)
+	 */
+	childquals = NIL;
+	cq_min_security = UINT_MAX;
+	foreach(lc, rel->baserestrictinfo)
+	{
+		RestrictInfo *rinfo = (RestrictInfo *) lfirst(lc);
+		Node	   *childqual;
+		ListCell   *lc2;
+
+		Assert(IsA(rinfo, RestrictInfo));
+		childqual = adjust_appendrel_attrs(root,
+										   (Node *) rinfo->clause,
+										   1, &appinfo);
+		childqual = eval_const_expressions(root, childqual);
+		/* check for flat-out constant */
+		if (childqual && IsA(childqual, Const))
+		{
+			if (((Const *) childqual)->constisnull ||
+				!DatumGetBool(((Const *) childqual)->constvalue))
+			{
+				/* Restriction reduces to constant FALSE or NULL */
+				return false;
+			}
+			/* Restriction reduces to constant TRUE, so drop it */
+			continue;
+		}
+		/* might have gotten an AND clause, if so flatten it */
+		foreach(lc2, make_ands_implicit((Expr *) childqual))
+		{
+			Node	   *onecq = (Node *) lfirst(lc2);
+			bool		pseudoconstant;
+
+			/* check for pseudoconstant (no Vars or volatile functions) */
+			pseudoconstant =
+				!contain_vars_of_level(onecq, 0) &&
+				!contain_volatile_functions(onecq);
+			if (pseudoconstant)
+			{
+				/* tell createplan.c to check for gating quals */
+				root->hasPseudoConstantQuals = true;
+			}
+			/* reconstitute RestrictInfo with appropriate properties */
+			childquals = lappend(childquals,
+								 make_restrictinfo((Expr *) onecq,
+												   rinfo->is_pushed_down,
+												   rinfo->outerjoin_delayed,
+												   pseudoconstant,
+												   rinfo->security_level,
+												   NULL, NULL, NULL));
+			/* track minimum security level among child quals */
+			cq_min_security = Min(cq_min_security, rinfo->security_level);
+		}
+	}
+
+	/*
+	 * In addition to the quals inherited from the parent, we might have
+	 * securityQuals associated with this particular child node. (Currently
+	 * this can only happen in appendrels originating from UNION ALL;
+	 * inheritance child tables don't have their own securityQuals, see
+	 * expand_inherited_rtentry().)	Pull any such securityQuals up into the
+	 * baserestrictinfo for the child.  This is similar to
+	 * process_security_barrier_quals() for the parent rel, except that we
+	 * can't make any general deductions from such quals, since they don't
+	 * hold for the whole appendrel.
+	 */
+	if (childRTE->securityQuals)
+	{
+		Index		security_level = 0;
+
+		foreach(lc, childRTE->securityQuals)
+		{
+			List	   *qualset = (List *) lfirst(lc);
+			ListCell   *lc2;
+
+			foreach(lc2, qualset)
+			{
+				Expr	   *qual = (Expr *) lfirst(lc2);
+
+				/* not likely that we'd see constants here, so no check */
+				childquals = lappend(childquals,
+									 make_restrictinfo(qual,
+													   true, false, false,
+													   security_level,
+													   NULL, NULL, NULL));
+				cq_min_security = Min(cq_min_security, security_level);
+			}
+			security_level++;
+		}
+		Assert(security_level <= root->qual_security_level);
+	}
+
+	/*
+	 * OK, we've got all the baserestrictinfo quals for this child.
+	 */
+	childrel->baserestrictinfo = childquals;
+	childrel->baserestrict_min_security = cq_min_security;
+
+	return true;
+}
 
 /*****************************************************************************
  *			DEBUG SUPPORT
@@ -3676,9 +3750,6 @@ print_path(PlannerInfo *root, Path *path, int indent)
 				case T_SampleScan:
 					ptype = "SampleScan";
 					break;
-				case T_SubqueryScan:
-					ptype = "SubqueryScan";
-					break;
 				case T_FunctionScan:
 					ptype = "FunctionScan";
 					break;
@@ -3690,6 +3761,12 @@ print_path(PlannerInfo *root, Path *path, int indent)
 					break;
 				case T_CteScan:
 					ptype = "CteScan";
+					break;
+				case T_NamedTuplestoreScan:
+					ptype = "NamedTuplestoreScan";
+					break;
+				case T_Result:
+					ptype = "Result";
 					break;
 				case T_WorkTableScan:
 					ptype = "WorkTableScan";
@@ -3715,7 +3792,7 @@ print_path(PlannerInfo *root, Path *path, int indent)
 			ptype = "TidScan";
 			break;
 		case T_SubqueryScanPath:
-			ptype = "SubqueryScanScan";
+			ptype = "SubqueryScan";
 			break;
 		case T_ForeignPath:
 			ptype = "ForeignScan";
@@ -3741,8 +3818,8 @@ print_path(PlannerInfo *root, Path *path, int indent)
 		case T_MergeAppendPath:
 			ptype = "MergeAppend";
 			break;
-		case T_ResultPath:
-			ptype = "Result";
+		case T_GroupResultPath:
+			ptype = "GroupResult";
 			break;
 		case T_MaterialPath:
 			ptype = "Material";

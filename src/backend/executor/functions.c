@@ -3,7 +3,7 @@
  * functions.c
  *	  Execution of SQL-language functions
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -906,21 +906,10 @@ postquel_sub_params(SQLFunctionCachePtr fcache,
 	if (nargs > 0)
 	{
 		ParamListInfo paramLI;
-		int			i;
 
 		if (fcache->paramLI == NULL)
 		{
-			paramLI = (ParamListInfo)
-				palloc(offsetof(ParamListInfoData, params) +
-					   nargs * sizeof(ParamExternData));
-			/* we have static list of params, so no hooks needed */
-			paramLI->paramFetch = NULL;
-			paramLI->paramFetchArg = NULL;
-			paramLI->paramCompile = NULL;
-			paramLI->paramCompileArg = NULL;
-			paramLI->parserSetup = NULL;
-			paramLI->parserSetupArg = NULL;
-			paramLI->numParams = nargs;
+			paramLI = makeParamList(nargs);
 			fcache->paramLI = paramLI;
 		}
 		else
@@ -929,12 +918,12 @@ postquel_sub_params(SQLFunctionCachePtr fcache,
 			Assert(paramLI->numParams == nargs);
 		}
 
-		for (i = 0; i < nargs; i++)
+		for (int i = 0; i < nargs; i++)
 		{
 			ParamExternData *prm = &paramLI->params[i];
 
-			prm->value = fcinfo->arg[i];
-			prm->isnull = fcinfo->argnull[i];
+			prm->value = fcinfo->args[i].value;
+			prm->isnull = fcinfo->args[i].isnull;
 			prm->pflags = 0;
 			prm->ptype = fcache->pinfo->argtypes[i];
 		}

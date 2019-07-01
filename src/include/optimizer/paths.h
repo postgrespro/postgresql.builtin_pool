@@ -4,7 +4,7 @@
  *	  prototypes for various files in optimizer/path
  *
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/optimizer/paths.h
@@ -14,7 +14,7 @@
 #ifndef PATHS_H
 #define PATHS_H
 
-#include "nodes/relation.h"
+#include "nodes/pathnodes.h"
 
 
 /*
@@ -49,7 +49,6 @@ extern PGDLLIMPORT join_search_hook_type join_search_hook;
 
 
 extern RelOptInfo *make_one_rel(PlannerInfo *root, List *joinlist);
-extern void set_dummy_rel_pathlist(RelOptInfo *rel);
 extern RelOptInfo *standard_join_search(PlannerInfo *root, int levels_needed,
 					 List *initial_rels);
 
@@ -78,15 +77,7 @@ extern bool indexcol_is_bool_constant_for_query(IndexOptInfo *index,
 									int indexcol);
 extern bool match_index_to_operand(Node *operand, int indexcol,
 					   IndexOptInfo *index);
-extern void expand_indexqual_conditions(IndexOptInfo *index,
-							List *indexclauses, List *indexclausecols,
-							List **indexquals_p, List **indexqualcols_p);
 extern void check_index_predicates(PlannerInfo *root, RelOptInfo *rel);
-extern Expr *adjust_rowcompare_for_index(RowCompareExpr *clause,
-							IndexOptInfo *index,
-							int indexcol,
-							List **indexcolnos,
-							bool *var_on_left_p);
 
 /*
  * tidpath.h
@@ -175,6 +166,8 @@ extern bool eclass_useful_for_merging(PlannerInfo *root,
 						  EquivalenceClass *eclass,
 						  RelOptInfo *rel);
 extern bool is_redundant_derived_clause(RestrictInfo *rinfo, List *clauselist);
+extern bool is_redundant_with_indexclauses(RestrictInfo *rinfo,
+							   List *indexclauses);
 
 /*
  * pathkeys.c

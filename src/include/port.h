@@ -3,7 +3,7 @@
  * port.h
  *	  Header for src/port/ compatibility functions.
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/port.h
@@ -385,6 +385,15 @@ extern int	isinf(double x);
 #endif							/* __clang__ && !__cplusplus */
 #endif							/* !HAVE_ISINF */
 
+#ifndef HAVE_STRTOF
+extern float strtof(const char *nptr, char **endptr);
+#endif
+
+#ifdef HAVE_BUGGY_STRTOF
+extern float pg_strtof(const char *nptr, char **endptr);
+#define strtof(a,b) (pg_strtof((a),(b)))
+#endif
+
 #ifndef HAVE_MKDTEMP
 extern char *mkdtemp(char *path);
 #endif
@@ -502,9 +511,12 @@ extern char *inet_net_ntop(int af, const void *src, int bits,
 			  char *dst, size_t size);
 
 /* port/pg_strong_random.c */
-#ifdef HAVE_STRONG_RANDOM
 extern bool pg_strong_random(void *buf, size_t len);
-#endif
+/*
+ * pg_backend_random used to be a wrapper for pg_strong_random before
+ * Postgres 12 for the backend code.
+ */
+#define pg_backend_random pg_strong_random
 
 /* port/pgcheckdir.c */
 extern int	pg_check_dir(const char *dir);
@@ -524,7 +536,7 @@ extern pqsigfunc pqsignal_no_restart(int signo, pqsigfunc func);
 /* port/quotes.c */
 extern char *escape_single_quotes_ascii(const char *src);
 
-/* port/wait_error.c */
+/* common/wait_error.c */
 extern char *wait_result_to_str(int exit_status);
 extern bool wait_result_is_signal(int exit_status, int signum);
 extern bool wait_result_is_any_signal(int exit_status, bool include_command_not_found);

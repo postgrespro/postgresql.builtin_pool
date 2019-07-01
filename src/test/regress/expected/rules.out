@@ -910,24 +910,24 @@ insert into rtest_comp values ('p4', 'cm', 15.0);
 insert into rtest_comp values ('p5', 'inch', 7.0);
 insert into rtest_comp values ('p6', 'inch', 4.4);
 select * from rtest_vcomp order by part;
- part | size_in_cm 
-------+------------
- p1   |        500
- p2   |        300
- p3   |          5
- p4   |         15
- p5   |      17.78
- p6   |     11.176
+ part |     size_in_cm     
+------+--------------------
+ p1   |                500
+ p2   |                300
+ p3   |                  5
+ p4   |                 15
+ p5   |              17.78
+ p6   | 11.176000000000002
 (6 rows)
 
 select * from rtest_vcomp where size_in_cm > 10.0 order by size_in_cm using >;
- part | size_in_cm 
-------+------------
- p1   |        500
- p2   |        300
- p5   |      17.78
- p4   |         15
- p6   |     11.176
+ part |     size_in_cm     
+------+--------------------
+ p1   |                500
+ p2   |                300
+ p5   |              17.78
+ p4   |                 15
+ p6   | 11.176000000000002
 (5 rows)
 
 --
@@ -1289,6 +1289,14 @@ iexit| SELECT ih.name,
    FROM ihighway ih,
     ramp r
   WHERE (ih.thepath ## r.thepath);
+key_dependent_view| SELECT view_base_table.key,
+    view_base_table.data
+   FROM view_base_table
+  GROUP BY view_base_table.key;
+key_dependent_view_no_cols| SELECT
+   FROM view_base_table
+  GROUP BY view_base_table.key
+ HAVING (length((view_base_table.data)::text) > 0);
 mvtest_tv| SELECT mvtest_t.type,
     sum(mvtest_t.amt) AS totamt
    FROM mvtest_t
@@ -1731,7 +1739,7 @@ pg_stat_activity| SELECT s.datid,
     s.backend_xmin,
     s.query,
     s.backend_type
-   FROM ((pg_stat_get_activity(NULL::integer) s(datid, pid, usesysid, application_name, state, query, wait_event_type, wait_event, xact_start, query_start, backend_start, state_change, client_addr, client_hostname, client_port, backend_xid, backend_xmin, backend_type, ssl, sslversion, sslcipher, sslbits, sslcompression, sslclientdn)
+   FROM ((pg_stat_get_activity(NULL::integer) s(datid, pid, usesysid, application_name, state, query, wait_event_type, wait_event, xact_start, query_start, backend_start, state_change, client_addr, client_hostname, client_port, backend_xid, backend_xmin, backend_type, ssl, sslversion, sslcipher, sslbits, sslcompression, ssl_client_dn, ssl_client_serial, ssl_issuer_dn)
      LEFT JOIN pg_database d ON ((s.datid = d.oid)))
      LEFT JOIN pg_authid u ON ((s.usesysid = u.oid)));
 pg_stat_all_indexes| SELECT c.oid AS relid,
@@ -1809,6 +1817,7 @@ pg_stat_database| SELECT d.oid AS datid,
     pg_stat_get_db_temp_files(d.oid) AS temp_files,
     pg_stat_get_db_temp_bytes(d.oid) AS temp_bytes,
     pg_stat_get_db_deadlocks(d.oid) AS deadlocks,
+    pg_stat_get_db_checksum_failures(d.oid) AS checksum_failures,
     pg_stat_get_db_blk_read_time(d.oid) AS blk_read_time,
     pg_stat_get_db_blk_write_time(d.oid) AS blk_write_time,
     pg_stat_get_db_stat_reset_time(d.oid) AS stats_reset
@@ -1863,7 +1872,7 @@ pg_stat_replication| SELECT s.pid,
     w.sync_priority,
     w.sync_state,
     w.reply_time
-   FROM ((pg_stat_get_activity(NULL::integer) s(datid, pid, usesysid, application_name, state, query, wait_event_type, wait_event, xact_start, query_start, backend_start, state_change, client_addr, client_hostname, client_port, backend_xid, backend_xmin, backend_type, ssl, sslversion, sslcipher, sslbits, sslcompression, sslclientdn)
+   FROM ((pg_stat_get_activity(NULL::integer) s(datid, pid, usesysid, application_name, state, query, wait_event_type, wait_event, xact_start, query_start, backend_start, state_change, client_addr, client_hostname, client_port, backend_xid, backend_xmin, backend_type, ssl, sslversion, sslcipher, sslbits, sslcompression, ssl_client_dn, ssl_client_serial, ssl_issuer_dn)
      JOIN pg_stat_get_wal_senders() w(pid, state, sent_lsn, write_lsn, flush_lsn, replay_lsn, write_lag, flush_lag, replay_lag, sync_priority, sync_state, reply_time) ON ((s.pid = w.pid)))
      LEFT JOIN pg_authid u ON ((s.usesysid = u.oid)));
 pg_stat_ssl| SELECT s.pid,
@@ -1872,8 +1881,10 @@ pg_stat_ssl| SELECT s.pid,
     s.sslcipher AS cipher,
     s.sslbits AS bits,
     s.sslcompression AS compression,
-    s.sslclientdn AS clientdn
-   FROM pg_stat_get_activity(NULL::integer) s(datid, pid, usesysid, application_name, state, query, wait_event_type, wait_event, xact_start, query_start, backend_start, state_change, client_addr, client_hostname, client_port, backend_xid, backend_xmin, backend_type, ssl, sslversion, sslcipher, sslbits, sslcompression, sslclientdn);
+    s.ssl_client_dn AS client_dn,
+    s.ssl_client_serial AS client_serial,
+    s.ssl_issuer_dn AS issuer_dn
+   FROM pg_stat_get_activity(NULL::integer) s(datid, pid, usesysid, application_name, state, query, wait_event_type, wait_event, xact_start, query_start, backend_start, state_change, client_addr, client_hostname, client_port, backend_xid, backend_xmin, backend_type, ssl, sslversion, sslcipher, sslbits, sslcompression, ssl_client_dn, ssl_client_serial, ssl_issuer_dn);
 pg_stat_subscription| SELECT su.oid AS subid,
     su.subname,
     st.pid,
@@ -2499,21 +2510,21 @@ insert into rule_and_refint_t3 values (1, 11, 12, 'row2');
 insert into rule_and_refint_t3 values (1, 12, 11, 'row3');
 insert into rule_and_refint_t3 values (1, 12, 12, 'row4');
 insert into rule_and_refint_t3 values (1, 11, 13, 'row5');
-ERROR:  insert or update on table "rule_and_refint_t3" violates foreign key constraint "rule_and_refint_t3_id3a_fkey1"
+ERROR:  insert or update on table "rule_and_refint_t3" violates foreign key constraint "rule_and_refint_t3_id3a_id3c_fkey"
 DETAIL:  Key (id3a, id3c)=(1, 13) is not present in table "rule_and_refint_t2".
 insert into rule_and_refint_t3 values (1, 13, 11, 'row6');
-ERROR:  insert or update on table "rule_and_refint_t3" violates foreign key constraint "rule_and_refint_t3_id3a_fkey"
+ERROR:  insert or update on table "rule_and_refint_t3" violates foreign key constraint "rule_and_refint_t3_id3a_id3b_fkey"
 DETAIL:  Key (id3a, id3b)=(1, 13) is not present in table "rule_and_refint_t1".
 -- Ordinary table
 insert into rule_and_refint_t3 values (1, 13, 11, 'row6')
   on conflict do nothing;
-ERROR:  insert or update on table "rule_and_refint_t3" violates foreign key constraint "rule_and_refint_t3_id3a_fkey"
+ERROR:  insert or update on table "rule_and_refint_t3" violates foreign key constraint "rule_and_refint_t3_id3a_id3b_fkey"
 DETAIL:  Key (id3a, id3b)=(1, 13) is not present in table "rule_and_refint_t1".
 -- rule not fired, so fk violation
 insert into rule_and_refint_t3 values (1, 13, 11, 'row6')
   on conflict (id3a, id3b, id3c) do update
   set id3b = excluded.id3b;
-ERROR:  insert or update on table "rule_and_refint_t3" violates foreign key constraint "rule_and_refint_t3_id3a_fkey"
+ERROR:  insert or update on table "rule_and_refint_t3" violates foreign key constraint "rule_and_refint_t3_id3a_id3b_fkey"
 DETAIL:  Key (id3a, id3b)=(1, 13) is not present in table "rule_and_refint_t1".
 -- rule fired, so unsupported
 insert into shoelace values ('sl9', 0, 'pink', 35.0, 'inch', 0.0)
@@ -2530,10 +2541,10 @@ create rule rule_and_refint_t3_ins as on insert to rule_and_refint_t3
 	and (rule_and_refint_t3.id3b = new.id3b))
 	and (rule_and_refint_t3.id3c = new.id3c));
 insert into rule_and_refint_t3 values (1, 11, 13, 'row7');
-ERROR:  insert or update on table "rule_and_refint_t3" violates foreign key constraint "rule_and_refint_t3_id3a_fkey1"
+ERROR:  insert or update on table "rule_and_refint_t3" violates foreign key constraint "rule_and_refint_t3_id3a_id3c_fkey"
 DETAIL:  Key (id3a, id3c)=(1, 13) is not present in table "rule_and_refint_t2".
 insert into rule_and_refint_t3 values (1, 13, 11, 'row8');
-ERROR:  insert or update on table "rule_and_refint_t3" violates foreign key constraint "rule_and_refint_t3_id3a_fkey"
+ERROR:  insert or update on table "rule_and_refint_t3" violates foreign key constraint "rule_and_refint_t3_id3a_id3b_fkey"
 DETAIL:  Key (id3a, id3b)=(1, 13) is not present in table "rule_and_refint_t1".
 --
 -- disallow dropping a view's rule (bug #5072)
@@ -3108,7 +3119,7 @@ explain (costs off) INSERT INTO hats VALUES ('h8', 'forbidden') RETURNING *;
 (5 rows)
 
 -- ensure upserting into a rule, with a CTE (different offsets!) works
-WITH data(hat_name, hat_color) AS (
+WITH data(hat_name, hat_color) AS MATERIALIZED (
     VALUES ('h8', 'green'),
         ('h9', 'blue'),
         ('h7', 'forbidden')
@@ -3122,7 +3133,8 @@ RETURNING *;
  h9         | blue      
 (2 rows)
 
-EXPLAIN (costs off) WITH data(hat_name, hat_color) AS (
+EXPLAIN (costs off)
+WITH data(hat_name, hat_color) AS MATERIALIZED (
     VALUES ('h8', 'green'),
         ('h9', 'blue'),
         ('h7', 'forbidden')

@@ -5,7 +5,7 @@
  *	  Planning is complete, we just need to convert the selected
  *	  Path into a Plan.
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -19,7 +19,6 @@
 #include <limits.h>
 #include <math.h>
 
-#include "access/stratnum.h"
 #include "access/sysattr.h"
 #include "catalog/pg_class.h"
 #include "foreign/fdwapi.h"
@@ -29,16 +28,15 @@
 #include "nodes/nodeFuncs.h"
 #include "optimizer/clauses.h"
 #include "optimizer/cost.h"
+#include "optimizer/optimizer.h"
+#include "optimizer/paramassign.h"
 #include "optimizer/paths.h"
 #include "optimizer/placeholder.h"
 #include "optimizer/plancat.h"
 #include "optimizer/planmain.h"
-#include "optimizer/planner.h"
-#include "optimizer/predtest.h"
 #include "optimizer/restrictinfo.h"
 #include "optimizer/subselect.h"
 #include "optimizer/tlist.h"
-#include "optimizer/var.h"
 #include "parser/parse_clause.h"
 #include "parser/parsetree.h"
 #include "partitioning/partprune.h"
@@ -85,7 +83,8 @@ static Plan *create_gating_plan(PlannerInfo *root, Path *path, Plan *plan,
 static Plan *create_join_plan(PlannerInfo *root, JoinPath *best_path);
 static Plan *create_append_plan(PlannerInfo *root, AppendPath *best_path);
 static Plan *create_merge_append_plan(PlannerInfo *root, MergeAppendPath *best_path);
-static Result *create_result_plan(PlannerInfo *root, ResultPath *best_path);
+static Result *create_group_result_plan(PlannerInfo *root,
+						 GroupResultPath *best_path);
 static ProjectSet *create_project_set_plan(PlannerInfo *root, ProjectSetPath *best_path);
 static Material *create_material_plan(PlannerInfo *root, MaterialPath *best_path,
 					 int flags);
@@ -139,6 +138,8 @@ static CteScan *create_ctescan_plan(PlannerInfo *root, Path *best_path,
 					List *tlist, List *scan_clauses);
 static NamedTuplestoreScan *create_namedtuplestorescan_plan(PlannerInfo *root,
 								Path *best_path, List *tlist, List *scan_clauses);
+static Result *create_resultscan_plan(PlannerInfo *root, Path *best_path,
+					   List *tlist, List *scan_clauses);
 static WorkTableScan *create_worktablescan_plan(PlannerInfo *root, Path *best_path,
 						  List *tlist, List *scan_clauses);
 static ForeignScan *create_foreignscan_plan(PlannerInfo *root, ForeignPath *best_path,
@@ -151,10 +152,13 @@ static MergeJoin *create_mergejoin_plan(PlannerInfo *root, MergePath *best_path)
 static HashJoin *create_hashjoin_plan(PlannerInfo *root, HashPath *best_path);
 static Node *replace_nestloop_params(PlannerInfo *root, Node *expr);
 static Node *replace_nestloop_params_mutator(Node *node, PlannerInfo *root);
-static void process_subquery_nestloop_params(PlannerInfo *root,
-								 List *subplan_params);
-static List *fix_indexqual_references(PlannerInfo *root, IndexPath *index_path);
+static void fix_indexqual_references(PlannerInfo *root, IndexPath *index_path,
+						 List **stripped_indexquals_p,
+						 List **fixed_indexquals_p);
 static List *fix_indexorderby_references(PlannerInfo *root, IndexPath *index_path);
+static Node *fix_indexqual_clause(PlannerInfo *root,
+					 IndexOptInfo *index, int indexcol,
+					 Node *clause, List *indexcolnos);
 static Node *fix_indexqual_operand(Node *node, IndexOptInfo *index, int indexcol);
 static List *get_switched_clauses(List *clauses, Relids outerrelids);
 static List *order_qual_clauses(PlannerInfo *root, List *clauses);
@@ -310,7 +314,7 @@ create_plan(PlannerInfo *root, Path *best_path)
 	/* plan_params should not be in use in current query level */
 	Assert(root->plan_params == NIL);
 
-	/* Initialize this module's private workspace in PlannerInfo */
+	/* Initialize this module's workspace in PlannerInfo */
 	root->curOuterRels = NULL;
 	root->curOuterParams = NIL;
 
@@ -406,11 +410,16 @@ create_plan_recurse(PlannerInfo *root, Path *best_path, int flags)
 				plan = (Plan *) create_minmaxagg_plan(root,
 													  (MinMaxAggPath *) best_path);
 			}
+			else if (IsA(best_path, GroupResultPath))
+			{
+				plan = (Plan *) create_group_result_plan(root,
+														 (GroupResultPath *) best_path);
+			}
 			else
 			{
-				Assert(IsA(best_path, ResultPath));
-				plan = (Plan *) create_result_plan(root,
-												   (ResultPath *) best_path);
+				/* Simple RTE_RESULT base relation */
+				Assert(IsA(best_path, Path));
+				plan = create_scan_plan(root, best_path, flags);
 			}
 			break;
 		case T_ProjectSet:
@@ -694,6 +703,13 @@ create_scan_plan(PlannerInfo *root, Path *best_path, int flags)
 															scan_clauses);
 			break;
 
+		case T_Result:
+			plan = (Plan *) create_resultscan_plan(root,
+												   best_path,
+												   tlist,
+												   scan_clauses);
+			break;
+
 		case T_WorkTableScan:
 			plan = (Plan *) create_worktablescan_plan(root,
 													  best_path,
@@ -925,8 +941,25 @@ create_gating_plan(PlannerInfo *root, Path *path, Plan *plan,
 				   List *gating_quals)
 {
 	Plan	   *gplan;
+	Plan	   *splan;
 
 	Assert(gating_quals);
+
+	/*
+	 * We might have a trivial Result plan already.  Stacking one Result atop
+	 * another is silly, so if that applies, just discard the input plan.
+	 * (We're assuming its targetlist is uninteresting; it should be either
+	 * the same as the result of build_path_tlist, or a simplified version.)
+	 */
+	splan = plan;
+	if (IsA(plan, Result))
+	{
+		Result	   *rplan = (Result *) plan;
+
+		if (rplan->plan.lefttree == NULL &&
+			rplan->resconstantqual == NULL)
+			splan = NULL;
+	}
 
 	/*
 	 * Since we need a Result node anyway, always return the path's requested
@@ -935,7 +968,7 @@ create_gating_plan(PlannerInfo *root, Path *path, Plan *plan,
 	 */
 	gplan = (Plan *) make_result(build_path_tlist(root, path),
 								 (Node *) gating_quals,
-								 plan);
+								 splan);
 
 	/*
 	 * Notice that we don't change cost or size estimates when doing gating.
@@ -1039,7 +1072,7 @@ create_append_plan(PlannerInfo *root, AppendPath *best_path)
 	 *
 	 * Note that an AppendPath with no members is also generated in certain
 	 * cases where there was no appending construct at all, but we know the
-	 * relation is empty (see set_dummy_rel_pathlist).
+	 * relation is empty (see set_dummy_rel_pathlist and mark_dummy_rel).
 	 */
 	if (best_path->subpaths == NIL)
 	{
@@ -1257,15 +1290,14 @@ create_merge_append_plan(PlannerInfo *root, MergeAppendPath *best_path)
 }
 
 /*
- * create_result_plan
+ * create_group_result_plan
  *	  Create a Result plan for 'best_path'.
- *	  This is only used for degenerate cases, such as a query with an empty
- *	  jointree.
+ *	  This is only used for degenerate grouping cases.
  *
  *	  Returns a Plan node.
  */
 static Result *
-create_result_plan(PlannerInfo *root, ResultPath *best_path)
+create_group_result_plan(PlannerInfo *root, GroupResultPath *best_path)
 {
 	Result	   *plan;
 	List	   *tlist;
@@ -1554,7 +1586,7 @@ create_gather_plan(PlannerInfo *root, GatherPath *best_path)
 	gather_plan = make_gather(tlist,
 							  NIL,
 							  best_path->num_workers,
-							  SS_assign_special_param(root),
+							  assign_special_exec_param(root),
 							  best_path->single_copy,
 							  subplan);
 
@@ -1590,7 +1622,7 @@ create_gather_merge_plan(PlannerInfo *root, GatherMergePath *best_path)
 	copy_generic_path_info(&gm_plan->plan, &best_path->path);
 
 	/* Assign the rescan Param. */
-	gm_plan->rescan_param = SS_assign_special_param(root);
+	gm_plan->rescan_param = assign_special_exec_param(root);
 
 	/* Gather Merge is pointless with no pathkeys; use Gather instead. */
 	Assert(pathkeys != NIL);
@@ -2580,7 +2612,7 @@ create_indexscan_plan(PlannerInfo *root,
 					  bool indexonly)
 {
 	Scan	   *scan_plan;
-	List	   *indexquals = best_path->indexquals;
+	List	   *indexclauses = best_path->indexclauses;
 	List	   *indexorderbys = best_path->indexorderbys;
 	Index		baserelid = best_path->path.parent->relid;
 	Oid			indexoid = best_path->indexinfo->indexoid;
@@ -2596,16 +2628,14 @@ create_indexscan_plan(PlannerInfo *root,
 	Assert(best_path->path.parent->rtekind == RTE_RELATION);
 
 	/*
-	 * Build "stripped" indexquals structure (no RestrictInfos) to pass to
-	 * executor as indexqualorig
+	 * Extract the index qual expressions (stripped of RestrictInfos) from the
+	 * IndexClauses list, and prepare a copy with index Vars substituted for
+	 * table Vars.  (This step also does replace_nestloop_params on the
+	 * fixed_indexquals.)
 	 */
-	stripped_indexquals = get_actual_clauses(indexquals);
-
-	/*
-	 * The executor needs a copy with the indexkey on the left of each clause
-	 * and with index Vars substituted for table ones.
-	 */
-	fixed_indexquals = fix_indexqual_references(root, best_path);
+	fix_indexqual_references(root, best_path,
+							 &stripped_indexquals,
+							 &fixed_indexquals);
 
 	/*
 	 * Likewise fix up index attr references in the ORDER BY expressions.
@@ -2621,14 +2651,14 @@ create_indexscan_plan(PlannerInfo *root,
 	 * included in qpqual.  The upshot is that qpqual must contain
 	 * scan_clauses minus whatever appears in indexquals.
 	 *
-	 * In normal cases simple pointer equality checks will be enough to spot
-	 * duplicate RestrictInfos, so we try that first.
-	 *
-	 * Another common case is that a scan_clauses entry is generated from the
-	 * same EquivalenceClass as some indexqual, and is therefore redundant
-	 * with it, though not equal.  (This happens when indxpath.c prefers a
+	 * is_redundant_with_indexclauses() detects cases where a scan clause is
+	 * present in the indexclauses list or is generated from the same
+	 * EquivalenceClass as some indexclause, and is therefore redundant with
+	 * it, though not equal.  (The latter happens when indxpath.c prefers a
 	 * different derived equality than what generate_join_implied_equalities
-	 * picked for a parameterized scan's ppi_clauses.)
+	 * picked for a parameterized scan's ppi_clauses.)  Note that it will not
+	 * match to lossy index clauses, which is critical because we have to
+	 * include the original clause in qpqual in that case.
 	 *
 	 * In some situations (particularly with OR'd index conditions) we may
 	 * have scan_clauses that are not equal to, but are logically implied by,
@@ -2647,12 +2677,11 @@ create_indexscan_plan(PlannerInfo *root,
 
 		if (rinfo->pseudoconstant)
 			continue;			/* we may drop pseudoconstants here */
-		if (list_member_ptr(indexquals, rinfo))
-			continue;			/* simple duplicate */
-		if (is_redundant_derived_clause(rinfo, indexquals))
-			continue;			/* derived from same EquivalenceClass */
+		if (is_redundant_with_indexclauses(rinfo, indexclauses))
+			continue;			/* dup or derived from same EquivalenceClass */
 		if (!contain_mutable_functions((Node *) rinfo->clause) &&
-			predicate_implied_by(list_make1(rinfo->clause), indexquals, false))
+			predicate_implied_by(list_make1(rinfo->clause), stripped_indexquals,
+								 false))
 			continue;			/* provably implied by indexquals */
 		qpqual = lappend(qpqual, rinfo);
 	}
@@ -3013,6 +3042,8 @@ create_bitmap_subplan(PlannerInfo *root, Path *bitmapqual,
 	{
 		IndexPath  *ipath = (IndexPath *) bitmapqual;
 		IndexScan  *iscan;
+		List	   *subquals;
+		List	   *subindexquals;
 		List	   *subindexECs;
 		ListCell   *l;
 
@@ -3033,8 +3064,23 @@ create_bitmap_subplan(PlannerInfo *root, Path *bitmapqual,
 		plan->plan_width = 0;	/* meaningless */
 		plan->parallel_aware = false;
 		plan->parallel_safe = ipath->path.parallel_safe;
-		*qual = get_actual_clauses(ipath->indexclauses);
-		*indexqual = get_actual_clauses(ipath->indexquals);
+		/* Extract original index clauses, actual index quals, relevant ECs */
+		subquals = NIL;
+		subindexquals = NIL;
+		subindexECs = NIL;
+		foreach(l, ipath->indexclauses)
+		{
+			IndexClause *iclause = (IndexClause *) lfirst(l);
+			RestrictInfo *rinfo = iclause->rinfo;
+
+			Assert(!rinfo->pseudoconstant);
+			subquals = lappend(subquals, rinfo->clause);
+			subindexquals = list_concat(subindexquals,
+										get_actual_clauses(iclause->indexquals));
+			if (rinfo->parent_ec)
+				subindexECs = lappend(subindexECs, rinfo->parent_ec);
+		}
+		/* We can add any index predicate conditions, too */
 		foreach(l, ipath->indexinfo->indpred)
 		{
 			Expr	   *pred = (Expr *) lfirst(l);
@@ -3045,21 +3091,14 @@ create_bitmap_subplan(PlannerInfo *root, Path *bitmapqual,
 			 * the conditions that got pushed into the bitmapqual.  Avoid
 			 * generating redundant conditions.
 			 */
-			if (!predicate_implied_by(list_make1(pred), ipath->indexclauses,
-									  false))
+			if (!predicate_implied_by(list_make1(pred), subquals, false))
 			{
-				*qual = lappend(*qual, pred);
-				*indexqual = lappend(*indexqual, pred);
+				subquals = lappend(subquals, pred);
+				subindexquals = lappend(subindexquals, pred);
 			}
 		}
-		subindexECs = NIL;
-		foreach(l, ipath->indexquals)
-		{
-			RestrictInfo *rinfo = (RestrictInfo *) lfirst(l);
-
-			if (rinfo->parent_ec)
-				subindexECs = lappend(subindexECs, rinfo->parent_ec);
-		}
+		*qual = subquals;
+		*indexqual = subindexquals;
 		*indexECs = subindexECs;
 	}
 	else
@@ -3083,17 +3122,71 @@ create_tidscan_plan(PlannerInfo *root, TidPath *best_path,
 	TidScan    *scan_plan;
 	Index		scan_relid = best_path->path.parent->relid;
 	List	   *tidquals = best_path->tidquals;
-	List	   *ortidquals;
 
 	/* it should be a base rel... */
 	Assert(scan_relid > 0);
 	Assert(best_path->path.parent->rtekind == RTE_RELATION);
 
+	/*
+	 * The qpqual list must contain all restrictions not enforced by the
+	 * tidquals list.  Since tidquals has OR semantics, we have to be careful
+	 * about matching it up to scan_clauses.  It's convenient to handle the
+	 * single-tidqual case separately from the multiple-tidqual case.  In the
+	 * single-tidqual case, we look through the scan_clauses while they are
+	 * still in RestrictInfo form, and drop any that are redundant with the
+	 * tidqual.
+	 *
+	 * In normal cases simple pointer equality checks will be enough to spot
+	 * duplicate RestrictInfos, so we try that first.
+	 *
+	 * Another common case is that a scan_clauses entry is generated from the
+	 * same EquivalenceClass as some tidqual, and is therefore redundant with
+	 * it, though not equal.
+	 *
+	 * Unlike indexpaths, we don't bother with predicate_implied_by(); the
+	 * number of cases where it could win are pretty small.
+	 */
+	if (list_length(tidquals) == 1)
+	{
+		List	   *qpqual = NIL;
+		ListCell   *l;
+
+		foreach(l, scan_clauses)
+		{
+			RestrictInfo *rinfo = lfirst_node(RestrictInfo, l);
+
+			if (rinfo->pseudoconstant)
+				continue;		/* we may drop pseudoconstants here */
+			if (list_member_ptr(tidquals, rinfo))
+				continue;		/* simple duplicate */
+			if (is_redundant_derived_clause(rinfo, tidquals))
+				continue;		/* derived from same EquivalenceClass */
+			qpqual = lappend(qpqual, rinfo);
+		}
+		scan_clauses = qpqual;
+	}
+
 	/* Sort clauses into best execution order */
 	scan_clauses = order_qual_clauses(root, scan_clauses);
 
-	/* Reduce RestrictInfo list to bare expressions; ignore pseudoconstants */
+	/* Reduce RestrictInfo lists to bare expressions; ignore pseudoconstants */
+	tidquals = extract_actual_clauses(tidquals, false);
 	scan_clauses = extract_actual_clauses(scan_clauses, false);
+
+	/*
+	 * If we have multiple tidquals, it's more convenient to remove duplicate
+	 * scan_clauses after stripping the RestrictInfos.  In this situation,
+	 * because the tidquals represent OR sub-clauses, they could not have come
+	 * from EquivalenceClasses so we don't have to worry about matching up
+	 * non-identical clauses.  On the other hand, because tidpath.c will have
+	 * extracted those sub-clauses from some OR clause and built its own list,
+	 * we will certainly not have pointer equality to any scan clause.  So
+	 * convert the tidquals list to an explicit OR clause and see if we can
+	 * match it via equal() to any scan clause.
+	 */
+	if (list_length(tidquals) > 1)
+		scan_clauses = list_difference(scan_clauses,
+									   list_make1(make_orclause(tidquals)));
 
 	/* Replace any outer-relation variables with nestloop params */
 	if (best_path->path.param_info)
@@ -3103,15 +3196,6 @@ create_tidscan_plan(PlannerInfo *root, TidPath *best_path,
 		scan_clauses = (List *)
 			replace_nestloop_params(root, (Node *) scan_clauses);
 	}
-
-	/*
-	 * Remove any clauses that are TID quals.  This is a bit tricky since the
-	 * tidquals list has implicit OR semantics.
-	 */
-	ortidquals = tidquals;
-	if (list_length(ortidquals) > 1)
-		ortidquals = list_make1(make_orclause(ortidquals));
-	scan_clauses = list_difference(scan_clauses, ortidquals);
 
 	scan_plan = make_tidscan(tlist,
 							 scan_clauses,
@@ -3436,6 +3520,44 @@ create_namedtuplestorescan_plan(PlannerInfo *root, Path *best_path,
 }
 
 /*
+ * create_resultscan_plan
+ *	 Returns a Result plan for the RTE_RESULT base relation scanned by
+ *	'best_path' with restriction clauses 'scan_clauses' and targetlist
+ *	'tlist'.
+ */
+static Result *
+create_resultscan_plan(PlannerInfo *root, Path *best_path,
+					   List *tlist, List *scan_clauses)
+{
+	Result	   *scan_plan;
+	Index		scan_relid = best_path->parent->relid;
+	RangeTblEntry *rte PG_USED_FOR_ASSERTS_ONLY;
+
+	Assert(scan_relid > 0);
+	rte = planner_rt_fetch(scan_relid, root);
+	Assert(rte->rtekind == RTE_RESULT);
+
+	/* Sort clauses into best execution order */
+	scan_clauses = order_qual_clauses(root, scan_clauses);
+
+	/* Reduce RestrictInfo list to bare expressions; ignore pseudoconstants */
+	scan_clauses = extract_actual_clauses(scan_clauses, false);
+
+	/* Replace any outer-relation variables with nestloop params */
+	if (best_path->param_info)
+	{
+		scan_clauses = (List *)
+			replace_nestloop_params(root, (Node *) scan_clauses);
+	}
+
+	scan_plan = make_result(tlist, (Node *) scan_clauses, NULL);
+
+	copy_generic_path_info(&scan_plan->plan, best_path);
+
+	return scan_plan;
+}
+
+/*
  * create_worktablescan_plan
  *	 Returns a worktablescan plan for the base relation scanned by 'best_path'
  *	 with restriction clauses 'scan_clauses' and targetlist 'tlist'.
@@ -3729,9 +3851,6 @@ create_nestloop_plan(PlannerInfo *root,
 	Relids		outerrelids;
 	List	   *nestParams;
 	Relids		saveOuterRels = root->curOuterRels;
-	ListCell   *cell;
-	ListCell   *prev;
-	ListCell   *next;
 
 	/* NestLoop can project, so no need to be picky about child tlists */
 	outer_plan = create_plan_recurse(root, best_path->outerjoinpath, 0);
@@ -3775,38 +3894,10 @@ create_nestloop_plan(PlannerInfo *root,
 
 	/*
 	 * Identify any nestloop parameters that should be supplied by this join
-	 * node, and move them from root->curOuterParams to the nestParams list.
+	 * node, and remove them from root->curOuterParams.
 	 */
 	outerrelids = best_path->outerjoinpath->parent->relids;
-	nestParams = NIL;
-	prev = NULL;
-	for (cell = list_head(root->curOuterParams); cell; cell = next)
-	{
-		NestLoopParam *nlp = (NestLoopParam *) lfirst(cell);
-
-		next = lnext(cell);
-		if (IsA(nlp->paramval, Var) &&
-			bms_is_member(nlp->paramval->varno, outerrelids))
-		{
-			root->curOuterParams = list_delete_cell(root->curOuterParams,
-													cell, prev);
-			nestParams = lappend(nestParams, nlp);
-		}
-		else if (IsA(nlp->paramval, PlaceHolderVar) &&
-				 bms_overlap(((PlaceHolderVar *) nlp->paramval)->phrels,
-							 outerrelids) &&
-				 bms_is_subset(find_placeholder_info(root,
-													 (PlaceHolderVar *) nlp->paramval,
-													 false)->ph_eval_at,
-							   outerrelids))
-		{
-			root->curOuterParams = list_delete_cell(root->curOuterParams,
-													cell, prev);
-			nestParams = lappend(nestParams, nlp);
-		}
-		else
-			prev = cell;
-	}
+	nestParams = identify_current_nestloop_params(root, outerrelids);
 
 	join_plan = make_nestloop(tlist,
 							  joinclauses,
@@ -4306,42 +4397,18 @@ replace_nestloop_params_mutator(Node *node, PlannerInfo *root)
 	if (IsA(node, Var))
 	{
 		Var		   *var = (Var *) node;
-		Param	   *param;
-		NestLoopParam *nlp;
-		ListCell   *lc;
 
 		/* Upper-level Vars should be long gone at this point */
 		Assert(var->varlevelsup == 0);
 		/* If not to be replaced, we can just return the Var unmodified */
 		if (!bms_is_member(var->varno, root->curOuterRels))
 			return node;
-		/* Create a Param representing the Var */
-		param = assign_nestloop_param_var(root, var);
-		/* Is this param already listed in root->curOuterParams? */
-		foreach(lc, root->curOuterParams)
-		{
-			nlp = (NestLoopParam *) lfirst(lc);
-			if (nlp->paramno == param->paramid)
-			{
-				Assert(equal(var, nlp->paramval));
-				/* Present, so we can just return the Param */
-				return (Node *) param;
-			}
-		}
-		/* No, so add it */
-		nlp = makeNode(NestLoopParam);
-		nlp->paramno = param->paramid;
-		nlp->paramval = var;
-		root->curOuterParams = lappend(root->curOuterParams, nlp);
-		/* And return the replacement Param */
-		return (Node *) param;
+		/* Replace the Var with a nestloop Param */
+		return (Node *) replace_nestloop_param_var(root, var);
 	}
 	if (IsA(node, PlaceHolderVar))
 	{
 		PlaceHolderVar *phv = (PlaceHolderVar *) node;
-		Param	   *param;
-		NestLoopParam *nlp;
-		ListCell   *lc;
 
 		/* Upper-level PlaceHolderVars should be long gone at this point */
 		Assert(phv->phlevelsup == 0);
@@ -4378,26 +4445,8 @@ replace_nestloop_params_mutator(Node *node, PlannerInfo *root)
 												root);
 			return (Node *) newphv;
 		}
-		/* Create a Param representing the PlaceHolderVar */
-		param = assign_nestloop_param_placeholdervar(root, phv);
-		/* Is this param already listed in root->curOuterParams? */
-		foreach(lc, root->curOuterParams)
-		{
-			nlp = (NestLoopParam *) lfirst(lc);
-			if (nlp->paramno == param->paramid)
-			{
-				Assert(equal(phv, nlp->paramval));
-				/* Present, so we can just return the Param */
-				return (Node *) param;
-			}
-		}
-		/* No, so add it */
-		nlp = makeNode(NestLoopParam);
-		nlp->paramno = param->paramid;
-		nlp->paramval = (Var *) phv;
-		root->curOuterParams = lappend(root->curOuterParams, nlp);
-		/* And return the replacement Param */
-		return (Node *) param;
+		/* Replace the PlaceHolderVar with a nestloop Param */
+		return (Node *) replace_nestloop_param_placeholdervar(root, phv);
 	}
 	return expression_tree_mutator(node,
 								   replace_nestloop_params_mutator,
@@ -4405,228 +4454,56 @@ replace_nestloop_params_mutator(Node *node, PlannerInfo *root)
 }
 
 /*
- * process_subquery_nestloop_params
- *	  Handle params of a parameterized subquery that need to be fed
- *	  from an outer nestloop.
- *
- * Currently, that would be *all* params that a subquery in FROM has demanded
- * from the current query level, since they must be LATERAL references.
- *
- * The subplan's references to the outer variables are already represented
- * as PARAM_EXEC Params, so we need not modify the subplan here.  What we
- * do need to do is add entries to root->curOuterParams to signal the parent
- * nestloop plan node that it must provide these values.
- */
-static void
-process_subquery_nestloop_params(PlannerInfo *root, List *subplan_params)
-{
-	ListCell   *ppl;
-
-	foreach(ppl, subplan_params)
-	{
-		PlannerParamItem *pitem = (PlannerParamItem *) lfirst(ppl);
-
-		if (IsA(pitem->item, Var))
-		{
-			Var		   *var = (Var *) pitem->item;
-			NestLoopParam *nlp;
-			ListCell   *lc;
-
-			/* If not from a nestloop outer rel, complain */
-			if (!bms_is_member(var->varno, root->curOuterRels))
-				elog(ERROR, "non-LATERAL parameter required by subquery");
-			/* Is this param already listed in root->curOuterParams? */
-			foreach(lc, root->curOuterParams)
-			{
-				nlp = (NestLoopParam *) lfirst(lc);
-				if (nlp->paramno == pitem->paramId)
-				{
-					Assert(equal(var, nlp->paramval));
-					/* Present, so nothing to do */
-					break;
-				}
-			}
-			if (lc == NULL)
-			{
-				/* No, so add it */
-				nlp = makeNode(NestLoopParam);
-				nlp->paramno = pitem->paramId;
-				nlp->paramval = copyObject(var);
-				root->curOuterParams = lappend(root->curOuterParams, nlp);
-			}
-		}
-		else if (IsA(pitem->item, PlaceHolderVar))
-		{
-			PlaceHolderVar *phv = (PlaceHolderVar *) pitem->item;
-			NestLoopParam *nlp;
-			ListCell   *lc;
-
-			/* If not from a nestloop outer rel, complain */
-			if (!bms_is_subset(find_placeholder_info(root, phv, false)->ph_eval_at,
-							   root->curOuterRels))
-				elog(ERROR, "non-LATERAL parameter required by subquery");
-			/* Is this param already listed in root->curOuterParams? */
-			foreach(lc, root->curOuterParams)
-			{
-				nlp = (NestLoopParam *) lfirst(lc);
-				if (nlp->paramno == pitem->paramId)
-				{
-					Assert(equal(phv, nlp->paramval));
-					/* Present, so nothing to do */
-					break;
-				}
-			}
-			if (lc == NULL)
-			{
-				/* No, so add it */
-				nlp = makeNode(NestLoopParam);
-				nlp->paramno = pitem->paramId;
-				nlp->paramval = (Var *) copyObject(phv);
-				root->curOuterParams = lappend(root->curOuterParams, nlp);
-			}
-		}
-		else
-			elog(ERROR, "unexpected type of subquery parameter");
-	}
-}
-
-/*
  * fix_indexqual_references
  *	  Adjust indexqual clauses to the form the executor's indexqual
  *	  machinery needs.
  *
- * We have four tasks here:
- *	* Remove RestrictInfo nodes from the input clauses.
+ * We have three tasks here:
+ *	* Select the actual qual clauses out of the input IndexClause list,
+ *	  and remove RestrictInfo nodes from the qual clauses.
  *	* Replace any outer-relation Var or PHV nodes with nestloop Params.
  *	  (XXX eventually, that responsibility should go elsewhere?)
  *	* Index keys must be represented by Var nodes with varattno set to the
  *	  index's attribute number, not the attribute number in the original rel.
- *	* If the index key is on the right, commute the clause to put it on the
- *	  left.
  *
- * The result is a modified copy of the path's indexquals list --- the
- * original is not changed.  Note also that the copy shares no substructure
- * with the original; this is needed in case there is a subplan in it (we need
- * two separate copies of the subplan tree, or things will go awry).
+ * *stripped_indexquals_p receives a list of the actual qual clauses.
+ *
+ * *fixed_indexquals_p receives a list of the adjusted quals.  This is a copy
+ * that shares no substructure with the original; this is needed in case there
+ * are subplans in it (we need two separate copies of the subplan tree, or
+ * things will go awry).
  */
-static List *
-fix_indexqual_references(PlannerInfo *root, IndexPath *index_path)
+static void
+fix_indexqual_references(PlannerInfo *root, IndexPath *index_path,
+						 List **stripped_indexquals_p, List **fixed_indexquals_p)
 {
 	IndexOptInfo *index = index_path->indexinfo;
+	List	   *stripped_indexquals;
 	List	   *fixed_indexquals;
-	ListCell   *lcc,
-			   *lci;
+	ListCell   *lc;
 
-	fixed_indexquals = NIL;
+	stripped_indexquals = fixed_indexquals = NIL;
 
-	forboth(lcc, index_path->indexquals, lci, index_path->indexqualcols)
+	foreach(lc, index_path->indexclauses)
 	{
-		RestrictInfo *rinfo = lfirst_node(RestrictInfo, lcc);
-		int			indexcol = lfirst_int(lci);
-		Node	   *clause;
+		IndexClause *iclause = lfirst_node(IndexClause, lc);
+		int			indexcol = iclause->indexcol;
+		ListCell   *lc2;
 
-		/*
-		 * Replace any outer-relation variables with nestloop params.
-		 *
-		 * This also makes a copy of the clause, so it's safe to modify it
-		 * in-place below.
-		 */
-		clause = replace_nestloop_params(root, (Node *) rinfo->clause);
-
-		if (IsA(clause, OpExpr))
+		foreach(lc2, iclause->indexquals)
 		{
-			OpExpr	   *op = (OpExpr *) clause;
+			RestrictInfo *rinfo = lfirst_node(RestrictInfo, lc2);
+			Node	   *clause = (Node *) rinfo->clause;
 
-			if (list_length(op->args) != 2)
-				elog(ERROR, "indexqual clause is not binary opclause");
-
-			/*
-			 * Check to see if the indexkey is on the right; if so, commute
-			 * the clause.  The indexkey should be the side that refers to
-			 * (only) the base relation.
-			 */
-			if (!bms_equal(rinfo->left_relids, index->rel->relids))
-				CommuteOpExpr(op);
-
-			/*
-			 * Now replace the indexkey expression with an index Var.
-			 */
-			linitial(op->args) = fix_indexqual_operand(linitial(op->args),
-													   index,
-													   indexcol);
+			stripped_indexquals = lappend(stripped_indexquals, clause);
+			clause = fix_indexqual_clause(root, index, indexcol,
+										  clause, iclause->indexcols);
+			fixed_indexquals = lappend(fixed_indexquals, clause);
 		}
-		else if (IsA(clause, RowCompareExpr))
-		{
-			RowCompareExpr *rc = (RowCompareExpr *) clause;
-			Expr	   *newrc;
-			List	   *indexcolnos;
-			bool		var_on_left;
-			ListCell   *lca,
-					   *lcai;
-
-			/*
-			 * Re-discover which index columns are used in the rowcompare.
-			 */
-			newrc = adjust_rowcompare_for_index(rc,
-												index,
-												indexcol,
-												&indexcolnos,
-												&var_on_left);
-
-			/*
-			 * Trouble if adjust_rowcompare_for_index thought the
-			 * RowCompareExpr didn't match the index as-is; the clause should
-			 * have gone through that routine already.
-			 */
-			if (newrc != (Expr *) rc)
-				elog(ERROR, "inconsistent results from adjust_rowcompare_for_index");
-
-			/*
-			 * Check to see if the indexkey is on the right; if so, commute
-			 * the clause.
-			 */
-			if (!var_on_left)
-				CommuteRowCompareExpr(rc);
-
-			/*
-			 * Now replace the indexkey expressions with index Vars.
-			 */
-			Assert(list_length(rc->largs) == list_length(indexcolnos));
-			forboth(lca, rc->largs, lcai, indexcolnos)
-			{
-				lfirst(lca) = fix_indexqual_operand(lfirst(lca),
-													index,
-													lfirst_int(lcai));
-			}
-		}
-		else if (IsA(clause, ScalarArrayOpExpr))
-		{
-			ScalarArrayOpExpr *saop = (ScalarArrayOpExpr *) clause;
-
-			/* Never need to commute... */
-
-			/* Replace the indexkey expression with an index Var. */
-			linitial(saop->args) = fix_indexqual_operand(linitial(saop->args),
-														 index,
-														 indexcol);
-		}
-		else if (IsA(clause, NullTest))
-		{
-			NullTest   *nt = (NullTest *) clause;
-
-			/* Replace the indexkey expression with an index Var. */
-			nt->arg = (Expr *) fix_indexqual_operand((Node *) nt->arg,
-													 index,
-													 indexcol);
-		}
-		else
-			elog(ERROR, "unsupported indexqual type: %d",
-				 (int) nodeTag(clause));
-
-		fixed_indexquals = lappend(fixed_indexquals, clause);
 	}
 
-	return fixed_indexquals;
+	*stripped_indexquals_p = stripped_indexquals;
+	*fixed_indexquals_p = fixed_indexquals;
 }
 
 /*
@@ -4634,11 +4511,8 @@ fix_indexqual_references(PlannerInfo *root, IndexPath *index_path)
  *	  Adjust indexorderby clauses to the form the executor's index
  *	  machinery needs.
  *
- * This is a simplified version of fix_indexqual_references.  The input does
- * not have RestrictInfo nodes, and we assume that indxpath.c already
- * commuted the clauses to put the index keys on the left.  Also, we don't
- * bother to support any cases except simple OpExprs, since nothing else
- * is allowed for ordering operators.
+ * This is a simplified version of fix_indexqual_references.  The input is
+ * bare clauses and a separate indexcol list, instead of IndexClauses.
  */
 static List *
 fix_indexorderby_references(PlannerInfo *root, IndexPath *index_path)
@@ -4655,36 +4529,79 @@ fix_indexorderby_references(PlannerInfo *root, IndexPath *index_path)
 		Node	   *clause = (Node *) lfirst(lcc);
 		int			indexcol = lfirst_int(lci);
 
-		/*
-		 * Replace any outer-relation variables with nestloop params.
-		 *
-		 * This also makes a copy of the clause, so it's safe to modify it
-		 * in-place below.
-		 */
-		clause = replace_nestloop_params(root, clause);
-
-		if (IsA(clause, OpExpr))
-		{
-			OpExpr	   *op = (OpExpr *) clause;
-
-			if (list_length(op->args) != 2)
-				elog(ERROR, "indexorderby clause is not binary opclause");
-
-			/*
-			 * Now replace the indexkey expression with an index Var.
-			 */
-			linitial(op->args) = fix_indexqual_operand(linitial(op->args),
-													   index,
-													   indexcol);
-		}
-		else
-			elog(ERROR, "unsupported indexorderby type: %d",
-				 (int) nodeTag(clause));
-
+		clause = fix_indexqual_clause(root, index, indexcol, clause, NIL);
 		fixed_indexorderbys = lappend(fixed_indexorderbys, clause);
 	}
 
 	return fixed_indexorderbys;
+}
+
+/*
+ * fix_indexqual_clause
+ *	  Convert a single indexqual clause to the form needed by the executor.
+ *
+ * We replace nestloop params here, and replace the index key variables
+ * or expressions by index Var nodes.
+ */
+static Node *
+fix_indexqual_clause(PlannerInfo *root, IndexOptInfo *index, int indexcol,
+					 Node *clause, List *indexcolnos)
+{
+	/*
+	 * Replace any outer-relation variables with nestloop params.
+	 *
+	 * This also makes a copy of the clause, so it's safe to modify it
+	 * in-place below.
+	 */
+	clause = replace_nestloop_params(root, clause);
+
+	if (IsA(clause, OpExpr))
+	{
+		OpExpr	   *op = (OpExpr *) clause;
+
+		/* Replace the indexkey expression with an index Var. */
+		linitial(op->args) = fix_indexqual_operand(linitial(op->args),
+												   index,
+												   indexcol);
+	}
+	else if (IsA(clause, RowCompareExpr))
+	{
+		RowCompareExpr *rc = (RowCompareExpr *) clause;
+		ListCell   *lca,
+				   *lcai;
+
+		/* Replace the indexkey expressions with index Vars. */
+		Assert(list_length(rc->largs) == list_length(indexcolnos));
+		forboth(lca, rc->largs, lcai, indexcolnos)
+		{
+			lfirst(lca) = fix_indexqual_operand(lfirst(lca),
+												index,
+												lfirst_int(lcai));
+		}
+	}
+	else if (IsA(clause, ScalarArrayOpExpr))
+	{
+		ScalarArrayOpExpr *saop = (ScalarArrayOpExpr *) clause;
+
+		/* Replace the indexkey expression with an index Var. */
+		linitial(saop->args) = fix_indexqual_operand(linitial(saop->args),
+													 index,
+													 indexcol);
+	}
+	else if (IsA(clause, NullTest))
+	{
+		NullTest   *nt = (NullTest *) clause;
+
+		/* Replace the indexkey expression with an index Var. */
+		nt->arg = (Expr *) fix_indexqual_operand((Node *) nt->arg,
+												 index,
+												 indexcol);
+	}
+	else
+		elog(ERROR, "unsupported indexqual type: %d",
+			 (int) nodeTag(clause));
+
+	return clause;
 }
 
 /*
@@ -6668,12 +6585,11 @@ is_projection_capable_path(Path *path)
 		case T_Append:
 
 			/*
-			 * Append can't project, but if it's being used to represent a
-			 * dummy path, claim that it can project.  This prevents us from
-			 * converting a rel from dummy to non-dummy status by applying a
-			 * projection to its dummy path.
+			 * Append can't project, but if an AppendPath is being used to
+			 * represent a dummy path, what will actually be generated is a
+			 * Result which can project.
 			 */
-			return IS_DUMMY_PATH(path);
+			return IS_DUMMY_APPEND(path);
 		case T_ProjectSet:
 
 			/*

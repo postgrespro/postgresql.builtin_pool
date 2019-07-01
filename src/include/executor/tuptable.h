@@ -4,7 +4,7 @@
  *	  tuple table support stuff
  *
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/executor/tuptable.h
@@ -15,7 +15,9 @@
 #define TUPTABLE_H
 
 #include "access/htup.h"
+#include "access/sysattr.h"
 #include "access/tupdesc.h"
+#include "access/htup_details.h"
 #include "storage/buf.h"
 
 /*----------
@@ -125,6 +127,8 @@ typedef struct TupleTableSlot
 #define FIELDNO_TUPLETABLESLOT_ISNULL 6
 	bool	   *tts_isnull;		/* current per-attribute isnull flags */
 	MemoryContext tts_mcxt;		/* slot itself is in this context */
+	ItemPointerData tts_tid;    /* stored tuple's tid */
+	Oid			tts_tableOid;   /* table oid of tuple */
 } TupleTableSlot;
 
 /* routines for a TupleTableSlot implementation */
@@ -246,6 +250,7 @@ typedef struct HeapTupleTableSlot
 	HeapTuple	tuple;		/* physical tuple */
 #define FIELDNO_HEAPTUPLETABLESLOT_OFF 2
 	uint32		off;		/* saved state for slot_deform_heap_tuple */
+	HeapTupleData tupdata;	/* optional workspace for storing tuple */
 } HeapTupleTableSlot;
 
 /* heap tuple residing in a buffer */
@@ -305,6 +310,9 @@ extern void ExecForceStoreHeapTuple(HeapTuple tuple, TupleTableSlot *slot);
 extern TupleTableSlot *ExecStoreBufferHeapTuple(HeapTuple tuple,
 						 TupleTableSlot *slot,
 						 Buffer buffer);
+extern TupleTableSlot *ExecStorePinnedBufferHeapTuple(HeapTuple tuple,
+						 TupleTableSlot *slot,
+						 Buffer buffer);
 extern TupleTableSlot *ExecStoreMinimalTuple(MinimalTuple mtup,
 					  TupleTableSlot *slot,
 					  bool shouldFree);
@@ -312,6 +320,7 @@ extern void ExecForceStoreMinimalTuple(MinimalTuple mtup, TupleTableSlot *slot,
 									   bool shouldFree);
 extern TupleTableSlot *ExecStoreVirtualTuple(TupleTableSlot *slot);
 extern TupleTableSlot *ExecStoreAllNullTuple(TupleTableSlot *slot);
+extern void ExecStoreHeapTupleDatum(Datum data, TupleTableSlot *slot);
 extern HeapTuple ExecFetchSlotHeapTuple(TupleTableSlot *slot, bool materialize, bool *shouldFree);
 extern MinimalTuple ExecFetchSlotMinimalTuple(TupleTableSlot *slot,
 						  bool *shouldFree);
@@ -392,6 +401,17 @@ static inline Datum
 slot_getsysattr(TupleTableSlot *slot, int attnum, bool *isnull)
 {
 	AssertArg(attnum < 0);		/* caller error */
+
+	if (attnum == TableOidAttributeNumber)
+	{
+		*isnull = false;
+		return ObjectIdGetDatum(slot->tts_tableOid);
+	}
+	else if (attnum == SelfItemPointerAttributeNumber)
+	{
+		*isnull = false;
+		return PointerGetDatum(&slot->tts_tid);
+	}
 
 	/* Fetch the system attribute from the underlying tuple. */
 	return slot->tts_ops->getsysattr(slot, attnum, isnull);

@@ -37,7 +37,7 @@
  * record, wait for it to be replicated to the standby, and then exit.
  *
  *
- * Portions Copyright (c) 2010-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 2010-2019, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *	  src/backend/replication/walsender.c
@@ -521,7 +521,11 @@ SendTimeLineHistory(TimeLineHistoryCmd *cmd)
 		pq_sendbytes(&buf, rbuf.data, nread);
 		bytesleft -= nread;
 	}
-	CloseTransientFile(fd);
+
+	if (CloseTransientFile(fd))
+		ereport(ERROR,
+				(errcode_for_file_access(),
+				 errmsg("could not close file \"%s\": %m", path)));
 
 	pq_endmessage(&buf);
 }
@@ -2273,8 +2277,8 @@ InitWalSenderSlot(void)
 	Assert(MyWalSnd == NULL);
 
 	/*
-	 * Find a free walsender slot and reserve it. If this fails, we must be
-	 * out of WalSnd structures.
+	 * Find a free walsender slot and reserve it. This must not fail due to
+	 * the prior check for free WAL senders in InitProcess().
 	 */
 	for (i = 0; i < max_wal_senders; i++)
 	{
@@ -2310,12 +2314,8 @@ InitWalSenderSlot(void)
 			break;
 		}
 	}
-	if (MyWalSnd == NULL)
-		ereport(FATAL,
-				(errcode(ERRCODE_TOO_MANY_CONNECTIONS),
-				 errmsg("number of requested standby connections "
-						"exceeds max_wal_senders (currently %d)",
-						max_wal_senders)));
+
+	Assert(MyWalSnd != NULL);
 
 	/* Arrange to clean up at walsender exit */
 	on_shmem_exit(WalSndKill, 0);

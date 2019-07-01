@@ -4,7 +4,7 @@
  *	  prototypes for catalog/index.c.
  *
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/catalog/index.h
@@ -107,17 +107,17 @@ extern void FormIndexDatum(IndexInfo *indexInfo,
 extern void index_build(Relation heapRelation,
 			Relation indexRelation,
 			IndexInfo *indexInfo,
-			bool isprimary,
 			bool isreindex,
 			bool parallel);
 
+struct TableScanDescData;
 extern double IndexBuildHeapScan(Relation heapRelation,
 				   Relation indexRelation,
 				   IndexInfo *indexInfo,
 				   bool allow_sync,
 				   IndexBuildCallback callback,
 				   void *callback_state,
-				   HeapScanDesc scan);
+				   struct TableScanDescData *scan);
 extern double IndexBuildHeapRangeScan(Relation heapRelation,
 						Relation indexRelation,
 						IndexInfo *indexInfo,
@@ -127,7 +127,7 @@ extern double IndexBuildHeapRangeScan(Relation heapRelation,
 						BlockNumber end_blockno,
 						IndexBuildCallback callback,
 						void *callback_state,
-						HeapScanDesc scan);
+						struct TableScanDescData *scan);
 
 extern void validate_index(Oid heapId, Oid indexId, Snapshot snapshot);
 

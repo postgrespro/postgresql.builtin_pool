@@ -57,8 +57,6 @@ hash_txt_heap|t
 hobbies_r|f
 ihighway|t
 inet_tbl|f
-inhf|f
-inhx|t
 insert_tbl|f
 int2_tbl|f
 int4_tbl|f
@@ -186,6 +184,13 @@ sql_sizing|f
 sql_sizing_profiles|f
 stud_emp|f
 student|f
+tableam_parted_a_heap2|f
+tableam_parted_b_heap2|f
+tableam_parted_c_heap2|f
+tableam_parted_d_heap2|f
+tableam_parted_heap2|f
+tableam_tbl_heap2|f
+tableam_tblas_heap2|f
 tbl_include_box|t
 tbl_include_box_pk|f
 tbl_include_pk|t
@@ -205,6 +210,7 @@ timestamp_tbl|f
 timestamptz_tbl|f
 timetz_tbl|f
 varchar_tbl|f
+view_base_table|t
 -- restore normal output mode
 \a\t
 --
@@ -221,6 +227,15 @@ SELECT relname, nspname
                      AND indkey[0] = a.attnum AND indnatts = 1
                      AND indisunique AND indimmediate);
  relname | nspname 
+---------+---------
+(0 rows)
+
+-- check that relations without storage don't have relfilenode
+SELECT relname, relkind
+  FROM pg_class
+ WHERE relkind IN ('v', 'c', 'f', 'p', 'I')
+       AND relfilenode <> 0;
+ relname | relkind 
 ---------+---------
 (0 rows)
 

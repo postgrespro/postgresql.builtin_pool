@@ -3,7 +3,7 @@
  * clausesel.c
  *	  Routines to compute clause selectivities
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -15,8 +15,10 @@
 #include "postgres.h"
 
 #include "nodes/makefuncs.h"
+#include "nodes/nodeFuncs.h"
 #include "optimizer/clauses.h"
 #include "optimizer/cost.h"
+#include "optimizer/optimizer.h"
 #include "optimizer/pathnode.h"
 #include "optimizer/plancat.h"
 #include "utils/fmgroids.h"
@@ -688,7 +690,7 @@ clause_selectivity(PlannerInfo *root,
 			/* XXX any way to do better than default? */
 		}
 	}
-	else if (not_clause(clause))
+	else if (is_notclause(clause))
 	{
 		/* inverse of the selectivity of the underlying clause */
 		s1 = 1.0 - clause_selectivity(root,
@@ -697,7 +699,7 @@ clause_selectivity(PlannerInfo *root,
 									  jointype,
 									  sjinfo);
 	}
-	else if (and_clause(clause))
+	else if (is_andclause(clause))
 	{
 		/* share code with clauselist_selectivity() */
 		s1 = clauselist_selectivity(root,
@@ -706,7 +708,7 @@ clause_selectivity(PlannerInfo *root,
 									jointype,
 									sjinfo);
 	}
-	else if (or_clause(clause))
+	else if (is_orclause(clause))
 	{
 		/*
 		 * Selectivities for an OR clause are computed as s1+s2 - s1*s2 to
@@ -759,6 +761,21 @@ clause_selectivity(PlannerInfo *root,
 		 */
 		if (IsA(clause, DistinctExpr))
 			s1 = 1.0 - s1;
+	}
+	else if (is_funcclause(clause))
+	{
+		FuncExpr   *funcclause = (FuncExpr *) clause;
+
+		/* Try to get an estimate from the support function, if any */
+		s1 = function_selectivity(root,
+								  funcclause->funcid,
+								  funcclause->args,
+								  funcclause->inputcollid,
+								  treat_as_join_clause(clause, rinfo,
+													   varRelid, sjinfo),
+								  varRelid,
+								  jointype,
+								  sjinfo);
 	}
 	else if (IsA(clause, ScalarArrayOpExpr))
 	{

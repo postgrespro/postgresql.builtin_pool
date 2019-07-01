@@ -3,16 +3,20 @@
  * partbounds.c
  *		Support routines for manipulating partition bounds
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
  *		  src/backend/partitioning/partbounds.c
  *
  *-------------------------------------------------------------------------
-*/
+ */
+
 #include "postgres.h"
 
+#include "access/relation.h"
+#include "access/table.h"
+#include "access/tableam.h"
 #include "catalog/partition.h"
 #include "catalog/pg_inherits.h"
 #include "catalog/pg_type.h"
@@ -21,10 +25,10 @@
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
-#include "optimizer/clauses.h"
 #include "parser/parse_coerce.h"
-#include "partitioning/partprune.h"
 #include "partitioning/partbounds.h"
+#include "partitioning/partdesc.h"
+#include "partitioning/partprune.h"
 #include "utils/builtins.h"
 #include "utils/datum.h"
 #include "utils/fmgroids.h"
@@ -1200,19 +1204,17 @@ check_default_partition_contents(Relation parent, Relation default_rel,
 		Expr	   *constr;
 		Expr	   *partition_constraint;
 		EState	   *estate;
-		HeapTuple	tuple;
 		ExprState  *partqualstate = NULL;
 		Snapshot	snapshot;
-		TupleDesc	tupdesc;
 		ExprContext *econtext;
-		HeapScanDesc scan;
+		TableScanDesc scan;
 		MemoryContext oldCxt;
 		TupleTableSlot *tupslot;
 
 		/* Lock already taken above. */
 		if (part_relid != RelationGetRelid(default_rel))
 		{
-			part_rel = heap_open(part_relid, NoLock);
+			part_rel = table_open(part_relid, NoLock);
 
 			/*
 			 * If the partition constraints on default partition child imply
@@ -1226,7 +1228,7 @@ check_default_partition_contents(Relation parent, Relation default_rel,
 						(errmsg("updated partition constraint for default partition \"%s\" is implied by existing constraints",
 								RelationGetRelationName(part_rel))));
 
-				heap_close(part_rel, NoLock);
+				table_close(part_rel, NoLock);
 				continue;
 			}
 		}
@@ -1247,12 +1249,11 @@ check_default_partition_contents(Relation parent, Relation default_rel,
 								RelationGetRelationName(default_rel))));
 
 			if (RelationGetRelid(default_rel) != RelationGetRelid(part_rel))
-				heap_close(part_rel, NoLock);
+				table_close(part_rel, NoLock);
 
 			continue;
 		}
 
-		tupdesc = CreateTupleDescCopy(RelationGetDescr(part_rel));
 		constr = linitial(def_part_constraints);
 		partition_constraint = (Expr *)
 			map_partition_varattnos((List *) constr,
@@ -1264,8 +1265,8 @@ check_default_partition_contents(Relation parent, Relation default_rel,
 
 		econtext = GetPerTupleExprContext(estate);
 		snapshot = RegisterSnapshot(GetLatestSnapshot());
-		scan = heap_beginscan(part_rel, snapshot, 0, NULL);
-		tupslot = MakeSingleTupleTableSlot(tupdesc, &TTSOpsHeapTuple);
+		tupslot = table_slot_create(part_rel, &estate->es_tupleTable);
+		scan = table_beginscan(part_rel, snapshot, 0, NULL);
 
 		/*
 		 * Switch to per-tuple memory context and reset it for each tuple
@@ -1273,9 +1274,8 @@ check_default_partition_contents(Relation parent, Relation default_rel,
 		 */
 		oldCxt = MemoryContextSwitchTo(GetPerTupleMemoryContext(estate));
 
-		while ((tuple = heap_getnext(scan, ForwardScanDirection)) != NULL)
+		while (table_scan_getnextslot(scan, ForwardScanDirection, tupslot))
 		{
-			ExecStoreHeapTuple(tuple, tupslot, false);
 			econtext->ecxt_scantuple = tupslot;
 
 			if (!ExecCheck(partqualstate, econtext))
@@ -1289,13 +1289,13 @@ check_default_partition_contents(Relation parent, Relation default_rel,
 		}
 
 		MemoryContextSwitchTo(oldCxt);
-		heap_endscan(scan);
+		table_endscan(scan);
 		UnregisterSnapshot(snapshot);
 		ExecDropSingleTupleTableSlot(tupslot);
 		FreeExecutorState(estate);
 
 		if (RelationGetRelid(default_rel) != RelationGetRelid(part_rel))
-			heap_close(part_rel, NoLock);	/* keep the lock until commit */
+			table_close(part_rel, NoLock);	/* keep the lock until commit */
 	}
 }
 

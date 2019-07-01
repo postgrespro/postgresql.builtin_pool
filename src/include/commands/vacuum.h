@@ -4,7 +4,7 @@
  *	  header file for postgres vacuum cleaner and statistics analyzer
  *
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/commands/vacuum.h
@@ -195,10 +195,6 @@ extern bool vacuum_is_relation_owner(Oid relid, Form_pg_class reltuple,
 						 int options);
 extern Relation vacuum_open_relation(Oid relid, RangeVar *relation,
 					 VacuumParams *params, int options, LOCKMODE lmode);
-
-/* in commands/vacuumlazy.c */
-extern void lazy_vacuum_rel(Relation onerel, int options,
-				VacuumParams *params, BufferAccessStrategy bstrategy);
 
 /* in commands/analyze.c */
 extern void analyze_rel(Oid relid, RangeVar *relation, int options,

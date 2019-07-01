@@ -5,7 +5,7 @@
  *		bits of hard-wired knowledge
  *
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -21,9 +21,9 @@
 #include <unistd.h>
 
 #include "access/genam.h"
-#include "access/heapam.h"
 #include "access/htup_details.h"
 #include "access/sysattr.h"
+#include "access/table.h"
 #include "access/transam.h"
 #include "catalog/catalog.h"
 #include "catalog/indexing.h"
@@ -47,8 +47,8 @@
 #include "utils/fmgroids.h"
 #include "utils/fmgrprotos.h"
 #include "utils/rel.h"
+#include "utils/snapmgr.h"
 #include "utils/syscache.h"
-#include "utils/tqual.h"
 
 
 /*
@@ -481,7 +481,7 @@ pg_nextoid(PG_FUNCTION_ARGS)
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
 				 errmsg("must be superuser to call pg_nextoid")));
 
-	rel = heap_open(reloid, RowExclusiveLock);
+	rel = table_open(reloid, RowExclusiveLock);
 	idx = index_open(idxoid, RowExclusiveLock);
 
 	if (!IsSystemRelation(rel))
@@ -523,7 +523,7 @@ pg_nextoid(PG_FUNCTION_ARGS)
 	newoid = GetNewOidWithIndex(rel, idxoid, attno);
 
 	ReleaseSysCache(atttuple);
-	heap_close(rel, RowExclusiveLock);
+	table_close(rel, RowExclusiveLock);
 	index_close(idx, RowExclusiveLock);
 
 	return newoid;

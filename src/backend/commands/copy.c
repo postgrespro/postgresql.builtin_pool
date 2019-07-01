@@ -3,7 +3,7 @@
  * copy.c
  *		Implements the COPY utility command
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -21,6 +21,7 @@
 #include "access/heapam.h"
 #include "access/htup_details.h"
 #include "access/sysattr.h"
+#include "access/tableam.h"
 #include "access/xact.h"
 #include "access/xlog.h"
 #include "catalog/dependency.h"
@@ -37,9 +38,11 @@
 #include "libpq/pqformat.h"
 #include "mb/pg_wchar.h"
 #include "miscadmin.h"
-#include "optimizer/clauses.h"
-#include "optimizer/planner.h"
+#include "optimizer/optimizer.h"
 #include "nodes/makefuncs.h"
+#include "parser/parse_coerce.h"
+#include "parser/parse_collate.h"
+#include "parser/parse_expr.h"
 #include "parser/parse_relation.h"
 #include "port/pg_bswap.h"
 #include "rewrite/rewriteHandler.h"
@@ -149,6 +152,7 @@ typedef struct CopyStateData
 	bool		convert_selectively;	/* do selective binary conversion? */
 	List	   *convert_select; /* list of column names (can be NIL) */
 	bool	   *convert_select_flags;	/* per-column CSV/TEXT CS flags */
+	Node	   *whereClause;	/* WHERE condition (or NULL) */
 
 	/* these are just for error messages, see CopyFromErrorCallback */
 	const char *cur_relname;	/* table name for error messages */
@@ -179,6 +183,7 @@ typedef struct CopyStateData
 	ExprState **defexprs;		/* array of default att expressions */
 	bool		volatile_defexprs;	/* is any of defexprs volatile? */
 	List	   *range_table;
+	ExprState  *qualexpr;
 
 	TransitionCaptureState *transition_capture;
 
@@ -800,6 +805,7 @@ DoCopy(ParseState *pstate, const CopyStmt *stmt,
 	Relation	rel;
 	Oid			relid;
 	RawStmt    *query = NULL;
+	Node    *whereClause = NULL;
 
 	/*
 	 * Disallow COPY to/from file or program except to users with the
@@ -845,13 +851,33 @@ DoCopy(ParseState *pstate, const CopyStmt *stmt,
 		Assert(!stmt->query);
 
 		/* Open and lock the relation, using the appropriate lock type. */
-		rel = heap_openrv(stmt->relation, lockmode);
+		rel = table_openrv(stmt->relation, lockmode);
 
 		relid = RelationGetRelid(rel);
 
 		rte = addRangeTableEntryForRelation(pstate, rel, lockmode,
 											NULL, false, false);
 		rte->requiredPerms = (is_from ? ACL_INSERT : ACL_SELECT);
+
+		if (stmt->whereClause)
+		{
+			/* add rte to column namespace  */
+			addRTEtoQuery(pstate, rte, false, true, true);
+
+			/* Transform the raw expression tree */
+			whereClause = transformExpr(pstate, stmt->whereClause, EXPR_KIND_COPY_WHERE);
+
+			/*  Make sure it yields a boolean result. */
+			whereClause = coerce_to_boolean(pstate, whereClause, "WHERE");
+
+			/* we have to fix its collations too */
+			assign_expr_collations(pstate, whereClause);
+
+			whereClause = eval_const_expressions(NULL, whereClause);
+
+			whereClause = (Node *) canonicalize_qual((Expr *) whereClause, false);
+			whereClause = (Node *) make_ands_implicit((Expr *) whereClause);
+		}
 
 		tupDesc = RelationGetDescr(rel);
 		attnums = CopyGetAttnums(tupDesc, rel, stmt->attlist);
@@ -973,7 +999,7 @@ DoCopy(ParseState *pstate, const CopyStmt *stmt,
 			 *
 			 * We'll reopen it later as part of the query-based COPY.
 			 */
-			heap_close(rel, NoLock);
+			table_close(rel, NoLock);
 			rel = NULL;
 		}
 	}
@@ -1001,6 +1027,7 @@ DoCopy(ParseState *pstate, const CopyStmt *stmt,
 
 		cstate = BeginCopyFrom(pstate, rel, stmt->filename, stmt->is_program,
 							   NULL, stmt->attlist, stmt->options);
+		cstate->whereClause = whereClause;
 		*processed = CopyFrom(cstate);	/* copy from file to database */
 		EndCopyFrom(cstate);
 	}
@@ -1019,7 +1046,7 @@ DoCopy(ParseState *pstate, const CopyStmt *stmt,
 	 * ensure that updates will be committed before lock is released.
 	 */
 	if (rel != NULL)
-		heap_close(rel, (is_from ? NoLock : AccessShareLock));
+		table_close(rel, (is_from ? NoLock : AccessShareLock));
 }
 
 /*
@@ -2047,13 +2074,13 @@ CopyTo(CopyState cstate)
 	{
 		Datum	   *values;
 		bool	   *nulls;
-		HeapScanDesc scandesc;
+		TableScanDesc scandesc;
 		HeapTuple	tuple;
 
 		values = (Datum *) palloc(num_phys_attrs * sizeof(Datum));
 		nulls = (bool *) palloc(num_phys_attrs * sizeof(bool));
 
-		scandesc = heap_beginscan(cstate->rel, GetActiveSnapshot(), 0, NULL);
+		scandesc = table_beginscan(cstate->rel, GetActiveSnapshot(), 0, NULL);
 
 		processed = 0;
 		while ((tuple = heap_getnext(scandesc, ForwardScanDirection)) != NULL)
@@ -2068,7 +2095,7 @@ CopyTo(CopyState cstate)
 			processed++;
 		}
 
-		heap_endscan(scandesc);
+		table_endscan(scandesc);
 
 		pfree(values);
 		pfree(nulls);
@@ -2295,9 +2322,9 @@ CopyFrom(CopyState cstate)
 	ExprContext *econtext;
 	TupleTableSlot *myslot;
 	MemoryContext oldcontext = CurrentMemoryContext;
+	MemoryContext batchcontext;
 
 	PartitionTupleRouting *proute = NULL;
-	ExprContext *secondaryExprContext = NULL;
 	ErrorContextCallback errcallback;
 	CommandId	mycid = GetCurrentCommandId(true);
 	int			hi_options = 0; /* start with default heap_insert options */
@@ -2405,7 +2432,7 @@ CopyFrom(CopyState cstate)
 	 *----------
 	 */
 	/* createSubid is creation check, newRelfilenodeSubid is truncation check */
-	if (RELKIND_CAN_HAVE_STORAGE(cstate->rel->rd_rel->relkind) &&
+	if (RELKIND_HAS_STORAGE(cstate->rel->rd_rel->relkind) &&
 		(cstate->rel->rd_createSubid != InvalidSubTransactionId ||
 		 cstate->rel->rd_newRelfilenodeSubid != InvalidSubTransactionId))
 	{
@@ -2493,9 +2520,6 @@ CopyFrom(CopyState cstate)
 	/* Set up a tuple slot too */
 	myslot = ExecInitExtraTupleSlot(estate, tupDesc,
 									&TTSOpsHeapTuple);
-	/* Triggers might need a slot as well */
-	estate->es_trig_tuple_slot = ExecInitExtraTupleSlot(estate, NULL,
-														&TTSOpsHeapTuple);
 
 	/*
 	 * Set up a ModifyTableState so we can let FDW(s) init themselves for
@@ -2533,7 +2557,11 @@ CopyFrom(CopyState cstate)
 	 * CopyFrom tuple routing.
 	 */
 	if (cstate->rel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE)
-		proute = ExecSetupPartitionTupleRouting(NULL, cstate->rel);
+		proute = ExecSetupPartitionTupleRouting(estate, NULL, cstate->rel);
+
+	if (cstate->whereClause)
+		cstate->qualexpr = ExecInitQual(castNode(List, cstate->whereClause),
+												&mtstate->ps);
 
 	/*
 	 * It's more efficient to prepare a bunch of tuples for insertion, and
@@ -2580,6 +2608,15 @@ CopyFrom(CopyState cstate)
 		 */
 		insertMethod = CIM_SINGLE;
 	}
+	else if (contain_volatile_functions(cstate->whereClause))
+	{
+		/*
+		 * Can't support multi-inserts if there are any volatile funcation
+		 * expressions in WHERE clause.  Similarly to the trigger case above,
+		 * such expressions may query the table we're inserting into.
+		 */
+		insertMethod = CIM_SINGLE;
+	}
 	else
 	{
 		/*
@@ -2598,20 +2635,10 @@ CopyFrom(CopyState cstate)
 		 * Normally, when performing bulk inserts we just flush the insert
 		 * buffer whenever it becomes full, but for the partitioned table
 		 * case, we flush it whenever the current tuple does not belong to the
-		 * same partition as the previous tuple, and since we flush the
-		 * previous partition's buffer once the new tuple has already been
-		 * built, we're unable to reset the estate since we'd free the memory
-		 * in which the new tuple is stored.  To work around this we maintain
-		 * a secondary expression context and alternate between these when the
-		 * partition changes.  This does mean we do store the first new tuple
-		 * in a different context than subsequent tuples, but that does not
-		 * matter, providing we don't free anything while it's still needed.
+		 * same partition as the previous tuple.
 		 */
 		if (proute)
-		{
 			insertMethod = CIM_MULTI_CONDITIONAL;
-			secondaryExprContext = CreateExprContext(estate);
-		}
 		else
 			insertMethod = CIM_MULTI;
 
@@ -2644,6 +2671,14 @@ CopyFrom(CopyState cstate)
 	errcallback.previous = error_context_stack;
 	error_context_stack = &errcallback;
 
+	/*
+	 * Set up memory context for batches. For cases without batching we could
+	 * use the per-tuple context, but it's simpler to just use it every time.
+	 */
+	batchcontext = AllocSetContextCreate(CurrentMemoryContext,
+										 "batch context",
+										 ALLOCSET_DEFAULT_SIZES);
+
 	for (;;)
 	{
 		TupleTableSlot *slot;
@@ -2651,30 +2686,32 @@ CopyFrom(CopyState cstate)
 
 		CHECK_FOR_INTERRUPTS();
 
-		if (nBufferedTuples == 0)
-		{
-			/*
-			 * Reset the per-tuple exprcontext. We can only do this if the
-			 * tuple buffer is empty. (Calling the context the per-tuple
-			 * memory context is a bit of a misnomer now.)
-			 */
-			ResetPerTupleExprContext(estate);
-		}
+		/*
+		 * Reset the per-tuple exprcontext. We do this after every tuple, to
+		 * clean-up after expression evaluations etc.
+		 */
+		ResetPerTupleExprContext(estate);
 
-		/* Switch into its memory context */
+		/*
+		 * Switch to per-tuple context before calling NextCopyFrom, which does
+		 * evaluate default expressions etc. and requires per-tuple context.
+		 */
 		MemoryContextSwitchTo(GetPerTupleMemoryContext(estate));
 
 		if (!NextCopyFrom(cstate, econtext, values, nulls))
 			break;
 
+		/* Switch into per-batch memory context before forming the tuple. */
+		MemoryContextSwitchTo(batchcontext);
+
 		/* And now we can form the input tuple. */
 		tuple = heap_form_tuple(tupDesc, values, nulls);
 
 		/*
-		 * Constraints might reference the tableoid column, so initialize
-		 * t_tableOid before evaluating them.
+		 * Constraints might reference the tableoid column, so (re-)initialize
+		 * tts_tableOid before evaluating them.
 		 */
-		tuple->t_tableOid = RelationGetRelid(target_resultRelInfo->ri_RelationDesc);
+		myslot->tts_tableOid = RelationGetRelid(target_resultRelInfo->ri_RelationDesc);
 
 		/* Triggers and stuff need to be invoked in query context. */
 		MemoryContextSwitchTo(oldcontext);
@@ -2682,6 +2719,13 @@ CopyFrom(CopyState cstate)
 		/* Place tuple in tuple slot --- but slot shouldn't free it */
 		slot = myslot;
 		ExecStoreHeapTuple(tuple, slot, false);
+
+		if (cstate->whereClause)
+		{
+			econtext->ecxt_scantuple = myslot;
+			if (!ExecQual(cstate->qualexpr, econtext))
+				continue;
+		}
 
 		/* Determine the partition to heap_insert the tuple into */
 		if (proute)
@@ -2708,7 +2752,7 @@ CopyFrom(CopyState cstate)
 					 */
 					if (nBufferedTuples > 0)
 					{
-						ExprContext *swapcontext;
+						MemoryContext	oldcontext;
 
 						CopyFromInsertBatch(cstate, estate, mycid, hi_options,
 											prevResultRelInfo, myslot, bistate,
@@ -2717,29 +2761,29 @@ CopyFrom(CopyState cstate)
 						nBufferedTuples = 0;
 						bufferedTuplesSize = 0;
 
-						Assert(secondaryExprContext);
+						/*
+						 * The tuple is already allocated in the batch context, which
+						 * we want to reset.  So to keep the tuple we copy it into the
+						 * short-lived (per-tuple) context, reset the batch context
+						 * and then copy it back into the per-batch one.
+						 */
+						oldcontext = MemoryContextSwitchTo(GetPerTupleMemoryContext(estate));
+						tuple = heap_copytuple(tuple);
+						MemoryContextSwitchTo(oldcontext);
+
+						/* cleanup the old batch */
+						MemoryContextReset(batchcontext);
+
+						/* copy the tuple back to the per-batch context */
+						oldcontext = MemoryContextSwitchTo(batchcontext);
+						tuple = heap_copytuple(tuple);
+						MemoryContextSwitchTo(oldcontext);
 
 						/*
-						 * Normally we reset the per-tuple context whenever
-						 * the bufferedTuples array is empty at the beginning
-						 * of the loop, however, it is possible since we flush
-						 * the buffer here that the buffer is never empty at
-						 * the start of the loop.  To prevent the per-tuple
-						 * context from never being reset we maintain a second
-						 * context and alternate between them when the
-						 * partition changes.  We can now reset
-						 * secondaryExprContext as this is no longer needed,
-						 * since we just flushed any tuples stored in it.  We
-						 * also now switch over to the other context.  This
-						 * does mean that the first tuple in the buffer won't
-						 * be in the same context as the others, but that does
-						 * not matter since we only reset it after the flush.
+						 * Also push the tuple copy to the slot (resetting the context
+						 * invalidated the slot contents).
 						 */
-						ReScanExprContext(secondaryExprContext);
-
-						swapcontext = secondaryExprContext;
-						secondaryExprContext = estate->es_per_tuple_exprcontext;
-						estate->es_per_tuple_exprcontext = swapcontext;
+						ExecStoreHeapTuple(tuple, slot, false);
 					}
 
 					nPartitionChanges++;
@@ -2824,7 +2868,7 @@ CopyFrom(CopyState cstate)
 					 * Otherwise, just remember the original unconverted
 					 * tuple, to avoid a needless round trip conversion.
 					 */
-					cstate->transition_capture->tcs_original_insert_tuple = tuple;
+					cstate->transition_capture->tcs_original_insert_tuple = myslot;
 					cstate->transition_capture->tcs_map = NULL;
 				}
 			}
@@ -2845,15 +2889,15 @@ CopyFrom(CopyState cstate)
 				slot = execute_attr_map_slot(map->attrMap, slot, new_slot);
 
 				/*
-				 * Get the tuple in the per-tuple context, so that it will be
+				 * Get the tuple in the per-batch context, so that it will be
 				 * freed after each batch insert.
 				 */
-				oldcontext = MemoryContextSwitchTo(GetPerTupleMemoryContext(estate));
+				oldcontext = MemoryContextSwitchTo(batchcontext);
 				tuple = ExecCopySlotHeapTuple(slot);
 				MemoryContextSwitchTo(oldcontext);
 			}
 
-			tuple->t_tableOid = RelationGetRelid(resultRelInfo->ri_RelationDesc);
+			slot->tts_tableOid = RelationGetRelid(resultRelInfo->ri_RelationDesc);
 		}
 
 		skip_tuple = false;
@@ -2861,19 +2905,19 @@ CopyFrom(CopyState cstate)
 		/* BEFORE ROW INSERT Triggers */
 		if (has_before_insert_row_trig)
 		{
-			slot = ExecBRInsertTriggers(estate, resultRelInfo, slot);
-
-			if (slot == NULL)	/* "do nothing" */
-				skip_tuple = true;
-			else				/* trigger might have changed tuple */
-				tuple = ExecFetchSlotHeapTuple(slot, true, NULL);
+			if (!ExecBRInsertTriggers(estate, resultRelInfo, slot))
+				skip_tuple = true;	/* "do nothing" */
 		}
 
 		if (!skip_tuple)
 		{
+			/*
+			 * If there is an INSTEAD OF INSERT ROW trigger, let it handle the
+			 * tuple.  Otherwise, proceed with inserting the tuple into the
+			 * table or foreign table.
+			 */
 			if (has_instead_insert_row_trig)
 			{
-				/* Pass the data to the INSTEAD ROW INSERT trigger */
 				ExecIRInsertTriggers(estate, resultRelInfo, slot);
 			}
 			else
@@ -2924,6 +2968,9 @@ CopyFrom(CopyState cstate)
 											firstBufferedLineNo);
 						nBufferedTuples = 0;
 						bufferedTuplesSize = 0;
+
+						/* free memory occupied by tuples from the batch */
+						MemoryContextReset(batchcontext);
 					}
 				}
 				else
@@ -2941,19 +2988,21 @@ CopyFrom(CopyState cstate)
 						if (slot == NULL)	/* "do nothing" */
 							continue;	/* next tuple please */
 
-						/* FDW might have changed tuple */
-						tuple = ExecFetchSlotHeapTuple(slot, true, NULL);
-
 						/*
 						 * AFTER ROW Triggers might reference the tableoid
-						 * column, so initialize t_tableOid before evaluating
-						 * them.
+						 * column, so (re-)initialize tts_tableOid before
+						 * evaluating them.
 						 */
-						tuple->t_tableOid = RelationGetRelid(resultRelInfo->ri_RelationDesc);
+						slot->tts_tableOid = RelationGetRelid(resultRelInfo->ri_RelationDesc);
 					}
 					else
+					{
+						tuple = ExecFetchSlotHeapTuple(slot, true, NULL);
 						heap_insert(resultRelInfo->ri_RelationDesc, tuple,
 									mycid, hi_options, bistate);
+						ItemPointerCopy(&tuple->t_self, &slot->tts_tid);
+						slot->tts_tableOid = RelationGetRelid(resultRelInfo->ri_RelationDesc);
+					}
 
 					/* And create index entries for it */
 					if (resultRelInfo->ri_NumIndices > 0)
@@ -2965,7 +3014,7 @@ CopyFrom(CopyState cstate)
 															   NIL);
 
 					/* AFTER ROW INSERT Triggers */
-					ExecARInsertTriggers(estate, resultRelInfo, tuple,
+					ExecARInsertTriggers(estate, resultRelInfo, slot,
 										 recheckIndexes, cstate->transition_capture);
 
 					list_free(recheckIndexes);
@@ -3004,6 +3053,8 @@ CopyFrom(CopyState cstate)
 	FreeBulkInsertState(bistate);
 
 	MemoryContextSwitchTo(oldcontext);
+
+	MemoryContextDelete(batchcontext);
 
 	/*
 	 * In the old protocol, tell pqcomm that we can process normal protocol
@@ -3103,7 +3154,7 @@ CopyFromInsertBatch(CopyState cstate, EState *estate, CommandId mycid,
 				ExecInsertIndexTuples(myslot, &(bufferedTuples[i]->t_self),
 									  estate, false, NULL, NIL);
 			ExecARInsertTriggers(estate, resultRelInfo,
-								 bufferedTuples[i],
+								 myslot,
 								 recheckIndexes, cstate->transition_capture);
 			list_free(recheckIndexes);
 		}
@@ -3120,8 +3171,9 @@ CopyFromInsertBatch(CopyState cstate, EState *estate, CommandId mycid,
 		for (i = 0; i < nBufferedTuples; i++)
 		{
 			cstate->cur_lineno = firstBufferedLineNo + i;
+			ExecStoreHeapTuple(bufferedTuples[i], myslot, false);
 			ExecARInsertTriggers(estate, resultRelInfo,
-								 bufferedTuples[i],
+								 myslot,
 								 NIL, cstate->transition_capture);
 		}
 	}
@@ -4073,9 +4125,14 @@ not_end_of_copy:
 		{
 			int			mblen;
 
+			/*
+			 * It is enough to look at the first byte in all our encodings, to
+			 * get the length.  (GB18030 is a bit special, but still works for
+			 * our purposes; see comment in pg_gb18030_mblen())
+			 */
 			mblen_str[0] = c;
-			/* All our encodings only read the first byte to get the length */
 			mblen = pg_encoding_mblen(cstate->file_encoding, mblen_str);
+
 			IF_NEED_REFILL_AND_NOT_EOF_CONTINUE(mblen - 1);
 			IF_NEED_REFILL_AND_EOF_BREAK(mblen - 1);
 			raw_buf_ptr += mblen - 1;

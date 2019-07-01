@@ -3,7 +3,7 @@
  * statistics.h
  *	  Extended statistics and selectivity estimation functions.
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/statistics/statistics.h
@@ -14,7 +14,7 @@
 #define STATISTICS_H
 
 #include "commands/vacuum.h"
-#include "nodes/relation.h"
+#include "nodes/pathnodes.h"
 
 #define STATS_MAX_DIMENSIONS	8	/* max number of attributes */
 

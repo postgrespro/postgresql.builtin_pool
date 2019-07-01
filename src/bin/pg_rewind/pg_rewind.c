@@ -3,7 +3,7 @@
  * pg_rewind.c
  *	  Synchronizes a PostgreSQL data directory to a new timeline
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  *
  *-------------------------------------------------------------------------
  */
@@ -24,6 +24,7 @@
 #include "access/xlog_internal.h"
 #include "catalog/catversion.h"
 #include "catalog/pg_control.h"
+#include "common/controldata_utils.h"
 #include "common/file_perm.h"
 #include "common/file_utils.h"
 #include "common/restricted_token.h"
@@ -37,8 +38,7 @@ static void createBackupLabel(XLogRecPtr startpoint, TimeLineID starttli,
 
 static void digestControlFile(ControlFileData *ControlFile, char *source,
 				  size_t size);
-static void updateControlFile(ControlFileData *ControlFile);
-static void syncTargetDirectory(const char *argv0);
+static void syncTargetDirectory(void);
 static void sanityChecks(void);
 static void findCommonAncestorTimeline(XLogRecPtr *recptr, int *tliIndex);
 
@@ -78,7 +78,7 @@ usage(const char *progname)
 	printf(_("      --debug                    write a lot of debug messages\n"));
 	printf(_("  -V, --version                  output version information, then exit\n"));
 	printf(_("  -?, --help                     show this help, then exit\n"));
-	printf(_("\nReport bugs to <pgsql-bugs@postgresql.org>.\n"));
+	printf(_("\nReport bugs to <pgsql-bugs@lists.postgresql.org>.\n"));
 }
 
 
@@ -377,10 +377,10 @@ main(int argc, char **argv)
 	ControlFile_new.minRecoveryPoint = endrec;
 	ControlFile_new.minRecoveryPointTLI = endtli;
 	ControlFile_new.state = DB_IN_ARCHIVE_RECOVERY;
-	updateControlFile(&ControlFile_new);
+	update_controlfile(datadir_target, progname, &ControlFile_new);
 
 	pg_log(PG_PROGRESS, "syncing target data directory\n");
-	syncTargetDirectory(argv[0]);
+	syncTargetDirectory();
 
 	printf(_("Done!\n"));
 
@@ -488,7 +488,7 @@ getTimelineHistory(ControlFileData *controlFile, int *nentries)
 		else if (controlFile == &ControlFile_target)
 			histfile = slurpFile(datadir_target, path, NULL);
 		else
-			pg_fatal("invalid control file");
+			pg_fatal("invalid control file\n");
 
 		history = rewind_parseTimeLineHistory(histfile, tli, nentries);
 		pg_free(histfile);
@@ -667,45 +667,6 @@ digestControlFile(ControlFileData *ControlFile, char *src, size_t size)
 }
 
 /*
- * Update the target's control file.
- */
-static void
-updateControlFile(ControlFileData *ControlFile)
-{
-	char		buffer[PG_CONTROL_FILE_SIZE];
-
-	/*
-	 * For good luck, apply the same static assertions as in backend's
-	 * WriteControlFile().
-	 */
-	StaticAssertStmt(sizeof(ControlFileData) <= PG_CONTROL_MAX_SAFE_SIZE,
-					 "pg_control is too large for atomic disk writes");
-	StaticAssertStmt(sizeof(ControlFileData) <= PG_CONTROL_FILE_SIZE,
-					 "sizeof(ControlFileData) exceeds PG_CONTROL_FILE_SIZE");
-
-	/* Recalculate CRC of control file */
-	INIT_CRC32C(ControlFile->crc);
-	COMP_CRC32C(ControlFile->crc,
-				(char *) ControlFile,
-				offsetof(ControlFileData, crc));
-	FIN_CRC32C(ControlFile->crc);
-
-	/*
-	 * Write out PG_CONTROL_FILE_SIZE bytes into pg_control by zero-padding
-	 * the excess over sizeof(ControlFileData), to avoid premature EOF related
-	 * errors when reading it.
-	 */
-	memset(buffer, 0, PG_CONTROL_FILE_SIZE);
-	memcpy(buffer, ControlFile, sizeof(ControlFileData));
-
-	open_target_file("global/pg_control", false);
-
-	write_target_range(buffer, 0, PG_CONTROL_FILE_SIZE);
-
-	close_target_file();
-}
-
-/*
  * Sync target data directory to ensure that modifications are safely on disk.
  *
  * We do this once, for the whole data directory, for performance reasons.  At
@@ -715,7 +676,7 @@ updateControlFile(ControlFileData *ControlFile)
  * the overall amount of IO noticeably.
  */
 static void
-syncTargetDirectory(const char *argv0)
+syncTargetDirectory(void)
 {
 	if (!do_sync || dry_run)
 		return;

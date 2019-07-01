@@ -3,7 +3,7 @@
  * execAmi.c
  *	  miscellaneous executor access method routines
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *	src/backend/executor/execAmi.c
@@ -56,8 +56,9 @@
 #include "executor/nodeValuesscan.h"
 #include "executor/nodeWindowAgg.h"
 #include "executor/nodeWorktablescan.h"
+#include "nodes/extensible.h"
 #include "nodes/nodeFuncs.h"
-#include "nodes/relation.h"
+#include "nodes/pathnodes.h"
 #include "utils/rel.h"
 #include "utils/syscache.h"
 
@@ -437,9 +438,12 @@ ExecSupportsMarkRestore(Path *pathnode)
 				return ExecSupportsMarkRestore(((ProjectionPath *) pathnode)->subpath);
 			else if (IsA(pathnode, MinMaxAggPath))
 				return false;	/* childless Result */
+			else if (IsA(pathnode, GroupResultPath))
+				return false;	/* childless Result */
 			else
 			{
-				Assert(IsA(pathnode, ResultPath));
+				/* Simple RTE_RESULT base relation */
+				Assert(IsA(pathnode, Path));
 				return false;	/* childless Result */
 			}
 

@@ -3,7 +3,7 @@
  * tsmapi.h
  *	  API for tablesample methods
  *
- * Copyright (c) 2015-2018, PostgreSQL Global Development Group
+ * Copyright (c) 2015-2019, PostgreSQL Global Development Group
  *
  * src/include/access/tsmapi.h
  *
@@ -13,7 +13,7 @@
 #define TSMAPI_H
 
 #include "nodes/execnodes.h"
-#include "nodes/relation.h"
+#include "nodes/pathnodes.h"
 
 
 /*

@@ -3,7 +3,7 @@
  * statscmds.c
  *	  Commands for creating and altering extended statistics objects
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -14,7 +14,9 @@
  */
 #include "postgres.h"
 
+#include "access/relation.h"
 #include "access/relscan.h"
+#include "access/table.h"
 #include "catalog/catalog.h"
 #include "catalog/dependency.h"
 #include "catalog/indexing.h"
@@ -306,7 +308,7 @@ CreateStatistics(CreateStatsStmt *stmt)
 	Assert(ntypes > 0 && ntypes <= lengthof(types));
 	stxkind = construct_array(types, ntypes, CHAROID, 1, true, 'c');
 
-	statrel = heap_open(StatisticExtRelationId, RowExclusiveLock);
+	statrel = table_open(StatisticExtRelationId, RowExclusiveLock);
 
 	/*
 	 * Everything seems fine, so let's build the pg_statistic_ext tuple.
@@ -394,7 +396,7 @@ RemoveStatisticsById(Oid statsOid)
 	 * Delete the pg_statistic_ext tuple.  Also send out a cache inval on the
 	 * associated table, so that dependent plans will be rebuilt.
 	 */
-	relation = heap_open(StatisticExtRelationId, RowExclusiveLock);
+	relation = table_open(StatisticExtRelationId, RowExclusiveLock);
 
 	tup = SearchSysCache1(STATEXTOID, ObjectIdGetDatum(statsOid));
 
@@ -410,7 +412,7 @@ RemoveStatisticsById(Oid statsOid)
 
 	ReleaseSysCache(tup);
 
-	heap_close(relation, RowExclusiveLock);
+	table_close(relation, RowExclusiveLock);
 }
 
 /*
@@ -496,7 +498,8 @@ ChooseExtendedStatisticName(const char *name1, const char *name2,
  * We know that less than NAMEDATALEN characters will actually be used,
  * so we can truncate the result once we've generated that many.
  *
- * XXX see also ChooseIndexNameAddition.
+ * XXX see also ChooseForeignKeyConstraintNameAddition and
+ * ChooseIndexNameAddition.
  */
 static char *
 ChooseExtendedStatisticNameAddition(List *exprs)

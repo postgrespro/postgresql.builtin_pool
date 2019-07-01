@@ -35,7 +35,7 @@
  * and munge the system catalogs of the new database.
  *
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -54,6 +54,7 @@
 #include "access/reloptions.h"
 #include "access/htup_details.h"
 #include "access/sysattr.h"
+#include "access/tableam.h"
 #include "access/xact.h"
 #include "access/xlog.h"
 #include "access/xloginsert.h"
@@ -81,7 +82,6 @@
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
-#include "utils/tqual.h"
 #include "utils/varlena.h"
 
 
@@ -323,7 +323,7 @@ CreateTableSpace(CreateTableSpaceStmt *stmt)
 	 * lock the proposed tablename against other would-be creators. The
 	 * insertion will roll back if we find problems below.
 	 */
-	rel = heap_open(TableSpaceRelationId, RowExclusiveLock);
+	rel = table_open(TableSpaceRelationId, RowExclusiveLock);
 
 	MemSet(nulls, false, sizeof(nulls));
 
@@ -385,7 +385,7 @@ CreateTableSpace(CreateTableSpaceStmt *stmt)
 	pfree(location);
 
 	/* We keep the lock on pg_tablespace until commit */
-	heap_close(rel, NoLock);
+	table_close(rel, NoLock);
 
 	return tablespaceoid;
 #else							/* !HAVE_SYMLINK */
@@ -406,7 +406,7 @@ DropTableSpace(DropTableSpaceStmt *stmt)
 {
 #ifdef HAVE_SYMLINK
 	char	   *tablespacename = stmt->tablespacename;
-	HeapScanDesc scandesc;
+	TableScanDesc scandesc;
 	Relation	rel;
 	HeapTuple	tuple;
 	Form_pg_tablespace spcform;
@@ -416,13 +416,13 @@ DropTableSpace(DropTableSpaceStmt *stmt)
 	/*
 	 * Find the target tuple
 	 */
-	rel = heap_open(TableSpaceRelationId, RowExclusiveLock);
+	rel = table_open(TableSpaceRelationId, RowExclusiveLock);
 
 	ScanKeyInit(&entry[0],
 				Anum_pg_tablespace_spcname,
 				BTEqualStrategyNumber, F_NAMEEQ,
 				CStringGetDatum(tablespacename));
-	scandesc = heap_beginscan_catalog(rel, 1, entry);
+	scandesc = table_beginscan_catalog(rel, 1, entry);
 	tuple = heap_getnext(scandesc, ForwardScanDirection);
 
 	if (!HeapTupleIsValid(tuple))
@@ -440,8 +440,8 @@ DropTableSpace(DropTableSpaceStmt *stmt)
 					(errmsg("tablespace \"%s\" does not exist, skipping",
 							tablespacename)));
 			/* XXX I assume I need one or both of these next two calls */
-			heap_endscan(scandesc);
-			heap_close(rel, NoLock);
+			table_endscan(scandesc);
+			table_close(rel, NoLock);
 		}
 		return;
 	}
@@ -468,7 +468,7 @@ DropTableSpace(DropTableSpaceStmt *stmt)
 	 */
 	CatalogTupleDelete(rel, &tuple->t_self);
 
-	heap_endscan(scandesc);
+	table_endscan(scandesc);
 
 	/*
 	 * Remove any comments or security labels on this tablespace.
@@ -551,7 +551,7 @@ DropTableSpace(DropTableSpaceStmt *stmt)
 	LWLockRelease(TablespaceCreateLock);
 
 	/* We keep the lock on pg_tablespace until commit */
-	heap_close(rel, NoLock);
+	table_close(rel, NoLock);
 #else							/* !HAVE_SYMLINK */
 	ereport(ERROR,
 			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
@@ -919,20 +919,20 @@ RenameTableSpace(const char *oldname, const char *newname)
 	Oid			tspId;
 	Relation	rel;
 	ScanKeyData entry[1];
-	HeapScanDesc scan;
+	TableScanDesc scan;
 	HeapTuple	tup;
 	HeapTuple	newtuple;
 	Form_pg_tablespace newform;
 	ObjectAddress address;
 
 	/* Search pg_tablespace */
-	rel = heap_open(TableSpaceRelationId, RowExclusiveLock);
+	rel = table_open(TableSpaceRelationId, RowExclusiveLock);
 
 	ScanKeyInit(&entry[0],
 				Anum_pg_tablespace_spcname,
 				BTEqualStrategyNumber, F_NAMEEQ,
 				CStringGetDatum(oldname));
-	scan = heap_beginscan_catalog(rel, 1, entry);
+	scan = table_beginscan_catalog(rel, 1, entry);
 	tup = heap_getnext(scan, ForwardScanDirection);
 	if (!HeapTupleIsValid(tup))
 		ereport(ERROR,
@@ -944,7 +944,7 @@ RenameTableSpace(const char *oldname, const char *newname)
 	newform = (Form_pg_tablespace) GETSTRUCT(newtuple);
 	tspId = newform->oid;
 
-	heap_endscan(scan);
+	table_endscan(scan);
 
 	/* Must be owner */
 	if (!pg_tablespace_ownercheck(tspId, GetUserId()))
@@ -962,7 +962,7 @@ RenameTableSpace(const char *oldname, const char *newname)
 				Anum_pg_tablespace_spcname,
 				BTEqualStrategyNumber, F_NAMEEQ,
 				CStringGetDatum(newname));
-	scan = heap_beginscan_catalog(rel, 1, entry);
+	scan = table_beginscan_catalog(rel, 1, entry);
 	tup = heap_getnext(scan, ForwardScanDirection);
 	if (HeapTupleIsValid(tup))
 		ereport(ERROR,
@@ -970,7 +970,7 @@ RenameTableSpace(const char *oldname, const char *newname)
 				 errmsg("tablespace \"%s\" already exists",
 						newname)));
 
-	heap_endscan(scan);
+	table_endscan(scan);
 
 	/* OK, update the entry */
 	namestrcpy(&(newform->spcname), newname);
@@ -981,7 +981,7 @@ RenameTableSpace(const char *oldname, const char *newname)
 
 	ObjectAddressSet(address, TableSpaceRelationId, tspId);
 
-	heap_close(rel, NoLock);
+	table_close(rel, NoLock);
 
 	return address;
 }
@@ -994,7 +994,7 @@ AlterTableSpaceOptions(AlterTableSpaceOptionsStmt *stmt)
 {
 	Relation	rel;
 	ScanKeyData entry[1];
-	HeapScanDesc scandesc;
+	TableScanDesc scandesc;
 	HeapTuple	tup;
 	Oid			tablespaceoid;
 	Datum		datum;
@@ -1006,13 +1006,13 @@ AlterTableSpaceOptions(AlterTableSpaceOptionsStmt *stmt)
 	HeapTuple	newtuple;
 
 	/* Search pg_tablespace */
-	rel = heap_open(TableSpaceRelationId, RowExclusiveLock);
+	rel = table_open(TableSpaceRelationId, RowExclusiveLock);
 
 	ScanKeyInit(&entry[0],
 				Anum_pg_tablespace_spcname,
 				BTEqualStrategyNumber, F_NAMEEQ,
 				CStringGetDatum(stmt->tablespacename));
-	scandesc = heap_beginscan_catalog(rel, 1, entry);
+	scandesc = table_beginscan_catalog(rel, 1, entry);
 	tup = heap_getnext(scandesc, ForwardScanDirection);
 	if (!HeapTupleIsValid(tup))
 		ereport(ERROR,
@@ -1054,8 +1054,8 @@ AlterTableSpaceOptions(AlterTableSpaceOptionsStmt *stmt)
 	heap_freetuple(newtuple);
 
 	/* Conclude heap scan. */
-	heap_endscan(scandesc);
-	heap_close(rel, NoLock);
+	table_endscan(scandesc);
+	table_close(rel, NoLock);
 
 	return tablespaceoid;
 }
@@ -1388,7 +1388,7 @@ get_tablespace_oid(const char *tablespacename, bool missing_ok)
 {
 	Oid			result;
 	Relation	rel;
-	HeapScanDesc scandesc;
+	TableScanDesc scandesc;
 	HeapTuple	tuple;
 	ScanKeyData entry[1];
 
@@ -1397,13 +1397,13 @@ get_tablespace_oid(const char *tablespacename, bool missing_ok)
 	 * index on name, on the theory that pg_tablespace will usually have just
 	 * a few entries and so an indexed lookup is a waste of effort.
 	 */
-	rel = heap_open(TableSpaceRelationId, AccessShareLock);
+	rel = table_open(TableSpaceRelationId, AccessShareLock);
 
 	ScanKeyInit(&entry[0],
 				Anum_pg_tablespace_spcname,
 				BTEqualStrategyNumber, F_NAMEEQ,
 				CStringGetDatum(tablespacename));
-	scandesc = heap_beginscan_catalog(rel, 1, entry);
+	scandesc = table_beginscan_catalog(rel, 1, entry);
 	tuple = heap_getnext(scandesc, ForwardScanDirection);
 
 	/* We assume that there can be at most one matching tuple */
@@ -1412,8 +1412,8 @@ get_tablespace_oid(const char *tablespacename, bool missing_ok)
 	else
 		result = InvalidOid;
 
-	heap_endscan(scandesc);
-	heap_close(rel, AccessShareLock);
+	table_endscan(scandesc);
+	table_close(rel, AccessShareLock);
 
 	if (!OidIsValid(result) && !missing_ok)
 		ereport(ERROR,
@@ -1434,7 +1434,7 @@ get_tablespace_name(Oid spc_oid)
 {
 	char	   *result;
 	Relation	rel;
-	HeapScanDesc scandesc;
+	TableScanDesc scandesc;
 	HeapTuple	tuple;
 	ScanKeyData entry[1];
 
@@ -1443,13 +1443,13 @@ get_tablespace_name(Oid spc_oid)
 	 * index on oid, on the theory that pg_tablespace will usually have just a
 	 * few entries and so an indexed lookup is a waste of effort.
 	 */
-	rel = heap_open(TableSpaceRelationId, AccessShareLock);
+	rel = table_open(TableSpaceRelationId, AccessShareLock);
 
 	ScanKeyInit(&entry[0],
 				Anum_pg_tablespace_oid,
 				BTEqualStrategyNumber, F_OIDEQ,
 				ObjectIdGetDatum(spc_oid));
-	scandesc = heap_beginscan_catalog(rel, 1, entry);
+	scandesc = table_beginscan_catalog(rel, 1, entry);
 	tuple = heap_getnext(scandesc, ForwardScanDirection);
 
 	/* We assume that there can be at most one matching tuple */
@@ -1458,8 +1458,8 @@ get_tablespace_name(Oid spc_oid)
 	else
 		result = NULL;
 
-	heap_endscan(scandesc);
-	heap_close(rel, AccessShareLock);
+	table_endscan(scandesc);
+	table_close(rel, AccessShareLock);
 
 	return result;
 }

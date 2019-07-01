@@ -4,7 +4,7 @@
  *	  definitions for query plan nodes
  *
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/nodes/plannodes.h
@@ -478,7 +478,8 @@ typedef struct BitmapHeapScan
  *		tid scan node
  *
  * tidquals is an implicitly OR'ed list of qual expressions of the form
- * "CTID = pseudoconstant" or "CTID = ANY(pseudoconstant_array)".
+ * "CTID = pseudoconstant", or "CTID = ANY(pseudoconstant_array)",
+ * or a CurrentOfExpr for the relation.
  * ----------------
  */
 typedef struct TidScan
@@ -1107,6 +1108,7 @@ typedef struct PartitionedRelPruneInfo
 	int			nexprs;			/* Length of hasexecparam[] */
 	int		   *subplan_map;	/* subplan index by partition index, or -1 */
 	int		   *subpart_map;	/* subpart index by partition index, or -1 */
+	Oid		   *relid_map;		/* relation OID by partition index, or -1 */
 	bool	   *hasexecparam;	/* true if corresponding pruning_step contains
 								 * any PARAM_EXEC Params. */
 	bool		do_initial_prune;	/* true if pruning should be performed
