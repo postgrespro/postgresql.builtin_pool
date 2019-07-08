@@ -357,7 +357,7 @@ socket_write(Channel* chan, char const* buf, size_t size)
 #ifdef USE_SSL
 	int waitfor = 0;
 	if (chan->client_port && chan->client_port->ssl_in_use)
-		rc = be_tls_write(chan->client_port, buf, size, &waitfor);
+		rc = be_tls_write(chan->client_port, (char*)buf, size, &waitfor);
 	else
 #endif
 		rc = chan->client_port

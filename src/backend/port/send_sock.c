@@ -46,7 +46,7 @@ pg_send_sock(pgsocket chan, pgsocket sock, pid_t pid)
 						(int)sock, WSAGetLastError())));
 		return -1;
 	}
-	rc = send(chan, &dst, sizeof(dst), 0);
+	rc = send(chan, (char*)&dst, sizeof(dst), 0);
 	if (rc != sizeof(dst))
 	{
 		ereport(FATAL,
@@ -101,7 +101,7 @@ pg_recv_sock(pgsocket chan)
 #ifdef WIN32
 	InheritableSocket src;
 	SOCKET s;
-	size_t rc = recv(chan, &src, sizeof(src), 0);
+	size_t rc = recv(chan, (char*)&src, sizeof(src), 0);
 	if (rc != sizeof(src))
 	{
 		ereport(FATAL,

@@ -5172,7 +5172,7 @@ SubPostmasterMain(int argc, char *argv[])
 		InitProcess();
 
 		/* Attach process to shared data structures */
-		CreateSharedMemoryAndSemaphores(false, 0);
+		CreateSharedMemoryAndSemaphores(0);
 
 		ConnectionProxyMain(argc - 2, argv + 2);	/* does not return */
 	}
@@ -6604,7 +6604,7 @@ restore_backend_variables(BackendParameters *param, Port *port)
 
 	strlcpy(ExtraOptions, param->ExtraOptions, MAXPGPATH);
 
-	read_inheritable_socket(&MyProxySock, &param->proxySocket);
+	read_inheritable_socket(&MyProxySocket, &param->proxySocket);
 	MyProxyId = param->proxyId;
 }
 
