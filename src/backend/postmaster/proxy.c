@@ -691,6 +691,9 @@ proxy_add_client(Proxy* proxy, Port* port)
 	{
 		/* Too much sessions, error report was already logged */
 		close(port->sock);
+#if defined(ENABLE_GSS) || defined(ENABLE_SSPI)
+		free(port->gss);
+#endif
 		free(port);
 		free(chan->buf);
 		free(chan);
@@ -786,7 +789,16 @@ proxy_loop(Proxy* proxy)
 					free(port);
 				}
 				else
+				{
+#if defined(ENABLE_GSS) || defined(ENABLE_SSPI)
+					port->gss = (pg_gssinfo *) calloc(1, sizeof(pg_gssinfo));
+					if (!port->gss)
+						ereport(FATAL,
+								(errcode(ERRCODE_OUT_OF_MEMORY),
+								 errmsg("out of memory")));
+#endif
 					proxy_add_client(proxy, port);
+				}
 			}
 			else
 			{
