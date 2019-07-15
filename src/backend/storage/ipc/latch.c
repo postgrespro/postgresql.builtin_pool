@@ -801,7 +801,7 @@ ModifyWaitEvent(WaitEventSet *set, int pos, uint32 events, Latch *latch)
 
 	event = &set->events[pos];
 
-#if !defined(WAIT_USE_EPOLL)
+#if defined(WAIT_USE_EPOLL)
 	/* ModifyWaitEvent is used to emulate epoll EPOLLET (edge-triggered) flag */
 	if (events & WL_SOCKET_EDGE)
 		return;
