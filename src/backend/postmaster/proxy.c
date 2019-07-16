@@ -61,7 +61,8 @@ typedef struct Channel
 	bool     backend_is_ready;   /* ready for query */
 	bool     is_interrupted;     /* client interrupts query execution */
 	bool     is_disconnected;    /* connection is lost */
-	bool     write_pending;     /* emulate epoll EPOLLET (edge-triggered) flag */
+	bool     write_pending;      /* write request is pending: emulate epoll EPOLLET (edge-triggered) flag */
+	bool     read_pending;       /* read request is pending: emulate epoll EPOLLET (edge-triggered) flag */
 	/* We need to save startup packet response to be able to send it to new connection */
 	int      handshake_response_size;
 	char*    handshake_response;
@@ -367,14 +368,16 @@ socket_write(Channel* chan, char const* buf, size_t size)
 	{
 		channel_hangout(chan, "write");
 	}
-	else if (rc < 0) /* do not accept more read events while write requests is pending */
+	else if (rc < 0)
 	{
+		/* do not accept more read events while write request is pending */
 		ModifyWaitEvent(chan->proxy->wait_events, chan->event_pos, WL_SOCKET_WRITEABLE|WL_SOCKET_EDGE, NULL);
 		chan->write_pending = true;
 	}
-	else if (chan->write_pending && rc > 0)
+	else if (chan->write_pending)
 	{
-		ModifyWaitEvent(chan->proxy->wait_events, chan->event_pos, WL_SOCKET_READABLE|WL_SOCKET_WRITEABLE|WL_SOCKET_EDGE, NULL);
+		/* resume accepting read events */
+		ModifyWaitEvent(chan->proxy->wait_events, chan->event_pos, WL_SOCKET_READABLE|WL_SOCKET_EDGE, NULL);
 		chan->write_pending = false;
 	}
 	return rc;
@@ -459,7 +462,19 @@ channel_read(Channel* chan)
 		{
 			if (rc == 0 || (errno != EAGAIN && errno != EWOULDBLOCK))
 				channel_hangout(chan, "read");
+			else
+			{
+				/* do not accept more write events while read request is pending */
+				ModifyWaitEvent(chan->proxy->wait_events, chan->event_pos, WL_SOCKET_READABLE|WL_SOCKET_EDGE, NULL);
+				chan->read_pending = true;
+			}
 			return false; /* wait for more data */
+		}
+		else if (chan->read_pending)
+		{
+			/* resume accepting all events */
+			ModifyWaitEvent(chan->proxy->wait_events, chan->event_pos, WL_SOCKET_READABLE|WL_SOCKET_WRITEABLE|WL_SOCKET_EDGE, NULL);
+			chan->read_pending = false;
 		}
 		chan->rx_pos += rc;
 		msg_start = 0;
