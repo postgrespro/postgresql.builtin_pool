@@ -788,9 +788,9 @@ include_dir 'conf.d'
       <listitem>
         <para>
           Sets number of connection proxies.
-          Postmaster spawns separate worker process for each proxy. Postmaster scatters connections between proxies using one of scheduling policies (round-robin, random, load-balancing)."
-		 "Each proxy launches its own subset of backends. So maximal number of non-tainted backends is "
-		  "session_pool_size*connection_proxies*databases*roles.
+          Postmaster spawns separate worker process for each proxy. Postmaster scatters connections between proxies using one of scheduling policies (round-robin, random, load-balancing).
+		  Each proxy launches its own subset of backends.
+          So maximal number of non-tainted backends is  <varname>session_pool_size*connection_proxies*databases*roles</varname>.
        </para>
         <para>
           The default value is 0, so session pooling is disabled.

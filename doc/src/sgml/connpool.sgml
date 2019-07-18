@@ -111,7 +111,7 @@
 
   <para>
     Connection proxy accepts connections on special port, defined by <varname>proxy_port</varname>.
-    Default value is 6543, but it can be changed to standard Postgres 4321, so by default all connections to the databases will be pooled.
+    Default value is 6543, but it can be changed to standard Postgres 5432, so by default all connections to the databases will be pooled.
     But it is still necessary to have a port for direct connections to the database (dedicated backends).
     It is needed for connection pooler itself to launch worker backends.
   </para>
@@ -139,7 +139,7 @@
   <title>Built-in Connection Pooler Pros and Cons</title>
 
   <para>
-    Unlike pgbouncer and other external connection poolera, built-in connection pooler doesn't require installation and configuration of some other components.
+    Unlike pgbouncer and other external connection poolers, built-in connection pooler doesn't require installation and configuration of some other components.
     Also it doesn't introduce any limitations for clients: existed clients can work through proxy and don't notice any difference.
     If client application requires session context, then it will be served by dedicated backend. Such connection will not participate in
     connection pooling but it will correctly work. This is the main difference with pgbouncer,
@@ -149,8 +149,8 @@
 
   <para>
     The main limitation of current built-in connection pooler implementation is that it is not able to save/resume session context.
-    Although it is not so difficult to do, but it requires more changes in Postgres core. So developers of client applications still have a choice
-    either to avoid using session-specific operations either not to use pooling. For example, using prepared statements can improve speed of simple queries
+    Although it is not so difficult to do, but it requires more changes in Postgres core. Developers of client applications have
+    the choice to either avoid using session-specific operations, or not use built-in pooling. For example, using prepared statements can improve speed of simple queries
     up to two times. But prepared statements can not be handled by pooled backend, so if all clients are using prepared statements, then there will be no connection pooling
     even if connection pooling is enabled.
   </para>

@@ -59,30 +59,30 @@ pg_send_sock(pgsocket chan, pgsocket sock, pid_t pid)
 	struct msghdr msg = { 0 };
 	struct iovec io;
 	struct cmsghdr * cmsg;
-    char buf[CMSG_SPACE(sizeof(sock))];
-    memset(buf, '\0', sizeof(buf));
+	char buf[CMSG_SPACE(sizeof(sock))];
+	memset(buf, '\0', sizeof(buf));
 
-    /* On Mac OS X, the struct iovec is needed, even if it points to minimal data */
-    io.iov_base = "";
+	/* On Mac OS X, the struct iovec is needed, even if it points to minimal data */
+	io.iov_base = "";
 	io.iov_len = 1;
 
-    msg.msg_iov = &io;
-    msg.msg_iovlen = 1;
-    msg.msg_control = buf;
-    msg.msg_controllen = sizeof(buf);
+	msg.msg_iov = &io;
+	msg.msg_iovlen = 1;
+	msg.msg_control = buf;
+	msg.msg_controllen = sizeof(buf);
 
-    cmsg = CMSG_FIRSTHDR(&msg);
+	cmsg = CMSG_FIRSTHDR(&msg);
 	if (!cmsg)
 		return PGINVALID_SOCKET;
 
-    cmsg->cmsg_level = SOL_SOCKET;
-    cmsg->cmsg_type = SCM_RIGHTS;
-    cmsg->cmsg_len = CMSG_LEN(sizeof(sock));
+	cmsg->cmsg_level = SOL_SOCKET;
+	cmsg->cmsg_type = SCM_RIGHTS;
+	cmsg->cmsg_len = CMSG_LEN(sizeof(sock));
 
-    memcpy(CMSG_DATA(cmsg), &sock, sizeof(sock));
-    msg.msg_controllen = cmsg->cmsg_len;
+	memcpy(CMSG_DATA(cmsg), &sock, sizeof(sock));
+	msg.msg_controllen = cmsg->cmsg_len;
 
-    while (sendmsg(chan, &msg, 0) < 0)
+	while (sendmsg(chan, &msg, 0) < 0)
 	{
 		if (errno != EINTR)
 			return PGINVALID_SOCKET;
@@ -130,36 +130,36 @@ pg_recv_sock(pgsocket chan)
 	return s;
 #else
 	struct msghdr msg = {0};
-    char c_buffer[256];
-    char m_buffer[256];
-    struct iovec io;
+	char c_buffer[256];
+	char m_buffer[256];
+	struct iovec io;
 	struct cmsghdr * cmsg;
 	pgsocket sock;
 
-    io.iov_base = m_buffer;
+	io.iov_base = m_buffer;
 	io.iov_len = sizeof(m_buffer);
-    msg.msg_iov = &io;
-    msg.msg_iovlen = 1;
+	msg.msg_iov = &io;
+	msg.msg_iovlen = 1;
 
-    msg.msg_control = c_buffer;
-    msg.msg_controllen = sizeof(c_buffer);
+	msg.msg_control = c_buffer;
+	msg.msg_controllen = sizeof(c_buffer);
 
-    while (recvmsg(chan, &msg, 0) < 0)
+	while (recvmsg(chan, &msg, 0) < 0)
 	{
 		if (errno != EINTR)
 			return PGINVALID_SOCKET;
 	}
 
-    cmsg = CMSG_FIRSTHDR(&msg);
+	cmsg = CMSG_FIRSTHDR(&msg);
 	if (!cmsg)
 	{
 		elog(WARNING, "Failed to transfer socket");
 		return PGINVALID_SOCKET;
 	}
 
-    memcpy(&sock, CMSG_DATA(cmsg), sizeof(sock));
+	memcpy(&sock, CMSG_DATA(cmsg), sizeof(sock));
 	pg_set_noblock(sock);
 
-    return sock;
+	return sock;
 #endif
 }
