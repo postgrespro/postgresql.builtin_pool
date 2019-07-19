@@ -110,7 +110,7 @@ typedef struct SessionPool
 SessionPool;
 
 static void channel_remove(Channel* chan);
-static Channel* backend_start(SessionPool* pool, Port* client_port);
+static Channel* backend_start(SessionPool* pool);
 static bool channel_read(Channel* chan);
 static bool channel_write(Channel* chan, bool synchronous);
 
@@ -130,7 +130,7 @@ ConnectionProxyState* ProxyState;
  * Now if backend is not tainted it is possible to schedule some other client to this backend.
  */
 static bool
-backend_reschedule(Channel* chan)
+backend_reschedule(Channel* chan, bool is_new)
 {
 	chan->backend_is_ready = false;
 	if (chan->backend_proc == NULL) /* Lazy resolving of PGPROC entry */
@@ -139,7 +139,7 @@ backend_reschedule(Channel* chan)
 		chan->backend_proc = BackendPidGetProc(chan->backend_pid);
 		Assert(chan->backend_proc); /* If backend completes execution of some query, then it has definitely registered itself in procarray */
 	}
-	if (!chan->backend_proc->is_tainted) /* If backend is not storing some session context */
+	if (is_new || !chan->backend_proc->is_tainted) /* If backend is not storing some session context */
 	{
 		Channel* pending = chan->pool->pending_clients;
 		Assert(!chan->backend_is_tainted);
@@ -184,6 +184,7 @@ backend_reschedule(Channel* chan)
 	}
 	else if (!chan->backend_is_tainted) /* if it was not marked as tainted before... */
 	{
+		ELOG(LOG, "Backed %d is tainted", chan->backend_pid);
 		chan->backend_is_tainted = true;
 		chan->proxy->state->n_dedicated_backends += 1;
 	}
@@ -269,7 +270,7 @@ client_attach(Channel* chan)
 		if (chan->pool->n_launched_backends < chan->proxy->max_backends)
 		{
 			/* Try to start new backend */
-			idle_backend = backend_start(chan->pool, chan->client_port);
+			idle_backend = backend_start(chan->pool);
 			if (idle_backend != NULL)
 			{
 				ELOG(LOG, "Start new backend %p (pid %d) for client %p",
@@ -340,7 +341,7 @@ channel_hangout(Channel* chan, char const* op)
 		else if (!peer->is_interrupted)
 		{
 			/* Client already sent 'X' command, so we can safely reschedule backend to some other client session */
-			backend_reschedule(peer);
+			backend_reschedule(peer, false);
 		}
 	}
 	chan->next = chan->proxy->hangout;
@@ -430,7 +431,7 @@ channel_write(Channel* chan, bool synchronous)
 		peer->tx_pos = peer->tx_size = 0;
 		if (peer->backend_is_ready) {
 			Assert(peer->rx_pos == 0);
-			backend_reschedule(peer);
+			backend_reschedule(peer, false);
 			return true;
 		}
 	}
@@ -587,7 +588,7 @@ channel_read(Channel* chan)
 		}
 		/* If backend is out of transaction, then reschedule it */
 		if (chan->backend_is_ready)
-			return backend_reschedule(chan);
+			return backend_reschedule(chan, false);
 	}
 	return true;
 }
@@ -633,7 +634,7 @@ channel_register(Proxy* proxy, Channel* chan)
  * Backend is forked using BackendStartup function.
  */
 static Channel*
-backend_start(SessionPool* pool, Port* client_port)
+backend_start(SessionPool* pool)
 {
 	Channel* chan;
 	char postmaster_port[8];
@@ -751,6 +752,17 @@ channel_remove(Channel* chan)
 		chan->pool->n_launched_backends -= 1;
 		close(chan->backend_socket);
 		free(chan->handshake_response);
+
+		if (chan->pool->pending_clients)
+		{
+			/* Try to start new backend instead of terminated */
+			Channel* new_backend = backend_start(chan->pool);
+			if (new_backend != NULL)
+			{
+				ELOG(LOG, "Spawn new backend %p instead of terminated %p", new_backend, chan);
+				backend_reschedule(new_backend, true);
+			}
+		}
 	}
 	free(chan->buf);
 	free(chan);

@@ -197,7 +197,7 @@ BackgroundWorker *MyBgworkerEntry = NULL;
 /* The socket number we are listening for connections on */
 int			PostPortNumber;
 
-/* The socket number we are listening for poolled connections on */
+/* The socket number we are listening for pooled connections on */
 int			ProxyPortNumber;
 
 /* The directory names for Unix socket(s) */
@@ -1243,7 +1243,7 @@ PostmasterMain(int argc, char *argv[])
 		if (status != STATUS_OK)
 		{
 			ereport(WARNING,
-					(errmsg("could not create listen socket for locahost")));
+					(errmsg("could not create listen socket for localhost")));
 		}
 	}
 
@@ -1719,7 +1719,7 @@ GetConnectionProxyWorkload(int id)
 /**
  * Choose connection pool for this session.
  * Right now sessions can not be moved between pools (in principle it is not so difficult to implement it),
- * so to support order balancing we should do dome smart work here.
+ * so to support order balancing we should do some smart work here.
  */
 static ConnectionProxy*
 SelectConnectionProxy(void)
