@@ -25,9 +25,9 @@
 #include "../interfaces/libpq/libpq-fe.h"
 #include "../interfaces/libpq/libpq-int.h"
 
-#define INIT_BUF_SIZE      (64*1024)
+#define INIT_BUF_SIZE	   (64*1024)
 #define MAX_READY_EVENTS   128
-#define DB_HASH_SIZE       101
+#define DB_HASH_SIZE	   101
 #define PROXY_WAIT_TIMEOUT 1000 /* 1 second */
 
 struct SessionPool;
@@ -45,31 +45,31 @@ SessionPoolKey;
  */
 typedef struct Channel
 {
-	char*    buf;
-	int      rx_pos;
-	int      tx_pos;
-	int      tx_size;
-	int      buf_size;
-	int      event_pos;          /* Position of wait event returned by AddWaitEventToSet */
+	char*	 buf;
+	int		 rx_pos;
+	int		 tx_pos;
+	int		 tx_size;
+	int		 buf_size;
+	int		 event_pos;			 /* Position of wait event returned by AddWaitEventToSet */
 
-	Port*    client_port;        /* Not null for client, null for server */
+	Port*	 client_port;		 /* Not null for client, null for server */
 
 	pgsocket backend_socket;
-	PGPROC*  backend_proc;
-	int      backend_pid;
-	bool     backend_is_tainted; /* client changes session context */
-	bool     backend_is_ready;   /* ready for query */
-	bool     is_interrupted;     /* client interrupts query execution */
-	bool     is_disconnected;    /* connection is lost */
-	bool     write_pending;      /* write request is pending: emulate epoll EPOLLET (edge-triggered) flag */
-	bool     read_pending;       /* read request is pending: emulate epoll EPOLLET (edge-triggered) flag */
+	PGPROC*	 backend_proc;
+	int		 backend_pid;
+	bool	 backend_is_tainted; /* client changes session context */
+	bool	 backend_is_ready;	 /* ready for query */
+	bool	 is_interrupted;	 /* client interrupts query execution */
+	bool	 is_disconnected;	 /* connection is lost */
+	bool	 write_pending;		 /* write request is pending: emulate epoll EPOLLET (edge-triggered) flag */
+	bool	 read_pending;		 /* read request is pending: emulate epoll EPOLLET (edge-triggered) flag */
 	/* We need to save startup packet response to be able to send it to new connection */
-	int      handshake_response_size;
-	char*    handshake_response;
+	int		 handshake_response_size;
+	char*	 handshake_response;
 
 	struct Channel* peer;
 	struct Channel* next;
-	struct Proxy*   proxy;
+	struct Proxy*	proxy;
 	struct SessionPool* pool;
 }
 Channel;
@@ -80,15 +80,15 @@ Channel;
  */
 typedef struct Proxy
 {
-	MemoryContext memctx;        /* Memory context for this proxy (used only in single thread) */
-	MemoryContext tmpctx;        /* Temporary memory context used for parsing startup packet */
-	WaitEventSet* wait_events;   /* Set of socket descriptors of backends and clients socket descriptors */
-	HTAB*    pools;              /* Session pool map with dbname/role used as a key */
-	int      n_accepted_connections; /* Number of accepted, but not yet established connections
+	MemoryContext memctx;		 /* Memory context for this proxy (used only in single thread) */
+	MemoryContext tmpctx;		 /* Temporary memory context used for parsing startup packet */
+	WaitEventSet* wait_events;	 /* Set of socket descriptors of backends and clients socket descriptors */
+	HTAB*	 pools;				 /* Session pool map with dbname/role used as a key */
+	int		 n_accepted_connections; /* Number of accepted, but not yet established connections
 									  * (startup packet is not received and db/role are not known) */
-	int      max_backends;       /* Maximal number of backends per database */
-	bool     shutdown;           /* Shutdown flag */
-	Channel* hangout;            /* List of disconnected backends */
+	int		 max_backends;		 /* Maximal number of backends per database */
+	bool	 shutdown;			 /* Shutdown flag */
+	Channel* hangout;			 /* List of disconnected backends */
 	ConnectionProxyState* state; /* State of proxy */
 } Proxy;
 
@@ -98,14 +98,14 @@ typedef struct Proxy
 typedef struct SessionPool
 {
 	SessionPoolKey key;
-	Channel* idle_backends;       /* List of idle clients */
-	Channel* pending_clients;     /* List of clients waiting for free backend */
-	Proxy*   proxy;               /* Owner of this pool */
-	int      n_launched_backends; /* Total number of launched backends */
-	int      n_idle_backends;     /* Number of backends in idle state */
-	int      n_connected_clients; /* Total number of connected clients */
-	int      n_idle_clients;      /* Number of clients in idle state */
-	int      n_pending_clients;   /* Number of clients waiting for free backend */
+	Channel* idle_backends;		  /* List of idle clients */
+	Channel* pending_clients;	  /* List of clients waiting for free backend */
+	Proxy*	 proxy;				  /* Owner of this pool */
+	int		 n_launched_backends; /* Total number of launched backends */
+	int		 n_idle_backends;	  /* Number of backends in idle state */
+	int		 n_connected_clients; /* Total number of connected clients */
+	int		 n_idle_clients;	  /* Number of clients in idle state */
+	int		 n_pending_clients;	  /* Number of clients waiting for free backend */
 }
 SessionPool;
 
@@ -148,7 +148,7 @@ backend_reschedule(Channel* chan, bool is_new)
 		chan->pool->n_idle_clients += 1;
 		if (pending)
 		{
-            /* Has pending clients: serve one of them */
+			/* Has pending clients: serve one of them */
 			ELOG(LOG, "Backed %d is reassigned to client %p", chan->backend_pid, pending);
 			chan->pool->pending_clients = pending->next;
 			Assert(chan != pending);
@@ -444,7 +444,7 @@ channel_write(Channel* chan, bool synchronous)
 static bool
 channel_read(Channel* chan)
 {
-	int  msg_start;
+	int	 msg_start;
 	while (chan->tx_size == 0) /* there is no pending write op */
 	{
 		ssize_t rc;
@@ -519,7 +519,7 @@ channel_read(Channel* chan)
 					}
 				}
 				else if (!chan->client_port /* Message from backend */
-					&& chan->buf[msg_start] == 'Z'  /* Ready for query */
+					&& chan->buf[msg_start] == 'Z'	/* Ready for query */
 					&& chan->buf[msg_start+5] == 'I') /* Transaction block status is idle */
 				{
 					Assert(chan->rx_pos - msg_start == msg_len); /* Should be last message */
@@ -537,7 +537,7 @@ channel_read(Channel* chan)
 						return false;
 					}
 				}
-				if (chan->peer == NULL)  /* client is not yet connected to backend */
+				if (chan->peer == NULL)	 /* client is not yet connected to backend */
 				{
 					if (!chan->client_port)
 					{
@@ -548,7 +548,7 @@ channel_read(Channel* chan)
 					client_attach(chan);
 					if (handshake) /* Send handshake response to the client */
 					{
-                        /* If we attach new client to the existed backend, then we need to send handshake response to the client */
+						/* If we attach new client to the existed backend, then we need to send handshake response to the client */
 						Channel* backend = chan->peer;
 						Assert(chan->rx_pos == msg_len && msg_start == 0);
 						chan->rx_pos = 0; /* Skip startup packet */
@@ -781,7 +781,7 @@ static Proxy*
 proxy_create(pgsocket postmaster_socket, ConnectionProxyState* state, int max_backends)
 {
 	HASHCTL ctl;
-	Proxy*  proxy = calloc(1, sizeof(Proxy));
+	Proxy*	proxy = calloc(1, sizeof(Proxy));
 	proxy->memctx = AllocSetContextCreate(TopMemoryContext,
 										  "Proxy",
 										  ALLOCSET_DEFAULT_SIZES);
@@ -824,7 +824,7 @@ proxy_loop(Proxy* proxy)
 			{
 				Port* port = (Port*)calloc(1, sizeof(Port));
 				port->sock = pg_recv_sock(ready[i].fd);
-			    if (port->sock == PGINVALID_SOCKET)
+				if (port->sock == PGINVALID_SOCKET)
 				{
 					elog(WARNING, "Failed to receive session socket: %m");
 					free(port);
@@ -937,7 +937,7 @@ ConnectionProxyMain(int argc, char *argv[])
 		EmitErrorReport();
 
 		/*
-		 * We can now go away.  Note that because we called InitProcess, a
+		 * We can now go away.	Note that because we called InitProcess, a
 		 * callback was registered to do ProcKill, which will clean up
 		 * necessary state.
 		 */
@@ -1022,19 +1022,19 @@ typedef struct
  * Return information about proxies state.
  * This set-returning functions returns the following columns:
  *
- * pid            - proxy process identifier
- * n_clients      - number of clients connected to proxy
+ * pid			  - proxy process identifier
+ * n_clients	  - number of clients connected to proxy
  * n_ssl_clients  - number of clients using SSL protocol
- * n_pools        - number of pools (role/dbname combinations) maintained by proxy
- * n_backends     - total number of backends spawned by this proxy (including tainted)
+ * n_pools		  - number of pools (role/dbname combinations) maintained by proxy
+ * n_backends	  - total number of backends spawned by this proxy (including tainted)
  * n_dedicated_backends - number of tainted backend
- * tx_bytes       - amount of data sent from backends to clients
- * rx_bytes       - amount of data sent from client to backends
+ * tx_bytes		  - amount of data sent from backends to clients
+ * rx_bytes		  - amount of data sent from client to backends
  * n_transactions - number of transaction proceeded by all backends of this proxy
  */
 Datum pg_pooler_state(PG_FUNCTION_ARGS)
 {
-    FuncCallContext* srf_ctx;
+	FuncCallContext* srf_ctx;
 	MemoryContext old_context;
 	PoolerStateContext* ps_ctx;
 	HeapTuple tuple;
@@ -1047,8 +1047,8 @@ Datum pg_pooler_state(PG_FUNCTION_ARGS)
 	{
 		srf_ctx = SRF_FIRSTCALL_INIT();
 		old_context = MemoryContextSwitchTo(srf_ctx->multi_call_memory_ctx);
-        ps_ctx = (PoolerStateContext*)palloc(sizeof(PoolerStateContext));
-        get_call_result_type(fcinfo, NULL, &ps_ctx->ret_desc);
+		ps_ctx = (PoolerStateContext*)palloc(sizeof(PoolerStateContext));
+		get_call_result_type(fcinfo, NULL, &ps_ctx->ret_desc);
 		ps_ctx->proxy_id = 0;
 		srf_ctx->user_fctx = ps_ctx;
 		MemoryContextSwitchTo(old_context);
@@ -1076,4 +1076,3 @@ Datum pg_pooler_state(PG_FUNCTION_ARGS)
 	tuple = heap_form_tuple(ps_ctx->ret_desc, values, nulls);
 	SRF_RETURN_NEXT(srf_ctx, HeapTupleGetDatum(tuple));
 }
-

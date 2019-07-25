@@ -457,7 +457,7 @@ int			pgwin32_recv(SOCKET s, char *buf, int len, int flags);
 int			pgwin32_send(SOCKET s, const void *buf, int len, int flags);
 int			pgwin32_waitforsinglesocket(SOCKET s, int what, int timeout);
 int         pgwin32_socketpair(int domain, int type, int protocol, SOCKET socks[2]);
- 
+
 extern int	pgwin32_noblock;
 
 #endif							/* FRONTEND */

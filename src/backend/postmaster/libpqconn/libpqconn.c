@@ -44,4 +44,3 @@ void _PG_init(void)
 {
 	LibpqConnectdbParams = libpq_connectdb;
 }
-
