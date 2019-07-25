@@ -72,6 +72,13 @@
 #error "no wait set implementation available"
 #endif
 
+#if defined(WAIT_USE_EPOLL)
+bool WaitEventUseEpoll = true;
+#else
+bool WaitEventUseEpoll = false;
+#endif
+
+
 /* typedef in latch.h */
 struct WaitEventSet
 {

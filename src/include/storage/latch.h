@@ -151,6 +151,8 @@ typedef struct WaitEvent
 #endif
 } WaitEvent;
 
+extern bool WaitEventUseEpoll;
+
 /* forward declaration to avoid exposing latch.c implementation details */
 typedef struct WaitEventSet WaitEventSet;
 

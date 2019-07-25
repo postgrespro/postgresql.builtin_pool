@@ -158,6 +158,7 @@ sub mkvcbuild
 
 	$postgres = $solution->AddProject('postgres', 'exe', '', 'src/backend');
 	$postgres->AddIncludeDir('src/backend');
+	$postgres->AddIncludeDir('src/port');
 	$postgres->AddDir('src/backend/port/win32');
 	$postgres->AddFile('src/backend/utils/fmgrtab.c');
 	$postgres->ReplaceFile('src/backend/port/pg_sema.c',
@@ -270,6 +271,12 @@ sub mkvcbuild
 		'src/backend/replication/libpqwalreceiver');
 	$libpqwalreceiver->AddIncludeDir('src/interfaces/libpq');
 	$libpqwalreceiver->AddReference($postgres, $libpq);
+
+	my $libpqconn =
+	  $solution->AddProject('libpqconn', 'dll', '',
+		'src/backend/postmaster/libpqconn');
+	$libpqconn->AddIncludeDir('src/interfaces/libpq');
+	$libpqconn->AddReference($postgres, $libpq);
 
 	my $pgoutput = $solution->AddProject('pgoutput', 'dll', '',
 		'src/backend/replication/pgoutput');

@@ -589,6 +589,10 @@ channel_read(Channel* chan)
 		/* If backend is out of transaction, then reschedule it */
 		if (chan->backend_is_ready)
 			return backend_reschedule(chan, false);
+
+		/* Do not try to read more data if edge-triggered mode is not supported */
+		if (!WaitEventUseEpoll)
+			break;
 	}
 	return true;
 }
@@ -689,7 +693,7 @@ backend_start(SessionPool* pool)
 	else
 	{
 		/* Too much sessions, error report was already logged */
-		close(chan->backend_socket);
+		closesocket(chan->backend_socket);
 		free(chan->buf);
 		free(chan);
 		chan = NULL;
@@ -716,7 +720,7 @@ proxy_add_client(Proxy* proxy, Port* port)
 	else
 	{
 		/* Too much sessions, error report was already logged */
-		close(port->sock);
+		closesocket(port->sock);
 #if defined(ENABLE_GSS) || defined(ENABLE_SSPI)
 		free(port->gss);
 #endif
@@ -742,7 +746,7 @@ channel_remove(Channel* chan)
 			chan->proxy->n_accepted_connections -= 1;
 		chan->proxy->state->n_clients -= 1;
 		chan->proxy->state->n_ssl_clients -= chan->client_port->ssl_in_use;
-		close(chan->client_port->sock);
+		closesocket(chan->client_port->sock);
 		free(chan->client_port);
 	}
 	else
@@ -750,7 +754,7 @@ channel_remove(Channel* chan)
 		chan->proxy->state->n_backends -= 1;
 		chan->proxy->state->n_dedicated_backends -= chan->backend_is_tainted;
 		chan->pool->n_launched_backends -= 1;
-		close(chan->backend_socket);
+		closesocket(chan->backend_socket);
 		free(chan->handshake_response);
 
 		if (chan->pool->pending_clients)
@@ -841,6 +845,8 @@ proxy_loop(Proxy* proxy)
 			{
 				if (ready[i].events & WL_SOCKET_WRITEABLE) {
 					ELOG(LOG, "Channel %p is writable", chan);
+					/* At systems not supporttring epoll edge triggering (Win32, FreeBSD, MacOS), we need to disable writable event to avoid busy loop */
+					ModifyWaitEvent(chan->proxy->wait_events, chan->event_pos, WL_SOCKET_READABLE | WL_SOCKET_EDGE, NULL);
 					channel_write(chan, false);
 				}
 				if (ready[i].events & WL_SOCKET_READABLE) {

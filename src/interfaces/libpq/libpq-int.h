@@ -59,7 +59,7 @@
 #include <security.h>
 #undef SECURITY_WIN32
 
-#ifndef ENABLE_GSS
+#if !defined(ENABLE_GSS) && !defined(GSS_BUFFER_STUB_DEFINED)
 /*
  * Define a fake structure compatible with GSSAPI on Unix.
  */
@@ -68,6 +68,7 @@ typedef struct
 	void	   *value;
 	int			length;
 } gss_buffer_desc;
+#define GSS_BUFFER_STUB_DEFINED
 #endif
 #endif							/* ENABLE_SSPI */
 

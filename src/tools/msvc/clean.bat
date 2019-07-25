@@ -19,6 +19,7 @@ if exist pgsql.suo del /q /a:H pgsql.suo
 del /s /q src\bin\win32ver.rc 2> NUL
 del /s /q src\interfaces\win32ver.rc 2> NUL
 if exist src\backend\win32ver.rc del /q src\backend\win32ver.rc
+if exist src\backend\postmaster\libpqconn\win32ver.rc del /q src\backend\postmaster\libpqconn\win32ver.rc
 if exist src\backend\replication\libpqwalreceiver\win32ver.rc del /q src\backend\replication\libpqwalreceiver\win32ver.rc
 if exist src\backend\replication\pgoutput\win32ver.rc del /q src\backend\replication\pgoutput\win32ver.rc
 if exist src\backend\snowball\win32ver.rc del /q src\backend\snowball\win32ver.rc
