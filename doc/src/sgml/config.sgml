@@ -728,7 +728,7 @@ include_dir 'conf.d'
       <listitem>
         <para>
           The maximum number of client sessions that can be handled by
-          one connection proxy when session pooling is switched on.
+          one connection proxy when session pooling is enabled.
           This parameter does not add any memory or CPU overhead, so
           specifying a large <varname>max_sessions</varname> value
           does not affect performance.
