@@ -117,8 +117,8 @@ static bool channel_write(Channel* chan, bool synchronous);
 /*
  * #define ELOG(severity, fmt,...) elog(severity, "PROXY: " fmt, ## __VA_ARGS__)
  */
-#define ELOG(severity,fmt,...)
-//#define ELOG(severity, fmt,...) elog(severity, "PROXY: " fmt, ## __VA_ARGS__)
+//#define ELOG(severity,fmt,...)
+#define ELOG(severity, fmt,...) elog(severity, "PROXY: " fmt, ## __VA_ARGS__)
 
 static Proxy* proxy;
 int MyProxyId;

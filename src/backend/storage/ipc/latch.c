@@ -643,6 +643,8 @@ FreeWaitEventSet(WaitEventSet *set)
 #elif defined(WAIT_USE_WIN32)
 	WaitEvent  *cur_event;
 
+	WaitEventSetDefragment(set);
+
 	for (cur_event = set->events;
 		 cur_event < (set->events + set->nevents);
 		 cur_event++)
@@ -743,7 +745,7 @@ AddWaitEventToSet(WaitEventSet *set, uint32 events, pgsocket fd, Latch *latch,
 		event = &set->events[set->nevents];
 		event->pos = set->nevents;
 	}
-	set->nevents += 1;
+	event->index = set->nevents++;
 	event->fd = fd;
 	event->events = events;
 	event->user_data = user_data;
@@ -786,12 +788,17 @@ void DeleteWaitEventFromSet(WaitEventSet *set, int event_pos)
 	WaitEvent  *event = &set->events[event_pos];
 #if defined(WAIT_USE_EPOLL)
 	WaitEventAdjustEpoll(set, event, EPOLL_CTL_DEL);
-#elif defined(WAIT_USE_POLL)
+#elif defined(WAIT_USE_Poll)
 	WaitEventAdjustPoll(set, event, true);
 #elif defined(WAIT_USE_WIN32)
 	WaitEventAdjustWin32(set, event, true);
 #endif
+	event->fd = PGINVALID_SOCKET;
+	event->index = --set->nevents;
+	event->pos = set->free_events;
+	set->free_events = event_pos;
 }
+
 
 /*
  * Change the event mask and, in the WL_LATCH_SET case, the latch associated
@@ -903,15 +910,6 @@ WaitEventAdjustEpoll(WaitEventSet *set, WaitEvent *event, int action)
 				 /* translator: %s is a syscall name, such as "poll()" */
 				 errmsg("%s failed: %m",
 						"epoll_ctl()")));
-
-	if (action == EPOLL_CTL_DEL)
-	{
-		int pos = event->pos;
-		event->fd = PGINVALID_SOCKET;
-		set->nevents -= 1;
-		event->pos = set->free_events;
-		set->free_events = pos;
-	}
 }
 #endif
 
@@ -924,14 +922,10 @@ WaitEventAdjustPoll(WaitEventSet *set, WaitEvent *event, bool remove)
 
 	if (remove)
 	{
-		set->nevents -= 1;
-		*pollfd = set->pollfds[set->nevents];
-		set->events[pos] = set->events[set->nevents];
-		event->pos = pos;
+		*pollfd = set->pollfds[set->nevents-1];
 		return;
 	}
 
-	pollfd->revents = 0;
 	pollfd->fd = event->fd;
 
 	/* prepare pollfd entry once */
@@ -972,11 +966,7 @@ WaitEventAdjustWin32(WaitEventSet *set, WaitEvent *event, bool remove)
 		if (*handle != WSA_INVALID_EVENT)
 			WSACloseEvent(*handle);
 
-		set->nevents -= 1;
-		set->events[pos] = set->events[set->nevents];
-		*handle = set->handles[set->nevents + 1];
-		set->handles[set->nevents + 1] = WSA_INVALID_EVENT;
-		event->pos = pos;
+		*handle = set->handles[set->nevents];
 		return;
 	}
 
@@ -1407,6 +1397,8 @@ WaitEventSetWaitBlock(WaitEventSet *set, int cur_timeout,
 	int			returned_events = 0;
 	DWORD		rc;
 	WaitEvent  *cur_event;
+
+	WaitEventSetDefragment(set);
 
 	/* Reset any wait events that need it */
 	for (cur_event = set->events;
