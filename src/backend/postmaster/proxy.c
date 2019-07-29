@@ -19,6 +19,7 @@
 #include "libpq/libpq.h"
 #include "libpq/libpq-be.h"
 #include "libpq/pqsignal.h"
+#include "libpq/pqformat.h"
 #include "tcop/tcopprot.h"
 #include "utils/timeout.h"
 #include "utils/ps_status.h"
@@ -110,15 +111,17 @@ typedef struct SessionPool
 SessionPool;
 
 static void channel_remove(Channel* chan);
-static Channel* backend_start(SessionPool* pool);
+static Channel* backend_start(SessionPool* pool, char** error);
 static bool channel_read(Channel* chan);
 static bool channel_write(Channel* chan, bool synchronous);
+static void channel_hangout(Channel* chan, char const* op);
+static ssize_t socket_write(Channel* chan, char const* buf, size_t size);
 
 /*
  * #define ELOG(severity, fmt,...) elog(severity, "PROXY: " fmt, ## __VA_ARGS__)
  */
-//#define ELOG(severity,fmt,...)
-#define ELOG(severity, fmt,...) elog(severity, "PROXY: " fmt, ## __VA_ARGS__)
+#define ELOG(severity,fmt,...)
+
 
 static Proxy* proxy;
 int MyProxyId;
@@ -269,8 +272,9 @@ client_attach(Channel* chan)
 	{
 		if (chan->pool->n_launched_backends < chan->proxy->max_backends)
 		{
+			char* error;
 			/* Try to start new backend */
-			idle_backend = backend_start(chan->pool);
+			idle_backend = backend_start(chan->pool, &error);
 			if (idle_backend != NULL)
 			{
 				ELOG(LOG, "Start new backend %p (pid %d) for client %p",
@@ -279,6 +283,24 @@ client_attach(Channel* chan)
 				chan->peer = idle_backend;
 				idle_backend->peer = chan;
 				return true;
+			}
+			else
+			{
+				if (error)
+				{
+					StringInfoData msgbuf;
+					initStringInfo(&msgbuf);
+					pq_sendbyte(&msgbuf, 'E');
+					pq_sendint32(&msgbuf, 7 + strlen(error));
+					pq_sendbyte(&msgbuf, PG_DIAG_MESSAGE_PRIMARY);
+					pq_sendstring(&msgbuf, error);
+					pq_sendbyte(&msgbuf, '\0');
+					socket_write(chan, msgbuf.data, msgbuf.len);
+					pfree(msgbuf.data);
+					free(error);
+				}
+				channel_hangout(chan, "connect");
+				return false;
 			}
 		}
 		/* Postpone handshake until some backend is available */
@@ -638,7 +660,7 @@ channel_register(Proxy* proxy, Channel* chan)
  * Backend is forked using BackendStartup function.
  */
 static Channel*
-backend_start(SessionPool* pool)
+backend_start(SessionPool* pool, char** error)
 {
 	Channel* chan;
 	char postmaster_port[8];
@@ -658,7 +680,7 @@ backend_start(SessionPool* pool)
 		libpqconn_loaded = true;
 	}
 	pg_itoa(PostPortNumber, postmaster_port);
-	conn = LibpqConnectdbParams(keywords, values);
+	conn = LibpqConnectdbParams(keywords, values, error);
 	if (!conn)
 		return NULL;
 
@@ -759,13 +781,16 @@ channel_remove(Channel* chan)
 
 		if (chan->pool->pending_clients)
 		{
+			char* error;
 			/* Try to start new backend instead of terminated */
-			Channel* new_backend = backend_start(chan->pool);
+			Channel* new_backend = backend_start(chan->pool, &error);
 			if (new_backend != NULL)
 			{
 				ELOG(LOG, "Spawn new backend %p instead of terminated %p", new_backend, chan);
 				backend_reschedule(new_backend, true);
 			}
+			else
+				free(error);
 		}
 	}
 	free(chan->buf);

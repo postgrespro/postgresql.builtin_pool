@@ -145,7 +145,7 @@ typedef struct WaitEvent
 	int			pos;			/* position in the event data structure */
 	uint32		events;			/* triggered events */
 	pgsocket	fd;				/* socket fd associated with event */
-	int         index;          /* position in descriptors array (for poll() and win32 implementation */
+	int         index;          /* position of correspondent element in descriptors array (for poll() and win32 implementation */
 	void	   *user_data;		/* pointer provided in AddWaitEventToSet */
 #ifdef WIN32
 	bool		reset;			/* Is reset of the event required? */

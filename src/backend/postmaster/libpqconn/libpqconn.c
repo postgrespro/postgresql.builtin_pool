@@ -26,17 +26,20 @@ PG_MODULE_MAGIC;
 void _PG_init(void);
 
 static void*
-libpq_connectdb(char const* keywords[], char const* values[])
+libpq_connectdb(char const* keywords[], char const* values[], char** error)
 {
 	PGconn* conn = PQconnectdbParams(keywords, values, false);
-	if (!conn || PQstatus(conn) != CONNECTION_OK)
+	if (conn && PQstatus(conn) != CONNECTION_OK)
 	{
 		ereport(WARNING,
 				(errcode(ERRCODE_SQLCLIENT_UNABLE_TO_ESTABLISH_SQLCONNECTION),
 				 errmsg("could not setup local connect to server"),
 				 errdetail_internal("%s", pchomp(PQerrorMessage(conn)))));
+		*error = strdup(PQerrorMessage(conn));
+		PQfinish(conn);
 		return NULL;
 	}
+	*error = NULL;
 	return conn;
 }
 
