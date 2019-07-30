@@ -8219,7 +8219,9 @@ ExecSetVariableStmt(VariableSetStmt *stmt, bool isTopLevel)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_TRANSACTION_STATE),
 				 errmsg("cannot set parameters during a parallel operation")));
-	MyProc->is_tainted = true;
+
+	if (!stmt->is_local)
+		MyProc->is_tainted = true;
 
 	switch (stmt->kind)
 	{

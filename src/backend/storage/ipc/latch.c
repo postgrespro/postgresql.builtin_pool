@@ -597,13 +597,10 @@ CreateWaitEventSet(MemoryContext context, int nevents)
 
 #if defined(WAIT_USE_EPOLL)
 	set->epoll_ret_events = (struct epoll_event *) data;
-	data += MAXALIGN(sizeof(struct epoll_event) * nevents);
 #elif defined(WAIT_USE_POLL)
 	set->pollfds = (struct pollfd *) data;
-	data += MAXALIGN(sizeof(struct pollfd) * nevents);
 #elif defined(WAIT_USE_WIN32)
-	set->handles = (HANDLE) data;
-	data += MAXALIGN(sizeof(HANDLE) * nevents);
+	set->handles = (HANDLE*) data;
 #endif
 
 	set->latch = NULL;
@@ -985,6 +982,7 @@ WaitEventAdjustWin32(WaitEventSet *set, WaitEvent *event, bool remove)
 			WSACloseEvent(*handle);
 
 		*handle = set->handles[set->nevents]; /* nevents is not decremented yet but we need to add 1 to the index */
+		set->handles[set->nevents] = WSA_INVALID_EVENT;
 		return;
 	}
 
@@ -1414,11 +1412,12 @@ WaitEventSetWaitBlock(WaitEventSet *set, int cur_timeout,
 	int			returned_events = 0;
 	int			i;
 	DWORD		rc;
+	WaitEvent*	cur_event;
 
 	/* Reset any wait events that need it */
 	for (i = 0; i < set->nevents; i++)
 	{
-		WaitEvent* cur_event = &set->events[set->permutation[i]];
+		cur_event = &set->events[set->permutation[i]];
 
 		/*
 		 * I have problem at Windows when SSPI connections "hanged" in WaitForMultipleObjects which

@@ -261,7 +261,7 @@ ConnectionProxy* ConnectionProxies;
 static bool ConnectionProxiesStarted;
 static int CurrentConnectionProxy; /* index used for round-robin distribution of connections between proxies */
 
-void* (*LibpqConnectdbParams)(char const* keywords[], char const* values[]);
+void* (*LibpqConnectdbParams)(char const* keywords[], char const* values[], char** error);
 
 /* PIDs of special child processes; 0 when not running */
 static pid_t StartupPID = 0,
