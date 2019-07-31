@@ -2169,6 +2169,17 @@ static struct config_int ConfigureNamesInt[] =
 	},
 
 	{
+		{"idle_pool_worker_timeout", PGC_USERSET, CONN_POOLING,
+			gettext_noop("Sets the maximum allowed duration of any idling connection pool worker."),
+			gettext_noop("A value of 0 turns off the timeout."),
+			GUC_UNIT_MS
+		},
+		&IdlePoolWorkerTimeout,
+		0, 0, INT_MAX,
+		NULL, NULL, NULL
+	},
+
+	{
 		{"connection_proxies", PGC_POSTMASTER, CONN_POOLING,
 			gettext_noop("Sets number of connection proxies."),
 			gettext_noop("Postmaster spawns separate worker process for each proxy. Postmaster scatters connections between proxies using one of scheduling policies (round-robin, random, load-balancing)."

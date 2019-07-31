@@ -131,6 +131,7 @@ int			max_parallel_maintenance_workers = 2;
 int			NBuffers = 1000;
 int			MaxConnections = 90;
 int			SessionPoolSize = 0;
+int			IdlePoolWorkerTimeout = 0;
 int			ConnectionProxiesNumber = 1;
 int			SessionSchedule = SESSION_SCHED_ROUND_ROBIN;
 

@@ -16,6 +16,7 @@
 #include "storage/procarray.h"
 #include "utils/builtins.h"
 #include "utils/memutils.h"
+#include "utils/timestamp.h"
 #include "libpq/libpq.h"
 #include "libpq/libpq-be.h"
 #include "libpq/pqsignal.h"
@@ -67,6 +68,7 @@ typedef struct Channel
 	/* We need to save startup packet response to be able to send it to new connection */
 	int		 handshake_response_size;
 	char*	 handshake_response;
+	TimestampTz backend_last_activity;   /* time of last backend activity */
 
 	struct Channel* peer;
 	struct Channel* next;
@@ -91,6 +93,7 @@ typedef struct Proxy
 	bool	 shutdown;			 /* Shutdown flag */
 	Channel* hangout;			 /* List of disconnected backends */
 	ConnectionProxyState* state; /* State of proxy */
+	TimestampTz last_idle_timeout_check;  /* Time of last check for idle worker timeout expration */
 } Proxy;
 
 /*
@@ -147,8 +150,11 @@ backend_reschedule(Channel* chan, bool is_new)
 		Channel* pending = chan->pool->pending_clients;
 		Assert(!chan->backend_is_tainted);
 		if (chan->peer)
+		{
 			chan->peer->peer = NULL;
-		chan->pool->n_idle_clients += 1;
+			chan->pool->n_idle_clients += 1;
+			chan->pool->proxy->state->n_idle_clients += 1;
+		}
 		if (pending)
 		{
 			/* Has pending clients: serve one of them */
@@ -182,6 +188,7 @@ backend_reschedule(Channel* chan, bool is_new)
 			chan->next = chan->pool->idle_backends;
 			chan->pool->idle_backends = chan;
 			chan->pool->n_idle_backends += 1;
+			chan->pool->proxy->state->n_idle_backends += 1;
 			chan->peer = NULL;
 		}
 	}
@@ -245,6 +252,7 @@ client_connect(Channel* chan, int startup_packet_size)
 	chan->pool->proxy = chan->proxy;
 	chan->pool->n_connected_clients += 1;
 	chan->pool->n_idle_clients += 1;
+	chan->pool->proxy->state->n_idle_clients += 1;
 	chan->proxy->n_accepted_connections -= 1;
 	return true;
 }
@@ -257,6 +265,7 @@ client_attach(Channel* chan)
 {
 	Channel* idle_backend = chan->pool->idle_backends;
 	chan->pool->n_idle_clients -= 1;
+	chan->pool->proxy->state->n_idle_clients -= 1;
 	if (idle_backend)
 	{
 		/* has some idle backend */
@@ -266,6 +275,9 @@ client_attach(Channel* chan)
 		idle_backend->peer = chan;
 		chan->pool->idle_backends = idle_backend->next;
 		chan->pool->n_idle_backends -= 1;
+		chan->pool->proxy->state->n_idle_backends -= 1;
+		if (IdlePoolWorkerTimeout)
+			chan->backend_last_activity = GetCurrentTimestamp();
 		ELOG(LOG, "Attach client %p to backend %p (pid %d)", chan, idle_backend, idle_backend->backend_pid);
 	}
 	else /* all backends are busy */
@@ -282,6 +294,8 @@ client_attach(Channel* chan)
 				Assert(chan != idle_backend);
 				chan->peer = idle_backend;
 				idle_backend->peer = chan;
+				if (IdlePoolWorkerTimeout)
+					idle_backend->backend_last_activity = GetCurrentTimestamp();
 				return true;
 			}
 			else
@@ -327,19 +341,31 @@ channel_hangout(Channel* chan, char const* op)
 
 	if (chan->client_port) {
 		ELOG(LOG, "Hangout client %p due to %s error: %m", chan, op);
-		for (ipp = &chan->pool->pending_clients; *ipp != NULL; ipp = &(*ipp)->next) {
-			if (*ipp == chan) {
+		for (ipp = &chan->pool->pending_clients; *ipp != NULL; ipp = &(*ipp)->next)
+		{
+			if (*ipp == chan)
+			{
 				*ipp = chan->next;
 				chan->pool->n_pending_clients -= 1;
 				break;
 			}
 		}
-	} else {
+		if (!peer)
+		{
+			chan->pool->n_idle_clients -= 1;
+			chan->pool->proxy->state->n_idle_clients -= 1;
+		}
+	}
+	else
+	{
 		ELOG(LOG, "Hangout backend %p (pid %d) due to %s error: %m", chan, chan->backend_pid, op);
-		for (ipp = &chan->pool->idle_backends; *ipp != NULL; ipp = &(*ipp)->next) {
-			if (*ipp == chan) {
+		for (ipp = &chan->pool->idle_backends; *ipp != NULL; ipp = &(*ipp)->next)
+		{
+			if (*ipp == chan)
+			{
 				*ipp = chan->next;
 				chan->pool->n_idle_backends -= 1;
+				chan->pool->proxy->state->n_idle_backends -= 1;
 				break;
 			}
 		}
@@ -842,7 +868,8 @@ proxy_loop(Proxy* proxy)
 	while (!proxy->shutdown)
 	{
 		/* Use timeout to allow normal proxy shutdown */
-		n_ready = WaitEventSetWait(proxy->wait_events, PROXY_WAIT_TIMEOUT, ready, MAX_READY_EVENTS, PG_WAIT_CLIENT);
+		int wait_timeout = IdlePoolWorkerTimeout ? IdlePoolWorkerTimeout : PROXY_WAIT_TIMEOUT;
+		n_ready = WaitEventSetWait(proxy->wait_events, wait_timeout, ready, MAX_READY_EVENTS, PG_WAIT_CLIENT);
 		for (i = 0; i < n_ready; i++) {
 			chan = (Channel*)ready[i].user_data;
 			if (chan == NULL) /* new connection from postmaster */
@@ -880,6 +907,30 @@ proxy_loop(Proxy* proxy)
 				}
 			}
 		}
+		if (IdlePoolWorkerTimeout)
+		{
+			TimestampTz now = GetCurrentTimestamp();
+			TimestampTz timeout_usec = IdlePoolWorkerTimeout*1000;
+			if (proxy->last_idle_timeout_check + timeout_usec < now)
+			{
+				HASH_SEQ_STATUS seq;
+				struct SessionPool* pool;
+				proxy->last_idle_timeout_check = now;
+				hash_seq_init(&seq, proxy->pools);
+				while ((pool = hash_seq_search(&seq)) != NULL)
+				{
+					for (chan = pool->idle_backends; chan != NULL; chan = chan->next)
+					{
+						if (chan->backend_last_activity + timeout_usec < now)
+						{
+							chan->is_interrupted = true; /* interrupted flags makes channel_write to send 'X' message */
+							channel_write(chan, false);
+						}
+					}
+				}
+			}
+		}
+
 		/*
 		 * Delayed deallocation of disconnected channels.
 		 * We can not delete channels immediately because of presence of peer events.
@@ -1063,8 +1114,8 @@ Datum pg_pooler_state(PG_FUNCTION_ARGS)
 	MemoryContext old_context;
 	PoolerStateContext* ps_ctx;
 	HeapTuple tuple;
-	Datum values[9];
-	bool  nulls[9];
+	Datum values[11];
+	bool  nulls[11];
 	int id;
 	int i;
 
@@ -1090,11 +1141,13 @@ Datum pg_pooler_state(PG_FUNCTION_ARGS)
 	values[3] = Int32GetDatum(ProxyState[id].n_pools);
 	values[4] = Int32GetDatum(ProxyState[id].n_backends);
 	values[5] = Int32GetDatum(ProxyState[id].n_dedicated_backends);
-	values[6] = Int64GetDatum(ProxyState[id].tx_bytes);
-	values[7] = Int64GetDatum(ProxyState[id].rx_bytes);
-	values[8] = Int64GetDatum(ProxyState[id].n_transactions);
+	values[6] = Int32GetDatum(ProxyState[id].n_idle_backends);
+	values[7] = Int32GetDatum(ProxyState[id].n_idle_clients);
+	values[8] = Int64GetDatum(ProxyState[id].tx_bytes);
+	values[9] = Int64GetDatum(ProxyState[id].rx_bytes);
+	values[10] = Int64GetDatum(ProxyState[id].n_transactions);
 
-	for (i = 0; i <= 8; i++)
+	for (i = 0; i <= 11; i++)
 		nulls[i] = false;
 
 	ps_ctx->proxy_id += 1;

@@ -168,6 +168,7 @@ enum SessionSchedulePolicy
 };
 extern PGDLLIMPORT int MaxSessions;
 extern PGDLLIMPORT int SessionPoolSize;
+extern PGDLLIMPORT int IdlePoolWorkerTimeout;
 extern PGDLLIMPORT int ConnectionProxiesNumber;
 extern PGDLLIMPORT int SessionSchedule;
 extern PGDLLIMPORT bool RestartPoolerOnReload;

@@ -822,6 +822,20 @@ include_dir 'conf.d'
       </listitem>
      </varlistentry>
 
+     <varlistentry id="guc-idle-pool-worker-timeout" xreflabel="idle_pool_worker_timeout">
+      <term><varname>idle_pool_worker_timeout</varname> (<type>integer</type>)
+      <indexterm>
+       <primary><varname>idle_pool_worker_timeout</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+        <para>
+         Terminate an idle connection pool worker after the specified number of milliseconds.
+         The default value is 0, so pool workers are never terminated.
+       </para>
+      </listitem>
+     </varlistentry>
+
      <varlistentry id="guc-restart-pooler-on-reload" xreflabel="restart_pooler_on_reload">
       <term><varname>restart_pooler_on_reload</varname> (<type>string</type>)
       <indexterm>

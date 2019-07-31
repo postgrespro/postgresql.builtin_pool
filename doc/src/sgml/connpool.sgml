@@ -130,7 +130,8 @@
 
   <para>
     Because pooled backends are not terminated on client exit, it will not
-    be possible to drop database to which they are connected.  It can be achieved without server restart using <varname>restart_pooler_on_reload</varname> variable. Setting this variable to <literal>true</literal> cause shutdown of all pooled backends after execution of <function>pg_reload_conf()</function> function. Then it will be possible to drop database.
+    be possible to drop database to which they are connected.  It can be achieved without server restart using <varname>restart_pooler_on_reload</varname> variable. Setting this variable to <literal>true</literal> cause shutdown of all pooled backends after execution of <function>pg_reload_conf()</function> function. Then it will be possible to drop database. Alternatively you can specify <varname>idle-pool-worker-timeout</varname> which
+    forces termination of workers not used for the specified time. If database is not accessed for a long time, then all pool workers are terminated.
   </para>
 
  </sect1>

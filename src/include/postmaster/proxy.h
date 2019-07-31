@@ -24,6 +24,8 @@ typedef struct ConnectionProxyState
 	int n_pools;              /* nubmer of dbname/role combinations */
 	int n_backends;           /* totatal number of launched backends */
 	int n_dedicated_backends; /* number of tainted backends */
+	int n_idle_backends;      /* number of idle backends */
+	int n_idle_clients;       /* number of idle clients */
 	uint64 tx_bytes;          /* amount of data sent to client */
 	uint64 rx_bytes;          /* amount of data send to server */
 	uint64 n_transactions;    /* total number of proroceeded transactions */
