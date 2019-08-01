@@ -22,6 +22,7 @@
 <!ENTITY json       SYSTEM "json.sgml">
 <!ENTITY mvcc       SYSTEM "mvcc.sgml">
 <!ENTITY parallel   SYSTEM "parallel.sgml">
+<!ENTITY autoprepare SYSTEM "autoprepare.sgml">
 <!ENTITY perform    SYSTEM "perform.sgml">
 <!ENTITY queries    SYSTEM "queries.sgml">
 <!ENTITY rangetypes SYSTEM "rangetypes.sgml">

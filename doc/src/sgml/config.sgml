@@ -5326,6 +5326,39 @@ SELECT * FROM parent WHERE key = 2400;
       </listitem>
      </varlistentry>
 
+     <varlistentry id="guc-autoprepare-limit" xreflabel="autoprepare_limit">
+       <term><varname>autoprepare_limit</varname> (<type>integer/type>)
+           <indexterm>
+             <primary><varname>autoprepare_limit</varname> configuration parameter</primary>
+           </indexterm>
+       </term>
+       <listitem>
+         <para>
+           Maximal number of autoprepared queries.
+           Zero value disables autoprepare, -1 means unlimited number of autoprepared queries.
+           Too large number of prepared queries can cause backend memory overflow and slowdown execution speed
+           (because of increased lookup time). Default value is <literal>0</literal>.
+         </para>
+       </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-autoprepare-memory-limit" xreflabel="autoprepare_memory_limit">
+       <term><varname>autoprepare_memory_limit</varname> (<type>integer/type>)
+           <indexterm>
+             <primary><varname>autoprepare_memory_limit</varname> configuration parameter</primary>
+           </indexterm>
+       </term>
+       <listitem>
+         <para>
+           Maximal size of memory used by autoprepared queries.
+           Zero value disables autoprepare, -1 means means that there is no memory limit.
+           Default value is <literal>0</literal>. Calculating memory used by prepared queries adds some extra overhead,
+           so positive value of this parameter may cause some slowdown.
+           <varname>autoprepare_limit</varname> is much faster way to limit number of autoprepared statements.
+         </para>
+       </listitem>
+     </varlistentry>
+
      </variablelist>
     </sect2>
    </sect1>

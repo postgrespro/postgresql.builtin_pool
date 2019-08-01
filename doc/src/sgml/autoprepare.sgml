@@ -1,0 +1,62 @@
+<!-- doc/src/sgml/autoprepare.sgml -->
+
+ <chapter id="autoprepare">
+  <title>Autoprepared statements</title>
+
+  <indexterm zone="autoprepare">
+   <primary>autoprepared statements</primary>
+  </indexterm>
+
+  <para>
+    <productname>PostgreSQL</productname> makes it possible <firstterm>prepare</firstterm>
+    frequently used statements to eliminate cost of their compilation
+    and optimization on each execution of the query. On simple queries
+    (like ones in <filename>pgbench -S</filename>) using prepared statements
+    increase performance more than two times.
+  </para>
+
+  <para>
+    Unfortunately not all database applications are using prepared statements
+    and, moreover, it is not always possible. For example, in case of using
+    <productname>pgbouncer</productname> or any other session pooler,
+    there is no session state (transactions of one client may be executed at different
+    backends) and so prepared statements can not be used.
+  </para>
+
+  <para>
+    Autoprepare mode allows to overcome this limitation.
+    In this mode Postgres stores plans for all queries pass using extended protocol.
+    Speed of execution of autoprepared statements is almost the same as of explicitly prepared statements.
+  </para>
+
+  <para>
+    By default autoprepare mode is switched off. To enable it, assign non-zero
+    value to GUC variable <varname>autoprepare_limit</varname> or <varname>autoprepare_memory_limit</varname>.
+    This variables specify limit for number of autoprepared statement or memory used by them.
+    Autoprepare is enabled if one of thme is non zero. Value -1 means unlimited.
+    Please notice that event autoprepare is anabled, Postgres makes a decision about using
+    generalized plan vs. customized execution plans based on the results
+    of comparison of average time of five customized plans with
+    time of generalized plan.
+  </para>
+
+  <para>
+    Too large number of autoprepared statements can cause memory overflow
+    (especially if there are many active clients, because prepared statements cache
+    is local to the backend). So using unlimited autoprepare hash is debgerous and not recommended.
+    Postgres is using LRU policy to keep in memory most frequently used queries.
+  </para>
+
+  <para>
+    Autoprepare hash is local to the backend. It is implicitely reseted on any change of database schema or
+    session variables.
+  </para>
+
+  <para>
+    It is possible to inspect autoprepared queries in the backend using
+    <literal>pg_autoprepared_statements</literal> view. It shows original text of the
+    query, types of the extracted parameters (replacing literals) and
+    query execution counter.
+  </para>
+
+ </chapter>

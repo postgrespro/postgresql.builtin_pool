@@ -71,6 +71,8 @@
 #include "tcop/pquery.h"
 #include "tcop/tcopprot.h"
 #include "tcop/utility.h"
+#include "utils/builtins.h"
+#include "utils/fmgrprotos.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/ps_status.h"
@@ -171,6 +173,8 @@ static ProcSignalReason RecoveryConflictReason;
 static MemoryContext row_description_context = NULL;
 static StringInfoData row_description_buf;
 
+
+
 /* ----------------------------------------------------------------
  *		decls for routines only used in this file
  * ----------------------------------------------------------------
@@ -196,6 +200,167 @@ static void log_disconnections(int code, Datum arg);
 static void enable_statement_timeout(void);
 static void disable_statement_timeout(void);
 
+
+/* ----------------
+ *		autoprepare stuff
+ * ----------------
+ */
+typedef struct
+{
+	char* query_string;
+	Oid*  param_types;
+	int   num_params;
+} AutoprepareStatementKey;
+
+typedef struct
+{
+	AutoprepareStatementKey key;
+	CachedPlanSource* plan;
+	dlist_node		  lru;		  /* double linked list to implement LRU */
+	int64			  exec_count; /* counter of execution of this query */
+}  AutoprepareStatement;
+
+static AutoprepareStatement* autoprepare_stmt;
+static HTAB* autoprepare_hash;
+static dlist_head autoprepare_lru;
+static MemoryContext autoprepare_context;
+
+#define AUTOPREPARE_HASH_SIZE 113
+
+/*
+ * Plan cache access statistic
+ */
+static size_t autoprepare_cached_plans;
+static size_t autoprepare_used_memory;
+
+static uint32 autoprepare_hash_fn(const void *key, Size keysize)
+{
+	uint32 hash = 0;
+	int i;
+	AutoprepareStatementKey* ask = (AutoprepareStatementKey*)key;
+	for (i = 0; i < ask->num_params; i++)
+		hash ^= ask->param_types[i];
+	return string_hash(ask->query_string, strlen(ask->query_string)) ^ hash;
+}
+
+static int autoprepare_match_fn(const void *key1, const void *key2, Size keysize)
+{
+	AutoprepareStatementKey* ask1 = (AutoprepareStatementKey*)key1;
+	AutoprepareStatementKey* ask2 = (AutoprepareStatementKey*)key2;
+	if (ask1->num_params != ask2->num_params)
+		return 1;
+	if (memcmp(ask1->param_types, ask2->param_types, ask1->num_params*sizeof(Oid)) != 0)
+		return 1;
+
+	return strcmp(ask1->query_string, ask2->query_string);
+}
+
+static Size
+get_memory_context_size(MemoryContext ctx)
+{
+	MemoryContextCounters counters = {0};
+	ctx->methods->stats(ctx, NULL, NULL, &counters);
+	return counters.totalspace;
+}
+
+/*
+ * This set returning function reads all the autoprepared statements and
+ * returns a set of (name, statement, prepare_time, param_types, from_sql).
+ */
+Datum
+pg_autoprepared_statement(PG_FUNCTION_ARGS)
+{
+	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
+	TupleDesc	tupdesc;
+	Tuplestorestate *tupstore;
+	MemoryContext per_query_ctx;
+	MemoryContext oldcontext;
+
+	/* check to see if caller supports us returning a tuplestore */
+	if (rsinfo == NULL || !IsA(rsinfo, ReturnSetInfo))
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("set-valued function called in context that cannot accept a set")));
+	if (!(rsinfo->allowedModes & SFRM_Materialize))
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("materialize mode required, but it is not " \
+						"allowed in this context")));
+
+	/* need to build tuplestore in query context */
+	per_query_ctx = rsinfo->econtext->ecxt_per_query_memory;
+	oldcontext = MemoryContextSwitchTo(per_query_ctx);
+
+	/*
+	 * build tupdesc for result tuples. This must match the definition of the
+	 * pg_prepared_statements view in system_views.sql
+	 */
+	tupdesc = CreateTemplateTupleDesc(3);
+	TupleDescInitEntry(tupdesc, (AttrNumber) 1, "statement",
+					   TEXTOID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber) 2, "parameter_types",
+					   REGTYPEARRAYOID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber) 3, "exec_count",
+					   INT8OID, -1, 0);
+
+	/*
+	 * We put all the tuples into a tuplestore in one scan of the hashtable.
+	 * This avoids any issue of the hashtable possibly changing between calls.
+	 */
+	tupstore =
+		tuplestore_begin_heap(rsinfo->allowedModes & SFRM_Materialize_Random,
+							  false, work_mem);
+
+	/* generate junk in short-term context */
+	MemoryContextSwitchTo(oldcontext);
+
+	/* hash table might be uninitialized */
+	if (autoprepare_hash)
+	{
+		HASH_SEQ_STATUS hash_seq;
+		AutoprepareStatement *autoprep_stmt;
+
+		hash_seq_init(&hash_seq, autoprepare_hash);
+		while ((autoprep_stmt = hash_seq_search(&hash_seq)) != NULL)
+		{
+			if (autoprep_stmt->plan != NULL)
+			{
+				Datum		values[3];
+				bool		nulls[3];
+				MemSet(nulls, 0, sizeof(nulls));
+
+				values[0] = CStringGetTextDatum(autoprep_stmt->key.query_string);
+				values[1] = build_regtype_array(autoprep_stmt->key.param_types,
+												autoprep_stmt->key.num_params);
+				values[2] = Int64GetDatum(autoprep_stmt->exec_count);
+
+				tuplestore_putvalues(tupstore, tupdesc, values, nulls);
+			}
+		}
+	}
+
+	/* clean up and return the tuplestore */
+	tuplestore_donestoring(tupstore);
+
+	rsinfo->returnMode = SFRM_Materialize;
+	rsinfo->setResult = tupstore;
+	rsinfo->setDesc = tupdesc;
+
+	return (Datum) 0;
+}
+
+void ResetAutoprepareCache(void)
+{
+	if (autoprepare_hash != NULL)
+	{
+		hash_destroy(autoprepare_hash);
+		MemoryContextReset(autoprepare_context);
+		dlist_init(&autoprepare_lru);
+		autoprepare_cached_plans = 0;
+		autoprepare_used_memory = 0;
+		autoprepare_hash = 0;
+	}
+}
 
 /* ----------------------------------------------------------------
  *		routines to obtain user input
@@ -1393,14 +1558,103 @@ exec_parse_message(const char *query_string,	/* string to execute */
 	}
 	else
 	{
-		/* Unnamed prepared statement --- release any prior unnamed stmt */
-		drop_unnamed_stmt();
-		/* Create context for parsing */
-		unnamed_stmt_context =
-			AllocSetContextCreate(MessageContext,
-								  "unnamed prepared statement",
-								  ALLOCSET_DEFAULT_SIZES);
-		oldcontext = MemoryContextSwitchTo(unnamed_stmt_context);
+		/* check if autoprepare is enabled */
+		if (autoprepare_limit || autoprepare_memory_limit)
+		{
+			bool found;
+			AutoprepareStatementKey key;
+			key.query_string = (char*)query_string;
+			key.param_types = paramTypes;
+			key.num_params = numParams;
+
+			/*
+			 * Construct autoprepare context if not constructed yet.
+			 */
+			if (!autoprepare_context)
+				autoprepare_context = AllocSetContextCreate(CacheMemoryContext,
+														   "autoprepare context",
+														   ALLOCSET_DEFAULT_SIZES);
+
+			oldcontext = MemoryContextSwitchTo(autoprepare_context);
+
+			if (autoprepare_hash == NULL) /*initialize hash if not done yet */
+			{
+				static HASHCTL info;
+				info.keysize = sizeof(AutoprepareStatementKey);
+				info.entrysize = sizeof(AutoprepareStatement);
+				info.hash = autoprepare_hash_fn;
+				info.match = autoprepare_match_fn;
+				autoprepare_hash = hash_create("autoprepare_hash", autoprepare_limit != 0 ? autoprepare_limit : AUTOPREPARE_HASH_SIZE,
+											   &info, HASH_ELEM | HASH_FUNCTION | HASH_COMPARE);
+				dlist_init(&autoprepare_lru);
+			}
+			autoprepare_stmt = (AutoprepareStatement*)hash_search(autoprepare_hash, &key, HASH_ENTER, &found);
+			if (found)
+			{
+				autoprepare_stmt->exec_count += 1;
+				dlist_delete(&autoprepare_stmt->lru); /* accessed entry will be moved to the head of LRU list */
+				if (autoprepare_stmt->plan != NULL && !autoprepare_stmt->plan->is_valid)
+				{
+					/* Drop invalidated plan: it will be reconstructed later */
+					if (autoprepare_memory_limit)
+						autoprepare_used_memory -= get_memory_context_size(autoprepare_stmt->plan->context);
+					DropCachedPlan(autoprepare_stmt->plan);
+					autoprepare_stmt->plan = NULL;
+				}
+				else
+				{
+					dlist_insert_after(&autoprepare_lru.head, &autoprepare_stmt->lru); /* prepend entry to the head of LRU list */
+					goto ParseCompleted;
+				}
+			}
+			else
+			{
+				/* Initialize autoprepare hash entry */
+				autoprepare_cached_plans += 1;
+				autoprepare_stmt->plan = NULL;
+				autoprepare_stmt->exec_count = 1;
+
+				/* Copy query text and parameter type info to CacheMemoryContext */
+				autoprepare_stmt->key.query_string = pstrdup(query_string);
+				autoprepare_stmt->key.param_types = (Oid*)palloc(sizeof(Oid)*numParams);
+				memcpy(autoprepare_stmt->key.param_types, paramTypes, sizeof(Oid)*numParams);
+
+				/* LRU eviction policy */
+				while ((autoprepare_limit > 0 && autoprepare_cached_plans > autoprepare_limit)
+					   || (autoprepare_memory_limit > 0 && autoprepare_used_memory > (size_t)autoprepare_memory_limit*1024))
+				{
+					/* Drop least recently accessed query */
+					AutoprepareStatement* victim = dlist_container(AutoprepareStatement, lru, autoprepare_lru.head.prev);
+					dlist_delete(&victim->lru);
+					if (victim->plan)
+					{
+						if (autoprepare_memory_limit)
+							autoprepare_used_memory -= get_memory_context_size(victim->plan->context);
+						DropCachedPlan(victim->plan);
+					}
+					hash_search(autoprepare_hash, victim, HASH_REMOVE, NULL);
+					pfree(victim->key.query_string);
+					pfree(victim->key.param_types);
+					autoprepare_cached_plans -= 1;
+				}
+			}
+			dlist_insert_after(&autoprepare_lru.head, &autoprepare_stmt->lru); /* prepend entry to the head of LRU list */
+
+			/* Autoprepare statements also parsed in MessageContext */
+			MemoryContextSwitchTo(MessageContext);
+		}
+		else
+		{
+			/* Unnamed prepared statement --- release any prior unnamed stmt */
+			drop_unnamed_stmt();
+			/* Create context for parsing */
+			unnamed_stmt_context =
+				AllocSetContextCreate(MessageContext,
+									  "unnamed prepared statement",
+									  ALLOCSET_DEFAULT_SIZES);
+			oldcontext = MemoryContextSwitchTo(unnamed_stmt_context);
+			autoprepare_stmt = NULL;
+		}
 	}
 
 	/*
@@ -1539,13 +1793,17 @@ exec_parse_message(const char *query_string,	/* string to execute */
 	}
 	else
 	{
-		/*
-		 * We just save the CachedPlanSource into unnamed_stmt_psrc.
-		 */
 		SaveCachedPlan(psrc);
-		unnamed_stmt_psrc = psrc;
+		if (autoprepare_stmt)
+			autoprepare_stmt->plan = psrc;
+		else
+			/*
+			 * We just save the CachedPlanSource into unnamed_stmt_psrc.
+			 */
+			unnamed_stmt_psrc = psrc;
 	}
 
+  ParseCompleted:
 	MemoryContextSwitchTo(oldcontext);
 
 	/*
@@ -1633,7 +1891,7 @@ exec_bind_message(StringInfo input_message)
 	else
 	{
 		/* special-case the unnamed statement */
-		psrc = unnamed_stmt_psrc;
+		psrc = autoprepare_stmt ? autoprepare_stmt->plan : unnamed_stmt_psrc;
 		if (!psrc)
 			ereport(ERROR,
 					(errcode(ERRCODE_UNDEFINED_PSTATEMENT),
@@ -2457,7 +2715,7 @@ exec_describe_statement_message(const char *stmt_name)
 	else
 	{
 		/* special-case the unnamed statement */
-		psrc = unnamed_stmt_psrc;
+		psrc = autoprepare_stmt ? autoprepare_stmt->plan : unnamed_stmt_psrc;
 		if (!psrc)
 			ereport(ERROR,
 					(errcode(ERRCODE_UNDEFINED_PSTATEMENT),
