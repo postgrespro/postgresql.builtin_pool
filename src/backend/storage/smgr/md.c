@@ -814,12 +814,18 @@ mdwrite(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
 BlockNumber
 mdnblocks(SMgrRelation reln, ForkNumber forknum)
 {
-	MdfdVec    *v = mdopenfork(reln, forknum, EXTENSION_FAIL);
+	/*
+	 * If we access session relation, there may be no files yet of this relation for this backend.
+	 * Pass EXTENSION_RETURN_NULL to make mdopen return NULL in this case instead of reporting error.
+	 */
+	MdfdVec    *v = mdopenfork(reln, forknum, RelFileNodeBackendIsGlobalTemp(reln->smgr_rnode)
+							   ? EXTENSION_RETURN_NULL : EXTENSION_FAIL);
 	BlockNumber nblocks;
 	BlockNumber segno = 0;
 
 	/* mdopen has opened the first segment */
-	Assert(reln->md_num_open_segs[forknum] > 0);
+	if (reln->md_num_open_segs[forknum] == 0)
+		return 0;
 
 	/*
 	 * Start from the last open segments, to avoid redundant seeks.  We have
