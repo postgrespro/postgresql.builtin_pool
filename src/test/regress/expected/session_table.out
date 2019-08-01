@@ -1,0 +1,64 @@
+create session table my_private_table(x integer primary key, y integer);
+insert into my_private_table values (generate_series(1,10000), generate_series(1,10000));
+select count(*) from my_private_table;
+ count 
+-------
+ 10000
+(1 row)
+
+\c
+select count(*) from my_private_table;
+ count 
+-------
+     0
+(1 row)
+
+select * from my_private_table where x=10001;
+ x | y 
+---+---
+(0 rows)
+
+insert into my_private_table values (generate_series(1,100000), generate_series(1,100000));
+create index on my_private_table(y);
+select * from my_private_table where x=10001;
+   x   |   y   
+-------+-------
+ 10001 | 10001
+(1 row)
+
+select * from my_private_table where y=10001;
+   x   |   y   
+-------+-------
+ 10001 | 10001
+(1 row)
+
+select count(*) from my_private_table;
+ count  
+--------
+ 100000
+(1 row)
+
+\c
+select * from my_private_table where x=100001;
+ x | y 
+---+---
+(0 rows)
+
+select * from my_private_table order by y desc limit 1;
+ x | y 
+---+---
+(0 rows)
+
+insert into my_private_table values (generate_series(1,100000), generate_series(1,100000));
+select * from my_private_table where x=100001;
+ x | y 
+---+---
+(0 rows)
+
+select * from my_private_table order by y desc limit 1;
+   x    |   y    
+--------+--------
+ 100000 | 100000
+(1 row)
+
+drop table  my_private_table;
