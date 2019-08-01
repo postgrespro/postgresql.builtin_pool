@@ -90,16 +90,17 @@
  */
 typedef struct buftag
 {
-	RelFileNode rnode;			/* physical relation identifier */
+	RelFileNodeBackend rnode;			/* physical relation identifier */
 	ForkNumber	forkNum;
 	BlockNumber blockNum;		/* blknum relative to begin of reln */
 } BufferTag;
 
 #define CLEAR_BUFFERTAG(a) \
 ( \
-	(a).rnode.spcNode = InvalidOid, \
-	(a).rnode.dbNode = InvalidOid, \
-	(a).rnode.relNode = InvalidOid, \
+	(a).rnode.node.spcNode = InvalidOid, \
+	(a).rnode.node.dbNode = InvalidOid, \
+	(a).rnode.node.relNode = InvalidOid, \
+	(a).rnode.backend = InvalidBackendId, \
 	(a).forkNum = InvalidForkNumber, \
 	(a).blockNum = InvalidBlockNumber \
 )
@@ -113,7 +114,7 @@ typedef struct buftag
 
 #define BUFFERTAGS_EQUAL(a,b) \
 ( \
-	RelFileNodeEquals((a).rnode, (b).rnode) && \
+	RelFileNodeBackendEquals((a).rnode, (b).rnode) && \
 	(a).blockNum == (b).blockNum && \
 	(a).forkNum == (b).forkNum \
 )

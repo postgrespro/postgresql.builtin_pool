@@ -1400,7 +1400,7 @@ finish_heap_swap(Oid OIDOldHeap, Oid OIDNewHeap,
 	 */
 	if (newrelpersistence == RELPERSISTENCE_UNLOGGED)
 		reindex_flags |= REINDEX_REL_FORCE_INDEXES_UNLOGGED;
-	else if (newrelpersistence == RELPERSISTENCE_PERMANENT)
+	else if (newrelpersistence != RELPERSISTENCE_TEMP)
 		reindex_flags |= REINDEX_REL_FORCE_INDEXES_PERMANENT;
 
 	/* Report that we are now reindexing relations */

@@ -75,8 +75,23 @@ typedef struct RelFileNodeBackend
 	BackendId	backend;
 } RelFileNodeBackend;
 
+/*
+ * Check whether it is local or global temporary relation, which data belongs only to one backend.
+ */
 #define RelFileNodeBackendIsTemp(rnode) \
 	((rnode).backend != InvalidBackendId)
+
+/*
+ * Check whether it is global temporary relation which metadata is shared by all sessions,
+ * but data is private for the current session.
+ */
+#define RelFileNodeBackendIsGlobalTemp(rnode) IsSessionRelationBackendId((rnode).backend)
+
+/*
+ * Check whether it is local temporary relation which exists only in this backend.
+ */
+#define RelFileNodeBackendIsLocalTemp(rnode) \
+	(RelFileNodeBackendIsTemp(rnode) && !RelFileNodeBackendIsGlobalTemp(rnode))
 
 /*
  * Note: RelFileNodeEquals and RelFileNodeBackendEquals compare relNode first

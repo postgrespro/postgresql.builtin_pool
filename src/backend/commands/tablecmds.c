@@ -7678,6 +7678,12 @@ ATAddForeignKeyConstraint(List **wqueue, AlteredTableInfo *tab, Relation rel,
 						(errcode(ERRCODE_INVALID_TABLE_DEFINITION),
 						 errmsg("constraints on unlogged tables may reference only permanent or unlogged tables")));
 			break;
+		case RELPERSISTENCE_SESSION:
+			if (pkrel->rd_rel->relpersistence != RELPERSISTENCE_SESSION)
+				ereport(ERROR,
+						(errcode(ERRCODE_INVALID_TABLE_DEFINITION),
+						 errmsg("constraints on session tables may reference only session tables")));
+			break;
 		case RELPERSISTENCE_TEMP:
 			if (pkrel->rd_rel->relpersistence != RELPERSISTENCE_TEMP)
 				ereport(ERROR,
@@ -14079,6 +14085,13 @@ ATPrepChangePersistence(Relation rel, bool toLogged)
 			ereport(ERROR,
 					(errcode(ERRCODE_INVALID_TABLE_DEFINITION),
 					 errmsg("cannot change logged status of table \"%s\" because it is temporary",
+							RelationGetRelationName(rel)),
+					 errtable(rel)));
+			break;
+		case RELPERSISTENCE_SESSION:
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_TABLE_DEFINITION),
+					 errmsg("cannot change logged status of session table \"%s\"",
 							RelationGetRelationName(rel)),
 					 errtable(rel)));
 			break;

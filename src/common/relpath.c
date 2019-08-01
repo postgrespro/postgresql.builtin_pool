@@ -166,7 +166,18 @@ GetRelationPath(Oid dbNode, Oid spcNode, Oid relNode,
 		}
 		else
 		{
-			if (forkNumber != MAIN_FORKNUM)
+			/*
+			 * Session relations are distinguished from local temp relations by adding
+			 * SessionRelFirstBackendId offset to backendId.
+			 * These is no need to separate them at file system level, so just subtract SessionRelFirstBackendId
+			 * to avoid too long file names.
+			 * Segments of session relations have the same prefix (t%d_) as local temporary relations
+			 * to make it possible to cleanup them in the same way as local temporary relation files.
+			 */
+			 if (backendId >= SessionRelFirstBackendId)
+				 backendId -= SessionRelFirstBackendId;
+
+			 if (forkNumber != MAIN_FORKNUM)
 				path = psprintf("base/%u/t%d_%u_%s",
 								dbNode, backendId, relNode,
 								forkNames[forkNumber]);

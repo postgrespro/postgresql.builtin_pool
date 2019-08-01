@@ -213,6 +213,7 @@ void
 XLogRegisterBuffer(uint8 block_id, Buffer buffer, uint8 flags)
 {
 	registered_buffer *regbuf;
+	RelFileNodeBackend rnode;
 
 	/* NO_IMAGE doesn't make sense with FORCE_IMAGE */
 	Assert(!((flags & REGBUF_FORCE_IMAGE) && (flags & (REGBUF_NO_IMAGE))));
@@ -227,7 +228,8 @@ XLogRegisterBuffer(uint8 block_id, Buffer buffer, uint8 flags)
 
 	regbuf = &registered_buffers[block_id];
 
-	BufferGetTag(buffer, &regbuf->rnode, &regbuf->forkno, &regbuf->block);
+	BufferGetTag(buffer, &rnode, &regbuf->forkno, &regbuf->block);
+	regbuf->rnode = rnode.node;
 	regbuf->page = BufferGetPage(buffer);
 	regbuf->flags = flags;
 	regbuf->rdata_tail = (XLogRecData *) &regbuf->rdata_head;
@@ -919,7 +921,7 @@ XLogSaveBufferForHint(Buffer buffer, bool buffer_std)
 		int			flags;
 		PGAlignedBlock copied_buffer;
 		char	   *origdata = (char *) BufferGetBlock(buffer);
-		RelFileNode rnode;
+		RelFileNodeBackend rnode;
 		ForkNumber	forkno;
 		BlockNumber blkno;
 
@@ -948,7 +950,7 @@ XLogSaveBufferForHint(Buffer buffer, bool buffer_std)
 			flags |= REGBUF_STANDARD;
 
 		BufferGetTag(buffer, &rnode, &forkno, &blkno);
-		XLogRegisterBlock(0, &rnode, forkno, blkno, copied_buffer.data, flags);
+		XLogRegisterBlock(0, &rnode.node, forkno, blkno, copied_buffer.data, flags);
 
 		recptr = XLogInsert(RM_XLOG_ID, XLOG_FPI_FOR_HINT);
 	}
@@ -1009,7 +1011,7 @@ XLogRecPtr
 log_newpage_buffer(Buffer buffer, bool page_std)
 {
 	Page		page = BufferGetPage(buffer);
-	RelFileNode rnode;
+	RelFileNodeBackend rnode;
 	ForkNumber	forkNum;
 	BlockNumber blkno;
 
@@ -1018,7 +1020,7 @@ log_newpage_buffer(Buffer buffer, bool page_std)
 
 	BufferGetTag(buffer, &rnode, &forkNum, &blkno);
 
-	return log_newpage(&rnode, forkNum, blkno, page, page_std);
+	return log_newpage(&rnode.node, forkNum, blkno, page, page_std);
 }
 
 /*

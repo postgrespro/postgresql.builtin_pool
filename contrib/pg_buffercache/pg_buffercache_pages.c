@@ -153,9 +153,9 @@ pg_buffercache_pages(PG_FUNCTION_ARGS)
 			buf_state = LockBufHdr(bufHdr);
 
 			fctx->record[i].bufferid = BufferDescriptorGetBuffer(bufHdr);
-			fctx->record[i].relfilenode = bufHdr->tag.rnode.relNode;
-			fctx->record[i].reltablespace = bufHdr->tag.rnode.spcNode;
-			fctx->record[i].reldatabase = bufHdr->tag.rnode.dbNode;
+			fctx->record[i].relfilenode = bufHdr->tag.rnode.node.relNode;
+			fctx->record[i].reltablespace = bufHdr->tag.rnode.node.spcNode;
+			fctx->record[i].reldatabase = bufHdr->tag.rnode.node.dbNode;
 			fctx->record[i].forknum = bufHdr->tag.forkNum;
 			fctx->record[i].blocknum = bufHdr->tag.blockNum;
 			fctx->record[i].usagecount = BUF_STATE_GET_USAGECOUNT(buf_state);

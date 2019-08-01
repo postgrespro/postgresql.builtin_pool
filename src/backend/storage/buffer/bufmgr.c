@@ -556,7 +556,7 @@ PrefetchBuffer(Relation reln, ForkNumber forkNum, BlockNumber blockNum)
 		int			buf_id;
 
 		/* create a tag so we can lookup the buffer */
-		INIT_BUFFERTAG(newTag, reln->rd_smgr->smgr_rnode.node,
+		INIT_BUFFERTAG(newTag, reln->rd_smgr->smgr_rnode,
 					   forkNum, blockNum);
 
 		/* determine its hash code and partition lock ID */
@@ -710,7 +710,7 @@ ReadBuffer_common(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 	Block		bufBlock;
 	bool		found;
 	bool		isExtend;
-	bool		isLocalBuf = SmgrIsTemp(smgr);
+	bool		isLocalBuf = SmgrIsTemp(smgr) && relpersistence == RELPERSISTENCE_TEMP;
 
 	*hit = false;
 
@@ -1010,7 +1010,7 @@ BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 	uint32		buf_state;
 
 	/* create a tag so we can lookup the buffer */
-	INIT_BUFFERTAG(newTag, smgr->smgr_rnode.node, forkNum, blockNum);
+	INIT_BUFFERTAG(newTag, smgr->smgr_rnode, forkNum, blockNum);
 
 	/* determine its hash code and partition lock ID */
 	newHash = BufTableHashCode(&newTag);
@@ -1532,7 +1532,8 @@ ReleaseAndReadBuffer(Buffer buffer,
 		{
 			bufHdr = GetLocalBufferDescriptor(-buffer - 1);
 			if (bufHdr->tag.blockNum == blockNum &&
-				RelFileNodeEquals(bufHdr->tag.rnode, relation->rd_node) &&
+				RelFileNodeEquals(bufHdr->tag.rnode.node, relation->rd_node) &&
+				bufHdr->tag.rnode.backend == relation->rd_backend &&
 				bufHdr->tag.forkNum == forkNum)
 				return buffer;
 			ResourceOwnerForgetBuffer(CurrentResourceOwner, buffer);
@@ -1543,7 +1544,8 @@ ReleaseAndReadBuffer(Buffer buffer,
 			bufHdr = GetBufferDescriptor(buffer - 1);
 			/* we have pin, so it's ok to examine tag without spinlock */
 			if (bufHdr->tag.blockNum == blockNum &&
-				RelFileNodeEquals(bufHdr->tag.rnode, relation->rd_node) &&
+				RelFileNodeEquals(bufHdr->tag.rnode.node, relation->rd_node) &&
+				bufHdr->tag.rnode.backend == relation->rd_backend &&
 				bufHdr->tag.forkNum == forkNum)
 				return buffer;
 			UnpinBuffer(bufHdr, true);
@@ -1845,8 +1847,8 @@ BufferSync(int flags)
 
 			item = &CkptBufferIds[num_to_scan++];
 			item->buf_id = buf_id;
-			item->tsId = bufHdr->tag.rnode.spcNode;
-			item->relNode = bufHdr->tag.rnode.relNode;
+			item->tsId = bufHdr->tag.rnode.node.spcNode;
+			item->relNode = bufHdr->tag.rnode.node.relNode;
 			item->forkNum = bufHdr->tag.forkNum;
 			item->blockNum = bufHdr->tag.blockNum;
 		}
@@ -2559,7 +2561,7 @@ PrintBufferLeakWarning(Buffer buffer)
 	}
 
 	/* theoretically we should lock the bufhdr here */
-	path = relpathbackend(buf->tag.rnode, backend, buf->tag.forkNum);
+	path = relpathbackend(buf->tag.rnode.node, backend, buf->tag.forkNum);
 	buf_state = pg_atomic_read_u32(&buf->state);
 	elog(WARNING,
 		 "buffer refcount leak: [%03d] "
@@ -2631,7 +2633,7 @@ BufferGetBlockNumber(Buffer buffer)
  *		a buffer.
  */
 void
-BufferGetTag(Buffer buffer, RelFileNode *rnode, ForkNumber *forknum,
+BufferGetTag(Buffer buffer, RelFileNodeBackend *rnode, ForkNumber *forknum,
 			 BlockNumber *blknum)
 {
 	BufferDesc *bufHdr;
@@ -2696,7 +2698,7 @@ FlushBuffer(BufferDesc *buf, SMgrRelation reln)
 
 	/* Find smgr relation for buffer */
 	if (reln == NULL)
-		reln = smgropen(buf->tag.rnode, InvalidBackendId);
+		reln = smgropen(buf->tag.rnode.node, buf->tag.rnode.backend);
 
 	TRACE_POSTGRESQL_BUFFER_FLUSH_START(buf->tag.forkNum,
 										buf->tag.blockNum,
@@ -2930,7 +2932,7 @@ DropRelFileNodeBuffers(RelFileNodeBackend rnode, ForkNumber forkNum,
 	int			i;
 
 	/* If it's a local relation, it's localbuf.c's problem. */
-	if (RelFileNodeBackendIsTemp(rnode))
+	if (RelFileNodeBackendIsLocalTemp(rnode))
 	{
 		if (rnode.backend == MyBackendId)
 			DropRelFileNodeLocalBuffers(rnode.node, forkNum, firstDelBlock);
@@ -2958,11 +2960,11 @@ DropRelFileNodeBuffers(RelFileNodeBackend rnode, ForkNumber forkNum,
 		 * We could check forkNum and blockNum as well as the rnode, but the
 		 * incremental win from doing so seems small.
 		 */
-		if (!RelFileNodeEquals(bufHdr->tag.rnode, rnode.node))
+		if (!RelFileNodeBackendEquals(bufHdr->tag.rnode, rnode))
 			continue;
 
 		buf_state = LockBufHdr(bufHdr);
-		if (RelFileNodeEquals(bufHdr->tag.rnode, rnode.node) &&
+		if (RelFileNodeBackendEquals(bufHdr->tag.rnode, rnode) &&
 			bufHdr->tag.forkNum == forkNum &&
 			bufHdr->tag.blockNum >= firstDelBlock)
 			InvalidateBuffer(bufHdr);	/* releases spinlock */
@@ -2985,24 +2987,24 @@ DropRelFileNodesAllBuffers(RelFileNodeBackend *rnodes, int nnodes)
 {
 	int			i,
 				n = 0;
-	RelFileNode *nodes;
+	RelFileNodeBackend *nodes;
 	bool		use_bsearch;
 
 	if (nnodes == 0)
 		return;
 
-	nodes = palloc(sizeof(RelFileNode) * nnodes);	/* non-local relations */
+	nodes = palloc(sizeof(RelFileNodeBackend) * nnodes);	/* non-local relations */
 
 	/* If it's a local relation, it's localbuf.c's problem. */
 	for (i = 0; i < nnodes; i++)
 	{
-		if (RelFileNodeBackendIsTemp(rnodes[i]))
+		if (RelFileNodeBackendIsLocalTemp(rnodes[i]))
 		{
 			if (rnodes[i].backend == MyBackendId)
 				DropRelFileNodeAllLocalBuffers(rnodes[i].node);
 		}
 		else
-			nodes[n++] = rnodes[i].node;
+			nodes[n++] = rnodes[i];
 	}
 
 	/*
@@ -3025,11 +3027,11 @@ DropRelFileNodesAllBuffers(RelFileNodeBackend *rnodes, int nnodes)
 
 	/* sort the list of rnodes if necessary */
 	if (use_bsearch)
-		pg_qsort(nodes, n, sizeof(RelFileNode), rnode_comparator);
+		pg_qsort(nodes, n, sizeof(RelFileNodeBackend), rnode_comparator);
 
 	for (i = 0; i < NBuffers; i++)
 	{
-		RelFileNode *rnode = NULL;
+		RelFileNodeBackend *rnode = NULL;
 		BufferDesc *bufHdr = GetBufferDescriptor(i);
 		uint32		buf_state;
 
@@ -3044,7 +3046,7 @@ DropRelFileNodesAllBuffers(RelFileNodeBackend *rnodes, int nnodes)
 
 			for (j = 0; j < n; j++)
 			{
-				if (RelFileNodeEquals(bufHdr->tag.rnode, nodes[j]))
+				if (RelFileNodeBackendEquals(bufHdr->tag.rnode, nodes[j]))
 				{
 					rnode = &nodes[j];
 					break;
@@ -3054,7 +3056,7 @@ DropRelFileNodesAllBuffers(RelFileNodeBackend *rnodes, int nnodes)
 		else
 		{
 			rnode = bsearch((const void *) &(bufHdr->tag.rnode),
-							nodes, n, sizeof(RelFileNode),
+							nodes, n, sizeof(RelFileNodeBackend),
 							rnode_comparator);
 		}
 
@@ -3063,7 +3065,7 @@ DropRelFileNodesAllBuffers(RelFileNodeBackend *rnodes, int nnodes)
 			continue;
 
 		buf_state = LockBufHdr(bufHdr);
-		if (RelFileNodeEquals(bufHdr->tag.rnode, (*rnode)))
+		if (RelFileNodeBackendEquals(bufHdr->tag.rnode, (*rnode)))
 			InvalidateBuffer(bufHdr);	/* releases spinlock */
 		else
 			UnlockBufHdr(bufHdr, buf_state);
@@ -3102,11 +3104,11 @@ DropDatabaseBuffers(Oid dbid)
 		 * As in DropRelFileNodeBuffers, an unlocked precheck should be safe
 		 * and saves some cycles.
 		 */
-		if (bufHdr->tag.rnode.dbNode != dbid)
+		if (bufHdr->tag.rnode.node.dbNode != dbid)
 			continue;
 
 		buf_state = LockBufHdr(bufHdr);
-		if (bufHdr->tag.rnode.dbNode == dbid)
+		if (bufHdr->tag.rnode.node.dbNode == dbid)
 			InvalidateBuffer(bufHdr);	/* releases spinlock */
 		else
 			UnlockBufHdr(bufHdr, buf_state);
@@ -3136,7 +3138,7 @@ PrintBufferDescs(void)
 			 "[%02d] (freeNext=%d, rel=%s, "
 			 "blockNum=%u, flags=0x%x, refcount=%u %d)",
 			 i, buf->freeNext,
-			 relpathbackend(buf->tag.rnode, InvalidBackendId, buf->tag.forkNum),
+			 relpath(buf->tag.rnode, buf->tag.forkNum),
 			 buf->tag.blockNum, buf->flags,
 			 buf->refcount, GetPrivateRefCount(b));
 	}
@@ -3204,7 +3206,8 @@ FlushRelationBuffers(Relation rel)
 			uint32		buf_state;
 
 			bufHdr = GetLocalBufferDescriptor(i);
-			if (RelFileNodeEquals(bufHdr->tag.rnode, rel->rd_node) &&
+			if (RelFileNodeEquals(bufHdr->tag.rnode.node, rel->rd_node) &&
+				bufHdr->tag.rnode.backend == rel->rd_backend &&
 				((buf_state = pg_atomic_read_u32(&bufHdr->state)) &
 				 (BM_VALID | BM_DIRTY)) == (BM_VALID | BM_DIRTY))
 			{
@@ -3251,13 +3254,15 @@ FlushRelationBuffers(Relation rel)
 		 * As in DropRelFileNodeBuffers, an unlocked precheck should be safe
 		 * and saves some cycles.
 		 */
-		if (!RelFileNodeEquals(bufHdr->tag.rnode, rel->rd_node))
+		if (!RelFileNodeEquals(bufHdr->tag.rnode.node, rel->rd_node)
+			|| bufHdr->tag.rnode.backend != rel->rd_backend)
 			continue;
 
 		ReservePrivateRefCountEntry();
 
 		buf_state = LockBufHdr(bufHdr);
-		if (RelFileNodeEquals(bufHdr->tag.rnode, rel->rd_node) &&
+		if (RelFileNodeEquals(bufHdr->tag.rnode.node, rel->rd_node) &&
+			bufHdr->tag.rnode.backend == rel->rd_backend &&
 			(buf_state & (BM_VALID | BM_DIRTY)) == (BM_VALID | BM_DIRTY))
 		{
 			PinBuffer_Locked(bufHdr);
@@ -3305,13 +3310,13 @@ FlushDatabaseBuffers(Oid dbid)
 		 * As in DropRelFileNodeBuffers, an unlocked precheck should be safe
 		 * and saves some cycles.
 		 */
-		if (bufHdr->tag.rnode.dbNode != dbid)
+		if (bufHdr->tag.rnode.node.dbNode != dbid)
 			continue;
 
 		ReservePrivateRefCountEntry();
 
 		buf_state = LockBufHdr(bufHdr);
-		if (bufHdr->tag.rnode.dbNode == dbid &&
+		if (bufHdr->tag.rnode.node.dbNode == dbid &&
 			(buf_state & (BM_VALID | BM_DIRTY)) == (BM_VALID | BM_DIRTY))
 		{
 			PinBuffer_Locked(bufHdr);
@@ -4051,7 +4056,7 @@ AbortBufferIO(void)
 				/* Buffer is pinned, so we can read tag without spinlock */
 				char	   *path;
 
-				path = relpathperm(buf->tag.rnode, buf->tag.forkNum);
+				path = relpath(buf->tag.rnode, buf->tag.forkNum);
 				ereport(WARNING,
 						(errcode(ERRCODE_IO_ERROR),
 						 errmsg("could not write block %u of %s",
@@ -4075,7 +4080,7 @@ shared_buffer_write_error_callback(void *arg)
 	/* Buffer is pinned, so we can read the tag without locking the spinlock */
 	if (bufHdr != NULL)
 	{
-		char	   *path = relpathperm(bufHdr->tag.rnode, bufHdr->tag.forkNum);
+		char	   *path = relpath(bufHdr->tag.rnode, bufHdr->tag.forkNum);
 
 		errcontext("writing block %u of relation %s",
 				   bufHdr->tag.blockNum, path);
@@ -4093,7 +4098,7 @@ local_buffer_write_error_callback(void *arg)
 
 	if (bufHdr != NULL)
 	{
-		char	   *path = relpathbackend(bufHdr->tag.rnode, MyBackendId,
+		char	   *path = relpathbackend(bufHdr->tag.rnode.node, MyBackendId,
 										  bufHdr->tag.forkNum);
 
 		errcontext("writing block %u of relation %s",
@@ -4108,22 +4113,27 @@ local_buffer_write_error_callback(void *arg)
 static int
 rnode_comparator(const void *p1, const void *p2)
 {
-	RelFileNode n1 = *(const RelFileNode *) p1;
-	RelFileNode n2 = *(const RelFileNode *) p2;
+	RelFileNodeBackend n1 = *(const RelFileNodeBackend *) p1;
+	RelFileNodeBackend n2 = *(const RelFileNodeBackend *) p2;
 
-	if (n1.relNode < n2.relNode)
+	if (n1.node.relNode < n2.node.relNode)
 		return -1;
-	else if (n1.relNode > n2.relNode)
+	else if (n1.node.relNode > n2.node.relNode)
 		return 1;
 
-	if (n1.dbNode < n2.dbNode)
+	if (n1.node.dbNode < n2.node.dbNode)
 		return -1;
-	else if (n1.dbNode > n2.dbNode)
+	else if (n1.node.dbNode > n2.node.dbNode)
 		return 1;
 
-	if (n1.spcNode < n2.spcNode)
+	if (n1.node.spcNode < n2.node.spcNode)
 		return -1;
-	else if (n1.spcNode > n2.spcNode)
+	else if (n1.node.spcNode > n2.node.spcNode)
+		return 1;
+
+	if (n1.backend < n2.backend)
+		return -1;
+	else if (n1.backend > n2.backend)
 		return 1;
 	else
 		return 0;
@@ -4359,7 +4369,7 @@ IssuePendingWritebacks(WritebackContext *context)
 			next = &context->pending_writebacks[i + ahead + 1];
 
 			/* different file, stop */
-			if (!RelFileNodeEquals(cur->tag.rnode, next->tag.rnode) ||
+			if (!RelFileNodeBackendEquals(cur->tag.rnode, next->tag.rnode) ||
 				cur->tag.forkNum != next->tag.forkNum)
 				break;
 
@@ -4378,7 +4388,7 @@ IssuePendingWritebacks(WritebackContext *context)
 		i += ahead;
 
 		/* and finally tell the kernel to write the data to storage */
-		reln = smgropen(tag.rnode, InvalidBackendId);
+		reln = smgropen(tag.rnode.node, tag.rnode.backend);
 		smgrwriteback(reln, tag.forkNum, tag.blockNum, nblocks);
 	}
 
