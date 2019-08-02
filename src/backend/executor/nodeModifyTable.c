@@ -2317,8 +2317,8 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 	 * indexes for insertion of new index entries.  Note we *must* set
 	 * estate->es_result_relation_info correctly while we initialize each
 	 * sub-plan; external modules such as FDWs may depend on that (see
-	 * contrib/postgres_fdw/postgres_fdw.c: postgresBeginDirectModify()
-	 * as one example).
+	 * contrib/postgres_fdw/postgres_fdw.c: postgresBeginDirectModify() as one
+	 * example).
 	 */
 	saved_resultRelInfo = estate->es_result_relation_info;
 
@@ -2542,11 +2542,16 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 			table_slot_create(resultRelInfo->ri_RelationDesc,
 							  &mtstate->ps.state->es_tupleTable);
 
-		/* create the tuple slot for the UPDATE SET projection */
+		/*
+		 * Create the tuple slot for the UPDATE SET projection. We want a slot
+		 * of the table's type here, because the slot will be used to insert
+		 * into the table, and for RETURNING processing - which may access
+		 * system attributes.
+		 */
 		tupDesc = ExecTypeFromTL((List *) node->onConflictSet);
 		resultRelInfo->ri_onConflict->oc_ProjSlot =
 			ExecInitExtraTupleSlot(mtstate->ps.state, tupDesc,
-								   &TTSOpsVirtual);
+								   table_slot_callbacks(resultRelInfo->ri_RelationDesc));
 
 		/* build UPDATE SET projection state */
 		resultRelInfo->ri_onConflict->oc_ProjInfo =

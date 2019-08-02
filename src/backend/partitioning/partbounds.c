@@ -1237,13 +1237,14 @@ check_default_partition_contents(Relation parent, Relation default_rel,
 		: get_qual_for_range(parent, new_spec, false);
 	def_part_constraints =
 		get_proposed_default_constraint(new_part_constraints);
+
 	/*
 	 * Map the Vars in the constraint expression from parent's attnos to
 	 * default_rel's.
 	 */
 	def_part_constraints =
-			map_partition_varattnos(def_part_constraints, 1, default_rel,
-									parent, NULL);
+		map_partition_varattnos(def_part_constraints, 1, default_rel,
+								parent, NULL);
 
 	/*
 	 * If the existing constraints on the default partition imply that it will
@@ -2045,7 +2046,7 @@ get_qual_for_hash(Relation parent, PartitionBoundSpec *spec)
 		else
 		{
 			keyCol = (Node *) copyObject(lfirst(partexprs_item));
-			partexprs_item = lnext(partexprs_item);
+			partexprs_item = lnext(key->partexprs, partexprs_item);
 		}
 
 		args = lappend(args, keyCol);
@@ -2490,19 +2491,20 @@ get_qual_for_range(Relation parent, PartitionBoundSpec *spec,
 		j = i;
 		partexprs_item = partexprs_item_saved;
 
-		for_both_cell(cell1, lower_or_start_datum, cell2, upper_or_start_datum)
+		for_both_cell(cell1, spec->lowerdatums, lower_or_start_datum,
+					  cell2, spec->upperdatums, upper_or_start_datum)
 		{
 			PartitionRangeDatum *ldatum_next = NULL,
 					   *udatum_next = NULL;
 
 			ldatum = castNode(PartitionRangeDatum, lfirst(cell1));
-			if (lnext(cell1))
+			if (lnext(spec->lowerdatums, cell1))
 				ldatum_next = castNode(PartitionRangeDatum,
-									   lfirst(lnext(cell1)));
+									   lfirst(lnext(spec->lowerdatums, cell1)));
 			udatum = castNode(PartitionRangeDatum, lfirst(cell2));
-			if (lnext(cell2))
+			if (lnext(spec->upperdatums, cell2))
 				udatum_next = castNode(PartitionRangeDatum,
-									   lfirst(lnext(cell2)));
+									   lfirst(lnext(spec->upperdatums, cell2)));
 			get_range_key_properties(key, j, ldatum, udatum,
 									 &partexprs_item,
 									 &keyCol,
@@ -2667,7 +2669,7 @@ get_range_key_properties(PartitionKey key, int keynum,
 		if (*partexprs_item == NULL)
 			elog(ERROR, "wrong number of partition key expressions");
 		*keyCol = copyObject(lfirst(*partexprs_item));
-		*partexprs_item = lnext(*partexprs_item);
+		*partexprs_item = lnext(key->partexprs, *partexprs_item);
 	}
 
 	/* Get appropriate Const nodes for the bounds */
@@ -2715,7 +2717,7 @@ get_range_nulltest(PartitionKey key)
 			if (partexprs_item == NULL)
 				elog(ERROR, "wrong number of partition key expressions");
 			keyCol = copyObject(lfirst(partexprs_item));
-			partexprs_item = lnext(partexprs_item);
+			partexprs_item = lnext(key->partexprs, partexprs_item);
 		}
 
 		nulltest = makeNode(NullTest);
@@ -2833,7 +2835,7 @@ satisfies_hash_partition(PG_FUNCTION_ARGS)
 		PartitionKey key;
 		int			j;
 
-		/* Open parent relation and fetch partition keyinfo */
+		/* Open parent relation and fetch partition key info */
 		parent = try_relation_open(parentId, AccessShareLock);
 		if (parent == NULL)
 			PG_RETURN_NULL();

@@ -650,8 +650,9 @@ hostnogssenc <replaceable>database</replaceable>  <replaceable>user</replaceable
    <systemitem>SIGHUP</systemitem><indexterm><primary>SIGHUP</primary></indexterm>
    signal. If you edit the file on an
    active system, you will need to signal the postmaster
-   (using <literal>pg_ctl reload</literal> or <literal>kill -HUP</literal>) to make it
-   re-read the file.
+   (using <literal>pg_ctl reload</literal>, calling the SQL function
+   <function>pg_reload_conf()</function>, or using <literal>kill
+   -HUP</literal>) to make it re-read the file.
   </para>
 
   <note>
@@ -871,8 +872,9 @@ mymap   /^(.*)@otherdomain\.com$   guest
    <systemitem>SIGHUP</systemitem><indexterm><primary>SIGHUP</primary></indexterm>
    signal. If you edit the file on an
    active system, you will need to signal the postmaster
-   (using <literal>pg_ctl reload</literal> or <literal>kill -HUP</literal>) to make it
-   re-read the file.
+   (using <literal>pg_ctl reload</literal>, calling the SQL function
+   <function>pg_reload_conf()</function>, or using <literal>kill
+   -HUP</literal>) to make it re-read the file.
   </para>
 
   <para>
@@ -1729,7 +1731,7 @@ ldap[s]://<replaceable>host</replaceable>[:<replaceable>port</replaceable>]/<rep
      If <productname>PostgreSQL</productname> was compiled with
      <productname>OpenLDAP</productname> as the LDAP client library, the
      <literal>ldapserver</literal> setting may be omitted.  In that case, a
-     list of hostnames and ports is looked up via RFC 2782 DNS SRV records.
+     list of host names and ports is looked up via RFC 2782 DNS SRV records.
      The name <literal>_ldap._tcp.DOMAIN</literal> is looked up, where
      <literal>DOMAIN</literal> is extracted from <literal>ldapbasedn</literal>.
    </para>
@@ -1781,7 +1783,7 @@ host ... ldap ldapserver=ldap.example.net ldapbasedn="dc=example, dc=net" ldapse
 
    <para>
     Here is an example for a search+bind configuration that uses DNS SRV
-    discovery to find the hostname(s) and port(s) for the LDAP service for the
+    discovery to find the host name(s) and port(s) for the LDAP service for the
     domain name <literal>example.net</literal>:
 <programlisting>
 host ... ldap ldapbasedn="dc=example,dc=net"

@@ -1147,7 +1147,7 @@ Datum pg_pooler_state(PG_FUNCTION_ARGS)
 	values[9] = Int64GetDatum(ProxyState[id].rx_bytes);
 	values[10] = Int64GetDatum(ProxyState[id].n_transactions);
 
-	for (i = 0; i <= 11; i++)
+	for (i = 0; i < 11; i++)
 		nulls[i] = false;
 
 	ps_ctx->proxy_id += 1;

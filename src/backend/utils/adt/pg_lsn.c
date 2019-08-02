@@ -61,7 +61,7 @@ pg_lsn_in(PG_FUNCTION_ARGS)
 {
 	char	   *str = PG_GETARG_CSTRING(0);
 	XLogRecPtr	result;
-	bool have_error = false;
+	bool		have_error = false;
 
 	result = pg_lsn_in_internal(str, &have_error);
 	if (have_error)
@@ -169,6 +169,24 @@ pg_lsn_ge(PG_FUNCTION_ARGS)
 	XLogRecPtr	lsn2 = PG_GETARG_LSN(1);
 
 	PG_RETURN_BOOL(lsn1 >= lsn2);
+}
+
+Datum
+pg_lsn_larger(PG_FUNCTION_ARGS)
+{
+	XLogRecPtr	lsn1 = PG_GETARG_LSN(0);
+	XLogRecPtr	lsn2 = PG_GETARG_LSN(1);
+
+	PG_RETURN_LSN((lsn1 > lsn2) ? lsn1 : lsn2);
+}
+
+Datum
+pg_lsn_smaller(PG_FUNCTION_ARGS)
+{
+	XLogRecPtr	lsn1 = PG_GETARG_LSN(0);
+	XLogRecPtr	lsn2 = PG_GETARG_LSN(1);
+
+	PG_RETURN_LSN((lsn1 < lsn2) ? lsn1 : lsn2);
 }
 
 /* btree index opclass support */

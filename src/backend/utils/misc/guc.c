@@ -4199,7 +4199,7 @@ static struct config_string ConfigureNamesString[] =
 			GUC_SUPERUSER_ONLY
 		},
 		&SSLCipherSuites,
-#ifdef USE_SSL
+#ifdef USE_OPENSSL
 		"HIGH:MEDIUM:+3DES:!aNULL",
 #else
 		"none",
@@ -11703,7 +11703,7 @@ check_recovery_target_time(char **newval, void **extra, GucSource source)
 				dterr = DecodeDateTime(field, ftype, nf, &dtype, tm, &fsec, &tz);
 			if (dterr != 0)
 				return false;
-			if (dtype !=  DTK_DATE)
+			if (dtype != DTK_DATE)
 				return false;
 
 			if (tm2timestamp(tm, fsec, &tz, &timestamp) != 0)

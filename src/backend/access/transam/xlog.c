@@ -1796,11 +1796,11 @@ WaitXLogInsertionsToFinish(XLogRecPtr upto)
 		do
 		{
 			/*
-			 * See if this insertion is in progress. LWLockWait will wait for
-			 * the lock to be released, or for the 'value' to be set by a
-			 * LWLockUpdateVar call.  When a lock is initially acquired, its
-			 * value is 0 (InvalidXLogRecPtr), which means that we don't know
-			 * where it's inserting yet.  We will have to wait for it.  If
+			 * See if this insertion is in progress.  LWLockWaitForVar will
+			 * wait for the lock to be released, or for the 'value' to be set
+			 * by a LWLockUpdateVar call.  When a lock is initially acquired,
+			 * its value is 0 (InvalidXLogRecPtr), which means that we don't
+			 * know where it's inserting yet.  We will have to wait for it. If
 			 * it's a small insertion, the record will most likely fit on the
 			 * same page and the inserter will release the lock without ever
 			 * calling LWLockUpdateVar.  But if it has to sleep, it will
@@ -3321,7 +3321,7 @@ XLogFileInit(XLogSegNo logsegno, bool *use_existent, bool use_lock)
 	}
 	pgstat_report_wait_end();
 
-	if (close(fd))
+	if (close(fd) != 0)
 		ereport(ERROR,
 				(errcode_for_file_access(),
 				 errmsg("could not close file \"%s\": %m", tmppath)));
@@ -3489,12 +3489,12 @@ XLogFileCopy(XLogSegNo destsegno, TimeLineID srcTLI, XLogSegNo srcsegno,
 				 errmsg("could not fsync file \"%s\": %m", tmppath)));
 	pgstat_report_wait_end();
 
-	if (CloseTransientFile(fd))
+	if (CloseTransientFile(fd) != 0)
 		ereport(ERROR,
 				(errcode_for_file_access(),
 				 errmsg("could not close file \"%s\": %m", tmppath)));
 
-	if (CloseTransientFile(srcfd))
+	if (CloseTransientFile(srcfd) != 0)
 		ereport(ERROR,
 				(errcode_for_file_access(),
 				 errmsg("could not close file \"%s\": %m", path)));
@@ -3791,7 +3791,7 @@ XLogFileClose(void)
 		(void) posix_fadvise(openLogFile, 0, 0, POSIX_FADV_DONTNEED);
 #endif
 
-	if (close(openLogFile))
+	if (close(openLogFile) != 0)
 		ereport(PANIC,
 				(errcode_for_file_access(),
 				 errmsg("could not close file \"%s\": %m",
@@ -4566,7 +4566,7 @@ WriteControlFile(void)
 						XLOG_CONTROL_FILE)));
 	pgstat_report_wait_end();
 
-	if (close(fd))
+	if (close(fd) != 0)
 		ereport(PANIC,
 				(errcode_for_file_access(),
 				 errmsg("could not close file \"%s\": %m",
@@ -5225,7 +5225,7 @@ BootStrapXLOG(void)
 				 errmsg("could not fsync bootstrap write-ahead log file: %m")));
 	pgstat_report_wait_end();
 
-	if (close(openLogFile))
+	if (close(openLogFile) != 0)
 		ereport(PANIC,
 				(errcode_for_file_access(),
 				 errmsg("could not close bootstrap write-ahead log file: %m")));
@@ -5527,7 +5527,7 @@ exitArchiveRecovery(TimeLineID endTLI, XLogRecPtr endOfLog)
 
 		fd = XLogFileInit(startLogSegNo, &use_existent, true);
 
-		if (close(fd))
+		if (close(fd) != 0)
 			ereport(ERROR,
 					(errcode_for_file_access(),
 					 errmsg("could not close file \"%s\": %m",
@@ -6024,7 +6024,10 @@ recoveryApplyDelay(XLogReaderState *record)
 		TimestampDifference(GetCurrentTimestamp(), recoveryDelayUntilTime,
 							&secs, &microsecs);
 
-		/* NB: We're ignoring waits below min_apply_delay's resolution. */
+		/*
+		 * NB: We're ignoring waits below recovery_min_apply_delay's
+		 * resolution.
+		 */
 		if (secs <= 0 && microsecs / 1000 <= 0)
 			break;
 
@@ -9158,7 +9161,7 @@ CreateRestartPoint(int flags)
 
 	/*
 	 * Update pg_control, using current time.  Check that it still shows
-	 * IN_ARCHIVE_RECOVERY state and an older checkpoint, else do nothing;
+	 * DB_IN_ARCHIVE_RECOVERY state and an older checkpoint, else do nothing;
 	 * this is a quick hack to make sure nothing really bad happens if somehow
 	 * we get here after the end-of-recovery checkpoint.
 	 */

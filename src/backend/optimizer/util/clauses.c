@@ -881,11 +881,9 @@ is_parallel_safe(PlannerInfo *root, Node *node)
 		foreach(l, proot->init_plans)
 		{
 			SubPlan    *initsubplan = (SubPlan *) lfirst(l);
-			ListCell   *l2;
 
-			foreach(l2, initsubplan->setParam)
-				context.safe_param_ids = lcons_int(lfirst_int(l2),
-												   context.safe_param_ids);
+			context.safe_param_ids = list_concat(context.safe_param_ids,
+												 initsubplan->setParam);
 		}
 	}
 
@@ -1015,6 +1013,7 @@ max_parallel_hazard_walker(Node *node, max_parallel_hazard_context *context)
 											  context->safe_param_ids);
 		if (max_parallel_hazard_walker(subplan->testexpr, context))
 			return true;		/* no need to restore safe_param_ids */
+		list_free(context->safe_param_ids);
 		context->safe_param_ids = save_safe_param_ids;
 		/* we must also check args, but no special Param treatment there */
 		if (max_parallel_hazard_walker((Node *) subplan->args, context))
@@ -4185,8 +4184,8 @@ add_function_defaults(List *args, HeapTuple func_tuple)
 	ndelete = nargsprovided + list_length(defaults) - funcform->pronargs;
 	if (ndelete < 0)
 		elog(ERROR, "not enough default arguments");
-	while (ndelete-- > 0)
-		defaults = list_delete_first(defaults);
+	if (ndelete > 0)
+		defaults = list_copy_tail(defaults, ndelete);
 
 	/* And form the combined argument list, not modifying the input list */
 	return list_concat(list_copy(args), defaults);
@@ -4701,9 +4700,9 @@ inline_function(Oid funcid, Oid result_type, Oid result_collid,
 	 * Recursively try to simplify the modified expression.  Here we must add
 	 * the current function to the context list of active functions.
 	 */
-	context->active_fns = lcons_oid(funcid, context->active_fns);
+	context->active_fns = lappend_oid(context->active_fns, funcid);
 	newexpr = eval_const_expressions_mutator(newexpr, context);
-	context->active_fns = list_delete_first(context->active_fns);
+	context->active_fns = list_delete_last(context->active_fns);
 
 	error_context_stack = sqlerrcontext.previous;
 
@@ -4871,6 +4870,10 @@ evaluate_expr(Expr *expr, Oid result_type, int32 result_typmod,
  * set-returning SQL function that can safely be inlined, expand the function
  * and return the substitute Query structure.  Otherwise, return NULL.
  *
+ * We assume that the RTE's expression has already been put through
+ * eval_const_expressions(), which among other things will take care of
+ * default arguments and named-argument notation.
+ *
  * This has a good deal of similarity to inline_function(), but that's
  * for the non-set-returning case, and there are enough differences to
  * justify separate functions.
@@ -4889,7 +4892,6 @@ inline_set_returning_function(PlannerInfo *root, RangeTblEntry *rte)
 	bool		modifyTargetList;
 	MemoryContext oldcxt;
 	MemoryContext mycxt;
-	List	   *saveInvalItems;
 	inline_error_callback_arg callback_arg;
 	ErrorContextCallback sqlerrcontext;
 	SQLFunctionParseInfoPtr pinfo;
@@ -4967,7 +4969,7 @@ inline_set_returning_function(PlannerInfo *root, RangeTblEntry *rte)
 	 * sharing the snapshot of the calling query.  We also disallow returning
 	 * SETOF VOID, because inlining would result in exposing the actual result
 	 * of the function's last SELECT, which should not happen in that case.
-	 * (Rechecking prokind and proretset is just paranoia.)
+	 * (Rechecking prokind, proretset, and pronargs is just paranoia.)
 	 */
 	if (funcform->prolang != SQLlanguageId ||
 		funcform->prokind != PROKIND_FUNCTION ||
@@ -4976,6 +4978,7 @@ inline_set_returning_function(PlannerInfo *root, RangeTblEntry *rte)
 		funcform->prorettype == VOIDOID ||
 		funcform->prosecdef ||
 		!funcform->proretset ||
+		list_length(fexpr->args) != funcform->pronargs ||
 		!heap_attisnull(func_tuple, Anum_pg_proc_proconfig, NULL))
 	{
 		ReleaseSysCache(func_tuple);
@@ -4990,16 +4993,6 @@ inline_set_returning_function(PlannerInfo *root, RangeTblEntry *rte)
 								  "inline_set_returning_function",
 								  ALLOCSET_DEFAULT_SIZES);
 	oldcxt = MemoryContextSwitchTo(mycxt);
-
-	/*
-	 * When we call eval_const_expressions below, it might try to add items to
-	 * root->glob->invalItems.  Since it is running in the temp context, those
-	 * items will be in that context, and will need to be copied out if we're
-	 * successful.  Temporarily reset the list so that we can keep those items
-	 * separate from the pre-existing list contents.
-	 */
-	saveInvalItems = root->glob->invalItems;
-	root->glob->invalItems = NIL;
 
 	/* Fetch the function body */
 	tmp = SysCacheGetAttr(PROCOID,
@@ -5021,24 +5014,6 @@ inline_set_returning_function(PlannerInfo *root, RangeTblEntry *rte)
 	sqlerrcontext.arg = (void *) &callback_arg;
 	sqlerrcontext.previous = error_context_stack;
 	error_context_stack = &sqlerrcontext;
-
-	/*
-	 * Run eval_const_expressions on the function call.  This is necessary to
-	 * ensure that named-argument notation is converted to positional notation
-	 * and any default arguments are inserted.  It's a bit of overkill for the
-	 * arguments, since they'll get processed again later, but no harm will be
-	 * done.
-	 */
-	fexpr = (FuncExpr *) eval_const_expressions(root, (Node *) fexpr);
-
-	/* It should still be a call of the same function, but let's check */
-	if (!IsA(fexpr, FuncExpr) ||
-		fexpr->funcid != func_oid)
-		goto fail;
-
-	/* Arg list length should now match the function */
-	if (list_length(fexpr->args) != funcform->pronargs)
-		goto fail;
 
 	/*
 	 * Set up to handle parameters while parsing the function body.  We can
@@ -5130,10 +5105,6 @@ inline_set_returning_function(PlannerInfo *root, RangeTblEntry *rte)
 
 	querytree = copyObject(querytree);
 
-	/* copy up any new invalItems, too */
-	root->glob->invalItems = list_concat(saveInvalItems,
-										 copyObject(root->glob->invalItems));
-
 	MemoryContextDelete(mycxt);
 	error_context_stack = sqlerrcontext.previous;
 	ReleaseSysCache(func_tuple);
@@ -5154,7 +5125,6 @@ inline_set_returning_function(PlannerInfo *root, RangeTblEntry *rte)
 	/* Here if func is not inlinable: release temp memory and return NULL */
 fail:
 	MemoryContextSwitchTo(oldcxt);
-	root->glob->invalItems = saveInvalItems;
 	MemoryContextDelete(mycxt);
 	error_context_stack = sqlerrcontext.previous;
 	ReleaseSysCache(func_tuple);
@@ -5255,7 +5225,7 @@ tlist_matches_coltypelist(List *tlist, List *coltypelist)
 			return false;		/* too many tlist items */
 
 		coltype = lfirst_oid(clistitem);
-		clistitem = lnext(clistitem);
+		clistitem = lnext(coltypelist, clistitem);
 
 		if (exprType((Node *) tle->expr) != coltype)
 			return false;		/* column type mismatch */

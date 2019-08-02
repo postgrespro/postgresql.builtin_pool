@@ -3356,6 +3356,10 @@ CopyFrom(CopyState cstate)
 		target_resultRelInfo->ri_FdwRoutine->EndForeignInsert(estate,
 															  target_resultRelInfo);
 
+	/* Tear down the multi-insert buffer data */
+	if (insertMethod != CIM_SINGLE)
+		CopyMultiInsertInfoCleanup(&multiInsertInfo);
+
 	ExecCloseIndices(target_resultRelInfo);
 
 	/* Close all the partitioned tables, leaf partitions, and their indices */
@@ -3366,14 +3370,6 @@ CopyFrom(CopyState cstate)
 	ExecCleanUpTriggerState(estate);
 
 	FreeExecutorState(estate);
-
-	if (insertMethod != CIM_SINGLE)
-	{
-		table_finish_bulk_insert(cstate->rel, ti_options);
-
-		/* Tear down the multi-insert buffer data */
-		CopyMultiInsertInfoCleanup(&multiInsertInfo);
-	}
 
 	return processed;
 }

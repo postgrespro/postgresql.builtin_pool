@@ -354,6 +354,7 @@ static void ATSimplePermissions(Relation rel, int allowed_targets);
 static void ATWrongRelkindError(Relation rel, int allowed_targets);
 static void ATSimpleRecursion(List **wqueue, Relation rel,
 							  AlterTableCmd *cmd, bool recurse, LOCKMODE lockmode);
+static void ATCheckPartitionsNotInUse(Relation rel, LOCKMODE lockmode);
 static void ATTypedTableRecursion(List **wqueue, Relation rel, AlterTableCmd *cmd,
 								  LOCKMODE lockmode);
 static List *find_typed_table_dependencies(Oid typeOid, const char *typeName,
@@ -1081,7 +1082,7 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 							 errmsg("cannot create foreign partition of partitioned table \"%s\"",
 									RelationGetRelationName(parent)),
 							 errdetail("Table \"%s\" contains indexes that are unique.",
-									RelationGetRelationName(parent))));
+									   RelationGetRelationName(parent))));
 				else
 				{
 					index_close(idxRel, AccessShareLock);
@@ -1693,7 +1694,7 @@ ExecuteTruncateGuts(List *explicit_rels, List *relids, List *relids_logged,
 		foreach(cell, rels)
 		{
 			Relation	rel = (Relation) lfirst(cell);
-			List	   *seqlist = getOwnedSequences(RelationGetRelid(rel), 0);
+			List	   *seqlist = getOwnedSequences(RelationGetRelid(rel));
 			ListCell   *seqcell;
 
 			foreach(seqcell, seqlist)
@@ -2044,13 +2045,13 @@ static List *
 MergeAttributes(List *schema, List *supers, char relpersistence,
 				bool is_partition, List **supconstr)
 {
-	ListCell   *entry;
 	List	   *inhSchema = NIL;
 	List	   *constraints = NIL;
 	bool		have_bogus_defaults = false;
 	int			child_attno;
 	static Node bogus_marker = {0}; /* marks conflicting defaults */
 	List	   *saved_schema = NIL;
+	ListCell   *entry;
 
 	/*
 	 * Check for and reject tables with too many columns. We perform this
@@ -2075,12 +2076,17 @@ MergeAttributes(List *schema, List *supers, char relpersistence,
 	 * Although we might consider merging such entries in the same way that we
 	 * handle name conflicts for inherited attributes, it seems to make more
 	 * sense to assume such conflicts are errors.
+	 *
+	 * We don't use foreach() here because we have two nested loops over the
+	 * schema list, with possible element deletions in the inner one.  If we
+	 * used foreach_delete_current() it could only fix up the state of one of
+	 * the loops, so it seems cleaner to use looping over list indexes for
+	 * both loops.  Note that any deletion will happen beyond where the outer
+	 * loop is, so its index never needs adjustment.
 	 */
-	foreach(entry, schema)
+	for (int coldefpos = 0; coldefpos < list_length(schema); coldefpos++)
 	{
-		ColumnDef  *coldef = lfirst(entry);
-		ListCell   *rest = lnext(entry);
-		ListCell   *prev = entry;
+		ColumnDef  *coldef = list_nth_node(ColumnDef, schema, coldefpos);
 
 		if (!is_partition && coldef->typeName == NULL)
 		{
@@ -2096,11 +2102,10 @@ MergeAttributes(List *schema, List *supers, char relpersistence,
 							coldef->colname)));
 		}
 
-		while (rest != NULL)
+		/* restpos scans all entries beyond coldef; incr is in loop body */
+		for (int restpos = coldefpos + 1; restpos < list_length(schema);)
 		{
-			ColumnDef  *restdef = lfirst(rest);
-			ListCell   *next = lnext(rest); /* need to save it in case we
-											 * delete it */
+			ColumnDef  *restdef = list_nth_node(ColumnDef, schema, restpos);
 
 			if (strcmp(coldef->colname, restdef->colname) == 0)
 			{
@@ -2114,13 +2119,7 @@ MergeAttributes(List *schema, List *supers, char relpersistence,
 					coldef->cooked_default = restdef->cooked_default;
 					coldef->constraints = restdef->constraints;
 					coldef->is_from_type = false;
-					schema = list_delete_cell(schema, rest, prev);
-
-					/*
-					 * As two elements are merged and one is removed, we
-					 * should never finish with an empty list.
-					 */
-					Assert(schema != NIL);
+					schema = list_delete_nth_cell(schema, restpos);
 				}
 				else
 					ereport(ERROR,
@@ -2128,8 +2127,8 @@ MergeAttributes(List *schema, List *supers, char relpersistence,
 							 errmsg("column \"%s\" specified more than once",
 									coldef->colname)));
 			}
-			prev = rest;
-			rest = next;
+			else
+				restpos++;
 		}
 	}
 
@@ -3427,8 +3426,7 @@ CheckTableNotInUse(Relation rel, const char *stmt)
 		ereport(ERROR,
 				(errcode(ERRCODE_OBJECT_IN_USE),
 		/* translator: first %s is a SQL command, eg ALTER TABLE */
-				 errmsg("cannot %s \"%s\" because "
-						"it is being used by active queries in this session",
+				 errmsg("cannot %s \"%s\" because it is being used by active queries in this session",
 						stmt, RelationGetRelationName(rel))));
 
 	if (rel->rd_rel->relkind != RELKIND_INDEX &&
@@ -3437,8 +3435,7 @@ CheckTableNotInUse(Relation rel, const char *stmt)
 		ereport(ERROR,
 				(errcode(ERRCODE_OBJECT_IN_USE),
 		/* translator: first %s is a SQL command, eg ALTER TABLE */
-				 errmsg("cannot %s \"%s\" because "
-						"it has pending trigger events",
+				 errmsg("cannot %s \"%s\" because it has pending trigger events",
 						stmt, RelationGetRelationName(rel))));
 }
 
@@ -3916,15 +3913,18 @@ ATPrepCmd(List **wqueue, Relation rel, AlterTableCmd *cmd,
 			break;
 		case AT_AddIdentity:
 			ATSimplePermissions(rel, ATT_TABLE | ATT_VIEW | ATT_FOREIGN_TABLE);
+			/* This command never recurses */
 			pass = AT_PASS_ADD_CONSTR;
-			break;
-		case AT_DropIdentity:
-			ATSimplePermissions(rel, ATT_TABLE | ATT_VIEW | ATT_FOREIGN_TABLE);
-			pass = AT_PASS_DROP;
 			break;
 		case AT_SetIdentity:
 			ATSimplePermissions(rel, ATT_TABLE | ATT_VIEW | ATT_FOREIGN_TABLE);
+			/* This command never recurses */
 			pass = AT_PASS_COL_ATTRS;
+			break;
+		case AT_DropIdentity:
+			ATSimplePermissions(rel, ATT_TABLE | ATT_VIEW | ATT_FOREIGN_TABLE);
+			/* This command never recurses */
+			pass = AT_PASS_DROP;
 			break;
 		case AT_DropNotNull:	/* ALTER COLUMN DROP NOT NULL */
 			ATSimplePermissions(rel, ATT_TABLE | ATT_FOREIGN_TABLE);
@@ -3991,7 +3991,8 @@ ATPrepCmd(List **wqueue, Relation rel, AlterTableCmd *cmd,
 			break;
 		case AT_DropConstraint: /* DROP CONSTRAINT */
 			ATSimplePermissions(rel, ATT_TABLE | ATT_FOREIGN_TABLE);
-			/* Recursion occurs during execution phase */
+			ATCheckPartitionsNotInUse(rel, lockmode);
+			/* Other recursion occurs during execution phase */
 			/* No command-specific prep needed except saving recurse flag */
 			if (recurse)
 				cmd->subtype = AT_DropConstraintRecurse;
@@ -5230,8 +5231,9 @@ ATSimpleRecursion(List **wqueue, Relation rel,
 				  AlterTableCmd *cmd, bool recurse, LOCKMODE lockmode)
 {
 	/*
-	 * Propagate to children if desired.  Only plain tables and foreign tables
-	 * have children, so no need to search for other relkinds.
+	 * Propagate to children if desired.  Only plain tables, foreign tables
+	 * and partitioned tables have children, so no need to search for other
+	 * relkinds.
 	 */
 	if (recurse &&
 		(rel->rd_rel->relkind == RELKIND_RELATION ||
@@ -5262,6 +5264,36 @@ ATSimpleRecursion(List **wqueue, Relation rel,
 			ATPrepCmd(wqueue, childrel, cmd, false, true, lockmode);
 			relation_close(childrel, NoLock);
 		}
+	}
+}
+
+/*
+ * Obtain list of partitions of the given table, locking them all at the given
+ * lockmode and ensuring that they all pass CheckTableNotInUse.
+ *
+ * This function is a no-op if the given relation is not a partitioned table;
+ * in particular, nothing is done if it's a legacy inheritance parent.
+ */
+static void
+ATCheckPartitionsNotInUse(Relation rel, LOCKMODE lockmode)
+{
+	if (rel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE)
+	{
+		List	   *inh;
+		ListCell   *cell;
+
+		inh = find_all_inheritors(RelationGetRelid(rel), lockmode, NULL);
+		/* first element is the parent rel; must ignore it */
+		for_each_cell(cell, inh, list_second_cell(inh))
+		{
+			Relation	childrel;
+
+			/* find_all_inheritors already got lock */
+			childrel = table_open(lfirst_oid(cell), NoLock);
+			CheckTableNotInUse(childrel, "ALTER TABLE");
+			table_close(childrel, NoLock);
+		}
+		list_free(inh);
 	}
 }
 
@@ -6641,7 +6673,7 @@ ATExecDropIdentity(Relation rel, const char *colName, bool missing_ok, LOCKMODE 
 	table_close(attrelation, RowExclusiveLock);
 
 	/* drop the internal sequence */
-	seqid = getOwnedSequence(RelationGetRelid(rel), attnum);
+	seqid = getIdentitySequence(RelationGetRelid(rel), attnum, false);
 	deleteDependencyRecordsForClass(RelationRelationId, seqid,
 									RelationRelationId, DEPENDENCY_INTERNAL);
 	CommandCounterIncrement();
@@ -7027,27 +7059,28 @@ ATExecDropColumn(List **wqueue, Relation rel, const char *colName,
 				 errmsg("cannot drop system column \"%s\"",
 						colName)));
 
-	/* Don't drop inherited columns */
+	/*
+	 * Don't drop inherited columns, unless recursing (presumably from a drop
+	 * of the parent column)
+	 */
 	if (targetatt->attinhcount > 0 && !recursing)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_TABLE_DEFINITION),
 				 errmsg("cannot drop inherited column \"%s\"",
 						colName)));
 
-	/* Don't drop columns used in the partition key */
+	/*
+	 * Don't drop columns used in the partition key, either.  (If we let this
+	 * go through, the key column's dependencies would cause a cascaded drop
+	 * of the whole table, which is surely not what the user expected.)
+	 */
 	if (has_partition_attrs(rel,
 							bms_make_singleton(attnum - FirstLowInvalidHeapAttributeNumber),
 							&is_expr))
-	{
-		if (!is_expr)
-			ereport(ERROR,
-					(errcode(ERRCODE_INVALID_TABLE_DEFINITION),
-					 errmsg("cannot drop column named in partition key")));
-		else
-			ereport(ERROR,
-					(errcode(ERRCODE_INVALID_TABLE_DEFINITION),
-					 errmsg("cannot drop column referenced in partition key expression")));
-	}
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_TABLE_DEFINITION),
+				 errmsg("cannot drop column \"%s\" because it is part of the partition key of relation \"%s\"",
+						colName, RelationGetRelationName(rel))));
 
 	ReleaseSysCache(tuple);
 
@@ -7870,7 +7903,8 @@ ATAddForeignKeyConstraint(List **wqueue, AlteredTableInfo *tab, Relation rel,
 			 * assess ppeqop or ffeqop, which RI_Initial_Check() does not use.
 			 */
 			old_check_ok = (pfeqop == lfirst_oid(old_pfeqop_item));
-			old_pfeqop_item = lnext(old_pfeqop_item);
+			old_pfeqop_item = lnext(fkconstraint->old_conpfeqop,
+									old_pfeqop_item);
 		}
 		if (old_check_ok)
 		{
@@ -7931,7 +7965,6 @@ ATAddForeignKeyConstraint(List **wqueue, AlteredTableInfo *tab, Relation rel,
 							new_castfunc == old_castfunc &&
 							(!IsPolymorphicType(pfeqop_right) ||
 							 new_fktype == old_fktype));
-
 		}
 
 		pfeqoperators[i] = pfeqop;
@@ -10261,16 +10294,10 @@ ATPrepAlterColumnType(List **wqueue,
 	if (has_partition_attrs(rel,
 							bms_make_singleton(attnum - FirstLowInvalidHeapAttributeNumber),
 							&is_expr))
-	{
-		if (!is_expr)
-			ereport(ERROR,
-					(errcode(ERRCODE_INVALID_TABLE_DEFINITION),
-					 errmsg("cannot alter type of column named in partition key")));
-		else
-			ereport(ERROR,
-					(errcode(ERRCODE_INVALID_TABLE_DEFINITION),
-					 errmsg("cannot alter type of column referenced in partition key expression")));
-	}
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_TABLE_DEFINITION),
+				 errmsg("cannot alter column \"%s\" because it is part of the partition key of relation \"%s\"",
+						colName, RelationGetRelationName(rel))));
 
 	/* Look up the target type */
 	typenameTypeIdAndMod(NULL, typeName, &targettype, &targettypmod);
@@ -11483,7 +11510,7 @@ TryReuseForeignKey(Oid oldId, Constraint *con)
 
 	/* stash a List of the operator Oids in our Constraint node */
 	for (i = 0; i < numkeys; i++)
-		con->old_conpfeqop = lcons_oid(rawarr[i], con->old_conpfeqop);
+		con->old_conpfeqop = lappend_oid(con->old_conpfeqop, rawarr[i]);
 
 	ReleaseSysCache(tup);
 }
@@ -14486,6 +14513,11 @@ register_on_commit_action(Oid relid, OnCommitAction action)
 	oc->creating_subid = GetCurrentSubTransactionId();
 	oc->deleting_subid = InvalidSubTransactionId;
 
+	/*
+	 * We use lcons() here so that ON COMMIT actions are processed in reverse
+	 * order of registration.  That might not be essential but it seems
+	 * reasonable.
+	 */
 	on_commits = lcons(oc, on_commits);
 
 	MemoryContextSwitchTo(oldcxt);
@@ -14623,12 +14655,8 @@ void
 AtEOXact_on_commit_actions(bool isCommit)
 {
 	ListCell   *cur_item;
-	ListCell   *prev_item;
 
-	prev_item = NULL;
-	cur_item = list_head(on_commits);
-
-	while (cur_item != NULL)
+	foreach(cur_item, on_commits)
 	{
 		OnCommitItem *oc = (OnCommitItem *) lfirst(cur_item);
 
@@ -14636,20 +14664,14 @@ AtEOXact_on_commit_actions(bool isCommit)
 			oc->creating_subid != InvalidSubTransactionId)
 		{
 			/* cur_item must be removed */
-			on_commits = list_delete_cell(on_commits, cur_item, prev_item);
+			on_commits = foreach_delete_current(on_commits, cur_item);
 			pfree(oc);
-			if (prev_item)
-				cur_item = lnext(prev_item);
-			else
-				cur_item = list_head(on_commits);
 		}
 		else
 		{
 			/* cur_item must be preserved */
 			oc->creating_subid = InvalidSubTransactionId;
 			oc->deleting_subid = InvalidSubTransactionId;
-			prev_item = cur_item;
-			cur_item = lnext(prev_item);
 		}
 	}
 }
@@ -14666,24 +14688,16 @@ AtEOSubXact_on_commit_actions(bool isCommit, SubTransactionId mySubid,
 							  SubTransactionId parentSubid)
 {
 	ListCell   *cur_item;
-	ListCell   *prev_item;
 
-	prev_item = NULL;
-	cur_item = list_head(on_commits);
-
-	while (cur_item != NULL)
+	foreach(cur_item, on_commits)
 	{
 		OnCommitItem *oc = (OnCommitItem *) lfirst(cur_item);
 
 		if (!isCommit && oc->creating_subid == mySubid)
 		{
 			/* cur_item must be removed */
-			on_commits = list_delete_cell(on_commits, cur_item, prev_item);
+			on_commits = foreach_delete_current(on_commits, cur_item);
 			pfree(oc);
-			if (prev_item)
-				cur_item = lnext(prev_item);
-			else
-				cur_item = list_head(on_commits);
 		}
 		else
 		{
@@ -14692,8 +14706,6 @@ AtEOSubXact_on_commit_actions(bool isCommit, SubTransactionId mySubid,
 				oc->creating_subid = parentSubid;
 			if (oc->deleting_subid == mySubid)
 				oc->deleting_subid = isCommit ? parentSubid : InvalidSubTransactionId;
-			prev_item = cur_item;
-			cur_item = lnext(prev_item);
 		}
 	}
 }
@@ -15686,6 +15698,7 @@ ATExecAttachPartition(List **wqueue, Relation rel, PartitionCmd *cmd)
 		defaultrel = table_open(defaultPartOid, NoLock);
 		defPartConstraint =
 			get_proposed_default_constraint(partBoundConstraint);
+
 		/*
 		 * Map the Vars in the constraint expression from rel's attnos to
 		 * defaultrel's.
@@ -15918,6 +15931,7 @@ CloneRowTriggersToPartition(Relation parent, Relation partition)
 		Datum		value;
 		bool		isnull;
 		List	   *cols = NIL;
+		List	   *trigargs = NIL;
 		MemoryContext oldcxt;
 
 		/*
@@ -15982,11 +15996,31 @@ CloneRowTriggersToPartition(Relation parent, Relation partition)
 			}
 		}
 
+		/* Reconstruct trigger arguments list. */
+		if (trigForm->tgnargs > 0)
+		{
+			char	   *p;
+
+			value = heap_getattr(tuple, Anum_pg_trigger_tgargs,
+								 RelationGetDescr(pg_trigger), &isnull);
+			if (isnull)
+				elog(ERROR, "tgargs is null for trigger \"%s\" in partition \"%s\"",
+					 NameStr(trigForm->tgname), RelationGetRelationName(partition));
+
+			p = (char *) VARDATA_ANY(DatumGetByteaPP(value));
+
+			for (int i = 0; i < trigForm->tgnargs; i++)
+			{
+				trigargs = lappend(trigargs, makeString(pstrdup(p)));
+				p += strlen(p) + 1;
+			}
+		}
+
 		trigStmt = makeNode(CreateTrigStmt);
 		trigStmt->trigname = NameStr(trigForm->tgname);
 		trigStmt->relation = NULL;
 		trigStmt->funcname = NULL;	/* passed separately */
-		trigStmt->args = NULL;	/* passed separately */
+		trigStmt->args = trigargs;
 		trigStmt->row = true;
 		trigStmt->timing = trigForm->tgtype & TRIGGER_TYPE_TIMING_MASK;
 		trigStmt->events = trigForm->tgtype & TRIGGER_TYPE_EVENT_MASK;
