@@ -2022,3 +2022,39 @@ ResetPlanCache(void)
 		cexpr->is_valid = false;
 	}
 }
+
+/*
+ * CachedPlanMemUsage: Return memory used by the CachedPlanSource
+ *
+ * Returns the malloced memory used by the two MemoryContexts in
+ * CachedPlanSource and (if available) the MemoryContext in the generic plan.
+ * Does not care for the free memory in those MemoryContexts because it is very
+ * unlikely that it is reused for anythink else anymore and can be considered
+ * dead memory anyway. Also the size of the CachedPlanSource struct is added.
+ *
+ * This function is used only for the pg_prepared_statements view to allow
+ * client applications to monitor memory used by prepared statements and to
+ * selects candidates for eviction in memory contraint environments with
+ * automatic preparation of often called queries.
+ */
+Size
+CachedPlanMemoryUsage(CachedPlanSource *plan)
+{
+	MemoryContextCounters counters;
+	MemoryContext context;
+
+	counters.totalspace = 0;
+
+	context = plan->context;
+	context->methods->stats(context,NULL,NULL,&counters);
+
+	context = plan->query_context;
+	context->methods->stats(context,NULL,NULL,&counters);
+
+	if( plan->gplan ) {
+		context = plan->gplan->context;
+		context->methods->stats(context,NULL,NULL,&counters);
+	}
+
+	return counters.totalspace;
+}

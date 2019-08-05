@@ -55,8 +55,8 @@
   <para>
     It is possible to inspect autoprepared queries in the backend using
     <literal>pg_autoprepared_statements</literal> view. It shows original text of the
-    query, types of the extracted parameters (replacing literals) and
-    query execution counter.
+    query, types of the extracted parameters (replacing literals),
+    query execution counter and used memory.
   </para>
 
  </chapter>

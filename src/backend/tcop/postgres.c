@@ -216,8 +216,9 @@ typedef struct
 {
 	AutoprepareStatementKey key;
 	CachedPlanSource* plan;
-	dlist_node		  lru;		  /* double linked list to implement LRU */
-	int64			  exec_count; /* counter of execution of this query */
+	dlist_node		  lru;		   /* double linked list to implement LRU */
+	int64			  exec_count;  /* counter of execution of this query */
+	Size              used_memory; /* memory used by prepared statement */
 }  AutoprepareStatement;
 
 static AutoprepareStatement* autoprepare_stmt;
@@ -255,14 +256,6 @@ static int autoprepare_match_fn(const void *key1, const void *key2, Size keysize
 	return strcmp(ask1->query_string, ask2->query_string);
 }
 
-static Size
-get_memory_context_size(MemoryContext ctx)
-{
-	MemoryContextCounters counters = {0};
-	ctx->methods->stats(ctx, NULL, NULL, &counters);
-	return counters.totalspace;
-}
-
 /*
  * This set returning function reads all the autoprepared statements and
  * returns a set of (name, statement, prepare_time, param_types, from_sql).
@@ -295,12 +288,14 @@ pg_autoprepared_statement(PG_FUNCTION_ARGS)
 	 * build tupdesc for result tuples. This must match the definition of the
 	 * pg_prepared_statements view in system_views.sql
 	 */
-	tupdesc = CreateTemplateTupleDesc(3);
+	tupdesc = CreateTemplateTupleDesc(4);
 	TupleDescInitEntry(tupdesc, (AttrNumber) 1, "statement",
 					   TEXTOID, -1, 0);
 	TupleDescInitEntry(tupdesc, (AttrNumber) 2, "parameter_types",
 					   REGTYPEARRAYOID, -1, 0);
 	TupleDescInitEntry(tupdesc, (AttrNumber) 3, "exec_count",
+					   INT8OID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber) 4, "used_memory",
 					   INT8OID, -1, 0);
 
 	/*
@@ -325,14 +320,15 @@ pg_autoprepared_statement(PG_FUNCTION_ARGS)
 		{
 			if (autoprep_stmt->plan != NULL)
 			{
-				Datum		values[3];
-				bool		nulls[3];
+				Datum		values[4];
+				bool		nulls[4];
 				MemSet(nulls, 0, sizeof(nulls));
 
 				values[0] = CStringGetTextDatum(autoprep_stmt->key.query_string);
 				values[1] = build_regtype_array(autoprep_stmt->key.param_types,
 												autoprep_stmt->key.num_params);
 				values[2] = Int64GetDatum(autoprep_stmt->exec_count);
+				values[3] = Int64GetDatum(autoprep_stmt->used_memory);
 
 				tuplestore_putvalues(tupstore, tupdesc, values, nulls);
 			}
@@ -1597,9 +1593,10 @@ exec_parse_message(const char *query_string,	/* string to execute */
 				{
 					/* Drop invalidated plan: it will be reconstructed later */
 					if (autoprepare_memory_limit)
-						autoprepare_used_memory -= get_memory_context_size(autoprepare_stmt->plan->context);
+						autoprepare_used_memory -= autoprepare_stmt->used_memory;
 					DropCachedPlan(autoprepare_stmt->plan);
 					autoprepare_stmt->plan = NULL;
+					autoprepare_stmt->used_memory = 0;
 				}
 				else
 				{
@@ -1612,6 +1609,7 @@ exec_parse_message(const char *query_string,	/* string to execute */
 				/* Initialize autoprepare hash entry */
 				autoprepare_cached_plans += 1;
 				autoprepare_stmt->plan = NULL;
+				autoprepare_stmt->used_memory = 0;
 				autoprepare_stmt->exec_count = 1;
 
 				/* Copy query text and parameter type info to CacheMemoryContext */
@@ -1629,7 +1627,7 @@ exec_parse_message(const char *query_string,	/* string to execute */
 					if (victim->plan)
 					{
 						if (autoprepare_memory_limit)
-							autoprepare_used_memory -= get_memory_context_size(victim->plan->context);
+							autoprepare_used_memory -= victim->used_memory;
 						DropCachedPlan(victim->plan);
 					}
 					hash_search(autoprepare_hash, victim, HASH_REMOVE, NULL);
@@ -1795,7 +1793,11 @@ exec_parse_message(const char *query_string,	/* string to execute */
 	{
 		SaveCachedPlan(psrc);
 		if (autoprepare_stmt)
+		{
 			autoprepare_stmt->plan = psrc;
+			autoprepare_stmt->used_memory = CachedPlanMemoryUsage(autoprepare_stmt->plan);
+			autoprepare_used_memory += autoprepare_stmt->used_memory;
+		}
 		else
 			/*
 			 * We just save the CachedPlanSource into unnamed_stmt_psrc.

@@ -222,4 +222,6 @@ extern void ReleaseCachedPlan(CachedPlan *plan, bool useResOwner);
 extern CachedExpression *GetCachedExpression(Node *expr);
 extern void FreeCachedExpression(CachedExpression *cexpr);
 
+extern Size CachedPlanMemoryUsage(CachedPlanSource *plansource);
+
 #endif							/* PLANCACHE_H */
