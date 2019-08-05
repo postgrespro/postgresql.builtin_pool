@@ -1,0 +1,202 @@
+--
+-- GLOBAL TEMP
+-- Test global temp relations
+--
+-- Test ON COMMIT DELETE ROWS
+CREATE GLOBAL TEMP TABLE temptest(col int) ON COMMIT DELETE ROWS;
+BEGIN;
+INSERT INTO temptest VALUES (1);
+INSERT INTO temptest VALUES (2);
+SELECT * FROM temptest;
+ col 
+-----
+   1
+   2
+(2 rows)
+
+COMMIT;
+SELECT * FROM temptest;
+ col 
+-----
+(0 rows)
+
+DROP TABLE temptest;
+BEGIN;
+CREATE GLOBAL TEMP TABLE temptest(col) ON COMMIT DELETE ROWS AS SELECT 1;
+SELECT * FROM temptest;
+ col 
+-----
+   1
+(1 row)
+
+COMMIT;
+SELECT * FROM temptest;
+ col 
+-----
+(0 rows)
+
+DROP TABLE temptest;
+-- Test foreign keys
+BEGIN;
+CREATE GLOBAL TEMP TABLE temptest1(col int PRIMARY KEY);
+CREATE GLOBAL TEMP TABLE temptest2(col int REFERENCES temptest1)
+  ON COMMIT DELETE ROWS;
+INSERT INTO temptest1 VALUES (1);
+INSERT INTO temptest2 VALUES (1);
+COMMIT;
+SELECT * FROM temptest1;
+ col 
+-----
+   1
+(1 row)
+
+SELECT * FROM temptest2;
+ col 
+-----
+(0 rows)
+
+BEGIN;
+CREATE GLOBAL TEMP TABLE temptest3(col int PRIMARY KEY) ON COMMIT DELETE ROWS;
+CREATE GLOBAL TEMP TABLE temptest4(col int REFERENCES temptest3);
+COMMIT;
+ERROR:  unsupported ON COMMIT and foreign key combination
+DETAIL:  Table "temptest4" references "temptest3", but they do not have the same ON COMMIT setting.
+-- For partitioned temp tables, ON COMMIT actions ignore storage-less
+-- partitioned tables.
+begin;
+CREATE GLOBAL TEMP TABLE temp_parted_oncommit (a int)
+  partition by list (a) on commit delete rows;
+CREATE GLOBAL TEMP TABLE temp_parted_oncommit_1
+  partition of temp_parted_oncommit
+  for values in (1) on commit delete rows;
+insert into temp_parted_oncommit values (1);
+commit;
+-- partitions are emptied by the previous commit
+select * from temp_parted_oncommit;
+ a 
+---
+(0 rows)
+
+drop table temp_parted_oncommit;
+-- Using ON COMMIT DELETE on a partitioned table does not remove
+-- all rows if partitions preserve their data.
+begin;
+CREATE GLOBAL TEMP TABLE temp_parted_oncommit_test (a int)
+  partition by list (a) on commit delete rows;
+CREATE GLOBAL TEMP TABLE temp_parted_oncommit_test1
+  partition of temp_parted_oncommit_test
+  for values in (1) on commit preserve rows;
+insert into temp_parted_oncommit_test values (1);
+commit;
+-- Data from the remaining partition is still here as its rows are
+-- preserved.
+select * from temp_parted_oncommit_test;
+ a 
+---
+ 1
+(1 row)
+
+-- two relations remain in this case.
+select relname from pg_class where relname like 'temp_parted_oncommit_test%';
+          relname           
+----------------------------
+ temp_parted_oncommit_test
+ temp_parted_oncommit_test1
+(2 rows)
+
+drop table temp_parted_oncommit_test;
+-- Check dependencies between ON COMMIT actions with inheritance trees.
+-- Data on the parent is removed, and the child goes away.
+begin;
+CREATE GLOBAL TEMP TABLE temp_inh_oncommit_test (a int) on commit delete rows;
+CREATE GLOBAL TEMP TABLE temp_inh_oncommit_test1 ()
+  inherits(temp_inh_oncommit_test) on commit preserve rows;
+insert into temp_inh_oncommit_test1 values (1);
+insert into temp_inh_oncommit_test values (1);
+commit;
+select * from temp_inh_oncommit_test;
+ a 
+---
+ 1
+(1 row)
+
+-- two relations remain
+select relname from pg_class where relname like 'temp_inh_oncommit_test%';
+        relname         
+-------------------------
+ temp_inh_oncommit_test
+ temp_inh_oncommit_test1
+(2 rows)
+
+drop table temp_inh_oncommit_test;
+-- Tests with two-phase commit
+-- Transactions creating objects in a temporary namespace cannot be used
+-- with two-phase commit.
+-- These cases generate errors about temporary namespace.
+-- Function creation
+begin;
+create function pg_temp.twophase_func() returns void as
+  $$ select '2pc_func'::text $$ language sql;
+prepare transaction 'twophase_func';
+ERROR:  cannot PREPARE a transaction that has operated on temporary objects
+-- Function drop
+create function pg_temp.twophase_func() returns void as
+  $$ select '2pc_func'::text $$ language sql;
+begin;
+drop function pg_temp.twophase_func();
+prepare transaction 'twophase_func';
+ERROR:  cannot PREPARE a transaction that has operated on temporary objects
+-- Operator creation
+begin;
+create operator pg_temp.@@ (leftarg = int4, rightarg = int4, procedure = int4mi);
+prepare transaction 'twophase_operator';
+ERROR:  cannot PREPARE a transaction that has operated on temporary objects
+-- These generate errors about temporary tables.
+begin;
+create type pg_temp.twophase_type as (a int);
+prepare transaction 'twophase_type';
+ERROR:  cannot PREPARE a transaction that has operated on temporary objects
+begin;
+create view pg_temp.twophase_view as select 1;
+prepare transaction 'twophase_view';
+ERROR:  cannot PREPARE a transaction that has operated on temporary objects
+begin;
+create sequence pg_temp.twophase_seq;
+prepare transaction 'twophase_sequence';
+ERROR:  cannot PREPARE a transaction that has operated on temporary objects
+-- Temporary tables cannot be used with two-phase commit.
+CREATE GLOBAL TEMP TABLE twophase_tab (a int);
+begin;
+select a from twophase_tab;
+ a 
+---
+(0 rows)
+
+prepare transaction 'twophase_tab';
+ERROR:  cannot PREPARE a transaction that has operated on temporary objects
+begin;
+insert into twophase_tab values (1);
+prepare transaction 'twophase_tab';
+ERROR:  cannot PREPARE a transaction that has operated on temporary objects
+begin;
+lock twophase_tab in access exclusive mode;
+prepare transaction 'twophase_tab';
+ERROR:  cannot PREPARE a transaction that has operated on temporary objects
+begin;
+drop table twophase_tab;
+prepare transaction 'twophase_tab';
+ERROR:  cannot PREPARE a transaction that has operated on temporary objects
+-- Corner case: current_schema may create a temporary schema if namespace
+-- creation is pending, so check after that.  First reset the connection
+-- to remove the temporary namespace.
+\c -
+SET search_path TO 'pg_temp';
+BEGIN;
+SELECT current_schema() ~ 'pg_temp' AS is_temp_schema;
+ is_temp_schema 
+----------------
+ t
+(1 row)
+
+PREPARE TRANSACTION 'twophase_search';
+ERROR:  cannot PREPARE a transaction that has operated on temporary objects
