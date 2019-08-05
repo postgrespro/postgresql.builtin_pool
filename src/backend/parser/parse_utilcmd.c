@@ -435,6 +435,7 @@ generateSerialExtraStmts(CreateStmtContext *cxt, ColumnDef *column,
 	seqstmt->for_identity = for_identity;
 	seqstmt->sequence = makeRangeVar(snamespace, sname, -1);
 	seqstmt->options = seqoptions;
+	seqstmt->sequence->relpersistence = cxt->relation->relpersistence;
 
 	/*
 	 * If a sequence data type was specified, add it to the options.  Prepend
