@@ -2069,7 +2069,8 @@ do_autovacuum(void)
 		 * Check if it is a temp table (presumably, of some other backend's).
 		 * We cannot safely process other backends' temp tables.
 		 */
-		if (classForm->relpersistence == RELPERSISTENCE_TEMP)
+		if (classForm->relpersistence == RELPERSISTENCE_TEMP ||
+			classForm->relpersistence == RELPERSISTENCE_SESSION)
 		{
 			/*
 			 * We just ignore it if the owning backend is still active and
@@ -2154,7 +2155,8 @@ do_autovacuum(void)
 		/*
 		 * We cannot safely process other backends' temp tables, so skip 'em.
 		 */
-		if (classForm->relpersistence == RELPERSISTENCE_TEMP)
+		if (classForm->relpersistence == RELPERSISTENCE_TEMP ||
+			classForm->relpersistence == RELPERSISTENCE_SESSION)
 			continue;
 
 		relid = classForm->oid;
@@ -2239,7 +2241,8 @@ do_autovacuum(void)
 		 */
 		if (!((classForm->relkind == RELKIND_RELATION ||
 			   classForm->relkind == RELKIND_MATVIEW) &&
-			  classForm->relpersistence == RELPERSISTENCE_TEMP))
+			  (classForm->relpersistence == RELPERSISTENCE_TEMP ||
+			   classForm->relpersistence == RELPERSISTENCE_SESSION)))
 		{
 			UnlockRelationOid(relid, AccessExclusiveLock);
 			continue;
