@@ -2241,8 +2241,7 @@ do_autovacuum(void)
 		 */
 		if (!((classForm->relkind == RELKIND_RELATION ||
 			   classForm->relkind == RELKIND_MATVIEW) &&
-			  (classForm->relpersistence == RELPERSISTENCE_TEMP ||
-			   classForm->relpersistence == RELPERSISTENCE_SESSION)))
+			  classForm->relpersistence == RELPERSISTENCE_TEMP))
 		{
 			UnlockRelationOid(relid, AccessExclusiveLock);
 			continue;
