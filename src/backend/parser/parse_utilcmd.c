@@ -435,7 +435,14 @@ generateSerialExtraStmts(CreateStmtContext *cxt, ColumnDef *column,
 	seqstmt->for_identity = for_identity;
 	seqstmt->sequence = makeRangeVar(snamespace, sname, -1);
 	seqstmt->options = seqoptions;
-	seqstmt->sequence->relpersistence = cxt->relation->relpersistence;
+
+	/*
+	 * Why we should not always use persistence of parent table?
+	 * Although it is prohibited to have unlogged sequences,
+	 * unlogged tables with SERIAL fields are accepted!
+	 */
+	if (cxt->relation->relpersistence != RELPERSISTENCE_UNLOGGED)
+		seqstmt->sequence->relpersistence = cxt->relation->relpersistence;
 
 	/*
 	 * If a sequence data type was specified, add it to the options.  Prepend
