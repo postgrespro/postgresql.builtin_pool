@@ -46,101 +46,106 @@ COMMIT;
 
 -- For partitioned temp tables, ON COMMIT actions ignore storage-less
 -- partitioned tables.
-begin;
+BEGIN;
 CREATE GLOBAL TEMP TABLE temp_parted_oncommit (a int)
-  partition by list (a) on commit delete rows;
+  PARTITION BY LIST (a) ON COMMIT DELETE ROWS;
 CREATE GLOBAL TEMP TABLE temp_parted_oncommit_1
-  partition of temp_parted_oncommit
-  for values in (1) on commit delete rows;
-insert into temp_parted_oncommit values (1);
-commit;
+  PARTITION OF temp_parted_oncommit
+  FOR VALUES IN (1) ON COMMIT DELETE ROWS;
+INSERT INTO temp_parted_oncommit VALUES (1);
+COMMIT;
 -- partitions are emptied by the previous commit
-select * from temp_parted_oncommit;
-drop table temp_parted_oncommit;
+SELECT * FROM temp_parted_oncommit;
+DROP TABLE temp_parted_oncommit;
 
 -- Using ON COMMIT DELETE on a partitioned table does not remove
 -- all rows if partitions preserve their data.
-begin;
+BEGIN;
 CREATE GLOBAL TEMP TABLE temp_parted_oncommit_test (a int)
-  partition by list (a) on commit delete rows;
+  PARTITION BY LIST (a) ON COMMIT DELETE ROWS;
 CREATE GLOBAL TEMP TABLE temp_parted_oncommit_test1
-  partition of temp_parted_oncommit_test
-  for values in (1) on commit preserve rows;
-insert into temp_parted_oncommit_test values (1);
-commit;
+  PARTITION OF temp_parted_oncommit_test
+  FOR VALUES IN (1) ON COMMIT PRESERVE ROWS;
+INSERT INTO temp_parted_oncommit_test VALUES (1);
+COMMIT;
 -- Data from the remaining partition is still here as its rows are
 -- preserved.
-select * from temp_parted_oncommit_test;
+SELECT * FROM temp_parted_oncommit_test;
 -- two relations remain in this case.
-select relname from pg_class where relname like 'temp_parted_oncommit_test%';
-drop table temp_parted_oncommit_test;
+SELECT relname FROM pg_class WHERE relname LIKE 'temp_parted_oncommit_test%';
+DROP TABLE temp_parted_oncommit_test;
 
 -- Check dependencies between ON COMMIT actions with inheritance trees.
 -- Data on the parent is removed, and the child goes away.
-begin;
-CREATE GLOBAL TEMP TABLE temp_inh_oncommit_test (a int) on commit delete rows;
-CREATE GLOBAL TEMP TABLE temp_inh_oncommit_test1 ()
-  inherits(temp_inh_oncommit_test) on commit preserve rows;
-insert into temp_inh_oncommit_test1 values (1);
-insert into temp_inh_oncommit_test values (1);
-commit;
-select * from temp_inh_oncommit_test;
--- two relations remain
-select relname from pg_class where relname like 'temp_inh_oncommit_test%';
-drop table temp_inh_oncommit_test;
-
--- Tests with two-phase commit
--- Transactions creating objects in a temporary namespace cannot be used
--- with two-phase commit.
-
--- These cases generate errors about temporary namespace.
--- Function creation
-begin;
-create function pg_temp.twophase_func() returns void as
-  $$ select '2pc_func'::text $$ language sql;
-prepare transaction 'twophase_func';
--- Function drop
-create function pg_temp.twophase_func() returns void as
-  $$ select '2pc_func'::text $$ language sql;
-begin;
-drop function pg_temp.twophase_func();
-prepare transaction 'twophase_func';
--- Operator creation
-begin;
-create operator pg_temp.@@ (leftarg = int4, rightarg = int4, procedure = int4mi);
-prepare transaction 'twophase_operator';
-
--- These generate errors about temporary tables.
-begin;
-create type pg_temp.twophase_type as (a int);
-prepare transaction 'twophase_type';
-begin;
-create view pg_temp.twophase_view as select 1;
-prepare transaction 'twophase_view';
-begin;
-create sequence pg_temp.twophase_seq;
-prepare transaction 'twophase_sequence';
-
--- Temporary tables cannot be used with two-phase commit.
-CREATE GLOBAL TEMP TABLE twophase_tab (a int);
-begin;
-select a from twophase_tab;
-prepare transaction 'twophase_tab';
-begin;
-insert into twophase_tab values (1);
-prepare transaction 'twophase_tab';
-begin;
-lock twophase_tab in access exclusive mode;
-prepare transaction 'twophase_tab';
-begin;
-drop table twophase_tab;
-prepare transaction 'twophase_tab';
-
--- Corner case: current_schema may create a temporary schema if namespace
--- creation is pending, so check after that.  First reset the connection
--- to remove the temporary namespace.
-\c -
-SET search_path TO 'pg_temp';
 BEGIN;
-SELECT current_schema() ~ 'pg_temp' AS is_temp_schema;
-PREPARE TRANSACTION 'twophase_search';
+CREATE GLOBAL TEMP TABLE temp_inh_oncommit_test (a int) ON COMMIT DELETE ROWS;
+CREATE GLOBAL TEMP TABLE temp_inh_oncommit_test1 ()
+  INHERITS(temp_inh_oncommit_test) ON COMMIT PRESERVE ROWS;
+INSERT INTO temp_inh_oncommit_test1 VALUES (1);
+INSERT INTO temp_inh_oncommit_test VALUES (1);
+COMMIT;
+SELECT * FROM temp_inh_oncommit_test;
+-- two relations remain
+SELECT relname FROM pg_class WHERE relname LIKE 'temp_inh_oncommit_test%';
+DROP TABLE temp_inh_oncommit_test1;
+DROP TABLE temp_inh_oncommit_test;
+
+-- Global temp table cannot inherit from temporary relation
+BEGIN;
+CREATE TEMP TABLE global_temp_table (a int) ON COMMIT DELETE ROWS;
+CREATE GLOBAL TEMP TABLE global_temp_table1 ()
+  INHERITS(global_temp_table) ON COMMIT PRESERVE ROWS;
+ROLLBACK;
+
+-- Temp table can inherit from global temporary relation
+BEGIN;
+CREATE GLOBAL TEMP TABLE global_temp_table (a int) ON COMMIT DELETE ROWS;
+CREATE TEMP TABLE temp_table1 ()
+  INHERITS(global_temp_table) ON COMMIT PRESERVE ROWS;
+CREATE TEMP TABLE temp_table2 ()
+  INHERITS(global_temp_table) ON COMMIT DELETE ROWS;
+INSERT INTO temp_table2 VALUES (2);
+INSERT INTO temp_table1 VALUES (1);
+INSERT INTO global_temp_table VALUES (0);
+SELECT * FROM global_temp_table;
+COMMIT;
+SELECT * FROM global_temp_table;
+DROP TABLE temp_table2;
+DROP TABLE temp_table1;
+DROP TABLE global_temp_table;
+
+-- Global temp table can inherit from normal relation
+BEGIN;
+CREATE TABLE normal_table (a int);
+CREATE GLOBAL TEMP TABLE temp_table1 ()
+  INHERITS(normal_table) ON COMMIT PRESERVE ROWS;
+CREATE GLOBAL TEMP TABLE temp_table2 ()
+  INHERITS(normal_table) ON COMMIT DELETE ROWS;
+INSERT INTO temp_table2 VALUES (2);
+INSERT INTO temp_table1 VALUES (1);
+INSERT INTO normal_table VALUES (0);
+SELECT * FROM normal_table;
+COMMIT;
+SELECT * FROM normal_table;
+DROP TABLE temp_table2;
+DROP TABLE temp_table1;
+DROP TABLE normal_table;
+
+-- Check SERIAL and BIGSERIAL pseudo-types
+CREATE GLOBAL TEMP TABLE global_temp_table ( aid BIGSERIAL, bid SERIAL );
+CREATE SEQUENCE test_sequence;
+INSERT INTO global_temp_table DEFAULT VALUES;
+INSERT INTO global_temp_table DEFAULT VALUES;
+INSERT INTO global_temp_table DEFAULT VALUES;
+SELECT * FROM global_temp_table;
+SELECT NEXTVAL( 'test_sequence' );
+\c
+SELECT * FROM global_temp_table;
+SELECT NEXTVAL( 'test_sequence' );
+INSERT INTO global_temp_table DEFAULT VALUES;
+INSERT INTO global_temp_table DEFAULT VALUES;
+INSERT INTO global_temp_table DEFAULT VALUES;
+SELECT * FROM global_temp_table;
+SELECT NEXTVAL( 'test_sequence' );
+DROP TABLE global_temp_table;
+DROP SEQUENCE test_sequence;
