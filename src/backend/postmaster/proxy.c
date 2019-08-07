@@ -63,6 +63,7 @@ typedef struct Channel
 	bool	 backend_is_ready;	 /* ready for query */
 	bool	 is_interrupted;	 /* client interrupts query execution */
 	bool	 is_disconnected;	 /* connection is lost */
+	bool     is_idle;            /* no activity on this channel */
 	bool	 write_pending;		 /* write request is pending: emulate epoll EPOLLET (edge-triggered) flag */
 	bool	 read_pending;		 /* read request is pending: emulate epoll EPOLLET (edge-triggered) flag */
 	/* We need to save startup packet response to be able to send it to new connection */
@@ -154,6 +155,7 @@ backend_reschedule(Channel* chan, bool is_new)
 			chan->peer->peer = NULL;
 			chan->pool->n_idle_clients += 1;
 			chan->pool->proxy->state->n_idle_clients += 1;
+			chan->peer->is_idle = true;
 		}
 		if (pending)
 		{
@@ -189,6 +191,7 @@ backend_reschedule(Channel* chan, bool is_new)
 			chan->pool->idle_backends = chan;
 			chan->pool->n_idle_backends += 1;
 			chan->pool->proxy->state->n_idle_backends += 1;
+			chan->is_idle = true;
 			chan->peer = NULL;
 		}
 	}
@@ -251,9 +254,10 @@ client_connect(Channel* chan, int startup_packet_size)
 	}
 	chan->pool->proxy = chan->proxy;
 	chan->pool->n_connected_clients += 1;
+	chan->proxy->n_accepted_connections -= 1;
 	chan->pool->n_idle_clients += 1;
 	chan->pool->proxy->state->n_idle_clients += 1;
-	chan->proxy->n_accepted_connections -= 1;
+	chan->is_idle = true;
 	return true;
 }
 
@@ -282,6 +286,7 @@ static bool
 client_attach(Channel* chan)
 {
 	Channel* idle_backend = chan->pool->idle_backends;
+	chan->is_idle = false;
 	chan->pool->n_idle_clients -= 1;
 	chan->pool->proxy->state->n_idle_clients -= 1;
 	if (idle_backend)
@@ -294,6 +299,7 @@ client_attach(Channel* chan)
 		chan->pool->idle_backends = idle_backend->next;
 		chan->pool->n_idle_backends -= 1;
 		chan->pool->proxy->state->n_idle_backends -= 1;
+		idle_backend->is_idle = false;
 		if (IdlePoolWorkerTimeout)
 			chan->backend_last_activity = GetCurrentTimestamp();
 		ELOG(LOG, "Attach client %p to backend %p (pid %d)", chan, idle_backend, idle_backend->backend_pid);
@@ -360,10 +366,11 @@ channel_hangout(Channel* chan, char const* op)
 				break;
 			}
 		}
-		if (!peer)
+		if (chan->is_idle)
 		{
 			chan->pool->n_idle_clients -= 1;
 			chan->pool->proxy->state->n_idle_clients -= 1;
+			chan->is_idle = false;
 		}
 	}
 	else
@@ -373,9 +380,11 @@ channel_hangout(Channel* chan, char const* op)
 		{
 			if (*ipp == chan)
 			{
+				Assert (chan->is_idle);
 				*ipp = chan->next;
 				chan->pool->n_idle_backends -= 1;
 				chan->pool->proxy->state->n_idle_backends -= 1;
+				chan->is_idle = false;
 				break;
 			}
 		}
@@ -686,7 +695,6 @@ channel_register(Proxy* proxy, Channel* chan)
 		elog(WARNING, "PROXY: Failed to add new client - too much sessions: %d clients, %d backends. "
 					 "Try to increase 'max_sessions' configuration parameter.",
 					 proxy->state->n_clients, proxy->state->n_backends);
-		report_error_to_client(chan, "Too much sessions. Try to increase 'max_sessions' configuration parameter");
 		return false;
 	}
 	return true;
@@ -751,6 +759,7 @@ backend_start(SessionPool* pool, char** error)
 	}
 	else
 	{
+		*error = strdup("Too much sessios: try to increase 'max_sessions' configuration parameter");
 		/* Too much sessions, error report was already logged */
 		closesocket(chan->backend_socket);
 		free(chan->buf);
@@ -778,6 +787,7 @@ proxy_add_client(Proxy* proxy, Port* port)
 	}
 	else
 	{
+		report_error_to_client(chan, "Too much sessions. Try to increase 'max_sessions' configuration parameter");
 		/* Too much sessions, error report was already logged */
 		closesocket(port->sock);
 #if defined(ENABLE_GSS) || defined(ENABLE_SSPI)
