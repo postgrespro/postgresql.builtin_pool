@@ -258,6 +258,24 @@ client_connect(Channel* chan, int startup_packet_size)
 }
 
 /*
+ * Send error message to the client. This function is called when new backend can not be started
+ * or client is assigned to the backend because of configuration limitations.
+ */
+static void
+report_error_to_client(Channel* chan, char const* error)
+{
+	StringInfoData msgbuf;
+	initStringInfo(&msgbuf);
+	pq_sendbyte(&msgbuf, 'E');
+	pq_sendint32(&msgbuf, 7 + strlen(error));
+	pq_sendbyte(&msgbuf, PG_DIAG_MESSAGE_PRIMARY);
+	pq_sendstring(&msgbuf, error);
+	pq_sendbyte(&msgbuf, '\0');
+	socket_write(chan, msgbuf.data, msgbuf.len);
+	pfree(msgbuf.data);
+}
+
+/*
  * Attach client to backend. Return true if new backend is attached, false otherwise.
  */
 static bool
@@ -302,15 +320,7 @@ client_attach(Channel* chan)
 			{
 				if (error)
 				{
-					StringInfoData msgbuf;
-					initStringInfo(&msgbuf);
-					pq_sendbyte(&msgbuf, 'E');
-					pq_sendint32(&msgbuf, 7 + strlen(error));
-					pq_sendbyte(&msgbuf, PG_DIAG_MESSAGE_PRIMARY);
-					pq_sendstring(&msgbuf, error);
-					pq_sendbyte(&msgbuf, '\0');
-					socket_write(chan, msgbuf.data, msgbuf.len);
-					pfree(msgbuf.data);
+					report_error_to_client(chan, error);
 					free(error);
 				}
 				channel_hangout(chan, "connect");
@@ -676,6 +686,7 @@ channel_register(Proxy* proxy, Channel* chan)
 		elog(WARNING, "PROXY: Failed to add new client - too much sessions: %d clients, %d backends. "
 					 "Try to increase 'max_sessions' configuration parameter.",
 					 proxy->state->n_clients, proxy->state->n_backends);
+		report_error_to_client(chan, "Too much sessions. Try to increase 'max_sessions' configuration parameter");
 		return false;
 	}
 	return true;
