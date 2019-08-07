@@ -28,6 +28,7 @@
 #include "executor/executor.h"
 #include "executor/tstoreReceiver.h"
 #include "rewrite/rewriteHandler.h"
+#include "storage/proc.h"
 #include "tcop/pquery.h"
 #include "tcop/tcopprot.h"
 #include "utils/memutils.h"
@@ -56,6 +57,8 @@ PerformCursorOpen(DeclareCursorStmt *cstmt, ParamListInfo params,
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_CURSOR_NAME),
 				 errmsg("invalid cursor name: must not be empty")));
+
+	MyProc->is_tainted = true; /* cursors are not compatible with builtin connection pooler */
 
 	/*
 	 * If this is a non-holdable cursor, we require that this statement has

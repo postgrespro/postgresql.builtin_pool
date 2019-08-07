@@ -11,6 +11,7 @@
 
 #include "commands/trigger.h"
 #include "executor/spi.h"
+#include "storage/proc.h"
 #include "utils/builtins.h"
 #include "utils/rel.h"
 
@@ -92,6 +93,8 @@ check_primary_key(PG_FUNCTION_ARGS)
 	/* If UPDATE, then must check new Tuple, not old one */
 	else
 		tuple = trigdata->tg_newtuple;
+
+	MyProc->is_tainted = true;
 
 	trigger = trigdata->tg_trigger;
 	nargs = trigger->tgnargs;
@@ -283,6 +286,8 @@ check_foreign_key(PG_FUNCTION_ARGS)
 	if (TRIGGER_FIRED_BY_INSERT(trigdata->tg_event))
 		/* internal error */
 		elog(ERROR, "check_foreign_key: cannot process INSERT events");
+
+	MyProc->is_tainted = true;
 
 	/* Have to check tg_trigtuple - tuple being deleted */
 	trigtuple = trigdata->tg_trigtuple;
