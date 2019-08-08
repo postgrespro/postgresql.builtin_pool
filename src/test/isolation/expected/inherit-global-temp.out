@@ -209,9 +209,10 @@ step s1_insert_c: INSERT INTO inh_global_temp_child_s1 VALUES (3), (4);
 step s2_insert_c: INSERT INTO inh_global_temp_child_s2 VALUES (5), (6);
 step s1_begin: BEGIN;
 step s1_truncate_p: TRUNCATE inh_global_parent;
-step s2_select_c: SELECT a FROM inh_global_temp_child_s2;
+step s2_select_c: SELECT a FROM inh_global_temp_child_s2; <waiting ...>
+step s1_commit: COMMIT;
+step s2_select_c: <... completed>
 a              
 
 5              
 6              
-step s1_commit: COMMIT;
