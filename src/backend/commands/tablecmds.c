@@ -586,7 +586,8 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 	 * Check consistency of arguments
 	 */
 	if (stmt->oncommit != ONCOMMIT_NOOP
-		&& stmt->relation->relpersistence != RELPERSISTENCE_TEMP)
+		&& stmt->relation->relpersistence != RELPERSISTENCE_TEMP
+		&& stmt->relation->relpersistence != RELPERSISTENCE_SESSION)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_TABLE_DEFINITION),
 				 errmsg("ON COMMIT can only be used on temporary tables")));
@@ -7678,6 +7679,12 @@ ATAddForeignKeyConstraint(List **wqueue, AlteredTableInfo *tab, Relation rel,
 						(errcode(ERRCODE_INVALID_TABLE_DEFINITION),
 						 errmsg("constraints on unlogged tables may reference only permanent or unlogged tables")));
 			break;
+		case RELPERSISTENCE_SESSION:
+			if (pkrel->rd_rel->relpersistence != RELPERSISTENCE_SESSION)
+				ereport(ERROR,
+						(errcode(ERRCODE_INVALID_TABLE_DEFINITION),
+						 errmsg("constraints on session tables may reference only session tables")));
+			break;
 		case RELPERSISTENCE_TEMP:
 			if (pkrel->rd_rel->relpersistence != RELPERSISTENCE_TEMP)
 				ereport(ERROR,
@@ -14082,6 +14089,13 @@ ATPrepChangePersistence(Relation rel, bool toLogged)
 							RelationGetRelationName(rel)),
 					 errtable(rel)));
 			break;
+		case RELPERSISTENCE_SESSION:
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_TABLE_DEFINITION),
+					 errmsg("cannot change logged status of session table \"%s\"",
+							RelationGetRelationName(rel)),
+					 errtable(rel)));
+			break;
 		case RELPERSISTENCE_PERMANENT:
 			if (toLogged)
 				/* nothing to do */
@@ -14569,14 +14583,7 @@ PreCommit_on_commit_actions(void)
 				/* Do nothing (there shouldn't be such entries, actually) */
 				break;
 			case ONCOMMIT_DELETE_ROWS:
-
-				/*
-				 * If this transaction hasn't accessed any temporary
-				 * relations, we can skip truncating ON COMMIT DELETE ROWS
-				 * tables, as they must still be empty.
-				 */
-				if ((MyXactFlags & XACT_FLAGS_ACCESSEDTEMPNAMESPACE))
-					oids_to_truncate = lappend_oid(oids_to_truncate, oc->relid);
+				oids_to_truncate = lappend_oid(oids_to_truncate, oc->relid);
 				break;
 			case ONCOMMIT_DROP:
 				oids_to_drop = lappend_oid(oids_to_drop, oc->relid);

@@ -763,7 +763,11 @@ _bt_getbuf(Relation rel, BlockNumber blkno, int access)
 		/* Read an existing block of the relation */
 		buf = ReadBuffer(rel, blkno);
 		LockBuffer(buf, access);
-		_bt_checkpage(rel, buf);
+		/* Session temporary relation may be not yet initialized for this backend. */
+		if (blkno == BTREE_METAPAGE && PageIsNew(BufferGetPage(buf)) && IsSessionRelationBackendId(rel->rd_backend))
+			_bt_initmetapage(BufferGetPage(buf), P_NONE, 0);
+		else
+			_bt_checkpage(rel, buf);
 	}
 	else
 	{

@@ -673,6 +673,7 @@ heapam_relation_copy_data(Relation rel, const RelFileNode *newrnode)
 			 * init fork of an unlogged relation.
 			 */
 			if (rel->rd_rel->relpersistence == RELPERSISTENCE_PERMANENT ||
+				rel->rd_rel->relpersistence == RELPERSISTENCE_SESSION ||
 				(rel->rd_rel->relpersistence == RELPERSISTENCE_UNLOGGED &&
 				 forkNum == INIT_FORKNUM))
 				log_smgrcreate(newrnode, forkNum);

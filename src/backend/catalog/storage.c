@@ -93,6 +93,10 @@ RelationCreateStorage(RelFileNode rnode, char relpersistence)
 			backend = InvalidBackendId;
 			needs_wal = false;
 			break;
+		case RELPERSISTENCE_SESSION:
+			backend = BackendIdForSessionRelations();
+			needs_wal = false;
+			break;
 		case RELPERSISTENCE_PERMANENT:
 			backend = InvalidBackendId;
 			needs_wal = true;

@@ -1,0 +1,247 @@
+--
+-- GLOBAL TEMP
+-- Test global temp relations
+--
+-- Test ON COMMIT DELETE ROWS
+CREATE GLOBAL TEMP TABLE global_temptest(col int) ON COMMIT DELETE ROWS;
+BEGIN;
+INSERT INTO global_temptest VALUES (1);
+INSERT INTO global_temptest VALUES (2);
+SELECT * FROM global_temptest;
+ col 
+-----
+   1
+   2
+(2 rows)
+
+COMMIT;
+SELECT * FROM global_temptest;
+ col 
+-----
+(0 rows)
+
+DROP TABLE global_temptest;
+BEGIN;
+CREATE GLOBAL TEMP TABLE global_temptest(col) ON COMMIT DELETE ROWS AS SELECT 1;
+SELECT * FROM global_temptest;
+ col 
+-----
+   1
+(1 row)
+
+COMMIT;
+SELECT * FROM global_temptest;
+ col 
+-----
+(0 rows)
+
+DROP TABLE global_temptest;
+-- Test foreign keys
+BEGIN;
+CREATE GLOBAL TEMP TABLE global_temptest1(col int PRIMARY KEY);
+CREATE GLOBAL TEMP TABLE global_temptest2(col int REFERENCES global_temptest1)
+  ON COMMIT DELETE ROWS;
+INSERT INTO global_temptest1 VALUES (1);
+INSERT INTO global_temptest2 VALUES (1);
+COMMIT;
+SELECT * FROM global_temptest1;
+ col 
+-----
+   1
+(1 row)
+
+SELECT * FROM global_temptest2;
+ col 
+-----
+(0 rows)
+
+BEGIN;
+CREATE GLOBAL TEMP TABLE global_temptest3(col int PRIMARY KEY) ON COMMIT DELETE ROWS;
+CREATE GLOBAL TEMP TABLE global_temptest4(col int REFERENCES global_temptest3);
+COMMIT;
+ERROR:  unsupported ON COMMIT and foreign key combination
+DETAIL:  Table "global_temptest4" references "global_temptest3", but they do not have the same ON COMMIT setting.
+-- For partitioned temp tables, ON COMMIT actions ignore storage-less
+-- partitioned tables.
+BEGIN;
+CREATE GLOBAL TEMP TABLE temp_parted_oncommit (a int)
+  PARTITION BY LIST (a) ON COMMIT DELETE ROWS;
+CREATE GLOBAL TEMP TABLE temp_parted_oncommit_1
+  PARTITION OF temp_parted_oncommit
+  FOR VALUES IN (1) ON COMMIT DELETE ROWS;
+INSERT INTO temp_parted_oncommit VALUES (1);
+COMMIT;
+-- partitions are emptied by the previous commit
+SELECT * FROM temp_parted_oncommit;
+ a 
+---
+(0 rows)
+
+DROP TABLE temp_parted_oncommit;
+-- Using ON COMMIT DELETE on a partitioned table does not remove
+-- all rows if partitions preserve their data.
+BEGIN;
+CREATE GLOBAL TEMP TABLE global_temp_parted_oncommit_test (a int)
+  PARTITION BY LIST (a) ON COMMIT DELETE ROWS;
+CREATE GLOBAL TEMP TABLE global_temp_parted_oncommit_test1
+  PARTITION OF global_temp_parted_oncommit_test
+  FOR VALUES IN (1) ON COMMIT PRESERVE ROWS;
+INSERT INTO global_temp_parted_oncommit_test VALUES (1);
+COMMIT;
+-- Data from the remaining partition is still here as its rows are
+-- preserved.
+SELECT * FROM global_temp_parted_oncommit_test;
+ a 
+---
+ 1
+(1 row)
+
+-- two relations remain in this case.
+SELECT relname FROM pg_class WHERE relname LIKE 'global_temp_parted_oncommit_test%';
+              relname              
+-----------------------------------
+ global_temp_parted_oncommit_test
+ global_temp_parted_oncommit_test1
+(2 rows)
+
+DROP TABLE global_temp_parted_oncommit_test;
+-- Check dependencies between ON COMMIT actions with inheritance trees.
+-- Data on the parent is removed, and the child goes away.
+BEGIN;
+CREATE GLOBAL TEMP TABLE global_temp_inh_oncommit_test (a int) ON COMMIT DELETE ROWS;
+CREATE GLOBAL TEMP TABLE global_temp_inh_oncommit_test1 ()
+  INHERITS(global_temp_inh_oncommit_test) ON COMMIT PRESERVE ROWS;
+INSERT INTO global_temp_inh_oncommit_test1 VALUES (1);
+INSERT INTO global_temp_inh_oncommit_test VALUES (1);
+COMMIT;
+SELECT * FROM global_temp_inh_oncommit_test;
+ a 
+---
+ 1
+(1 row)
+
+-- two relations remain
+SELECT relname FROM pg_class WHERE relname LIKE 'global_temp_inh_oncommit_test%';
+            relname             
+--------------------------------
+ global_temp_inh_oncommit_test
+ global_temp_inh_oncommit_test1
+(2 rows)
+
+DROP TABLE global_temp_inh_oncommit_test1;
+DROP TABLE global_temp_inh_oncommit_test;
+-- Global temp table cannot inherit from temporary relation
+BEGIN;
+CREATE TEMP TABLE global_temp_table (a int) ON COMMIT DELETE ROWS;
+CREATE GLOBAL TEMP TABLE global_temp_table1 ()
+  INHERITS(global_temp_table) ON COMMIT PRESERVE ROWS;
+ERROR:  cannot inherit from temporary relation "global_temp_table"
+ROLLBACK;
+-- Temp table can inherit from global temporary relation
+BEGIN;
+CREATE GLOBAL TEMP TABLE global_temp_table (a int) ON COMMIT DELETE ROWS;
+CREATE TEMP TABLE temp_table1 ()
+  INHERITS(global_temp_table) ON COMMIT PRESERVE ROWS;
+CREATE TEMP TABLE temp_table2 ()
+  INHERITS(global_temp_table) ON COMMIT DELETE ROWS;
+INSERT INTO temp_table2 VALUES (2);
+INSERT INTO temp_table1 VALUES (1);
+INSERT INTO global_temp_table VALUES (0);
+SELECT * FROM global_temp_table;
+ a 
+---
+ 0
+ 1
+ 2
+(3 rows)
+
+COMMIT;
+SELECT * FROM global_temp_table;
+ a 
+---
+ 1
+(1 row)
+
+DROP TABLE temp_table2;
+DROP TABLE temp_table1;
+DROP TABLE global_temp_table;
+-- Global temp table can inherit from normal relation
+BEGIN;
+CREATE TABLE normal_table (a int);
+CREATE GLOBAL TEMP TABLE temp_table1 ()
+  INHERITS(normal_table) ON COMMIT PRESERVE ROWS;
+CREATE GLOBAL TEMP TABLE temp_table2 ()
+  INHERITS(normal_table) ON COMMIT DELETE ROWS;
+INSERT INTO temp_table2 VALUES (2);
+INSERT INTO temp_table1 VALUES (1);
+INSERT INTO normal_table VALUES (0);
+SELECT * FROM normal_table;
+ a 
+---
+ 0
+ 1
+ 2
+(3 rows)
+
+COMMIT;
+SELECT * FROM normal_table;
+ a 
+---
+ 0
+ 1
+(2 rows)
+
+DROP TABLE temp_table2;
+DROP TABLE temp_table1;
+DROP TABLE normal_table;
+-- Check SERIAL and BIGSERIAL pseudo-types
+CREATE GLOBAL TEMP TABLE global_temp_table ( aid BIGSERIAL, bid SERIAL );
+CREATE SEQUENCE test_sequence;
+INSERT INTO global_temp_table DEFAULT VALUES;
+INSERT INTO global_temp_table DEFAULT VALUES;
+INSERT INTO global_temp_table DEFAULT VALUES;
+SELECT * FROM global_temp_table;
+ aid | bid 
+-----+-----
+   1 |   1
+   2 |   2
+   3 |   3
+(3 rows)
+
+SELECT NEXTVAL( 'test_sequence' );
+ nextval 
+---------
+       1
+(1 row)
+
+\c
+SELECT * FROM global_temp_table;
+ aid | bid 
+-----+-----
+(0 rows)
+
+SELECT NEXTVAL( 'test_sequence' );
+ nextval 
+---------
+       2
+(1 row)
+
+INSERT INTO global_temp_table DEFAULT VALUES;
+INSERT INTO global_temp_table DEFAULT VALUES;
+INSERT INTO global_temp_table DEFAULT VALUES;
+SELECT * FROM global_temp_table;
+ aid | bid 
+-----+-----
+   1 |   1
+   2 |   2
+   3 |   3
+(3 rows)
+
+SELECT NEXTVAL( 'test_sequence' );
+ nextval 
+---------
+       3
+(1 row)
+
+DROP TABLE global_temp_table;
+DROP SEQUENCE test_sequence;

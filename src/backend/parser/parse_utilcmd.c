@@ -437,6 +437,14 @@ generateSerialExtraStmts(CreateStmtContext *cxt, ColumnDef *column,
 	seqstmt->options = seqoptions;
 
 	/*
+	 * Why we should not always use persistence of parent table?
+	 * Although it is prohibited to have unlogged sequences,
+	 * unlogged tables with SERIAL fields are accepted!
+	 */
+	if (cxt->relation->relpersistence != RELPERSISTENCE_UNLOGGED)
+		seqstmt->sequence->relpersistence = cxt->relation->relpersistence;
+
+	/*
 	 * If a sequence data type was specified, add it to the options.  Prepend
 	 * to the list rather than append; in case a user supplied their own AS
 	 * clause, the "redundant options" error will point to their occurrence,
