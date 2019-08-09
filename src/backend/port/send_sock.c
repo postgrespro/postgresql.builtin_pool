@@ -129,12 +129,12 @@ pg_recv_sock(pgsocket chan)
 	closesocket(src.origsocket);
 	return s;
 #else
+	pgsocket	sock;
+	char		c_buffer[CMSG_LEN(sizeof(sock))];
+	char		m_buffer[1];
 	struct msghdr msg = {0};
-	char c_buffer[256];
-	char m_buffer[256];
 	struct iovec io;
 	struct cmsghdr * cmsg;
-	pgsocket sock;
 
 	io.iov_base = m_buffer;
 	io.iov_len = sizeof(m_buffer);
