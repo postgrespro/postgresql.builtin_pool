@@ -1188,8 +1188,9 @@ read_seq_tuple(Relation rel, Buffer *buf, HeapTuple seqdatatuple)
 		/* Initialize sequence for global temporary tables */
 		Datum		value[SEQ_COL_LASTCOL] = {0};
 		bool		null[SEQ_COL_LASTCOL] = {false};
+		HeapTuple tuple;
 		value[SEQ_COL_LASTVAL-1] = Int64GetDatumFast(1); /* start sequence with 1 */
-		HeapTuple tuple = heap_form_tuple(RelationGetDescr(rel), value, null);
+		tuple = heap_form_tuple(RelationGetDescr(rel), value, null);
 		fill_seq_with_data(rel, tuple, *buf);
 	}
 
