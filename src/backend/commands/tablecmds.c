@@ -1773,7 +1773,8 @@ ExecuteTruncateGuts(List *explicit_rels, List *relids, List *relids_logged,
 		 * table or the current physical file to be thrown away anyway.
 		 */
 		if (rel->rd_createSubid == mySubid ||
-			rel->rd_newRelfilenodeSubid == mySubid)
+			rel->rd_newRelfilenodeSubid == mySubid ||
+			rel->rd_rel->relpersistence == RELPERSISTENCE_SESSION)
 		{
 			/* Immediate, non-rollbackable truncation is OK */
 			heap_truncate_one_rel(rel);

@@ -176,9 +176,6 @@ TruncateSessionRelations(int code, Datum arg)
 	SessionRelation* rel;
 	for (rel = SessionRelations; rel != NULL; rel = rel->next)
 	{
-		/* Remove relation pages from shared buffers */
-		DropRelFileNodesAllBuffers(&rel->rnode, 1);
-
 		/* Delete relation files */
 		mdunlink(rel->rnode, InvalidForkNumber, false);
 	}
