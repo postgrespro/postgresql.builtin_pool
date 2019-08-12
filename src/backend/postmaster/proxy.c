@@ -918,9 +918,13 @@ proxy_loop(Proxy* proxy)
 			{
 				if (ready[i].events & WL_SOCKET_WRITEABLE) {
 					ELOG(LOG, "Channel %p is writable", chan);
-					/* At systems not supporttring epoll edge triggering (Win32, FreeBSD, MacOS), we need to disable writable event to avoid busy loop */
-					ModifyWaitEvent(chan->proxy->wait_events, chan->event_pos, WL_SOCKET_READABLE | WL_SOCKET_EDGE, NULL);
 					channel_write(chan, false);
+					if (chan->tx_size == 0)
+					{
+						/* At systems not supporttring epoll edge triggering (Win32, FreeBSD, MacOS), we need to disable writable event to avoid busy loop */
+						ModifyWaitEvent(chan->proxy->wait_events, chan->event_pos, WL_SOCKET_READABLE | WL_SOCKET_EDGE, NULL);
+						chan->read_pending = true;
+					}
 				}
 				if (ready[i].events & WL_SOCKET_READABLE) {
 					ELOG(LOG, "Channel %p is readable", chan);
