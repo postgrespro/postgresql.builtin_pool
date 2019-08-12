@@ -64,8 +64,7 @@ typedef struct Channel
 	bool	 is_interrupted;	 /* client interrupts query execution */
 	bool	 is_disconnected;	 /* connection is lost */
 	bool     is_idle;            /* no activity on this channel */
-	bool	 write_pending;		 /* write request is pending: emulate epoll EPOLLET (edge-triggered) flag */
-	bool	 read_pending;		 /* read request is pending: emulate epoll EPOLLET (edge-triggered) flag */
+	bool	 edge_triggered;	 /* emulate epoll EPOLLET (edge-triggered) flag */
 	/* We need to save startup packet response to be able to send it to new connection */
 	int		 handshake_response_size;
 	char*	 handshake_response;
@@ -436,18 +435,6 @@ socket_write(Channel* chan, char const* buf, size_t size)
 	{
 		channel_hangout(chan, "write");
 	}
-	else if (rc < 0)
-	{
-		/* do not accept more read events while write request is pending */
-		ModifyWaitEvent(chan->proxy->wait_events, chan->event_pos, WL_SOCKET_WRITEABLE|WL_SOCKET_EDGE, NULL);
-		chan->write_pending = true;
-	}
-	else if (chan->write_pending)
-	{
-		/* resume accepting read events */
-		ModifyWaitEvent(chan->proxy->wait_events, chan->event_pos, WL_SOCKET_READABLE|WL_SOCKET_EDGE, NULL);
-		chan->write_pending = false;
-	}
 	return rc;
 }
 
@@ -486,6 +473,12 @@ channel_write(Channel* chan, bool synchronous)
 			chan->proxy->state->tx_bytes += rc;
 		else
 			chan->proxy->state->rx_bytes += rc;
+		if (rc > 0 && chan->edge_triggered)
+		{
+			/* resume accepting all events */
+			ModifyWaitEvent(chan->proxy->wait_events, chan->event_pos, WL_SOCKET_WRITEABLE|WL_SOCKET_READABLE|WL_SOCKET_EDGE, NULL);
+			chan->edge_triggered = false;
+		}
 		peer->tx_pos += rc;
 	}
 	if (peer->tx_size != 0)
@@ -530,19 +523,13 @@ channel_read(Channel* chan)
 		{
 			if (rc == 0 || (errno != EAGAIN && errno != EWOULDBLOCK))
 				channel_hangout(chan, "read");
-			else
-			{
-				/* do not accept more write events while read request is pending */
-				ModifyWaitEvent(chan->proxy->wait_events, chan->event_pos, WL_SOCKET_READABLE|WL_SOCKET_EDGE, NULL);
-				chan->read_pending = true;
-			}
 			return false; /* wait for more data */
 		}
-		else if (chan->read_pending)
+		else if (chan->edge_triggered)
 		{
 			/* resume accepting all events */
 			ModifyWaitEvent(chan->proxy->wait_events, chan->event_pos, WL_SOCKET_READABLE|WL_SOCKET_WRITEABLE|WL_SOCKET_EDGE, NULL);
-			chan->read_pending = false;
+			chan->edge_triggered = false;
 		}
 		chan->rx_pos += rc;
 		msg_start = 0;
@@ -919,16 +906,22 @@ proxy_loop(Proxy* proxy)
 				if (ready[i].events & WL_SOCKET_WRITEABLE) {
 					ELOG(LOG, "Channel %p is writable", chan);
 					channel_write(chan, false);
-					if (chan->tx_size == 0)
+					if (chan->peer == NULL || chan->peer->tx_size == 0) /* nothing to write */
 					{
-						/* At systems not supporttring epoll edge triggering (Win32, FreeBSD, MacOS), we need to disable writable event to avoid busy loop */
+						/* At systems not supporting epoll edge triggering (Win32, FreeBSD, MacOS), we need to disable writable event to avoid busy loop */
 						ModifyWaitEvent(chan->proxy->wait_events, chan->event_pos, WL_SOCKET_READABLE | WL_SOCKET_EDGE, NULL);
-						chan->read_pending = true;
+						chan->edge_triggered = true;
 					}
 				}
 				if (ready[i].events & WL_SOCKET_READABLE) {
 					ELOG(LOG, "Channel %p is readable", chan);
 					channel_read(chan);
+					if (chan->tx_size != 0) /* pending write: read is not prohibited */
+					{
+						/* At systems not supporting epoll edge triggering (Win32, FreeBSD, MacOS), we need to disable readable event to avoid busy loop */
+						ModifyWaitEvent(chan->proxy->wait_events, chan->event_pos, WL_SOCKET_WRITEABLE | WL_SOCKET_EDGE, NULL);
+						chan->edge_triggered = true;
+					}
 				}
 			}
 		}
