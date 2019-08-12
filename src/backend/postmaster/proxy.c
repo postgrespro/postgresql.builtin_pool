@@ -352,7 +352,7 @@ channel_hangout(Channel* chan, char const* op)
 {
 	Channel** ipp;
 	Channel* peer = chan->peer;
-	if (chan->is_disconnected)
+	if (chan->is_disconnected || chan->pool == NULL)
 	   return;
 
 	if (chan->client_port) {
