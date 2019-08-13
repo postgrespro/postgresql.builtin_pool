@@ -535,7 +535,7 @@ typedef struct ViewOptions
  *		True if relation's pages are stored in local buffers.
  */
 #define RelationUsesLocalBuffers(relation) \
-	RelationHasSessionScope(relation)
+	((relation)->rd_rel->relpersistence == RELPERSISTENCE_TEMP)
 
 /*
  * RELATION_IS_LOCAL
