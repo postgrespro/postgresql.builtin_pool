@@ -1028,8 +1028,7 @@ gistGetFakeLSN(Relation rel)
 {
 	static XLogRecPtr counter = FirstNormalUnloggedLSN;
 
-	if (rel->rd_rel->relpersistence == RELPERSISTENCE_TEMP ||
-		rel->rd_rel->relpersistence == RELPERSISTENCE_SESSION)
+	if (RelationHasSessionScope(rel))
 	{
 		/*
 		 * Temporary relations are only accessible in our session, so a simple

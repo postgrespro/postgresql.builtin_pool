@@ -1183,7 +1183,7 @@ read_seq_tuple(Relation rel, Buffer *buf, HeapTuple seqdatatuple)
 	LockBuffer(*buf, BUFFER_LOCK_EXCLUSIVE);
 
 	page = BufferGetPage(*buf);
-	if (rel->rd_rel->relpersistence == RELPERSISTENCE_SESSION && PageIsNew(page))
+	if (GlobalTempRelationPageIsNotInitialized(rel, page))
 	{
 		/* Initialize sequence for global temporary tables */
 		Datum		value[SEQ_COL_LASTCOL] = {0};
