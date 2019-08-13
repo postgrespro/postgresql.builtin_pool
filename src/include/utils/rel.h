@@ -540,7 +540,7 @@ typedef struct ViewOptions
 /*
  * RELATION_IS_LOCAL
  *		If a rel is either temp or newly created in the current transaction,
- *		it can be assumed to be accessible only to the current backend.
+ *		it can be assumed to be accessible ognly to the current backend.
  *		This is typically used to decide that we can skip acquiring locks.
  *
  * Beware of multiple eval of argument
