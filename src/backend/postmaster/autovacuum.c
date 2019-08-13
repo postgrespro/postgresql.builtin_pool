@@ -2069,8 +2069,7 @@ do_autovacuum(void)
 		 * Check if it is a temp table (presumably, of some other backend's).
 		 * We cannot safely process other backends' temp tables.
 		 */
-		if (classForm->relpersistence == RELPERSISTENCE_TEMP ||
-			classForm->relpersistence == RELPERSISTENCE_SESSION)
+		if (IsLocalRelpersistence(classForm->relpersistence))
 		{
 			/*
 			 * We just ignore it if the owning backend is still active and
@@ -2155,8 +2154,7 @@ do_autovacuum(void)
 		/*
 		 * We cannot safely process other backends' temp tables, so skip 'em.
 		 */
-		if (classForm->relpersistence == RELPERSISTENCE_TEMP ||
-			classForm->relpersistence == RELPERSISTENCE_SESSION)
+		if (IsLocalRelpersistence(classForm->relpersistence))
 			continue;
 
 		relid = classForm->oid;
