@@ -50,11 +50,12 @@
   <para>
     To minimize number of changes in Postgres core, built-in connection pooler is not trying to save/restore
     session context. If session context is modified by client application
-    (changing values of configuration variables (GUCs), creating temporary tables, preparing statements, advisory locking),
+    (changing values of session variables (GUCs), creating temporary tables, preparing statements, advisory locking),
     then backend executing this session is considered to be <emphasis>tainted</emphasis>.
     It is now dedicated to this session and can not be rescheduled to other session.
     Once this session is terminated, backend is terminated as well.
     Non-tainted backends are not terminated even if there are no more connected sessions.
+    Switching on <varname>proxying_gucs</varname> configuration option allows to set sessions parameters without marking backend as <emphasis>tainted</emphasis>.
   </para>
 
   <para>

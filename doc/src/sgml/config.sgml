@@ -837,7 +837,7 @@ include_dir 'conf.d'
      </varlistentry>
 
      <varlistentry id="guc-restart-pooler-on-reload" xreflabel="restart_pooler_on_reload">
-      <term><varname>restart_pooler_on_reload</varname> (<type>string</type>)
+      <term><varname>restart_pooler_on_reload</varname> (<type>boolean</type>)
       <indexterm>
        <primary><varname>restart_pooler_on_reload</varname> configuration parameter</primary>
       </indexterm>
@@ -845,6 +845,22 @@ include_dir 'conf.d'
       <listitem>
         <para>
           Restart session pool workers once <function>pg_reload_conf()</function> is called.
+          The default value is <literal>false</literal>.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-proxying-gucs" xreflabel="proxying_gucs">
+      <term><varname>proxying_gucs</varname> (<type>boolean</type>)
+      <indexterm>
+       <primary><varname>rproxying_gucs</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+        <para>
+          Support setting parameters in connection pooler sessions.
+          When this parameter is switched on, setting session parameters are replaced with setting local (transaction) parameters,
+          which are concatenated with each transaction or stanalone statement. It make it possible not to mark backend as tainted.
           The default value is <literal>false</literal>.
        </para>
       </listitem>
