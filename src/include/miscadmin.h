@@ -172,6 +172,7 @@ extern PGDLLIMPORT int IdlePoolWorkerTimeout;
 extern PGDLLIMPORT int ConnectionProxiesNumber;
 extern PGDLLIMPORT int SessionSchedule;
 extern PGDLLIMPORT bool RestartPoolerOnReload;
+extern PGDLLIMPORT bool ProxyingGUCs;
 
 extern PGDLLIMPORT int max_worker_processes;
 extern PGDLLIMPORT int max_parallel_workers;

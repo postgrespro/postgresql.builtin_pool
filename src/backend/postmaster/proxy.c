@@ -64,12 +64,14 @@ typedef struct Channel
 	bool	 is_interrupted;	 /* client interrupts query execution */
 	bool	 is_disconnected;	 /* connection is lost */
 	bool     is_idle;            /* no activity on this channel */
+	bool     in_transaction;     /* inside transaction body */
 	bool	 edge_triggered;	 /* emulate epoll EPOLLET (edge-triggered) flag */
 	/* We need to save startup packet response to be able to send it to new connection */
 	int		 handshake_response_size;
 	char*	 handshake_response;
 	TimestampTz backend_last_activity;   /* time of last backend activity */
-
+	char*    gucs;               /* concatenated "SET var=" commands for this session */
+	char*    prev_gucs;          /* previous value of "gucs" to perform rollback in case of error */
 	struct Channel* peer;
 	struct Channel* next;
 	struct Proxy*	proxy;
@@ -83,8 +85,7 @@ Channel;
  */
 typedef struct Proxy
 {
-	MemoryContext memctx;		 /* Memory context for this proxy (used only in single thread) */
-	MemoryContext tmpctx;		 /* Temporary memory context used for parsing startup packet */
+	MemoryContext parse_ctx;	 /* Temporary memory context used for parsing startup packet */
 	WaitEventSet* wait_events;	 /* Set of socket descriptors of backends and clients socket descriptors */
 	HTAB*	 pools;				 /* Session pool map with dbname/role used as a key */
 	int		 n_accepted_connections; /* Number of accepted, but not yet established connections
@@ -212,24 +213,27 @@ client_connect(Channel* chan, int startup_packet_size)
 	bool found;
 	SessionPoolKey key;
 	char* startup_packet = chan->buf;
+	MemoryContext proxy_ctx;
 
 	Assert(chan->client_port);
 
-	/* parse startup packet in tmpctx memory context and reset it when it is not needed any more */
-	MemoryContextReset(chan->proxy->tmpctx);
-	MemoryContextSwitchTo(chan->proxy->tmpctx);
+	/* parse startup packet in parse_ctx memory context and reset it when it is not needed any more */
+	MemoryContextReset(chan->proxy->parse_ctx);
+	proxy_ctx = MemoryContextSwitchTo(chan->proxy->parse_ctx);
 
 	/* Associate libpq with client's port */
 	MyProcPort = chan->client_port;
 	pq_init();
 
-	if (ParseStartupPacket(chan->client_port, chan->proxy->tmpctx, startup_packet+4, startup_packet_size-4, false) != STATUS_OK) /* skip packet size */
+	if (ParseStartupPacket(chan->client_port, chan->proxy->parse_ctx, startup_packet+4, startup_packet_size-4, false) != STATUS_OK) /* skip packet size */
 	{
 		MyProcPort = NULL;
+		MemoryContextSwitchTo(proxy_ctx);
 		elog(WARNING, "Failed to parse startup packet for client %p", chan);
 		return false;
 	}
 	MyProcPort = NULL;
+	MemoryContextSwitchTo(proxy_ctx);
 	if (am_walsender)
 	{
 		elog(WARNING, "WAL sender should not be connected through proxy");
@@ -538,6 +542,7 @@ channel_read(Channel* chan)
 		while (chan->rx_pos - msg_start >= 5) /* has message code + length */
 		{
 			int msg_len;
+			uint32 new_msg_len;
 			bool handshake = false;
 			if (chan->pool == NULL) /* process startup packet */
 			{
@@ -556,7 +561,7 @@ channel_read(Channel* chan)
 			{
 				/* Reallocate buffer to fit complete message body */
 				chan->buf_size = msg_start + msg_len;
-				chan->buf = realloc(chan->buf, chan->buf_size);
+				chan->buf = repalloc(chan->buf, chan->buf_size);
 			}
 			if (chan->rx_pos - msg_start >= msg_len) /* Message is completely fetched */
 			{
@@ -572,23 +577,93 @@ channel_read(Channel* chan)
 						return false;
 					}
 				}
-				else if (!chan->client_port /* Message from backend */
-					&& chan->buf[msg_start] == 'Z'	/* Ready for query */
-					&& chan->buf[msg_start+5] == 'I') /* Transaction block status is idle */
+				else if (!chan->client_port) /* Message from backend */
 				{
-					Assert(chan->rx_pos - msg_start == msg_len); /* Should be last message */
-					chan->backend_is_ready = true; /* Backend is ready for query */
-					chan->proxy->state->n_transactions += 1;
-				}
-				else if (chan->client_port /* Message from client */
-						 && chan->buf[msg_start] == 'X')	/* Terminate message */
-				{
-					chan->is_interrupted = true;
-					if (chan->peer == NULL || !chan->peer->backend_is_tainted)
+					if (chan->buf[msg_start] == 'Z'	/* Ready for query */
+						&& chan->buf[msg_start+5] == 'I') /* Transaction block status is idle */
 					{
-						/* Skip terminate message to idle and non-tainted backends */
-						channel_hangout(chan, "terminate");
-						return false;
+						Assert(chan->rx_pos - msg_start == msg_len); /* Should be last message */
+						chan->backend_is_ready = true; /* Backend is ready for query */
+						chan->proxy->state->n_transactions += 1;
+						if (chan->peer)
+							chan->peer->in_transaction = false;
+					}
+					else if (chan->buf[msg_start] == 'E')	/* Error */
+					{
+						if (chan->peer && chan->peer->prev_gucs)
+						{
+							/* Undo GUC assignment */
+							pfree(chan->peer->gucs);
+							chan->peer->gucs = chan->peer->prev_gucs;
+							chan->peer->prev_gucs = NULL;
+						}
+					}
+				}
+				else if (chan->client_port) /* Message from client */
+				{
+					if (chan->buf[msg_start] == 'X')	/* Terminate message */
+					{
+						chan->is_interrupted = true;
+						if (chan->peer == NULL || !chan->peer->backend_is_tainted)
+						{
+							/* Skip terminate message to idle and non-tainted backends */
+							channel_hangout(chan, "terminate");
+							return false;
+						}
+					}
+					else if (ProxyingGUCs && chan->buf[msg_start] == 'Q' && !chan->in_transaction)
+					{
+						char* stmt = &chan->buf[msg_start+5];
+						if (chan->prev_gucs)
+						{
+							pfree(chan->prev_gucs);
+							chan->prev_gucs = NULL;
+						}
+						if (pg_strncasecmp(stmt, "set", 3) == 0
+							&& pg_strncasecmp(stmt+3, " local", 6) != 0)
+						{
+							char* new_msg;
+							chan->prev_gucs = chan->gucs ? chan->gucs : pstrdup("");
+							chan->gucs = psprintf("%sset local%s%c", chan->prev_gucs, stmt+3,
+												  chan->buf[chan->rx_pos-2] == ';' ? ' ' : ';');
+							new_msg = chan->gucs + strlen(chan->prev_gucs);
+							Assert(msg_start + strlen(new_msg)*2 + 6 < chan->buf_size);
+							/*
+							 * We need to send SET command to check if it is correct.
+							 * To avoid "SET LOCAL can only be used in transaction blocks"
+							 * error we need to contruct multistatement. Let;s just double the command.
+							 */
+							msg_len = sprintf(stmt, "%s%s", new_msg, new_msg) + 6;
+							new_msg_len = pg_hton32(msg_len - 1);
+							memcpy(&chan->buf[msg_start+1], &new_msg_len, sizeof(new_msg_len));
+							chan->rx_pos = msg_start + msg_len;
+						}
+						else if (chan->gucs)
+						{
+							size_t gucs_len = strlen(chan->gucs);
+							if (chan->rx_pos + gucs_len > chan->buf_size)
+							{
+								/* Reallocate buffer to fit concatenated GUCs */
+								chan->buf_size = chan->rx_pos + gucs_len;
+								chan->buf = repalloc(chan->buf, chan->buf_size);
+							}
+							if (pg_strncasecmp(stmt, "begin", 5) == 0 || pg_strncasecmp(stmt, "start", 5) == 0)
+							{
+								/* Append GUCs after BEGIN command to include them in transaction body */
+								memcpy(&chan->buf[chan->rx_pos-1], chan->gucs, gucs_len+1);
+								chan->in_transaction = true;
+							}
+							else
+							{
+								/* Prepend standalone command with GUCs */
+								memmove(stmt + gucs_len, stmt, msg_len);
+								memcpy(stmt, chan->gucs, gucs_len);
+							}
+							chan->rx_pos += gucs_len;
+							msg_len += gucs_len;
+							new_msg_len = pg_hton32(msg_len - 1);
+							memcpy(&chan->buf[msg_start+1], &new_msg_len, sizeof(new_msg_len));
+						}
 					}
 				}
 				if (chan->peer == NULL)	 /* client is not yet connected to backend */
@@ -657,9 +732,9 @@ channel_read(Channel* chan)
 static Channel*
 channel_create(Proxy* proxy)
 {
-	Channel* chan = (Channel*)calloc(1, sizeof(Channel));
+	Channel* chan = (Channel*)palloc0(sizeof(Channel));
 	chan->proxy = proxy;
-	chan->buf = malloc(INIT_BUF_SIZE);
+	chan->buf = palloc(INIT_BUF_SIZE);
 	chan->buf_size = INIT_BUF_SIZE;
 	chan->tx_pos = chan->rx_pos = chan->tx_size = 0;
 	return chan;
@@ -724,7 +799,7 @@ backend_start(SessionPool* pool, char** error)
 
 	/* Save handshake response */
 	chan->handshake_response_size = conn->inEnd;
-	chan->handshake_response = malloc(chan->handshake_response_size);
+	chan->handshake_response = palloc(chan->handshake_response_size);
 	memcpy(chan->handshake_response, conn->inBuffer, chan->handshake_response_size);
 
 	/* Extract backend pid */
@@ -749,8 +824,8 @@ backend_start(SessionPool* pool, char** error)
 		*error = strdup("Too much sessios: try to increase 'max_sessions' configuration parameter");
 		/* Too much sessions, error report was already logged */
 		closesocket(chan->backend_socket);
-		free(chan->buf);
-		free(chan);
+		pfree(chan->buf);
+		pfree(chan);
 		chan = NULL;
 	}
 	return chan;
@@ -778,11 +853,11 @@ proxy_add_client(Proxy* proxy, Port* port)
 		/* Too much sessions, error report was already logged */
 		closesocket(port->sock);
 #if defined(ENABLE_GSS) || defined(ENABLE_SSPI)
-		free(port->gss);
+		pfree(port->gss);
 #endif
-		free(port);
-		free(chan->buf);
-		free(chan);
+		pfree(port);
+		pfree(chan->buf);
+		pfree(chan);
 	}
 }
 
@@ -803,7 +878,11 @@ channel_remove(Channel* chan)
 		chan->proxy->state->n_clients -= 1;
 		chan->proxy->state->n_ssl_clients -= chan->client_port->ssl_in_use;
 		closesocket(chan->client_port->sock);
-		free(chan->client_port);
+		pfree(chan->client_port);
+		if (chan->gucs)
+			pfree(chan->gucs);
+		if (chan->prev_gucs)
+			pfree(chan->prev_gucs);
 	}
 	else
 	{
@@ -811,7 +890,7 @@ channel_remove(Channel* chan)
 		chan->proxy->state->n_dedicated_backends -= chan->backend_is_tainted;
 		chan->pool->n_launched_backends -= 1;
 		closesocket(chan->backend_socket);
-		free(chan->handshake_response);
+		pfree(chan->handshake_response);
 
 		if (chan->pool->pending_clients)
 		{
@@ -827,8 +906,8 @@ channel_remove(Channel* chan)
 				free(error);
 		}
 	}
-	free(chan->buf);
-	free(chan);
+	pfree(chan->buf);
+	pfree(chan);
 }
 
 
@@ -840,17 +919,19 @@ static Proxy*
 proxy_create(pgsocket postmaster_socket, ConnectionProxyState* state, int max_backends)
 {
 	HASHCTL ctl;
-	Proxy*	proxy = calloc(1, sizeof(Proxy));
-	proxy->memctx = AllocSetContextCreate(TopMemoryContext,
-										  "Proxy",
-										  ALLOCSET_DEFAULT_SIZES);
-	proxy->tmpctx = AllocSetContextCreate(proxy->memctx,
-										  "Startup packet parsing context",
-										  ALLOCSET_DEFAULT_SIZES);
+	Proxy*	proxy;
+	MemoryContext proxy_memctx = AllocSetContextCreate(TopMemoryContext,
+													   "Proxy",
+													   ALLOCSET_DEFAULT_SIZES);
+	MemoryContextSwitchTo(proxy_memctx);
+	proxy = palloc0(sizeof(Proxy));
+	proxy->parse_ctx = AllocSetContextCreate(proxy_memctx,
+											 "Startup packet parsing context",
+											 ALLOCSET_DEFAULT_SIZES);
 	MemSet(&ctl, 0, sizeof(ctl));
 	ctl.keysize = sizeof(SessionPoolKey);
 	ctl.entrysize = sizeof(SessionPool);
-	ctl.hcxt = proxy->memctx;
+	ctl.hcxt = proxy_memctx;
 	proxy->pools = hash_create("Pool by database and user", DB_HASH_SIZE,
 							   &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 	 /* We need events both for clients and backends so multiply MaxConnection by two */
@@ -882,17 +963,17 @@ proxy_loop(Proxy* proxy)
 			chan = (Channel*)ready[i].user_data;
 			if (chan == NULL) /* new connection from postmaster */
 			{
-				Port* port = (Port*)calloc(1, sizeof(Port));
+				Port* port = (Port*)palloc0(sizeof(Port));
 				port->sock = pg_recv_sock(ready[i].fd);
 				if (port->sock == PGINVALID_SOCKET)
 				{
 					elog(WARNING, "Failed to receive session socket: %m");
-					free(port);
+					pfree(port);
 				}
 				else
 				{
 #if defined(ENABLE_GSS) || defined(ENABLE_SSPI)
-					port->gss = (pg_gssinfo *) calloc(1, sizeof(pg_gssinfo));
+					port->gss = (pg_gssinfo *)palloc0(sizeof(pg_gssinfo));
 					if (!port->gss)
 						ereport(FATAL,
 								(errcode(ERRCODE_OUT_OF_MEMORY),
