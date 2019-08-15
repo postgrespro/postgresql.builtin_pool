@@ -502,6 +502,12 @@ channel_write(Channel* chan, bool synchronous)
 	return synchronous || channel_read(peer); /* write is not invoked from read */
 }
 
+static bool
+is_transaction_start(char* stmt)
+{
+	return pg_strncasecmp(stmt, "begin", 5) == 0 || pg_strncasecmp(stmt, "start", 5) == 0;
+}
+
 /*
  * Try to read more data from the channel and send it to the peer.
  */
@@ -631,7 +637,7 @@ channel_read(Channel* chan)
 							/*
 							 * We need to send SET command to check if it is correct.
 							 * To avoid "SET LOCAL can only be used in transaction blocks"
-							 * error we need to contruct multistatement. Let;s just double the command.
+							 * error we need to construct block. Let's just double the command.
 							 */
 							msg_len = sprintf(stmt, "%s%s", new_msg, new_msg) + 6;
 							new_msg_len = pg_hton32(msg_len - 1);
@@ -647,7 +653,7 @@ channel_read(Channel* chan)
 								chan->buf_size = chan->rx_pos + gucs_len;
 								chan->buf = repalloc(chan->buf, chan->buf_size);
 							}
-							if (pg_strncasecmp(stmt, "begin", 5) == 0 || pg_strncasecmp(stmt, "start", 5) == 0)
+							if (is_transaction_start(stmt))
 							{
 								/* Append GUCs after BEGIN command to include them in transaction body */
 								memcpy(&chan->buf[chan->rx_pos-1], chan->gucs, gucs_len+1);
@@ -664,6 +670,8 @@ channel_read(Channel* chan)
 							new_msg_len = pg_hton32(msg_len - 1);
 							memcpy(&chan->buf[msg_start+1], &new_msg_len, sizeof(new_msg_len));
 						}
+						else if (is_transaction_start(stmt))
+							chan->in_transaction = true;
 					}
 				}
 				if (chan->peer == NULL)	 /* client is not yet connected to backend */
