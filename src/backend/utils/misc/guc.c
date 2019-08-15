@@ -558,7 +558,7 @@ int			huge_pages;
 
 /*
  * These variables are all dummies that don't do anything, except in some
- * cases provide the value for SHOW to display.	 The real state is elsewhere
+ * cases provide the value for SHOW to display.  The real state is elsewhere
  * and is kept in sync by assign_hooks.
  */
 static char *syslog_ident_str;
@@ -1174,7 +1174,7 @@ static struct config_bool ConfigureNamesBool[] =
 			gettext_noop("Writes full pages to WAL when first modified after a checkpoint."),
 			gettext_noop("A page write in process during an operating system crash might be "
 						 "only partially written to disk.  During recovery, the row changes "
-						 "stored in WAL are not enough to recover.	This option writes "
+						 "stored in WAL are not enough to recover.  This option writes "
 						 "pages when first modified after a checkpoint to WAL so full recovery "
 						 "is possible.")
 		},
@@ -2202,7 +2202,7 @@ static struct config_int ConfigureNamesInt[] =
 		NULL, NULL, NULL
 	},
 
-	{
+ 	{
 		{"max_sessions", PGC_POSTMASTER, CONN_POOLING,
 			gettext_noop("Sets the maximum number of client session."),
 			gettext_noop("Maximal number of client sessions which can be handled by ont connection proxy."
@@ -2340,7 +2340,7 @@ static struct config_int ConfigureNamesInt[] =
 
 	/*
 	 * We use the hopefully-safely-small value of 100kB as the compiled-in
-	 * default for max_stack_depth.	 InitializeGUCOptions will increase it if
+	 * default for max_stack_depth.  InitializeGUCOptions will increase it if
 	 * possible, depending on the actual platform-specific stack limit.
 	 */
 	{
@@ -4657,7 +4657,7 @@ static struct config_enum ConfigureNamesEnum[] =
 
 /*
  * To allow continued support of obsolete names for GUC variables, we apply
- * the following mappings to any unrecognized name.	 Note that an old name
+ * the following mappings to any unrecognized name.  Note that an old name
  * should be mapped to a new one only if the new variable has very similar
  * semantics to the old.
  */
@@ -4843,7 +4843,7 @@ extra_field_used(struct config_generic *gconf, void *extra)
 }
 
 /*
- * Support for assigning to an "extra" field of a GUC item.	 Free the prior
+ * Support for assigning to an "extra" field of a GUC item.  Free the prior
  * value if it's not referenced anywhere else in the item (including stacked
  * states).
  */
@@ -4933,7 +4933,7 @@ get_guc_variables(void)
 
 
 /*
- * Build the sorted array.	This is split out so that it could be
+ * Build the sorted array.  This is split out so that it could be
  * re-executed after startup (e.g., we could allow loadable modules to
  * add vars, and then we'd need to re-sort).
  */
@@ -5107,7 +5107,7 @@ add_placeholder_variable(const char *name, int elevel)
 
 	/*
 	 * The char* is allocated at the end of the struct since we have no
-	 * 'static' place to point to.	Note that the current value, as well as
+	 * 'static' place to point to.  Note that the current value, as well as
 	 * the boot and reset values, start out NULL.
 	 */
 	var->variable = (char **) (var + 1);
@@ -5123,7 +5123,7 @@ add_placeholder_variable(const char *name, int elevel)
 }
 
 /*
- * Look up option NAME.	 If it exists, return a pointer to its record,
+ * Look up option NAME.  If it exists, return a pointer to its record,
  * else return NULL.  If create_placeholders is true, we'll create a
  * placeholder record for a valid-looking custom variable name.
  */
@@ -5149,7 +5149,7 @@ find_option(const char *name, bool create_placeholders, int elevel)
 		return *res;
 
 	/*
-	 * See if the name is an obsolete name for a variable.	We assume that the
+	 * See if the name is an obsolete name for a variable.  We assume that the
 	 * set of supported old names is short enough that a brute-force search is
 	 * the best way.
 	 */
@@ -5510,7 +5510,7 @@ SelectConfigFiles(const char *userDoption, const char *progname)
 	}
 
 	/*
-	 * Read the configuration file for the first time.	This time only the
+	 * Read the configuration file for the first time.  This time only the
 	 * data_directory parameter is picked up to determine the data directory,
 	 * so that we can read the PG_AUTOCONF_FILENAME file next time.
 	 */
@@ -5805,7 +5805,7 @@ AtStart_GUC(void)
 {
 	/*
 	 * The nest level should be 0 between transactions; if it isn't, somebody
-	 * didn't call AtEOXact_GUC, or called it with the wrong nestLevel.	 We
+	 * didn't call AtEOXact_GUC, or called it with the wrong nestLevel.  We
 	 * throw a warning but make no other effort to clean up.
 	 */
 	if (GUCNestLevel != 0)
@@ -5829,10 +5829,10 @@ NewGUCNestLevel(void)
 /*
  * Do GUC processing at transaction or subtransaction commit or abort, or
  * when exiting a function that has proconfig settings, or when undoing a
- * transient assignment to some GUC variables.	(The name is thus a bit of
+ * transient assignment to some GUC variables.  (The name is thus a bit of
  * a misnomer; perhaps it should be ExitGUCNestLevel or some such.)
  * During abort, we discard all GUC settings that were applied at nesting
- * levels >= nestLevel.	 nestLevel == 1 corresponds to the main transaction.
+ * levels >= nestLevel.  nestLevel == 1 corresponds to the main transaction.
  */
 void
 AtEOXact_GUC(bool isCommit, int nestLevel)
@@ -6163,7 +6163,7 @@ ReportGUCOption(struct config_generic *record)
 
 /*
  * Convert a value from one of the human-friendly units ("kB", "min" etc.)
- * to the given base unit.	'value' and 'unit' are the input value and unit
+ * to the given base unit.  'value' and 'unit' are the input value and unit
  * to convert from (there can be trailing spaces in the unit string).
  * The converted value is stored in *base_value.
  * It's caller's responsibility to round off the converted value as necessary
@@ -6226,7 +6226,7 @@ convert_to_base_unit(double value, const char *unit,
  * Convert an integer value in some base unit to a human-friendly unit.
  *
  * The output unit is chosen so that it's the greatest unit that can represent
- * the value without loss.	For example, if the base unit is GUC_UNIT_KB, 1024
+ * the value without loss.  For example, if the base unit is GUC_UNIT_KB, 1024
  * is converted to 1 MB, but 1025 is represented as 1025 kB.
  */
 static void
@@ -6860,7 +6860,7 @@ set_config_option(const char *name, const char *value,
 
 	/*
 	 * GUC_ACTION_SAVE changes are acceptable during a parallel operation,
-	 * because the current worker will also pop the change.	 We're probably
+	 * because the current worker will also pop the change.  We're probably
 	 * dealing with a function having a proconfig entry.  Only the function's
 	 * body should observe the change, and peer workers do not share in the
 	 * execution of a function call started by this worker.
@@ -6902,7 +6902,7 @@ set_config_option(const char *name, const char *value,
 			{
 				/*
 				 * We are re-reading a PGC_POSTMASTER variable from
-				 * postgresql.conf.	 We can't change the setting, so we should
+				 * postgresql.conf.  We can't change the setting, so we should
 				 * give a warning if the DBA tries to change it.  However,
 				 * because of variant formats, canonicalization by check
 				 * hooks, etc, we can't just compare the given string directly
@@ -6964,7 +6964,7 @@ set_config_option(const char *name, const char *value,
 				 * non-default settings from the CONFIG_EXEC_PARAMS file
 				 * during backend start.  In that case we must accept
 				 * PGC_SIGHUP settings, so as to have the same value as if
-				 * we'd forked from the postmaster.	 This can also happen when
+				 * we'd forked from the postmaster.  This can also happen when
 				 * using RestoreGUCState() within a background worker that
 				 * needs to have the same settings as the user backend that
 				 * started it. is_reload will be true when either situation
@@ -7011,9 +7011,9 @@ set_config_option(const char *name, const char *value,
 	 * An exception might be made if the reset value is assumed to be "safe".
 	 *
 	 * Note: this flag is currently used for "session_authorization" and
-	 * "role".	We need to prohibit changing these inside a local userid
+	 * "role".  We need to prohibit changing these inside a local userid
 	 * context because when we exit it, GUC won't be notified, leaving things
-	 * out of sync.	 (This could be fixed by forcing a new GUC nesting level,
+	 * out of sync.  (This could be fixed by forcing a new GUC nesting level,
 	 * but that would change behavior in possibly-undesirable ways.)  Also, we
 	 * prohibit changing these in a security-restricted operation because
 	 * otherwise RESET could be used to regain the session user's privileges.
@@ -7586,7 +7586,7 @@ set_config_sourcefile(const char *name, char *sourcefile, int sourceline)
  * Set a config option to the given value.
  *
  * See also set_config_option; this is just the wrapper to be called from
- * outside GUC.	 (This function should be used when possible, because its API
+ * outside GUC.  (This function should be used when possible, because its API
  * is more stable than set_config_option's.)
  *
  * Note: there is no support here for setting source file/line, as it
@@ -7792,7 +7792,7 @@ flatten_set_variable_args(const char *name, List *args)
 		Node	   *arg = (Node *) lfirst(l);
 		char	   *val;
 		TypeName   *typeName = NULL;
-		A_Const	   *con;
+		A_Const    *con;
 
 		if (l != list_head(args))
 			appendStringInfoString(&buf, ", ");
@@ -7849,7 +7849,7 @@ flatten_set_variable_args(const char *name, List *args)
 				else
 				{
 					/*
-					 * Plain string literal or identifier.	For quote mode,
+					 * Plain string literal or identifier.  For quote mode,
 					 * quote it if it's not a vanilla identifier.
 					 */
 					if (flags & GUC_LIST_QUOTE)
@@ -8130,7 +8130,7 @@ AlterSystemSetConfigFile(AlterSystemStmt *altersysstmt)
 
 	/*
 	 * Only one backend is allowed to operate on PG_AUTOCONF_FILENAME at a
-	 * time.  Use AutoFileLock to ensure that.	We must hold the lock while
+	 * time.  Use AutoFileLock to ensure that.  We must hold the lock while
 	 * reading the old file contents.
 	 */
 	LWLockAcquire(AutoFileLock, LW_EXCLUSIVE);
@@ -8188,7 +8188,7 @@ AlterSystemSetConfigFile(AlterSystemStmt *altersysstmt)
 						AutoConfTmpFileName)));
 
 	/*
-	 * Use a TRY block to clean up the file if we fail.	 Since we need a TRY
+	 * Use a TRY block to clean up the file if we fail.  Since we need a TRY
 	 * block anyway, OK to use BasicOpenFile rather than OpenTransientFile.
 	 */
 	PG_TRY();
@@ -8274,7 +8274,7 @@ ExecSetVariableStmt(VariableSetStmt *stmt, bool isTopLevel)
 
 				foreach(head, stmt->args)
 				{
-					DefElem	   *item = (DefElem *) lfirst(head);
+					DefElem    *item = (DefElem *) lfirst(head);
 
 					if (strcmp(item->defname, "transaction_isolation") == 0)
 						SetPGVariable("transaction_isolation",
@@ -8296,7 +8296,7 @@ ExecSetVariableStmt(VariableSetStmt *stmt, bool isTopLevel)
 
 				foreach(head, stmt->args)
 				{
-					DefElem	   *item = (DefElem *) lfirst(head);
+					DefElem    *item = (DefElem *) lfirst(head);
 
 					if (strcmp(item->defname, "transaction_isolation") == 0)
 						SetPGVariable("default_transaction_isolation",
@@ -8314,7 +8314,7 @@ ExecSetVariableStmt(VariableSetStmt *stmt, bool isTopLevel)
 			}
 			else if (strcmp(stmt->name, "TRANSACTION SNAPSHOT") == 0)
 			{
-				A_Const	   *con = linitial_node(A_Const, stmt->args);
+				A_Const    *con = linitial_node(A_Const, stmt->args);
 
 				if (stmt->is_local)
 					ereport(ERROR,
@@ -8468,7 +8468,7 @@ init_custom_variable(const char *name,
 	/*
 	 * We can't support custom GUC_LIST_QUOTE variables, because the wrong
 	 * things would happen if such a variable were set or pg_dump'd when the
-	 * defining extension isn't loaded.	 Again, treat this as fatal because
+	 * defining extension isn't loaded.  Again, treat this as fatal because
 	 * the loadable module may be partly initialized already.
 	 */
 	if (flags & GUC_LIST_QUOTE)
@@ -8477,7 +8477,7 @@ init_custom_variable(const char *name,
 	/*
 	 * Before pljava commit 398f3b876ed402bdaec8bc804f29e2be95c75139
 	 * (2015-12-15), two of that module's PGC_USERSET variables facilitated
-	 * trivial escalation to superuser privileges.	Restrict the variables to
+	 * trivial escalation to superuser privileges.  Restrict the variables to
 	 * protect sites that have yet to upgrade pljava.
 	 */
 	if (context == PGC_USERSET &&
@@ -8559,9 +8559,9 @@ define_custom_variable(struct config_generic *variable)
 	 * variable.  Essentially, we need to duplicate all the active and stacked
 	 * values, but with appropriate validation and datatype adjustment.
 	 *
-	 * If an assignment fails, we report a WARNING and keep going.	We don't
+	 * If an assignment fails, we report a WARNING and keep going.  We don't
 	 * want to throw ERROR for bad values, because it'd bollix the add-on
-	 * module that's presumably halfway through getting loaded.	 In such cases
+	 * module that's presumably halfway through getting loaded.  In such cases
 	 * the default or previous state will become active instead.
 	 */
 
@@ -8587,7 +8587,7 @@ define_custom_variable(struct config_generic *variable)
 	/*
 	 * Free up as much as we conveniently can of the placeholder structure.
 	 * (This neglects any stack items, so it's possible for some memory to be
-	 * leaked.	Since this can only happen once per session per variable, it
+	 * leaked.  Since this can only happen once per session per variable, it
 	 * doesn't seem worth spending much code on.)
 	 */
 	set_string_field(pHolder, pHolder->variable, NULL);
@@ -8665,9 +8665,9 @@ reapply_stacked_values(struct config_generic *variable,
 	else
 	{
 		/*
-		 * We are at the end of the stack.	If the active/previous value is
+		 * We are at the end of the stack.  If the active/previous value is
 		 * different from the reset value, it must represent a previously
-		 * committed session value.	 Apply it, and then drop the stack entry
+		 * committed session value.  Apply it, and then drop the stack entry
 		 * that set_config_option will have created under the impression that
 		 * this is to be just a transactional assignment.  (We leak the stack
 		 * entry.)
@@ -9378,7 +9378,7 @@ show_config_by_name(PG_FUNCTION_ARGS)
 
 /*
  * show_config_by_name_missing_ok - equiv to SHOW X command but implemented as
- * a function.	If X does not exist, suppress the error and just return NULL
+ * a function.  If X does not exist, suppress the error and just return NULL
  * if missing_ok is true.
  */
 Datum
@@ -9532,7 +9532,7 @@ show_all_settings(PG_FUNCTION_ARGS)
  * which includes the config file pathname, the line number, a sequence number
  * indicating the order in which the settings were encountered, the parameter
  * name and value, a bool showing if the value could be applied, and possibly
- * an associated error message.	 (For problems such as syntax errors, the
+ * an associated error message.  (For problems such as syntax errors, the
  * parameter name/value might be NULL.)
  *
  * Note: no filtering is done here, instead we depend on the GRANT system
@@ -9760,7 +9760,7 @@ _ShowOption(struct config_generic *record, bool use_units)
 
 /*
  *	These routines dump out all non-default GUC options into a binary
- *	file that is read by all exec'ed backends.	The format is:
+ *	file that is read by all exec'ed backends.  The format is:
  *
  *		variable name, string, null terminated
  *		variable value, string, null terminated
@@ -9995,14 +9995,14 @@ read_nondefault_variables(void)
  *
  * A PGC_S_DEFAULT setting on the serialize side will typically match new
  * postmaster children, but that can be false when got_SIGHUP == true and the
- * pending configuration change modifies this setting.	Nonetheless, we omit
+ * pending configuration change modifies this setting.  Nonetheless, we omit
  * PGC_S_DEFAULT settings from serialization and make up for that by restoring
  * defaults before applying serialized values.
  *
  * PGC_POSTMASTER variables always have the same value in every child of a
  * particular postmaster.  Most PGC_INTERNAL variables are compile-time
  * constants; a few, like server_encoding and lc_ctype, are handled specially
- * outside the serialize/restore procedure.	 Therefore, SerializeGUCState()
+ * outside the serialize/restore procedure.  Therefore, SerializeGUCState()
  * never sends these, and RestoreGUCState() never changes them.
  *
  * Role is a special variable in the sense that its current value can be an
@@ -10051,7 +10051,7 @@ estimate_variable_size(struct config_generic *gconf)
 
 				/*
 				 * Instead of getting the exact display length, use max
-				 * length.	Also reduce the max length for typical ranges of
+				 * length.  Also reduce the max length for typical ranges of
 				 * small values.  Maximum value is 2147483647, i.e. 10 chars.
 				 * Include one byte for sign.
 				 */
@@ -10067,7 +10067,7 @@ estimate_variable_size(struct config_generic *gconf)
 				/*
 				 * We are going to print it with %e with REALTYPE_PRECISION
 				 * fractional digits.  Account for sign, leading digit,
-				 * decimal point, and exponent with up to 3 digits.	 E.g.
+				 * decimal point, and exponent with up to 3 digits.  E.g.
 				 * -3.99329042340000021e+110
 				 */
 				valsize = 1 + 1 + 1 + REALTYPE_PRECISION + 5;
@@ -10423,7 +10423,7 @@ ParseLongOption(const char *string, char **name, char **value)
 
 /*
  * Handle options fetched from pg_db_role_setting.setconfig,
- * pg_proc.proconfig, etc.	Caller must specify proper context/source/action.
+ * pg_proc.proconfig, etc.  Caller must specify proper context/source/action.
  *
  * The array parameter must be an array of TEXT (it must not be NULL).
  */
@@ -10482,7 +10482,7 @@ ProcessGUCArray(ArrayType *array,
 
 
 /*
- * Add an entry to an option array.	 The array parameter may be NULL
+ * Add an entry to an option array.  The array parameter may be NULL
  * to indicate the current table entry is NULL.
  */
 ArrayType *
@@ -10562,7 +10562,7 @@ GUCArrayAdd(ArrayType *array, const char *name, const char *value)
 
 /*
  * Delete an entry from an option array.  The array parameter may be NULL
- * to indicate the current table entry is NULL.	 Also, if the return value
+ * to indicate the current table entry is NULL.  Also, if the return value
  * is NULL then a null should be stored.
  */
 ArrayType *
@@ -10703,8 +10703,8 @@ GUCArrayReset(ArrayType *array)
 /*
  * Validate a proposed option setting for GUCArrayAdd/Delete/Reset.
  *
- * name is the option name.	 value is the proposed value for the Add case,
- * or NULL for the Delete/Reset cases.	If skipIfNoPermissions is true, it's
+ * name is the option name.  value is the proposed value for the Add case,
+ * or NULL for the Delete/Reset cases.  If skipIfNoPermissions is true, it's
  * not an error to have no permissions to set the option.
  *
  * Returns true if OK, false if skipIfNoPermissions is true and user does not
@@ -10726,13 +10726,13 @@ validate_option_array_item(const char *name, const char *value,
 	 * SUSET and user is superuser).
 	 *
 	 * name is not known, but exists or can be created as a placeholder (i.e.,
-	 * it has a prefixed name).	 We allow this case if you're a superuser,
+	 * it has a prefixed name).  We allow this case if you're a superuser,
 	 * otherwise not.  Superusers are assumed to know what they're doing. We
 	 * can't allow it for other users, because when the placeholder is
 	 * resolved it might turn out to be a SUSET variable;
 	 * define_custom_variable assumes we checked that.
 	 *
-	 * name is not known and can't be created as a placeholder.	 Throw error,
+	 * name is not known and can't be created as a placeholder.  Throw error,
 	 * unless skipIfNoPermissions is true, in which case return false.
 	 */
 	gconf = find_option(name, true, WARNING);
@@ -10785,7 +10785,7 @@ validate_option_array_item(const char *name, const char *value,
  * ERRCODE_INVALID_PARAMETER_VALUE SQLSTATE for check hook failures.
  *
  * Note that GUC_check_errmsg() etc are just macros that result in a direct
- * assignment to the associated variables.	That is ugly, but forced by the
+ * assignment to the associated variables.  That is ugly, but forced by the
  * limitations of C's macro mechanisms.
  */
 void
@@ -11221,7 +11221,7 @@ check_canonical_path(char **newval, void **extra, GucSource source)
 {
 	/*
 	 * Since canonicalize_path never enlarges the string, we can just modify
-	 * newval in-place.	 But watch out for NULL, which is the default value
+	 * newval in-place.  But watch out for NULL, which is the default value
 	 * for external_pid_file.
 	 */
 	if (*newval)
@@ -11234,7 +11234,7 @@ check_timezone_abbreviations(char **newval, void **extra, GucSource source)
 {
 	/*
 	 * The boot_val given above for timezone_abbreviations is NULL. When we
-	 * see this we just do nothing.	 If this value isn't overridden from the
+	 * see this we just do nothing.  If this value isn't overridden from the
 	 * config file then pg_timezone_abbrev_initialize() will eventually
 	 * replace it with "Default".  This hack has two purposes: to avoid
 	 * wasting cycles loading values that might soon be overridden from the
@@ -11272,7 +11272,7 @@ assign_timezone_abbreviations(const char *newval, void *extra)
 /*
  * pg_timezone_abbrev_initialize --- set default value if not done already
  *
- * This is called after initial loading of postgresql.conf.	 If no
+ * This is called after initial loading of postgresql.conf.  If no
  * timezone_abbreviations setting was found therein, select default.
  * If a non-default value is already installed, nothing will happen.
  *
@@ -11302,7 +11302,7 @@ assign_tcp_keepalives_idle(int newval, void *extra)
 	 * The kernel API provides no way to test a value without setting it; and
 	 * once we set it we might fail to unset it.  So there seems little point
 	 * in fully implementing the check-then-assign GUC API for these
-	 * variables.  Instead we just do the assignment on demand.	 pqcomm.c
+	 * variables.  Instead we just do the assignment on demand.  pqcomm.c
 	 * reports any problems via elog(LOG).
 	 *
 	 * This approach means that the GUC value might have little to do with the
@@ -11590,11 +11590,11 @@ assign_recovery_target_timeline(const char *newval, void *extra)
 
 /*
  * Recovery target settings: Only one of the several recovery_target* settings
- * may be set.	Setting a second one results in an error.  The global variable
- * recoveryTarget tracks which kind of recovery target was chosen.	Other
+ * may be set.  Setting a second one results in an error.  The global variable
+ * recoveryTarget tracks which kind of recovery target was chosen.  Other
  * variables store the actual target value (for example a string or a xid).
  * The assign functions of the parameters check whether a competing parameter
- * was already set.	 But we want to allow setting the same parameter multiple
+ * was already set.  But we want to allow setting the same parameter multiple
  * times.  We also want to allow unsetting a parameter and setting a different
  * one, so we unset recoveryTarget when the parameter is set to an empty
  * string.
