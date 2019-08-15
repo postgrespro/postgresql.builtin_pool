@@ -997,7 +997,7 @@ WaitEventAdjustWin32(WaitEventSet *set, WaitEvent *event, bool remove)
 	}
 	else
 	{
-		int flags = FD_CLOSE;	/* always check for errors/EOF */
+		int			flags = FD_CLOSE;	/* always check for errors/EOF */
 
 		if (event->events & WL_SOCKET_READABLE)
 			flags |= FD_READ;
@@ -1014,8 +1014,8 @@ WaitEventAdjustWin32(WaitEventSet *set, WaitEvent *event, bool remove)
 					 WSAGetLastError());
 		}
 		if (WSAEventSelect(event->fd, *handle, flags) != 0)
-			elog(ERROR, "failed to set up event for socket %p: error code %u",
-				 event->fd, WSAGetLastError());
+			elog(ERROR, "failed to set up event for socket: error code %u",
+				 WSAGetLastError());
 
 		Assert(event->fd != PGINVALID_SOCKET);
 	}

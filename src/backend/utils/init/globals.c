@@ -132,7 +132,7 @@ int			NBuffers = 1000;
 int			MaxConnections = 90;
 int			SessionPoolSize = 0;
 int			IdlePoolWorkerTimeout = 0;
-int			ConnectionProxiesNumber = 1;
+int			ConnectionProxiesNumber = 0;
 int			SessionSchedule = SESSION_SCHED_ROUND_ROBIN;
 
 int			max_worker_processes = 8;
