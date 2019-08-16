@@ -2,32 +2,40 @@
 -- GLOBAL TEMP
 -- Test global temp relations
 --
-
 -- Test ON COMMIT DELETE ROWS
-
 CREATE GLOBAL TEMP TABLE global_temptest(col int) ON COMMIT DELETE ROWS;
-
 BEGIN;
 INSERT INTO global_temptest VALUES (1);
 INSERT INTO global_temptest VALUES (2);
-
 SELECT * FROM global_temptest;
+ col 
+-----
+   1
+   2
+(2 rows)
+
 COMMIT;
-
 SELECT * FROM global_temptest;
+ col 
+-----
+(0 rows)
 
 DROP TABLE global_temptest;
-
 BEGIN;
 CREATE GLOBAL TEMP TABLE global_temptest(col) ON COMMIT DELETE ROWS AS SELECT 1;
-
 SELECT * FROM global_temptest;
+ col 
+-----
+   1
+(1 row)
+
 COMMIT;
-
 SELECT * FROM global_temptest;
+ col 
+-----
+(0 rows)
 
 DROP TABLE global_temptest;
-
 -- Test foreign keys
 BEGIN;
 CREATE GLOBAL TEMP TABLE global_temptest1(col int PRIMARY KEY);
@@ -37,17 +45,25 @@ INSERT INTO global_temptest1 VALUES (1);
 INSERT INTO global_temptest2 VALUES (1);
 COMMIT;
 SELECT * FROM global_temptest1;
+ col 
+-----
+   1
+(1 row)
+
 SELECT * FROM global_temptest2;
+ col 
+-----
+(0 rows)
 
 DROP TABLE global_temptest2;
 DROP TABLE global_temptest1;
-
 -- Unsupported ON COMMIT and foreign key combination
 BEGIN;
 CREATE GLOBAL TEMP TABLE global_temptest3(col int PRIMARY KEY) ON COMMIT DELETE ROWS;
 CREATE GLOBAL TEMP TABLE global_temptest4(col int REFERENCES global_temptest3);
 COMMIT;
-
+ERROR:  unsupported ON COMMIT and foreign key combination
+DETAIL:  Table "global_temptest4" references "global_temptest3", but they do not have the same ON COMMIT setting.
 -- For partitioned temp tables, ON COMMIT actions ignore storage-less
 -- partitioned tables.
 BEGIN;
@@ -60,8 +76,11 @@ INSERT INTO temp_parted_oncommit VALUES (1);
 COMMIT;
 -- partitions are emptied by the previous commit
 SELECT * FROM temp_parted_oncommit;
-DROP TABLE temp_parted_oncommit;
+ a 
+---
+(0 rows)
 
+DROP TABLE temp_parted_oncommit;
 -- Using ON COMMIT DELETE on a partitioned table does not remove
 -- all rows if partitions preserve their data.
 BEGIN;
@@ -75,10 +94,20 @@ COMMIT;
 -- Data from the remaining partition is still here as its rows are
 -- preserved.
 SELECT * FROM global_temp_parted_oncommit_test;
+ a 
+---
+ 1
+(1 row)
+
 -- two relations remain in this case.
 SELECT relname FROM pg_class WHERE relname LIKE 'global_temp_parted_oncommit_test%';
-DROP TABLE global_temp_parted_oncommit_test;
+              relname              
+-----------------------------------
+ global_temp_parted_oncommit_test
+ global_temp_parted_oncommit_test1
+(2 rows)
 
+DROP TABLE global_temp_parted_oncommit_test;
 -- Check dependencies between ON COMMIT actions with inheritance trees.
 -- Data on the parent is removed, and the child goes away.
 BEGIN;
@@ -89,18 +118,28 @@ INSERT INTO global_temp_inh_oncommit_test1 VALUES (1);
 INSERT INTO global_temp_inh_oncommit_test VALUES (1);
 COMMIT;
 SELECT * FROM global_temp_inh_oncommit_test;
+ a 
+---
+ 1
+(1 row)
+
 -- two relations remain
 SELECT relname FROM pg_class WHERE relname LIKE 'global_temp_inh_oncommit_test%';
+            relname             
+--------------------------------
+ global_temp_inh_oncommit_test
+ global_temp_inh_oncommit_test1
+(2 rows)
+
 DROP TABLE global_temp_inh_oncommit_test1;
 DROP TABLE global_temp_inh_oncommit_test;
-
 -- Global temp table cannot inherit from temporary relation
 BEGIN;
 CREATE TEMP TABLE global_temp_table (a int) ON COMMIT DELETE ROWS;
 CREATE GLOBAL TEMP TABLE global_temp_table1 ()
   INHERITS(global_temp_table) ON COMMIT PRESERVE ROWS;
+ERROR:  cannot inherit from temporary relation "global_temp_table"
 ROLLBACK;
-
 -- Temp table can inherit from global temporary relation
 BEGIN;
 CREATE GLOBAL TEMP TABLE global_temp_table (a int) ON COMMIT DELETE ROWS;
@@ -112,12 +151,23 @@ INSERT INTO temp_table2 VALUES (2);
 INSERT INTO temp_table1 VALUES (1);
 INSERT INTO global_temp_table VALUES (0);
 SELECT * FROM global_temp_table;
+ a 
+---
+ 0
+ 1
+ 2
+(3 rows)
+
 COMMIT;
 SELECT * FROM global_temp_table;
+ a 
+---
+ 1
+(1 row)
+
 DROP TABLE temp_table2;
 DROP TABLE temp_table1;
 DROP TABLE global_temp_table;
-
 -- Global temp table can inherit from normal relation
 BEGIN;
 CREATE TABLE normal_table (a int);
@@ -129,12 +179,24 @@ INSERT INTO temp_table2 VALUES (2);
 INSERT INTO temp_table1 VALUES (1);
 INSERT INTO normal_table VALUES (0);
 SELECT * FROM normal_table;
+ a 
+---
+ 0
+ 1
+ 2
+(3 rows)
+
 COMMIT;
 SELECT * FROM normal_table;
+ a 
+---
+ 0
+ 1
+(2 rows)
+
 DROP TABLE temp_table2;
 DROP TABLE temp_table1;
 DROP TABLE normal_table;
-
 -- Check SERIAL and BIGSERIAL pseudo-types
 CREATE GLOBAL TEMP TABLE global_temp_table ( aid BIGSERIAL, bid SERIAL );
 CREATE SEQUENCE test_sequence;
@@ -142,50 +204,123 @@ INSERT INTO global_temp_table DEFAULT VALUES;
 INSERT INTO global_temp_table DEFAULT VALUES;
 INSERT INTO global_temp_table DEFAULT VALUES;
 SELECT * FROM global_temp_table;
+ aid | bid 
+-----+-----
+   1 |   1
+   2 |   2
+   3 |   3
+(3 rows)
+
 SELECT NEXTVAL( 'test_sequence' );
+ nextval 
+---------
+       1
+(1 row)
+
 \c
 SELECT * FROM global_temp_table;
+ aid | bid 
+-----+-----
+(0 rows)
+
 SELECT NEXTVAL( 'test_sequence' );
+ nextval 
+---------
+       2
+(1 row)
+
 INSERT INTO global_temp_table DEFAULT VALUES;
 INSERT INTO global_temp_table DEFAULT VALUES;
 INSERT INTO global_temp_table DEFAULT VALUES;
 SELECT * FROM global_temp_table;
+ aid | bid 
+-----+-----
+   1 |   1
+   2 |   2
+   3 |   3
+(3 rows)
+
 SELECT NEXTVAL( 'test_sequence' );
+ nextval 
+---------
+       3
+(1 row)
+
 DROP TABLE global_temp_table;
 DROP SEQUENCE test_sequence;
-
 -- Test two phase commit
 CREATE TABLE global_temptest_persistent(col int);
 CREATE GLOBAL TEMP TABLE global_temptest(col int);
 INSERT INTO global_temptest VALUES (1);
-
 BEGIN;
 INSERT INTO global_temptest VALUES (2);
 SELECT * FROM global_temptest;
+ col 
+-----
+   1
+   2
+(2 rows)
+
 PREPARE TRANSACTION 'global_temp1';
+ERROR:  prepared transactions are disabled
+HINT:  Set max_prepared_transactions to a nonzero value.
 -- We can't see anything from an uncommitted transaction
 SELECT * FROM global_temptest;
+ col 
+-----
+   1
+(1 row)
 
 BEGIN;
 INSERT INTO global_temptest VALUES (3);
 INSERT INTO global_temptest_persistent SELECT * FROM global_temptest;
 PREPARE TRANSACTION 'global_temp2';
+ERROR:  prepared transactions are disabled
+HINT:  Set max_prepared_transactions to a nonzero value.
 COMMIT PREPARED 'global_temp1';
+ERROR:  prepared transaction with identifier "global_temp1" does not exist
 -- 1, 2
 SELECT * FROM global_temptest;
+ col 
+-----
+   1
+(1 row)
+
 -- Nothing
 SELECT * FROM global_temptest_persistent;
+ col 
+-----
+(0 rows)
+
 \c
 -- The temp table is empty now.
 SELECT * FROM global_temptest;
+ col 
+-----
+(0 rows)
+
 -- Still nothing in global_temptest_persistent table;
 SELECT * FROM global_temptest_persistent;
+ col 
+-----
+(0 rows)
+
 INSERT INTO global_temptest VALUES (4);
 COMMIT PREPARED 'global_temp2';
+ERROR:  prepared transaction with identifier "global_temp2" does not exist
 -- Only 4
 SELECT * FROM global_temptest;
+ col 
+-----
+   4
+(1 row)
+
 -- 1, 3
 SELECT * FROM global_temptest_persistent;
+ col 
+-----
+(0 rows)
+
 \c
 DROP TABLE global_temptest;
 DROP TABLE global_temptest_persistent;

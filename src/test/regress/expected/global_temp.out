@@ -55,6 +55,9 @@ SELECT * FROM global_temptest2;
 -----
 (0 rows)
 
+DROP TABLE global_temptest2;
+DROP TABLE global_temptest1;
+-- Unsupported ON COMMIT and foreign key combination
 BEGIN;
 CREATE GLOBAL TEMP TABLE global_temptest3(col int PRIMARY KEY) ON COMMIT DELETE ROWS;
 CREATE GLOBAL TEMP TABLE global_temptest4(col int REFERENCES global_temptest3);
@@ -245,3 +248,76 @@ SELECT NEXTVAL( 'test_sequence' );
 
 DROP TABLE global_temp_table;
 DROP SEQUENCE test_sequence;
+-- Test two phase commit
+CREATE TABLE global_temptest_persistent(col int);
+CREATE GLOBAL TEMP TABLE global_temptest(col int);
+INSERT INTO global_temptest VALUES (1);
+BEGIN;
+INSERT INTO global_temptest VALUES (2);
+SELECT * FROM global_temptest;
+ col 
+-----
+   1
+   2
+(2 rows)
+
+PREPARE TRANSACTION 'global_temp1';
+-- We can't see anything from an uncommitted transaction
+SELECT * FROM global_temptest;
+ col 
+-----
+   1
+(1 row)
+
+BEGIN;
+INSERT INTO global_temptest VALUES (3);
+INSERT INTO global_temptest_persistent SELECT * FROM global_temptest;
+PREPARE TRANSACTION 'global_temp2';
+COMMIT PREPARED 'global_temp1';
+-- 1, 2
+SELECT * FROM global_temptest;
+ col 
+-----
+   1
+   2
+(2 rows)
+
+-- Nothing
+SELECT * FROM global_temptest_persistent;
+ col 
+-----
+(0 rows)
+
+\c
+-- The temp table is empty now.
+SELECT * FROM global_temptest;
+ col 
+-----
+(0 rows)
+
+-- Still nothing in global_temptest_persistent table;
+SELECT * FROM global_temptest_persistent;
+ col 
+-----
+(0 rows)
+
+INSERT INTO global_temptest VALUES (4);
+COMMIT PREPARED 'global_temp2';
+-- Only 4
+SELECT * FROM global_temptest;
+ col 
+-----
+   4
+(1 row)
+
+-- 1, 3
+SELECT * FROM global_temptest_persistent;
+ col 
+-----
+   1
+   3
+(2 rows)
+
+\c
+DROP TABLE global_temptest;
+DROP TABLE global_temptest_persistent;
