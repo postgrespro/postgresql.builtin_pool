@@ -69,9 +69,10 @@ GetNewTransactionId(bool isSubXact)
 		return FullTransactionIdFromEpochAndXid(0, BootstrapTransactionId);
 	}
 
-	/* safety check, we should never get this far in a HS standby */
+	/* Make it possible to access global temporary tables at standby */
 	if (RecoveryInProgress())
-		elog(ERROR, "cannot assign TransactionIds during recovery");
+		return FullTransactionIdFromEpochAndXid(0, FrozenTransactionId);
+   	    /* elog(ERROR, "cannot assign TransactionIds during recovery"); */
 
 	LWLockAcquire(XidGenLock, LW_EXCLUSIVE);
 
