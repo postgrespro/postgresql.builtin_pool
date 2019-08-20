@@ -788,6 +788,9 @@ ExecCheckXactReadOnly(PlannedStmt *plannedstmt)
 		if (isTempNamespace(get_rel_namespace(rte->relid)))
 			continue;
 
+		if (get_rel_persistence(rte->relid) == RELPERSISTENCE_SESSION)
+			continue;
+
 		PreventCommandIfReadOnly(CreateCommandTag((Node *) plannedstmt));
 	}
 

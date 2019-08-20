@@ -1206,7 +1206,7 @@ static TransactionId
 RecordTransactionCommit(void)
 {
 	TransactionId xid = GetTopTransactionIdIfAny();
-	bool		markXidCommitted = TransactionIdIsValid(xid);
+	bool		markXidCommitted = TransactionIdIsNormal(xid);
 	TransactionId latestXid = InvalidTransactionId;
 	int			nrels;
 	RelFileNode *rels;
@@ -1624,7 +1624,7 @@ RecordTransactionAbort(bool isSubXact)
 	 * rels to delete (note that this routine is not responsible for actually
 	 * deleting 'em).  We cannot have any child XIDs, either.
 	 */
-	if (!TransactionIdIsValid(xid))
+	if (!TransactionIdIsNormal(xid))
 	{
 		/* Reset XactLastRecEnd until the next transaction writes something */
 		if (!isSubXact)
@@ -2991,6 +2991,9 @@ CommitTransactionCommand(void)
 			 * and then clean up.
 			 */
 		case TBLOCK_ABORT_PENDING:
+			if (GetCurrentTransactionIdIfAny() == FrozenTransactionId)
+				elog(FATAL, "Transaction is aborted at standby");
+
 			AbortTransaction();
 			CleanupTransaction();
 			s->blockState = TBLOCK_DEFAULT;
