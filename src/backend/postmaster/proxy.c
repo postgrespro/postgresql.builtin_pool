@@ -244,8 +244,10 @@ client_connect(Channel* chan, int startup_packet_size)
 	pg_set_noblock(chan->client_port->sock); /* SSL handshake may switch socket to blocking mode */
 	memset(&key, 0, sizeof(key));
 	strlcpy(key.database, chan->client_port->database_name, NAMEDATALEN);
-	strlcpy(key.username, chan->client_port->user_name, NAMEDATALEN);
-
+	if (MultitenantProxy)
+		chan->gucs = psprintf("set local role %s;", chan->client_port->user_name);
+	else
+		strlcpy(key.username, chan->client_port->user_name, NAMEDATALEN);
 	ELOG(LOG, "Client %p connects to %s/%s", chan, key.database, key.username);
 
 	chan->pool = (SessionPool*)hash_search(chan->proxy->pools, &key, HASH_ENTER, &found);
@@ -617,7 +619,8 @@ channel_read(Channel* chan)
 							return false;
 						}
 					}
-					else if (ProxyingGUCs && chan->buf[msg_start] == 'Q' && !chan->in_transaction)
+					else if ((ProxyingGUCs || MultitenantProxy)
+							 && chan->buf[msg_start] == 'Q' && !chan->in_transaction)
 					{
 						char* stmt = &chan->buf[msg_start+5];
 						if (chan->prev_gucs)
@@ -625,7 +628,8 @@ channel_read(Channel* chan)
 							pfree(chan->prev_gucs);
 							chan->prev_gucs = NULL;
 						}
-						if (pg_strncasecmp(stmt, "set", 3) == 0
+						if (ProxyingGUCs
+							&& pg_strncasecmp(stmt, "set", 3) == 0
 							&& pg_strncasecmp(stmt+3, " local", 6) != 0)
 						{
 							char* new_msg;

@@ -1314,6 +1314,16 @@ static struct config_bool ConfigureNamesBool[] =
 	},
 
 	{
+		{"multitenant_proxy", PGC_USERSET, CONN_POOLING,
+		 gettext_noop("One pool worker can serve clients with different roles"),
+		 NULL,
+		},
+		&MultitenantProxy,
+		false,
+		NULL, NULL, NULL
+	},
+
+	{
 		{"log_duration", PGC_SUSET, LOGGING_WHAT,
 			gettext_noop("Logs the duration of each completed SQL statement."),
 			NULL
