@@ -248,6 +248,25 @@ client_connect(Channel* chan, int startup_packet_size)
 		chan->gucs = psprintf("set local role %s;", chan->client_port->user_name);
 	else
 		strlcpy(key.username, chan->client_port->user_name, NAMEDATALEN);
+
+	if (ProxyingGUCs)
+	{
+		ListCell *gucopts = list_head(chan->client_port->guc_options);
+		while (gucopts)
+		{
+			char	   *name;
+			char	   *value;
+
+			name = lfirst(gucopts);
+			gucopts = lnext(chan->client_port->guc_options, gucopts);
+
+			value = lfirst(gucopts);
+			gucopts = lnext(chan->client_port->guc_options, gucopts);
+
+			chan->gucs = psprintf("%sset local %s='%s';", chan->gucs ? chan->gucs : "", name, value);
+		}
+	}
+
 	ELOG(LOG, "Client %p connects to %s/%s", chan, key.database, key.username);
 
 	chan->pool = (SessionPool*)hash_search(chan->proxy->pools, &key, HASH_ENTER, &found);
@@ -510,6 +529,28 @@ is_transaction_start(char* stmt)
 	return pg_strncasecmp(stmt, "begin", 5) == 0 || pg_strncasecmp(stmt, "start", 5) == 0;
 }
 
+static bool
+is_transactional_statement(char* stmt)
+{
+	static char const* const non_tx_stmts[] = {
+		"create",
+		"cluster",
+		"drop",
+		"discard",
+		"reindex",
+		"rollback",
+		"vacuum",
+		NULL
+	};
+	int i;
+	for (i = 0; non_tx_stmts[i]; i++)
+	{
+		if (pg_strncasecmp(stmt, non_tx_stmts[i], strlen(non_tx_stmts[i])) == 0)
+			return false;
+	}
+	return true;
+}
+
 /*
  * Try to read more data from the channel and send it to the peer.
  */
@@ -648,7 +689,7 @@ channel_read(Channel* chan)
 							memcpy(&chan->buf[msg_start+1], &new_msg_len, sizeof(new_msg_len));
 							chan->rx_pos = msg_start + msg_len;
 						}
-						else if (chan->gucs)
+						else if (chan->gucs && is_transactional_statement(stmt))
 						{
 							size_t gucs_len = strlen(chan->gucs);
 							if (chan->rx_pos + gucs_len > chan->buf_size)
