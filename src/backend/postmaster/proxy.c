@@ -691,7 +691,10 @@ channel_read(Channel* chan)
 							}
 							else
 							{
-								chan->gucs = psprintf("%sset local%s%c", chan->prev_gucs, stmt+3,
+								char* param = stmt + 3;
+								if (pg_strncasecmp(param, " session", 8) == 0)
+									param += 8;
+								chan->gucs = psprintf("%sset local%s%c", chan->prev_gucs, param,
 													  chan->buf[chan->rx_pos-2] == ';' ? ' ' : ';');
 							}
 							new_msg = chan->gucs + strlen(chan->prev_gucs);
