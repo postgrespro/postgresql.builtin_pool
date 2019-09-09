@@ -47,6 +47,7 @@ SessionPoolKey;
  */
 typedef struct Channel
 {
+	int      magic;
 	char*	 buf;
 	int		 rx_pos;
 	int		 tx_pos;
@@ -78,6 +79,9 @@ typedef struct Channel
 	struct SessionPool* pool;
 }
 Channel;
+
+#define ACTIVE_CHANNEL_MAGIC    0xDEFA1234U
+#define REMOVED_CHANNEL_MAGIC   0xDEADDEEDU
 
 /*
  * Control structure for connection proxies (several proxy workers can be launched and each has it sown proxy instance).
@@ -533,7 +537,8 @@ static bool
 is_transactional_statement(char* stmt)
 {
 	static char const* const non_tx_stmts[] = {
-		"create",
+		"create tablespace",
+		"create database",
 		"cluster",
 		"drop",
 		"discard",
@@ -670,13 +675,25 @@ channel_read(Channel* chan)
 							chan->prev_gucs = NULL;
 						}
 						if (ProxyingGUCs
-							&& pg_strncasecmp(stmt, "set", 3) == 0
-							&& pg_strncasecmp(stmt+3, " local", 6) != 0)
+							&& ((pg_strncasecmp(stmt, "set", 3) == 0
+								 && pg_strncasecmp(stmt+3, " local", 6) != 0)
+								|| pg_strncasecmp(stmt, "reset", 5) == 0))
 						{
 							char* new_msg;
 							chan->prev_gucs = chan->gucs ? chan->gucs : pstrdup("");
-							chan->gucs = psprintf("%sset local%s%c", chan->prev_gucs, stmt+3,
-												  chan->buf[chan->rx_pos-2] == ';' ? ' ' : ';');
+							if (pg_strncasecmp(stmt, "reset", 5) == 0)
+							{
+								char* semi = strchr(stmt+5, ';');
+								if (semi)
+									*semi = '\0';
+								chan->gucs = psprintf("%sset local%s=default;",
+													  chan->prev_gucs, stmt+5);
+							}
+							else
+							{
+								chan->gucs = psprintf("%sset local%s%c", chan->prev_gucs, stmt+3,
+													  chan->buf[chan->rx_pos-2] == ';' ? ' ' : ';');
+							}
 							new_msg = chan->gucs + strlen(chan->prev_gucs);
 							Assert(msg_start + strlen(new_msg)*2 + 6 < chan->buf_size);
 							/*
@@ -786,6 +803,7 @@ static Channel*
 channel_create(Proxy* proxy)
 {
 	Channel* chan = (Channel*)palloc0(sizeof(Channel));
+	chan->magic = ACTIVE_CHANNEL_MAGIC;
 	chan->proxy = proxy;
 	chan->buf = palloc(INIT_BUF_SIZE);
 	chan->buf_size = INIT_BUF_SIZE;
@@ -877,6 +895,7 @@ backend_start(SessionPool* pool, char** error)
 		*error = strdup("Too much sessios: try to increase 'max_sessions' configuration parameter");
 		/* Too much sessions, error report was already logged */
 		closesocket(chan->backend_socket);
+		chan->magic = REMOVED_CHANNEL_MAGIC;
 		pfree(chan->buf);
 		pfree(chan);
 		chan = NULL;
@@ -908,6 +927,7 @@ proxy_add_client(Proxy* proxy, Port* port)
 #if defined(ENABLE_GSS) || defined(ENABLE_SSPI)
 		pfree(port->gss);
 #endif
+		chan->magic = REMOVED_CHANNEL_MAGIC;
 		pfree(port);
 		pfree(chan->buf);
 		pfree(chan);
@@ -959,6 +979,7 @@ channel_remove(Channel* chan)
 				free(error);
 		}
 	}
+	chan->magic = REMOVED_CHANNEL_MAGIC;
 	pfree(chan->buf);
 	pfree(chan);
 }
@@ -1035,12 +1056,39 @@ proxy_loop(Proxy* proxy)
 					proxy_add_client(proxy, port);
 				}
 			}
-			else
+			/*
+			 * epoll may return event for already closed session if
+			 * socket is still openned. From epoll documentation: Q6
+			 * Will closing a file descriptor cause it to be removed
+			 * from all epoll sets automatically?
+			 *
+			 * A6  Yes, but be aware of the following point.  A file
+			 * descriptor is a reference to an open file description
+			 * (see open(2)).  Whenever a descriptor is duplicated via
+			 * dup(2), dup2(2), fcntl(2) F_DUPFD, or fork(2), a new
+			 * file descriptor referring to the same open file
+			 * description is created.  An open file  description
+			 * continues  to exist until  all  file  descriptors
+			 * referring to it have been closed.  A file descriptor is
+			 * removed from an epoll set only after all the file
+			 * descriptors referring to the underlying open file
+			 * description  have been closed  (or  before  if  the
+			 * descriptor is explicitly removed using epoll_ctl(2)
+			 * EPOLL_CTL_DEL).  This means that even after a file
+			 * descriptor that is part of an epoll set has been
+			 * closed, events may be reported  for that  file
+			 * descriptor  if  other  file descriptors referring to
+			 * the same underlying file description remain open.
+			 *
+			 * Using this check for valid magic field we try to ignore
+			 * such events.
+			 */
+			else if (chan->magic == ACTIVE_CHANNEL_MAGIC)
 			{
 				if (ready[i].events & WL_SOCKET_WRITEABLE) {
 					ELOG(LOG, "Channel %p is writable", chan);
 					channel_write(chan, false);
-					if (chan->peer == NULL || chan->peer->tx_size == 0) /* nothing to write */
+					if (chan->magic == ACTIVE_CHANNEL_MAGIC && (chan->peer == NULL || chan->peer->tx_size == 0)) /* nothing to write */
 					{
 						/* At systems not supporting epoll edge triggering (Win32, FreeBSD, MacOS), we need to disable writable event to avoid busy loop */
 						ModifyWaitEvent(chan->proxy->wait_events, chan->event_pos, WL_SOCKET_READABLE | WL_SOCKET_EDGE, NULL);
@@ -1050,7 +1098,7 @@ proxy_loop(Proxy* proxy)
 				if (ready[i].events & WL_SOCKET_READABLE) {
 					ELOG(LOG, "Channel %p is readable", chan);
 					channel_read(chan);
-					if (chan->tx_size != 0) /* pending write: read is not prohibited */
+					if (chan->magic == ACTIVE_CHANNEL_MAGIC && chan->tx_size != 0) /* pending write: read is not prohibited */
 					{
 						/* At systems not supporting epoll edge triggering (Win32, FreeBSD, MacOS), we need to disable readable event to avoid busy loop */
 						ModifyWaitEvent(chan->proxy->wait_events, chan->event_pos, WL_SOCKET_WRITEABLE | WL_SOCKET_EDGE, NULL);
