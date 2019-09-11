@@ -42,6 +42,8 @@ typedef struct
 }
 SessionPoolKey;
 
+#define NULLSTR(s) ((s) ? (s) : "?")
+
 /*
  * Channels represent both clients and backends
  */
@@ -84,7 +86,7 @@ Channel;
 #define REMOVED_CHANNEL_MAGIC   0xDEADDEEDU
 
 /*
- * Control structure for connection proxies (several proxy workers can be launched and each has it sown proxy instance).
+ * Control structure for connection proxies (several proxy workers can be launched and each has its own proxy instance).
  * Proxy contains hash of session pools for reach role/dbname combination.
  */
 typedef struct Proxy
@@ -115,6 +117,8 @@ typedef struct SessionPool
 	int		 n_connected_clients; /* Total number of connected clients */
 	int		 n_idle_clients;	  /* Number of clients in idle state */
 	int		 n_pending_clients;	  /* Number of clients waiting for free backend */
+	List*    startup_gucs;        /* List of startup options specified in startup packet */
+	char*    cmdline_options;     /* Command line options passed to backend */
 }
 SessionPool;
 
@@ -208,6 +212,71 @@ backend_reschedule(Channel* chan, bool is_new)
 	return true;
 }
 
+static size_t
+string_length(char const* str)
+{
+	size_t length;
+	if (str == NULL)
+		return 0;
+	while (*str != '\0')
+		length += (*str++ == ' ') ? 2 : 1;
+	return length;
+}
+
+static size_t
+string_list_length(List* list)
+{
+	ListCell *cell;
+	size_t length = 0;
+	foreach (cell, list)
+	{
+		length += strlen((char*)lfirst(cell));
+	}
+	return length;
+}
+
+static List*
+string_list_copy(List* orig)
+{
+	List* copy = list_copy(orig);
+	ListCell *cell;
+	foreach (cell, copy)
+	{
+		lfirst(cell) = pstrdup((char*)lfirst(cell));
+	}
+	return copy;
+}
+
+static bool
+string_list_equal(List* a, List* b)
+{
+	const ListCell *ca, *cb;
+	if (list_length(a) != list_length(b))
+		return false;
+	forboth(ca, a, cb, b)
+		if (strcmp(lfirst(ca), lfirst(cb)) != 0)
+			return false;
+	return true;
+}
+
+static char*
+string_append(char* dst, char const* src)
+{
+	while (*src)
+	{
+		if (*src == ' ')
+			*dst++ = '\\';
+		*dst++ = *src++;
+	}
+	return dst;
+}
+
+static bool
+string_equal(char const* a, char const* b)
+{
+	return a == b ? true : a == NULL || b == NULL ? false : strcmp(a, b) == 0;
+}
+
 /**
  * Parse client's startup packet and assign client to proper connection pool based on dbname/role
  */
@@ -253,6 +322,17 @@ client_connect(Channel* chan, int startup_packet_size)
 	else
 		strlcpy(key.username, chan->client_port->user_name, NAMEDATALEN);
 
+	ELOG(LOG, "Client %p connects to %s/%s", chan, key.database, key.username);
+
+	chan->pool = (SessionPool*)hash_search(chan->proxy->pools, &key, HASH_ENTER, &found);
+	if (!found)
+	{
+		/* First connection to this role/dbname */
+		chan->proxy->state->n_pools += 1;
+		chan->pool->startup_gucs = NULL;
+		chan->pool->cmdline_options = NULL;
+		memset((char*)chan->pool + sizeof(SessionPoolKey), 0, sizeof(SessionPool) - sizeof(SessionPoolKey));
+	}
 	if (ProxyingGUCs)
 	{
 		ListCell *gucopts = list_head(chan->client_port->guc_options);
@@ -270,15 +350,31 @@ client_connect(Channel* chan, int startup_packet_size)
 			chan->gucs = psprintf("%sset local %s='%s';", chan->gucs ? chan->gucs : "", name, value);
 		}
 	}
-
-	ELOG(LOG, "Client %p connects to %s/%s", chan, key.database, key.username);
-
-	chan->pool = (SessionPool*)hash_search(chan->proxy->pools, &key, HASH_ENTER, &found);
-	if (!found)
+	else
 	{
-		/* First connection to this role/dbname */
-		chan->proxy->state->n_pools += 1;
-		memset((char*)chan->pool + sizeof(SessionPoolKey), 0, sizeof(SessionPool) - sizeof(SessionPoolKey));
+		/* Assume that all clients are using the same set of GUCs.
+		 * Use then for launching pooler worker backends and report error
+		 * if GUCs in startup packets are different.
+		 */
+		if (chan->pool->n_launched_backends == 0)
+		{
+			list_free(chan->pool->startup_gucs);
+			if (chan->pool->cmdline_options)
+				pfree(chan->pool->cmdline_options);
+
+			chan->pool->startup_gucs = string_list_copy(chan->client_port->guc_options);
+			if (chan->client_port->cmdline_options)
+				chan->pool->cmdline_options = pstrdup(chan->client_port->cmdline_options);
+		}
+		else
+		{
+			if (!string_list_equal(chan->pool->startup_gucs, chan->client_port->guc_options) ||
+				!string_equal(chan->pool->cmdline_options, chan->client_port->cmdline_options))
+			{
+				elog(LOG, "Ignoring GUCs of client %s:%s",
+					 NULLSTR(chan->client_port->remote_host), NULLSTR(chan->client_port->remote_port));
+			}
+		}
 	}
 	chan->pool->proxy = chan->proxy;
 	chan->pool->n_connected_clients += 1;
@@ -845,13 +941,16 @@ backend_start(SessionPool* pool, char** error)
 {
 	Channel* chan;
 	char postmaster_port[8];
-	char const* keywords[] = {"port","dbname","user","sslmode","application_name",NULL};
-	char const* values[] = {postmaster_port,pool->key.database,pool->key.username,"disable","pool_worker",NULL};
+	char* options = (char*)palloc(string_length(pool->cmdline_options) + string_list_length(pool->startup_gucs) + list_length(pool->startup_gucs)*5 + 1);
+	char const* keywords[] = {"port","dbname","user","sslmode","application_name","options",NULL};
+	char const* values[] = {postmaster_port,pool->key.database,pool->key.username,"disable","pool_worker",options,NULL};
 	PGconn* conn;
 	char* msg;
 	int int32_buf;
 	int msg_len;
 	static bool libpqconn_loaded;
+	ListCell *gucopts;
+	char* dst = options;
 
 	if (!libpqconn_loaded)
 	{
@@ -861,7 +960,31 @@ backend_start(SessionPool* pool, char** error)
 		libpqconn_loaded = true;
 	}
 	pg_itoa(PostPortNumber, postmaster_port);
+
+	gucopts = list_head(pool->startup_gucs);
+	if (pool->cmdline_options)
+		dst += sprintf(dst, "%s", pool->cmdline_options);
+	while (gucopts)
+	{
+		char	   *name;
+		char	   *value;
+
+		name = lfirst(gucopts);
+		gucopts = lnext(pool->startup_gucs, gucopts);
+
+		value = lfirst(gucopts);
+		gucopts = lnext(pool->startup_gucs, gucopts);
+
+		if (strcmp(name, "application_name") != 0)
+		{
+			dst += sprintf(dst, " -c %s=", name);
+			dst = string_append(dst, value);
+		}
+	}
+	*dst = '\0';
+	elog(LOG, "Spawn backend with parameters \"%s\"", options);
 	conn = LibpqConnectdbParams(keywords, values, error);
+	pfree(options);
 	if (!conn)
 		return NULL;
 
