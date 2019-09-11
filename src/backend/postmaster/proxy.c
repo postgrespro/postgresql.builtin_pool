@@ -215,12 +215,13 @@ backend_reschedule(Channel* chan, bool is_new)
 static size_t
 string_length(char const* str)
 {
-	size_t length;
-	if (str == NULL)
+	size_t spaces = 0;
+	char const* p = str;
+	if (p == NULL)
 		return 0;
-	while (*str != '\0')
-		length += (*str++ == ' ') ? 2 : 1;
-	return length;
+	while (*p != '\0')
+		spaces += (*p++ == ' ');
+	return (p - str) + spaces;
 }
 
 static size_t
@@ -371,8 +372,8 @@ client_connect(Channel* chan, int startup_packet_size)
 			if (!string_list_equal(chan->pool->startup_gucs, chan->client_port->guc_options) ||
 				!string_equal(chan->pool->cmdline_options, chan->client_port->cmdline_options))
 			{
-				elog(LOG, "Ignoring GUCs of client %s:%s",
-					 NULLSTR(chan->client_port->remote_host), NULLSTR(chan->client_port->remote_port));
+				elog(LOG, "Ignoring GUCs of client %s",
+					 NULLSTR(chan->client_port->application_name));
 			}
 		}
 	}
@@ -941,7 +942,7 @@ backend_start(SessionPool* pool, char** error)
 {
 	Channel* chan;
 	char postmaster_port[8];
-	char* options = (char*)palloc(string_length(pool->cmdline_options) + string_list_length(pool->startup_gucs) + list_length(pool->startup_gucs)*5 + 1);
+	char* options = (char*)palloc(string_length(pool->cmdline_options) + string_list_length(pool->startup_gucs) + list_length(pool->startup_gucs)/2*5 + 1);
 	char const* keywords[] = {"port","dbname","user","sslmode","application_name","options",NULL};
 	char const* values[] = {postmaster_port,pool->key.database,pool->key.username,"disable","pool_worker",options,NULL};
 	PGconn* conn;
@@ -982,7 +983,6 @@ backend_start(SessionPool* pool, char** error)
 		}
 	}
 	*dst = '\0';
-	elog(LOG, "Spawn backend with parameters \"%s\"", options);
 	conn = LibpqConnectdbParams(keywords, values, error);
 	pfree(options);
 	if (!conn)
