@@ -113,6 +113,7 @@ typedef struct SessionPool
 	Channel* pending_clients;	  /* List of clients waiting for free backend */
 	Proxy*	 proxy;				  /* Owner of this pool */
 	int		 n_launched_backends; /* Total number of launched backends */
+	int		 n_dedicated_backends;/* Number of dedicated (tainted) backends */
 	int		 n_idle_backends;	  /* Number of backends in idle state */
 	int		 n_connected_clients; /* Total number of connected clients */
 	int		 n_idle_clients;	  /* Number of clients in idle state */
@@ -208,6 +209,7 @@ backend_reschedule(Channel* chan, bool is_new)
 		ELOG(LOG, "Backed %d is tainted", chan->backend_pid);
 		chan->backend_is_tainted = true;
 		chan->proxy->state->n_dedicated_backends += 1;
+		chan->pool->n_dedicated_backends += 1;
 	}
 	return true;
 }
@@ -357,7 +359,7 @@ client_connect(Channel* chan, int startup_packet_size)
 		 * Use then for launching pooler worker backends and report error
 		 * if GUCs in startup packets are different.
 		 */
-		if (chan->pool->n_launched_backends == 0)
+		if (chan->pool->n_launched_backends == chan->pool->n_dedicated_backends)
 		{
 			list_free(chan->pool->startup_gucs);
 			if (chan->pool->cmdline_options)
@@ -372,7 +374,7 @@ client_connect(Channel* chan, int startup_packet_size)
 			if (!string_list_equal(chan->pool->startup_gucs, chan->client_port->guc_options) ||
 				!string_equal(chan->pool->cmdline_options, chan->client_port->cmdline_options))
 			{
-				elog(LOG, "Ignoring GUCs of client %s",
+				elog(LOG, "Ignoring startup GUCs of client %s",
 					 NULLSTR(chan->client_port->application_name));
 			}
 		}
@@ -1087,6 +1089,7 @@ channel_remove(Channel* chan)
 	{
 		chan->proxy->state->n_backends -= 1;
 		chan->proxy->state->n_dedicated_backends -= chan->backend_is_tainted;
+		chan->pool->n_dedicated_backends -= chan->backend_is_tainted;
 		chan->pool->n_launched_backends -= 1;
 		closesocket(chan->backend_socket);
 		pfree(chan->handshake_response);
