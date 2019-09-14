@@ -1687,8 +1687,11 @@ HeapTupleSatisfiesHistoricMVCC(HeapTuple htup, Snapshot snapshot,
  *	if so, the indicated buffer is marked dirty.
  */
 bool
-HeapTupleSatisfiesVisibility(HeapTuple tup, Snapshot snapshot, Buffer buffer)
+HeapTupleSatisfiesVisibility(Relation relation, HeapTuple tup, Snapshot snapshot, Buffer buffer)
 {
+	if (relation->rd_rel->relpersistence == RELPERSISTENCE_SESSION)
+		return TempTupleSatisfiesMVCC(tup, snapshot, buffer);
+
 	switch (snapshot->snapshot_type)
 	{
 		case SNAPSHOT_MVCC:

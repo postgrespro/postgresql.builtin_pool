@@ -444,7 +444,7 @@ heapgetpage(TableScanDesc sscan, BlockNumber page)
 			if (all_visible)
 				valid = true;
 			else
-				valid = HeapTupleSatisfiesVisibility(&loctup, snapshot, buffer);
+				valid = HeapTupleSatisfiesVisibility(scan->rs_base.rs_rd, &loctup, snapshot, buffer);
 
 			CheckForSerializableConflictOut(valid, scan->rs_base.rs_rd,
 											&loctup, buffer, snapshot);
@@ -664,7 +664,8 @@ heapgettup(HeapScanDesc scan,
 				/*
 				 * if current tuple qualifies, return it.
 				 */
-				valid = HeapTupleSatisfiesVisibility(tuple,
+				valid = HeapTupleSatisfiesVisibility(scan->rs_base.rs_rd,
+													 tuple,
 													 snapshot,
 													 scan->rs_cbuf);
 
@@ -1474,7 +1475,7 @@ heap_fetch(Relation relation,
 	/*
 	 * check tuple visibility, then release lock
 	 */
-	valid = HeapTupleSatisfiesVisibility(tuple, snapshot, buffer);
+	valid = HeapTupleSatisfiesVisibility(relation, tuple, snapshot, buffer);
 
 	if (valid)
 		PredicateLockTuple(relation, tuple, snapshot);
@@ -1612,7 +1613,7 @@ heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 			ItemPointerSet(&(heapTuple->t_self), BufferGetBlockNumber(buffer), offnum);
 
 			/* If it's visible per the snapshot, we must return it */
-			valid = HeapTupleSatisfiesVisibility(heapTuple, snapshot, buffer);
+			valid = HeapTupleSatisfiesVisibility(relation, heapTuple, snapshot, buffer);
 			CheckForSerializableConflictOut(valid, relation, heapTuple,
 											buffer, snapshot);
 			/* reset to original, non-redirected, tid */
@@ -1754,7 +1755,7 @@ heap_get_latest_tid(TableScanDesc sscan,
 		 * Check tuple visibility; if visible, set it as the new result
 		 * candidate.
 		 */
-		valid = HeapTupleSatisfiesVisibility(&tp, snapshot, buffer);
+		valid = HeapTupleSatisfiesVisibility(relation, &tp, snapshot, buffer);
 		CheckForSerializableConflictOut(valid, relation, &tp, buffer, snapshot);
 		if (valid)
 			*tid = ctid;
@@ -1851,6 +1852,14 @@ ReleaseBulkInsertStatePin(BulkInsertState bistate)
 }
 
 
+static TransactionId
+GetTransactionId(Relation relation)
+{
+	TransactionId xid = relation->rd_rel->relpersistence == RELPERSISTENCE_SESSION
+		? GetReplicaTransactionId()
+		: GetCurrentTransactionId();
+}
+
 /*
  *	heap_insert		- insert tuple into a heap
  *
@@ -1873,7 +1882,7 @@ void
 heap_insert(Relation relation, HeapTuple tup, CommandId cid,
 			int options, BulkInsertState bistate)
 {
-	TransactionId xid = GetCurrentTransactionId();
+	TransactionId xid = GetTransactionId(relation);
 	HeapTuple	heaptup;
 	Buffer		buffer;
 	Buffer		vmbuffer = InvalidBuffer;
@@ -2110,7 +2119,7 @@ void
 heap_multi_insert(Relation relation, TupleTableSlot **slots, int ntuples,
 				  CommandId cid, int options, BulkInsertState bistate)
 {
-	TransactionId xid = GetCurrentTransactionId();
+	TransactionId xid = GetTransactionId(relation);
 	HeapTuple  *heaptuples;
 	int			i;
 	int			ndone;
@@ -2449,7 +2458,7 @@ heap_delete(Relation relation, ItemPointer tid,
 			TM_FailureData *tmfd, bool changingPart)
 {
 	TM_Result	result;
-	TransactionId xid = GetCurrentTransactionId();
+	TransactionId xid = GetTransactionId(relation);
 	ItemId		lp;
 	HeapTupleData tp;
 	Page		page;
@@ -2514,7 +2523,7 @@ heap_delete(Relation relation, ItemPointer tid,
 	tp.t_self = *tid;
 
 l1:
-	result = HeapTupleSatisfiesUpdate(&tp, cid, buffer);
+	result = HeapTupleSatisfiesUpdate(relation, &tp, cid, buffer);
 
 	if (result == TM_Invisible)
 	{
@@ -2633,7 +2642,7 @@ l1:
 	if (crosscheck != InvalidSnapshot && result == TM_Ok)
 	{
 		/* Perform additional check for transaction-snapshot mode RI updates */
-		if (!HeapTupleSatisfiesVisibility(&tp, crosscheck, buffer))
+		if (!HeapTupleSatisfiesVisibility(relation, &tp, crosscheck, buffer))
 			result = TM_Updated;
 	}
 
@@ -2900,7 +2909,7 @@ heap_update(Relation relation, ItemPointer otid, HeapTuple newtup,
 			TM_FailureData *tmfd, LockTupleMode *lockmode)
 {
 	TM_Result	result;
-	TransactionId xid = GetCurrentTransactionId();
+	TransactionId xid = GetTransactionId(relation);
 	Bitmapset  *hot_attrs;
 	Bitmapset  *key_attrs;
 	Bitmapset  *id_attrs;
@@ -3070,7 +3079,7 @@ heap_update(Relation relation, ItemPointer otid, HeapTuple newtup,
 l2:
 	checked_lockers = false;
 	locker_remains = false;
-	result = HeapTupleSatisfiesUpdate(&oldtup, cid, buffer);
+	result = HeapTupleSatisfiesUpdate(relation, &oldtup, cid, buffer);
 
 	/* see below about the "no wait" case */
 	Assert(result != TM_BeingModified || wait);
@@ -3262,7 +3271,7 @@ l2:
 	if (crosscheck != InvalidSnapshot && result == TM_Ok)
 	{
 		/* Perform additional check for transaction-snapshot mode RI updates */
-		if (!HeapTupleSatisfiesVisibility(&oldtup, crosscheck, buffer))
+		if (!HeapTupleSatisfiesVisibility(relation, &oldtup, crosscheck, buffer))
 		{
 			result = TM_Updated;
 			Assert(!ItemPointerEquals(&oldtup.t_self, &oldtup.t_data->t_ctid));
@@ -4018,7 +4027,7 @@ heap_lock_tuple(Relation relation, HeapTuple tuple,
 	tuple->t_tableOid = RelationGetRelid(relation);
 
 l3:
-	result = HeapTupleSatisfiesUpdate(tuple, cid, *buffer);
+	result = HeapTupleSatisfiesUpdate(relation, tuple, cid, *buffer);
 
 	if (result == TM_Invisible)
 	{
@@ -4193,7 +4202,7 @@ l3:
 					TM_Result	res;
 
 					res = heap_lock_updated_tuple(relation, tuple, &t_ctid,
-												  GetCurrentTransactionId(),
+												  GetTransactionId(relation),
 												  mode);
 					if (res != TM_Ok)
 					{
@@ -4441,7 +4450,7 @@ l3:
 				TM_Result	res;
 
 				res = heap_lock_updated_tuple(relation, tuple, &t_ctid,
-											  GetCurrentTransactionId(),
+											  GetTransactionId(relation),
 											  mode);
 				if (res != TM_Ok)
 				{
@@ -4550,7 +4559,7 @@ failed:
 	 * state if multixact.c elogs.
 	 */
 	compute_new_xmax_infomask(xmax, old_infomask, tuple->t_data->t_infomask2,
-							  GetCurrentTransactionId(), mode, false,
+							  GetTransactionId(relation), mode, false,
 							  &xid, &new_infomask, &new_infomask2);
 
 	START_CRIT_SECTION();
@@ -5570,7 +5579,7 @@ heap_finish_speculative(Relation relation, ItemPointer tid)
 void
 heap_abort_speculative(Relation relation, ItemPointer tid)
 {
-	TransactionId xid = GetCurrentTransactionId();
+	TransactionId xid = GetTransactionId(relation);
 	ItemId		lp;
 	HeapTupleData tp;
 	Page		page;

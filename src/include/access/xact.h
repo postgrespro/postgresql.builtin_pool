@@ -440,4 +440,7 @@ extern void EnterParallelMode(void);
 extern void ExitParallelMode(void);
 extern bool IsInParallelMode(void);
 
+extern TransactionId GetReplicaTransactionId(void);
+extern bool IsReplicaTransactionAborted(TransactionId xid);
+
 #endif							/* XACT_H */

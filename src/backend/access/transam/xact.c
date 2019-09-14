@@ -192,6 +192,7 @@ typedef struct TransactionStateData
 	int			parallelModeLevel;	/* Enter/ExitParallelMode counter */
 	bool		chain;			/* start a new block after this one */
 	struct TransactionStateData *parent;	/* back link to parent */
+	TransactionId replicXid;    /* pseudo XID for inserting data in global temp tables at replica */
 } TransactionStateData;
 
 typedef TransactionStateData *TransactionState;
@@ -285,6 +286,9 @@ typedef struct XactCallbackItem
 } XactCallbackItem;
 
 static XactCallbackItem *Xact_callbacks = NULL;
+
+static TransactionId replicaTransIdCount;
+static Bitmapset*    replicaAbortedXids;
 
 /*
  * List of add-on start- and end-of-subxact callbacks
@@ -427,6 +431,22 @@ GetCurrentTransactionId(void)
 	if (!FullTransactionIdIsValid(s->fullTransactionId))
 		AssignTransactionId(s);
 	return XidFromFullTransactionId(s->fullTransactionId);
+}
+
+
+TransactionId
+GetReplicaTransactionId(void)
+{
+	TransactionState s = CurrentTransactionState;
+	if (!TransactionIdIsValid(s->replicaTransactionId))
+		s->replicaTransactionId = ++replicaTransIdCount;
+	return s->replicaTransactionId;
+}
+
+bool
+IsReplicaTransactionAborted(TransactionId xid)
+{
+	return bms_is_member(replicaAbortedXids, xid);
 }
 
 /*
@@ -1905,6 +1925,7 @@ StartTransaction(void)
 	 */
 	s->state = TRANS_START;
 	s->fullTransactionId = InvalidFullTransactionId;	/* until assigned */
+	s->replicaTransactionId = InvalidTransactionId;	/* until assigned */
 
 	/* Determine if statements are logged in this transaction */
 	xact_is_sampled = log_xact_sample_rate != 0 &&
@@ -2569,6 +2590,10 @@ AbortTransaction(void)
 
 	/* Prevent cancel/die interrupt while cleaning up */
 	HOLD_INTERRUPTS();
+
+	/* Mark transactions involved global temp table at replica as aborted */
+	if (TransactionIdIsValid(s->replicaTransactionId))
+		replicaAbortedXids = bms_add_member(replicaAbortedXids, s->replicaTransactionId);
 
 	/* Make sure we have a valid memory context and resource owner */
 	AtAbort_Memory();
@@ -4858,6 +4883,10 @@ AbortSubTransaction(void)
 
 	/* Prevent cancel/die interrupt while cleaning up */
 	HOLD_INTERRUPTS();
+
+	/* Mark transactions involved global temp table at replica as aborted */
+	if (TransactionIdIsValid(s->replicaTransactionId))
+		replicaAbortedXids = bms_add_member(replicaAbortedXids, s->replicaTransactionId);
 
 	/* Make sure we have a valid memory context and resource owner */
 	AtSubAbort_Memory();
