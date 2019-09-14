@@ -192,7 +192,7 @@ typedef struct TransactionStateData
 	int			parallelModeLevel;	/* Enter/ExitParallelMode counter */
 	bool		chain;			/* start a new block after this one */
 	struct TransactionStateData *parent;	/* back link to parent */
-	TransactionId replicXid;    /* pseudo XID for inserting data in global temp tables at replica */
+	TransactionId replicaTransactionId;    /* pseudo XID for inserting data in global temp tables at replica */
 } TransactionStateData;
 
 typedef TransactionStateData *TransactionState;
@@ -288,6 +288,7 @@ typedef struct XactCallbackItem
 static XactCallbackItem *Xact_callbacks = NULL;
 
 static TransactionId replicaTransIdCount;
+static TransactionId replicaTopTransId;
 static Bitmapset*    replicaAbortedXids;
 
 /*
@@ -433,22 +434,6 @@ GetCurrentTransactionId(void)
 	return XidFromFullTransactionId(s->fullTransactionId);
 }
 
-
-TransactionId
-GetReplicaTransactionId(void)
-{
-	TransactionState s = CurrentTransactionState;
-	if (!TransactionIdIsValid(s->replicaTransactionId))
-		s->replicaTransactionId = ++replicaTransIdCount;
-	return s->replicaTransactionId;
-}
-
-bool
-IsReplicaTransactionAborted(TransactionId xid)
-{
-	return bms_is_member(replicaAbortedXids, xid);
-}
-
 /*
  *	GetCurrentTransactionIdIfAny
  *
@@ -460,6 +445,48 @@ TransactionId
 GetCurrentTransactionIdIfAny(void)
 {
 	return XidFromFullTransactionId(CurrentTransactionState->fullTransactionId);
+}
+
+/*
+ * Transactions at replica can update only global temporary tables.
+ * Them are assigned backend-local XIDs which are independent from normal XIDs received from primary node.
+ * So tuples of temporary tables at replica requires special visibility rules.
+ *
+ * XIDs for such transactions at replica are created on demand (when tuple of temp table is updated).
+ * XID wrap-around and adjusting XID horizon is not supported. So number of such transactions at replica is
+ * limited by 2^32 and require up to 2^29 in-memory bitmap for marking aborted transactions.
+  */
+TransactionId
+GetReplicaTransactionId(void)
+{
+	TransactionState s = CurrentTransactionState;
+	if (!TransactionIdIsValid(s->replicaTransactionId))
+		s->replicaTransactionId = ++replicaTransIdCount;
+	return s->replicaTransactionId;
+}
+
+/*
+ * At replica transaction can update only temporary tables
+ * and them are assigned special XIDs (not related with normal XIDs received from primary node).
+ * As far as we see only own transaction it is not necessary to mark committed transactions.
+ * Only marking aborted ones is enough. All transactions which are not marked as aborted are treated as
+ * committed or self in-progress transactions.
+ */
+bool
+IsReplicaTransactionAborted(TransactionId xid)
+{
+	return bms_is_member(xid, replicaAbortedXids);
+}
+
+/*
+ * As far as XIDs for transactions at replica are generated individually for each backends,
+ * we can check that XID belongs to the current transaction or any of its subtransactions by
+ * just comparing it with XID of top transaction.
+ */
+bool
+IsReplicaCurrentTransactionId(TransactionId xid)
+{
+	return xid > replicaTopTransId;
 }
 
 /*
@@ -1911,6 +1938,8 @@ StartTransaction(void)
 	 */
 	s = &TopTransactionStateData;
 	CurrentTransactionState = s;
+
+	replicaTopTransId = replicaTransIdCount;
 
 	Assert(!FullTransactionIdIsValid(XactTopFullTransactionId));
 

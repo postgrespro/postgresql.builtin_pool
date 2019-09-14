@@ -1855,7 +1855,7 @@ ReleaseBulkInsertStatePin(BulkInsertState bistate)
 static TransactionId
 GetTransactionId(Relation relation)
 {
-	TransactionId xid = relation->rd_rel->relpersistence == RELPERSISTENCE_SESSION
+	return relation->rd_rel->relpersistence == RELPERSISTENCE_SESSION && RecoveryInProgress()
 		? GetReplicaTransactionId()
 		: GetCurrentTransactionId();
 }

@@ -158,7 +158,8 @@ pgrowlocks(PG_FUNCTION_ARGS)
 		/* must hold a buffer lock to call HeapTupleSatisfiesUpdate */
 		LockBuffer(hscan->rs_cbuf, BUFFER_LOCK_SHARE);
 
-		htsu = HeapTupleSatisfiesUpdate(tuple,
+		htsu = HeapTupleSatisfiesUpdate(mydata->rel,
+										tuple,
 										GetCurrentCommandId(false),
 										hscan->rs_cbuf);
 		xmax = HeapTupleHeaderGetRawXmax(tuple->t_data);

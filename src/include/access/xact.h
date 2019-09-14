@@ -442,5 +442,6 @@ extern bool IsInParallelMode(void);
 
 extern TransactionId GetReplicaTransactionId(void);
 extern bool IsReplicaTransactionAborted(TransactionId xid);
+extern bool IsReplicaCurrentTransactionId(TransactionId xid);
 
 #endif							/* XACT_H */

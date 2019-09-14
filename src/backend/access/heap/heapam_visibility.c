@@ -77,6 +77,7 @@
 #include "utils/combocid.h"
 #include "utils/snapmgr.h"
 
+static bool TempTupleSatisfiesVisibility(HeapTuple htup, CommandId curcid, Buffer buffer);
 
 /*
  * SetHintBits()
@@ -454,13 +455,16 @@ HeapTupleSatisfiesToast(HeapTuple htup, Snapshot snapshot,
  *	test for it themselves.)
  */
 TM_Result
-HeapTupleSatisfiesUpdate(HeapTuple htup, CommandId curcid,
+HeapTupleSatisfiesUpdate(Relation relation, HeapTuple htup, CommandId curcid,
 						 Buffer buffer)
 {
 	HeapTupleHeader tuple = htup->t_data;
 
 	Assert(ItemPointerIsValid(&htup->t_self));
 	Assert(htup->t_tableOid != InvalidOid);
+
+	if (relation->rd_rel->relpersistence == RELPERSISTENCE_SESSION && RecoveryInProgress())
+		return TempTupleSatisfiesVisibility(htup, curcid, buffer) ? TM_Ok : TM_Invisible;
 
 	if (!HeapTupleHeaderXminCommitted(tuple))
 	{
@@ -1677,6 +1681,70 @@ HeapTupleSatisfiesHistoricMVCC(HeapTuple htup, Snapshot snapshot,
 }
 
 /*
+ * TempTupleSatisfiesVisibility
+ *		True iff global temp table tuple is visible for the given snapshot.
+ *
+ * Temporary tables are visible only for current backend, so there is no need to
+ * handle cases with tuples committed by other backends. We only need to exclude
+ * modifications done by aborted transactions or after start of table scan.
+ *
+ */
+static bool
+TempTupleSatisfiesVisibility(HeapTuple htup, CommandId curcid, Buffer buffer)
+{
+	HeapTupleHeader tuple = htup->t_data;
+	TransactionId xmin;
+	TransactionId xmax;
+
+
+	Assert(ItemPointerIsValid(&htup->t_self));
+	Assert(htup->t_tableOid != InvalidOid);
+
+	if (HeapTupleHeaderXminInvalid(tuple))
+		return false;
+
+	xmin = HeapTupleHeaderGetRawXmin(tuple);
+
+	if (IsReplicaTransactionAborted(xmin))
+		return false;
+
+	if (IsReplicaCurrentTransactionId(xmin)
+		&& HeapTupleHeaderGetCmin(tuple) >= curcid)
+	{
+		return false;	/* inserted after scan started */
+	}
+
+	if (tuple->t_infomask & HEAP_XMAX_INVALID)	/* xid invalid */
+		return true;
+
+	if (HEAP_XMAX_IS_LOCKED_ONLY(tuple->t_infomask))	/* not deleter */
+		return true;
+
+	if (tuple->t_infomask & HEAP_XMAX_IS_MULTI)
+	{
+		xmax = HeapTupleGetUpdateXid(tuple);
+
+		/* updating subtransaction must have aborted */
+		if (IsReplicaTransactionAborted(xmax))
+			return true;
+
+		return (HeapTupleHeaderGetCmax(tuple) >= curcid);
+	}
+	xmax = HeapTupleHeaderGetRawXmax(tuple);
+
+	/* deleting subtransaction must have aborted */
+	if (IsReplicaTransactionAborted(xmax))
+		return true;
+
+	if (IsReplicaCurrentTransactionId(xmax))
+		return (HeapTupleHeaderGetCmax(tuple) >= curcid); /* deleted after scan started */
+
+	/* xmax transaction committed */
+	return false;
+}
+
+
+/*
  * HeapTupleSatisfiesVisibility
  *		True iff heap tuple satisfies a time qual.
  *
@@ -1689,8 +1757,8 @@ HeapTupleSatisfiesHistoricMVCC(HeapTuple htup, Snapshot snapshot,
 bool
 HeapTupleSatisfiesVisibility(Relation relation, HeapTuple tup, Snapshot snapshot, Buffer buffer)
 {
-	if (relation->rd_rel->relpersistence == RELPERSISTENCE_SESSION)
-		return TempTupleSatisfiesMVCC(tup, snapshot, buffer);
+	if (relation->rd_rel->relpersistence == RELPERSISTENCE_SESSION && RecoveryInProgress())
+		return TempTupleSatisfiesVisibility(tup, snapshot->curcid, buffer);
 
 	switch (snapshot->snapshot_type)
 	{

@@ -69,11 +69,6 @@ GetNewTransactionId(bool isSubXact)
 		return FullTransactionIdFromEpochAndXid(0, BootstrapTransactionId);
 	}
 
-	/* Make it possible to access global temporary tables at standby */
-	if (RecoveryInProgress())
-		return FullTransactionIdFromEpochAndXid(0, FrozenTransactionId);
-   	    /* elog(ERROR, "cannot assign TransactionIds during recovery"); */
-
 	LWLockAcquire(XidGenLock, LW_EXCLUSIVE);
 
 	full_xid = ShmemVariableCache->nextFullXid;
