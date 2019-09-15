@@ -1682,7 +1682,7 @@ HeapTupleSatisfiesHistoricMVCC(HeapTuple htup, Snapshot snapshot,
 
 /*
  * TempTupleSatisfiesVisibility
- *		True iff global temp table tuple is visible for the given snapshot.
+ *		True iff global temp table tuple is visible for the current transaction.
  *
  * Temporary tables are visible only for current backend, so there is no need to
  * handle cases with tuples committed by other backends. We only need to exclude
@@ -1695,7 +1695,6 @@ TempTupleSatisfiesVisibility(HeapTuple htup, CommandId curcid, Buffer buffer)
 	HeapTupleHeader tuple = htup->t_data;
 	TransactionId xmin;
 	TransactionId xmax;
-
 
 	Assert(ItemPointerIsValid(&htup->t_self));
 	Assert(htup->t_tableOid != InvalidOid);
@@ -1720,27 +1719,17 @@ TempTupleSatisfiesVisibility(HeapTuple htup, CommandId curcid, Buffer buffer)
 	if (HEAP_XMAX_IS_LOCKED_ONLY(tuple->t_infomask))	/* not deleter */
 		return true;
 
-	if (tuple->t_infomask & HEAP_XMAX_IS_MULTI)
-	{
-		xmax = HeapTupleGetUpdateXid(tuple);
+	xmax = (tuple->t_infomask & HEAP_XMAX_IS_MULTI)
+	    ? HeapTupleGetUpdateXid(tuple)
+		: HeapTupleHeaderGetRawXmax(tuple);
 
-		/* updating subtransaction must have aborted */
-		if (IsReplicaTransactionAborted(xmax))
-			return true;
-
-		return (HeapTupleHeaderGetCmax(tuple) >= curcid);
-	}
-	xmax = HeapTupleHeaderGetRawXmax(tuple);
-
-	/* deleting subtransaction must have aborted */
 	if (IsReplicaTransactionAborted(xmax))
-		return true;
+		return true; /* updating subtransaction aborted */
 
-	if (IsReplicaCurrentTransactionId(xmax))
-		return (HeapTupleHeaderGetCmax(tuple) >= curcid); /* deleted after scan started */
+	if (!IsReplicaCurrentTransactionId(xmax))
+		return false; /* updating transaction committed */
 
-	/* xmax transaction committed */
-	return false;
+	return (HeapTupleHeaderGetCmax(tuple) >= curcid);	/* updated after scan started */
 }
 
 

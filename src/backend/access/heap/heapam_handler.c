@@ -226,7 +226,7 @@ heapam_tuple_satisfies_snapshot(Relation rel, TupleTableSlot *slot,
 	 * Caller should be holding pin, but not lock.
 	 */
 	LockBuffer(bslot->buffer, BUFFER_LOCK_SHARE);
-	
+
 	res = HeapTupleSatisfiesVisibility(rel, bslot->base.tuple, snapshot,
 									   bslot->buffer);
 	LockBuffer(bslot->buffer, BUFFER_LOCK_UNLOCK);
