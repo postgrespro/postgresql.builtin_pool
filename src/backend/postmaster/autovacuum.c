@@ -2069,7 +2069,7 @@ do_autovacuum(void)
 		 * Check if it is a temp table (presumably, of some other backend's).
 		 * We cannot safely process other backends' temp tables.
 		 */
-		if (IsLocalRelpersistence(classForm->relpersistence))
+		if (classForm->relpersistence == RELPERSISTENCE_TEMP)
 		{
 			/*
 			 * We just ignore it if the owning backend is still active and
