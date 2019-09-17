@@ -994,6 +994,9 @@ TransactionIdIsInProgress(TransactionId xid)
 	int			i,
 				j;
 
+	if (AccessTempRelationAtReplica)
+		return IsReplicaCurrentTransactionId(xid) && !IsReplicaTransactionAborted(xid);
+
 	/*
 	 * Don't bother checking a transaction older than RecentXmin; it could not
 	 * possibly still be running.  (Note: in particular, this guarantees that

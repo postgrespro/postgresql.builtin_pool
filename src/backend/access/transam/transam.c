@@ -22,6 +22,7 @@
 #include "access/clog.h"
 #include "access/subtrans.h"
 #include "access/transam.h"
+#include "access/xact.h"
 #include "utils/snapmgr.h"
 
 /*
@@ -126,6 +127,9 @@ TransactionIdDidCommit(TransactionId transactionId)
 {
 	XidStatus	xidstatus;
 
+	if (AccessTempRelationAtReplica)
+		return !IsReplicaCurrentTransactionId(transactionId) && !IsReplicaTransactionAborted(transactionId);
+
 	xidstatus = TransactionLogFetch(transactionId);
 
 	/*
@@ -181,6 +185,9 @@ bool							/* true if given transaction aborted */
 TransactionIdDidAbort(TransactionId transactionId)
 {
 	XidStatus	xidstatus;
+
+	if (AccessTempRelationAtReplica)
+		return IsReplicaTransactionAborted(transactionId);
 
 	xidstatus = TransactionLogFetch(transactionId);
 

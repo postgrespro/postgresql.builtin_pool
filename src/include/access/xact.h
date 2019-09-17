@@ -41,6 +41,9 @@
 extern int	DefaultXactIsoLevel;
 extern PGDLLIMPORT int XactIsoLevel;
 
+extern bool AccessTempRelationAtReplica;
+
+
 /*
  * We implement three isolation levels internally.
  * The two stronger ones use one snapshot per database transaction;

@@ -464,7 +464,11 @@ HeapTupleSatisfiesUpdate(Relation relation, HeapTuple htup, CommandId curcid,
 	Assert(htup->t_tableOid != InvalidOid);
 
 	if (relation->rd_rel->relpersistence == RELPERSISTENCE_SESSION && RecoveryInProgress())
+	{
+		AccessTempRelationAtReplica = true;
 		return TempTupleSatisfiesVisibility(htup, curcid, buffer) ? TM_Ok : TM_Invisible;
+	}
+	AccessTempRelationAtReplica = false;
 
 	if (!HeapTupleHeaderXminCommitted(tuple))
 	{
@@ -1747,7 +1751,11 @@ bool
 HeapTupleSatisfiesVisibility(Relation relation, HeapTuple tup, Snapshot snapshot, Buffer buffer)
 {
 	if (relation->rd_rel->relpersistence == RELPERSISTENCE_SESSION && RecoveryInProgress())
+	{
+		AccessTempRelationAtReplica = true;
 		return TempTupleSatisfiesVisibility(tup, snapshot->curcid, buffer);
+	}
+	AccessTempRelationAtReplica = false;
 
 	switch (snapshot->snapshot_type)
 	{

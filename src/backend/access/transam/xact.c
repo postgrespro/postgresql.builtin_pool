@@ -287,9 +287,11 @@ typedef struct XactCallbackItem
 
 static XactCallbackItem *Xact_callbacks = NULL;
 
-static TransactionId replicaTransIdCount;
+static TransactionId replicaTransIdCount = FirstNormalTransactionId;
 static TransactionId replicaTopTransId;
 static Bitmapset*    replicaAbortedXids;
+
+bool AccessTempRelationAtReplica;
 
 /*
  * List of add-on start- and end-of-subxact callbacks
@@ -901,6 +903,9 @@ bool
 TransactionIdIsCurrentTransactionId(TransactionId xid)
 {
 	TransactionState s;
+
+	if (AccessTempRelationAtReplica)
+		return IsReplicaCurrentTransactionId(xid);
 
 	/*
 	 * We always say that BootstrapTransactionId is "not my transaction ID"
@@ -2622,7 +2627,11 @@ AbortTransaction(void)
 
 	/* Mark transactions involved global temp table at replica as aborted */
 	if (TransactionIdIsValid(s->replicaTransactionId))
+	{
+		MemoryContext ctx = MemoryContextSwitchTo(TopMemoryContext);
 		replicaAbortedXids = bms_add_member(replicaAbortedXids, s->replicaTransactionId);
+		MemoryContextSwitchTo(ctx);
+	}
 
 	/* Make sure we have a valid memory context and resource owner */
 	AtAbort_Memory();
@@ -4915,7 +4924,11 @@ AbortSubTransaction(void)
 
 	/* Mark transactions involved global temp table at replica as aborted */
 	if (TransactionIdIsValid(s->replicaTransactionId))
+	{
+		MemoryContext ctx = MemoryContextSwitchTo(TopMemoryContext);
 		replicaAbortedXids = bms_add_member(replicaAbortedXids, s->replicaTransactionId);
+		MemoryContextSwitchTo(ctx);
+	}
 
 	/* Make sure we have a valid memory context and resource owner */
 	AtSubAbort_Memory();
