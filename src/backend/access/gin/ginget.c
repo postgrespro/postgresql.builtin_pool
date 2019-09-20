@@ -1750,7 +1750,7 @@ collectMatchesForHeapRow(IndexScanDesc scan, pendingPosition *pos)
 /*
  * Collect all matched rows from pending list into bitmap.
  */
-static void
+static bool
 scanPendingInsert(IndexScanDesc scan, TIDBitmap *tbm, int64 *ntids)
 {
 	GinScanOpaque so = (GinScanOpaque) scan->opaque;
@@ -1774,6 +1774,12 @@ scanPendingInsert(IndexScanDesc scan, TIDBitmap *tbm, int64 *ntids)
 	LockBuffer(metabuffer, GIN_SHARE);
 	page = BufferGetPage(metabuffer);
 	TestForOldSnapshot(scan->xs_snapshot, scan->indexRelation, page);
+
+	if (GlobalTempRelationPageIsNotInitialized(scan->indexRelation, page))
+	{
+		UnlockReleaseBuffer(metabuffer);
+		return false;
+	}
 	blkno = GinPageGetMeta(page)->head;
 
 	/*
@@ -1784,7 +1790,7 @@ scanPendingInsert(IndexScanDesc scan, TIDBitmap *tbm, int64 *ntids)
 	{
 		/* No pending list, so proceed with normal scan */
 		UnlockReleaseBuffer(metabuffer);
-		return;
+		return true;
 	}
 
 	pos.pendingBuffer = ReadBuffer(scan->indexRelation, blkno);
@@ -1840,6 +1846,7 @@ scanPendingInsert(IndexScanDesc scan, TIDBitmap *tbm, int64 *ntids)
 	}
 
 	pfree(pos.hasMatchKey);
+	return true;
 }
 
 
@@ -1875,7 +1882,8 @@ gingetbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 	 * to scan the main index before the pending list, since concurrent
 	 * cleanup could then make us miss entries entirely.
 	 */
-	scanPendingInsert(scan, tbm, &ntids);
+	if (!scanPendingInsert(scan, tbm, &ntids))
+		return 0;
 
 	/*
 	 * Now scan the main index.

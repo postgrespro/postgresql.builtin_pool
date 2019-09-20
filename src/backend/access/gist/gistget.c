@@ -339,7 +339,10 @@ gistScanPage(IndexScanDesc scan, GISTSearchItem *pageItem, double *myDistances,
 	buffer = ReadBuffer(scan->indexRelation, pageItem->blkno);
 	LockBuffer(buffer, GIST_SHARE);
 	PredicateLockPage(r, BufferGetBlockNumber(buffer), scan->xs_snapshot);
-	gistcheckpage(scan->indexRelation, buffer);
+	if (pageItem->blkno == GIST_ROOT_BLKNO && GlobalTempRelationPageIsNotInitialized(r, BufferGetPage(buffer)))
+		GISTInitBuffer(buffer, F_LEAF);
+	else
+		gistcheckpage(scan->indexRelation, buffer);
 	page = BufferGetPage(buffer);
 	TestForOldSnapshot(scan->xs_snapshot, r, page);
 	opaque = GistPageGetOpaque(page);
