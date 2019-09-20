@@ -241,6 +241,16 @@ ginHeapTupleFastInsert(GinState *ginstate, GinTupleCollector *collector)
 	metabuffer = ReadBuffer(index, GIN_METAPAGE_BLKNO);
 	metapage = BufferGetPage(metabuffer);
 
+	if (GlobalTempRelationPageIsNotInitialized(index, metapage))
+	{
+		Buffer rootbuffer = ReadBuffer(index, GIN_ROOT_BLKNO);
+		LockBuffer(rootbuffer, BUFFER_LOCK_EXCLUSIVE);
+		GinInitMetabuffer(metabuffer);
+		GinInitBuffer(rootbuffer, GIN_LEAF);
+		MarkBufferDirty(rootbuffer);
+		UnlockReleaseBuffer(rootbuffer);
+	}
+
 	/*
 	 * An insertion to the pending list could logically belong anywhere in the
 	 * tree, so it conflicts with all serializable scans.  All scans acquire a

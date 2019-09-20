@@ -677,7 +677,10 @@ gistdoinsert(Relation r, IndexTuple itup, Size freespace,
 		if (!xlocked)
 		{
 			LockBuffer(stack->buffer, GIST_SHARE);
-			gistcheckpage(state.r, stack->buffer);
+			if (stack->blkno == GIST_ROOT_BLKNO && GlobalTempRelationPageIsNotInitialized(state.r, BufferGetPage(stack->buffer)))
+				GISTInitBuffer(stack->buffer, F_LEAF);
+			else
+				gistcheckpage(state.r, stack->buffer);
 		}
 
 		stack->page = (Page) BufferGetPage(stack->buffer);

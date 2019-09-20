@@ -106,6 +106,7 @@ spgGetCache(Relation index)
 		spgConfigIn in;
 		FmgrInfo   *procinfo;
 		Buffer		metabuffer;
+		Page        metapage;
 		SpGistMetaPageData *metadata;
 
 		cache = MemoryContextAllocZero(index->rd_indexcxt,
@@ -155,12 +156,32 @@ spgGetCache(Relation index)
 		metabuffer = ReadBuffer(index, SPGIST_METAPAGE_BLKNO);
 		LockBuffer(metabuffer, BUFFER_LOCK_SHARE);
 
-		metadata = SpGistPageGetMeta(BufferGetPage(metabuffer));
+		metapage = BufferGetPage(metabuffer);
+		metadata = SpGistPageGetMeta(metapage);
 
 		if (metadata->magicNumber != SPGIST_MAGIC_NUMBER)
-			elog(ERROR, "index \"%s\" is not an SP-GiST index",
-				 RelationGetRelationName(index));
+		{
+			if (GlobalTempRelationPageIsNotInitialized(index, metapage))
+			{
+				Buffer rootbuffer = ReadBuffer(index, SPGIST_ROOT_BLKNO);
+				Buffer nullbuffer = ReadBuffer(index, SPGIST_NULL_BLKNO);
 
+				SpGistInitMetapage(metapage);
+
+				LockBuffer(rootbuffer, BUFFER_LOCK_EXCLUSIVE);
+				SpGistInitPage(BufferGetPage(rootbuffer), SPGIST_LEAF);
+				MarkBufferDirty(rootbuffer);
+				UnlockReleaseBuffer(rootbuffer);
+
+				LockBuffer(nullbuffer, BUFFER_LOCK_EXCLUSIVE);
+				SpGistInitPage(BufferGetPage(nullbuffer), SPGIST_LEAF | SPGIST_NULLS);
+				MarkBufferDirty(nullbuffer);
+				UnlockReleaseBuffer(nullbuffer);
+			}
+			else
+				elog(ERROR, "index \"%s\" is not an SP-GiST index",
+					 RelationGetRelationName(index));
+		}
 		cache->lastUsedPages = metadata->lastUsedPages;
 
 		UnlockReleaseBuffer(metabuffer);
