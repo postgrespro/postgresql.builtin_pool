@@ -50,7 +50,7 @@
   <para>
     As it was mentioned above separate proxy instance is created for each <literal>dbname,role</literal> pair. Postgres backend is not able to work with more than one database. But it is possible to change current user (role) inside one connection.
     If <varname>multitenent_proxy</varname> options is switched on, then separate proxy
-    will be create only for each database and current user is explicitly specified for each transaction/standalone statement using <literal>set command<literal> clause.
+    will be create only for each database and current user is explicitly specified for each transaction/standalone statement using <literal>set command</literal> clause.
     To support this mode you need to grant permissions to all roles to switch between each other.
   </para>
 
