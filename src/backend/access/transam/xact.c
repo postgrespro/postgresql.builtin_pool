@@ -463,7 +463,11 @@ GetReplicaTransactionId(void)
 {
 	TransactionState s = CurrentTransactionState;
 	if (!TransactionIdIsValid(s->replicaTransactionId))
-		s->replicaTransactionId = ++replicaTransIdCount;
+	{
+		if (!TransactionIdIsValid(++replicaTransIdCount))
+			elog(ERROR, "Too many write transactions at replica");
+		s->replicaTransactionId = replicaTransIdCount;
+	}
 	return s->replicaTransactionId;
 }
 
