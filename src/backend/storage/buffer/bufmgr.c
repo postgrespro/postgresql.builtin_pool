@@ -2903,7 +2903,7 @@ BufferGetLSNAtomic(Buffer buffer)
  *		DropRelFileNodeBuffers
  *
  *		This function removes from the buffer pool all the pages of the
- *		specified relation fork that have block numbers >= firstDelBlock.
+ *		specified relation forks that have block numbers >= firstDelBlock.
  *		(In particular, with firstDelBlock = 0, all pages are removed.)
  *		Dirty pages are simply dropped, without bothering to write them
  *		out first.  Therefore, this is NOT rollback-able, and so should be
@@ -2926,16 +2926,21 @@ BufferGetLSNAtomic(Buffer buffer)
  * --------------------------------------------------------------------
  */
 void
-DropRelFileNodeBuffers(RelFileNodeBackend rnode, ForkNumber forkNum,
-					   BlockNumber firstDelBlock)
+DropRelFileNodeBuffers(RelFileNodeBackend rnode, ForkNumber *forkNum,
+					   int nforks, BlockNumber *firstDelBlock)
 {
 	int			i;
+	int			j;
 
 	/* If it's a local relation, it's localbuf.c's problem. */
 	if (RelFileNodeBackendIsLocalTemp(rnode))
 	{
 		if (rnode.backend == MyBackendId)
-			DropRelFileNodeLocalBuffers(rnode.node, forkNum, firstDelBlock);
+		{
+			for (j = 0; j < nforks; j++)
+				DropRelFileNodeLocalBuffers(rnode.node, forkNum[j],
+											firstDelBlock[j]);
+		}
 		return;
 	}
 
@@ -2964,11 +2969,17 @@ DropRelFileNodeBuffers(RelFileNodeBackend rnode, ForkNumber forkNum,
 			continue;
 
 		buf_state = LockBufHdr(bufHdr);
-		if (RelFileNodeBackendEquals(bufHdr->tag.rnode, rnode) &&
-			bufHdr->tag.forkNum == forkNum &&
-			bufHdr->tag.blockNum >= firstDelBlock)
-			InvalidateBuffer(bufHdr);	/* releases spinlock */
-		else
+		for (j = 0; j < nforks; j++)
+		{
+			if (RelFileNodeBackendEquals(bufHdr->tag.rnode, rnode) &&
+				bufHdr->tag.forkNum == forkNum[j] &&
+				bufHdr->tag.blockNum >= firstDelBlock[j])
+			{
+				InvalidateBuffer(bufHdr); /* releases spinlock */
+				break;
+			}
+		}
+		if (j >= nforks)
 			UnlockBufHdr(bufHdr, buf_state);
 	}
 }

@@ -19,7 +19,6 @@
 #include "catalog/pg_class.h"
 #include "catalog/pg_index.h"
 #include "catalog/pg_publication.h"
-#include "fmgr.h"
 #include "nodes/bitmapset.h"
 #include "rewrite/prs2lock.h"
 #include "storage/block.h"
@@ -75,7 +74,7 @@ typedef struct RelationData
 	 * when a relation has multiple new relfilenodes within a single
 	 * transaction, with one of them occurring in a subsequently aborted
 	 * subtransaction, e.g. BEGIN; TRUNCATE t; SAVEPOINT save; TRUNCATE t;
-	 * ROLLBACK TO save; -- rd_newRelfilenode is now forgotten
+	 * ROLLBACK TO save; -- rd_newRelfilenodeSubid is now forgotten
 	 */
 	SubTransactionId rd_createSubid;	/* rel was created in current xact */
 	SubTransactionId rd_newRelfilenodeSubid;	/* new relfilenode assigned in
@@ -159,7 +158,7 @@ typedef struct RelationData
 	Oid		   *rd_opfamily;	/* OIDs of op families for each index col */
 	Oid		   *rd_opcintype;	/* OIDs of opclass declared input data types */
 	RegProcedure *rd_support;	/* OIDs of support procedures */
-	FmgrInfo   *rd_supportinfo; /* lookup info for support procedures */
+	struct FmgrInfo *rd_supportinfo; /* lookup info for support procedures */
 	int16	   *rd_indoption;	/* per-column AM-specific flags */
 	List	   *rd_indexprs;	/* index expression trees, if any */
 	List	   *rd_indpred;		/* index predicate tree, if any */
@@ -340,6 +339,14 @@ typedef struct StdRdOptions
 #define RelationHasSessionScope(relation) \
 	IsLocalRelpersistence(((relation)->rd_rel->relpersistence))
 
+/* ViewOptions->check_option values */
+typedef enum ViewOptCheckOption
+{
+	VIEW_OPTION_CHECK_OPTION_NOT_SET,
+	VIEW_OPTION_CHECK_OPTION_LOCAL,
+	VIEW_OPTION_CHECK_OPTION_CASCADED
+} ViewOptCheckOption;
+
 /*
  * ViewOptions
  *		Contents of rd_options for views
@@ -348,7 +355,7 @@ typedef struct ViewOptions
 {
 	int32		vl_len_;		/* varlena header (do not touch directly!) */
 	bool		security_barrier;
-	int			check_option_offset;
+	ViewOptCheckOption check_option;
 } ViewOptions;
 
 /*
@@ -367,7 +374,8 @@ typedef struct ViewOptions
  */
 #define RelationHasCheckOption(relation)									\
 	((relation)->rd_options &&												\
-	 ((ViewOptions *) (relation)->rd_options)->check_option_offset != 0)
+	 ((ViewOptions *) (relation)->rd_options)->check_option !=				\
+	 VIEW_OPTION_CHECK_OPTION_NOT_SET)
 
 /*
  * RelationHasLocalCheckOption
@@ -376,10 +384,8 @@ typedef struct ViewOptions
  */
 #define RelationHasLocalCheckOption(relation)								\
 	((relation)->rd_options &&												\
-	 ((ViewOptions *) (relation)->rd_options)->check_option_offset != 0 ?	\
-	 strcmp((char *) (relation)->rd_options +								\
-			((ViewOptions *) (relation)->rd_options)->check_option_offset,	\
-			"local") == 0 : false)
+	 ((ViewOptions *) (relation)->rd_options)->check_option ==				\
+	 VIEW_OPTION_CHECK_OPTION_LOCAL)
 
 /*
  * RelationHasCascadedCheckOption
@@ -388,11 +394,8 @@ typedef struct ViewOptions
  */
 #define RelationHasCascadedCheckOption(relation)							\
 	((relation)->rd_options &&												\
-	 ((ViewOptions *) (relation)->rd_options)->check_option_offset != 0 ?	\
-	 strcmp((char *) (relation)->rd_options +								\
-			((ViewOptions *) (relation)->rd_options)->check_option_offset,	\
-			"cascaded") == 0 : false)
-
+	 ((ViewOptions *) (relation)->rd_options)->check_option ==				\
+	  VIEW_OPTION_CHECK_OPTION_CASCADED)
 
 /*
  * RelationIsValid
@@ -617,6 +620,5 @@ typedef struct ViewOptions
 /* routines in utils/cache/relcache.c */
 extern void RelationIncrementReferenceCount(Relation rel);
 extern void RelationDecrementReferenceCount(Relation rel);
-extern bool RelationHasUnloggedIndex(Relation rel);
 
 #endif							/* REL_H */

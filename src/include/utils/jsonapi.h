@@ -94,7 +94,7 @@ typedef struct JsonSemAction
 } JsonSemAction;
 
 /*
- * parse_json will parse the string in the lex calling the
+ * pg_parse_json will parse the string in the lex calling the
  * action functions in sem at the appropriate points. It is
  * up to them to keep what state they need	in semstate. If they
  * need access to the state of the lexer, then its pointer
@@ -161,6 +161,7 @@ extern Jsonb *transform_jsonb_string_values(Jsonb *jsonb, void *action_state,
 extern text *transform_json_string_values(text *json, void *action_state,
 										  JsonTransformStringValuesAction transform_action);
 
-extern char *JsonEncodeDateTime(char *buf, Datum value, Oid typid);
+extern char *JsonEncodeDateTime(char *buf, Datum value, Oid typid,
+								const int *tzp);
 
 #endif							/* JSONAPI_H */

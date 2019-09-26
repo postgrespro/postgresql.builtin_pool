@@ -18,10 +18,6 @@
 
 
 #define oidcmp(x,y) ( ((x) < (y) ? -1 : ((x) > (y)) ?  1 : 0) )
-#define oideq(x,y) ( (x) == (y) )
-#define oidle(x,y) ( (x) <= (y) )
-#define oidge(x,y) ( (x) >= (y) )
-#define oidzero(x) ( (x) == 0 )
 
 /*
  * The data structures used to store system catalog information.  Every
@@ -386,6 +382,7 @@ typedef struct _statsExtInfo
 {
 	DumpableObject dobj;
 	char	   *rolname;		/* name of owner, or empty string */
+	int			stattarget;		/* statistics target */
 } StatsExtInfo;
 
 typedef struct _ruleInfo

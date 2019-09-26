@@ -1087,8 +1087,7 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 			}
 
 			attmap = convert_tuples_by_name_map(RelationGetDescr(rel),
-												RelationGetDescr(parent),
-												gettext_noop("could not convert row type"));
+												RelationGetDescr(parent));
 			idxstmt =
 				generateClonedIndexStmt(NULL, idxRel,
 										attmap, RelationGetDescr(rel)->natts,
@@ -8178,8 +8177,7 @@ addFkRecurseReferenced(List **wqueue, Constraint *fkconstraint, Relation rel,
 			 * definition to match the partition's column layout.
 			 */
 			map = convert_tuples_by_name_map_if_req(RelationGetDescr(partRel),
-													RelationGetDescr(pkrel),
-													gettext_noop("could not convert row type"));
+													RelationGetDescr(pkrel));
 			if (map)
 			{
 				mapped_pkattnum = palloc(sizeof(AttrNumber) * numfks);
@@ -8321,8 +8319,7 @@ addFkRecurseReferencing(List **wqueue, Constraint *fkconstraint, Relation rel,
 			CheckTableNotInUse(partition, "ALTER TABLE");
 
 			attmap = convert_tuples_by_name_map(RelationGetDescr(partition),
-												RelationGetDescr(rel),
-												gettext_noop("could not convert row type"));
+												RelationGetDescr(rel));
 			for (int j = 0; j < numfks; j++)
 				mapped_fkattnum[j] = attmap[fkattnum[j] - 1];
 
@@ -8512,8 +8509,7 @@ CloneFkReferenced(Relation parentRel, Relation partitionRel)
 	table_close(pg_constraint, RowShareLock);
 
 	attmap = convert_tuples_by_name_map(RelationGetDescr(partitionRel),
-										RelationGetDescr(parentRel),
-										gettext_noop("could not convert row type"));
+										RelationGetDescr(parentRel));
 	foreach(cell, clone)
 	{
 		Oid			constrOid = lfirst_oid(cell);
@@ -8649,8 +8645,7 @@ CloneFkReferencing(List **wqueue, Relation parentRel, Relation partRel)
 	 * different.  This map is used to convert them.
 	 */
 	attmap = convert_tuples_by_name_map(RelationGetDescr(partRel),
-										RelationGetDescr(parentRel),
-										gettext_noop("could not convert row type"));
+										RelationGetDescr(parentRel));
 
 	partFKs = copyObject(RelationGetFKeyList(partRel));
 
@@ -10286,7 +10281,11 @@ ATPrepAlterColumnType(List **wqueue,
 				 errmsg("cannot alter system column \"%s\"",
 						colName)));
 
-	/* Don't alter inherited columns */
+	/*
+	 * Don't alter inherited columns.  At outer level, there had better not be
+	 * any inherited definition; when recursing, we assume this was checked at
+	 * the parent level (see below).
+	 */
 	if (attTup->attinhcount > 0 && !recursing)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_TABLE_DEFINITION),
@@ -10412,20 +10411,26 @@ ATPrepAlterColumnType(List **wqueue,
 	if (recurse)
 	{
 		Oid			relid = RelationGetRelid(rel);
-		ListCell   *child;
-		List	   *children;
+		List	   *child_oids,
+				   *child_numparents;
+		ListCell   *lo,
+				   *li;
 
-		children = find_all_inheritors(relid, lockmode, NULL);
+		child_oids = find_all_inheritors(relid, lockmode,
+										 &child_numparents);
 
 		/*
 		 * find_all_inheritors does the recursive search of the inheritance
 		 * hierarchy, so all we have to do is process all of the relids in the
 		 * list that it returns.
 		 */
-		foreach(child, children)
+		forboth(lo, child_oids, li, child_numparents)
 		{
-			Oid			childrelid = lfirst_oid(child);
+			Oid			childrelid = lfirst_oid(lo);
+			int			numparents = lfirst_int(li);
 			Relation	childrel;
+			HeapTuple	childtuple;
+			Form_pg_attribute childattTup;
 
 			if (childrelid == relid)
 				continue;
@@ -10433,6 +10438,29 @@ ATPrepAlterColumnType(List **wqueue,
 			/* find_all_inheritors already got lock */
 			childrel = relation_open(childrelid, NoLock);
 			CheckTableNotInUse(childrel, "ALTER TABLE");
+
+			/*
+			 * Verify that the child doesn't have any inherited definitions of
+			 * this column that came from outside this inheritance hierarchy.
+			 * (renameatt makes a similar test, though in a different way
+			 * because of its different recursion mechanism.)
+			 */
+			childtuple = SearchSysCacheAttName(RelationGetRelid(childrel),
+											   colName);
+			if (!HeapTupleIsValid(childtuple))
+				ereport(ERROR,
+						(errcode(ERRCODE_UNDEFINED_COLUMN),
+						 errmsg("column \"%s\" of relation \"%s\" does not exist",
+								colName, RelationGetRelationName(childrel))));
+			childattTup = (Form_pg_attribute) GETSTRUCT(childtuple);
+
+			if (childattTup->attinhcount > numparents)
+				ereport(ERROR,
+						(errcode(ERRCODE_INVALID_TABLE_DEFINITION),
+						 errmsg("cannot alter inherited column \"%s\" of relation \"%s\"",
+								colName, RelationGetRelationName(childrel))));
+
+			ReleaseSysCache(childtuple);
 
 			/*
 			 * Remap the attribute numbers.  If no USING expression was
@@ -10447,8 +10475,7 @@ ATPrepAlterColumnType(List **wqueue,
 				cmd = copyObject(cmd);
 
 				attmap = convert_tuples_by_name_map(RelationGetDescr(childrel),
-													RelationGetDescr(rel),
-													gettext_noop("could not convert row type"));
+													RelationGetDescr(rel));
 				((ColumnDef *) cmd->def)->cooked_default =
 					map_variable_attnos(def->cooked_default,
 										1, 0,
@@ -15376,11 +15403,11 @@ QueuePartitionConstraintValidation(List **wqueue, Relation scanrel,
 	if (PartConstraintImpliedByRelConstraint(scanrel, partConstraint))
 	{
 		if (!validate_default)
-			ereport(INFO,
+			ereport(DEBUG1,
 					(errmsg("partition constraint for table \"%s\" is implied by existing constraints",
 							RelationGetRelationName(scanrel))));
 		else
-			ereport(INFO,
+			ereport(DEBUG1,
 					(errmsg("updated partition constraint for default partition \"%s\" is implied by existing constraints",
 							RelationGetRelationName(scanrel))));
 		return;
@@ -15819,8 +15846,7 @@ AttachPartitionEnsureIndexes(Relation rel, Relation attachrel)
 		/* construct an indexinfo to compare existing indexes against */
 		info = BuildIndexInfo(idxRel);
 		attmap = convert_tuples_by_name_map(RelationGetDescr(attachrel),
-											RelationGetDescr(rel),
-											gettext_noop("could not convert row type"));
+											RelationGetDescr(rel));
 		constraintOid = get_relation_idx_constraint_oid(RelationGetRelid(rel), idx);
 
 		/*
@@ -16396,8 +16422,7 @@ ATExecAttachPartitionIdx(List **wqueue, Relation parentIdx, RangeVar *name)
 		childInfo = BuildIndexInfo(partIdx);
 		parentInfo = BuildIndexInfo(parentIdx);
 		attmap = convert_tuples_by_name_map(RelationGetDescr(partTbl),
-											RelationGetDescr(parentTbl),
-											gettext_noop("could not convert row type"));
+											RelationGetDescr(parentTbl));
 		if (!CompareIndexInfo(childInfo, parentInfo,
 							  partIdx->rd_indcollation,
 							  parentIdx->rd_indcollation,

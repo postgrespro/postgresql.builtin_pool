@@ -23,11 +23,11 @@
 
 #include "access/genam.h"
 #include "access/heapam.h"
+#include "access/heaptoast.h"
 #include "access/multixact.h"
 #include "access/rewriteheap.h"
 #include "access/tableam.h"
 #include "access/tsmapi.h"
-#include "access/tuptoaster.h"
 #include "access/xact.h"
 #include "catalog/catalog.h"
 #include "catalog/index.h"
@@ -424,7 +424,9 @@ tuple_lock_retry:
 
 					/* otherwise xmin should not be dirty... */
 					if (TransactionIdIsValid(SnapshotDirty.xmin))
-						elog(ERROR, "t_xmin is uncommitted in tuple to be updated");
+						ereport(ERROR,
+								(errcode(ERRCODE_DATA_CORRUPTED),
+								 errmsg_internal("t_xmin is uncommitted in tuple to be updated")));
 
 					/*
 					 * If tuple is being updated by other transaction then we
