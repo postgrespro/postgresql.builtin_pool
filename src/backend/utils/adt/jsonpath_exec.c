@@ -66,6 +66,7 @@
 #include "miscadmin.h"
 #include "regex/regex.h"
 #include "utils/builtins.h"
+#include "utils/datetime.h"
 #include "utils/datum.h"
 #include "utils/formatting.h"
 #include "utils/float.h"
@@ -107,6 +108,7 @@ typedef struct JsonPathExecContext
 										 * ignored */
 	bool		throwErrors;	/* with "false" all suppressible errors are
 								 * suppressed */
+	bool		useTz;
 } JsonPathExecContext;
 
 /* Context for LIKE_REGEX execution. */
@@ -173,7 +175,8 @@ typedef JsonPathBool (*JsonPathPredicateCallback) (JsonPathItem *jsp,
 typedef Numeric (*BinaryArithmFunc) (Numeric num1, Numeric num2, bool *error);
 
 static JsonPathExecResult executeJsonPath(JsonPath *path, Jsonb *vars,
-										  Jsonb *json, bool throwErrors, JsonValueList *result);
+										  Jsonb *json, bool throwErrors,
+										  JsonValueList *result, bool useTz);
 static JsonPathExecResult executeItem(JsonPathExecContext *cxt,
 									  JsonPathItem *jsp, JsonbValue *jb, JsonValueList *found);
 static JsonPathExecResult executeItemOptUnwrapTarget(JsonPathExecContext *cxt,
@@ -214,6 +217,8 @@ static JsonPathBool executeLikeRegex(JsonPathItem *jsp, JsonbValue *str,
 static JsonPathExecResult executeNumericItemMethod(JsonPathExecContext *cxt,
 												   JsonPathItem *jsp, JsonbValue *jb, bool unwrap, PGFunction func,
 												   JsonValueList *found);
+static JsonPathExecResult executeDateTimeMethod(JsonPathExecContext *cxt, JsonPathItem *jsp,
+												JsonbValue *jb, JsonValueList *found);
 static JsonPathExecResult executeKeyValueMethod(JsonPathExecContext *cxt,
 												JsonPathItem *jsp, JsonbValue *jb, JsonValueList *found);
 static JsonPathExecResult appendBoolResult(JsonPathExecContext *cxt,
@@ -225,7 +230,8 @@ static void getJsonPathVariable(JsonPathExecContext *cxt,
 static int	JsonbArraySize(JsonbValue *jb);
 static JsonPathBool executeComparison(JsonPathItem *cmp, JsonbValue *lv,
 									  JsonbValue *rv, void *p);
-static JsonPathBool compareItems(int32 op, JsonbValue *jb1, JsonbValue *jb2);
+static JsonPathBool compareItems(int32 op, JsonbValue *jb1, JsonbValue *jb2,
+								 bool useTz);
 static int	compareNumeric(Numeric a, Numeric b);
 static JsonbValue *copyJsonbValue(JsonbValue *src);
 static JsonPathExecResult getArrayIndex(JsonPathExecContext *cxt,
@@ -246,6 +252,8 @@ static JsonbValue *JsonbInitBinary(JsonbValue *jbv, Jsonb *jb);
 static int	JsonbType(JsonbValue *jb);
 static JsonbValue *getScalar(JsonbValue *scalar, enum jbvType type);
 static JsonbValue *wrapItemsInArray(const JsonValueList *items);
+static int	compareDatetime(Datum val1, Oid typid1, Datum val2, Oid typid2,
+							bool useTz, bool *have_error);
 
 /****************** User interface to JsonPath executor ********************/
 
@@ -261,8 +269,8 @@ static JsonbValue *wrapItemsInArray(const JsonValueList *items);
  *		SQL/JSON.  Regarding jsonb_path_match(), this function doesn't have
  *		an analogy in SQL/JSON, so we define its behavior on our own.
  */
-Datum
-jsonb_path_exists(PG_FUNCTION_ARGS)
+static Datum
+jsonb_path_exists_internal(FunctionCallInfo fcinfo, bool tz)
 {
 	Jsonb	   *jb = PG_GETARG_JSONB_P(0);
 	JsonPath   *jp = PG_GETARG_JSONPATH_P(1);
@@ -276,7 +284,7 @@ jsonb_path_exists(PG_FUNCTION_ARGS)
 		silent = PG_GETARG_BOOL(3);
 	}
 
-	res = executeJsonPath(jp, vars, jb, !silent, NULL);
+	res = executeJsonPath(jp, vars, jb, !silent, NULL, tz);
 
 	PG_FREE_IF_COPY(jb, 0);
 	PG_FREE_IF_COPY(jp, 1);
@@ -285,6 +293,18 @@ jsonb_path_exists(PG_FUNCTION_ARGS)
 		PG_RETURN_NULL();
 
 	PG_RETURN_BOOL(res == jperOk);
+}
+
+Datum
+jsonb_path_exists(PG_FUNCTION_ARGS)
+{
+	return jsonb_path_exists_internal(fcinfo, false);
+}
+
+Datum
+jsonb_path_exists_tz(PG_FUNCTION_ARGS)
+{
+	return jsonb_path_exists_internal(fcinfo, true);
 }
 
 /*
@@ -296,7 +316,7 @@ Datum
 jsonb_path_exists_opr(PG_FUNCTION_ARGS)
 {
 	/* just call the other one -- it can handle both cases */
-	return jsonb_path_exists(fcinfo);
+	return jsonb_path_exists_internal(fcinfo, false);
 }
 
 /*
@@ -304,8 +324,8 @@ jsonb_path_exists_opr(PG_FUNCTION_ARGS)
  *		Returns jsonpath predicate result item for the specified jsonb value.
  *		See jsonb_path_exists() comment for details regarding error handling.
  */
-Datum
-jsonb_path_match(PG_FUNCTION_ARGS)
+static Datum
+jsonb_path_match_internal(FunctionCallInfo fcinfo, bool tz)
 {
 	Jsonb	   *jb = PG_GETARG_JSONB_P(0);
 	JsonPath   *jp = PG_GETARG_JSONPATH_P(1);
@@ -319,7 +339,7 @@ jsonb_path_match(PG_FUNCTION_ARGS)
 		silent = PG_GETARG_BOOL(3);
 	}
 
-	(void) executeJsonPath(jp, vars, jb, !silent, &found);
+	(void) executeJsonPath(jp, vars, jb, !silent, &found, tz);
 
 	PG_FREE_IF_COPY(jb, 0);
 	PG_FREE_IF_COPY(jp, 1);
@@ -337,10 +357,22 @@ jsonb_path_match(PG_FUNCTION_ARGS)
 
 	if (!silent)
 		ereport(ERROR,
-				(errcode(ERRCODE_SINGLETON_JSON_ITEM_REQUIRED),
+				(errcode(ERRCODE_SINGLETON_SQL_JSON_ITEM_REQUIRED),
 				 errmsg("single boolean result is expected")));
 
 	PG_RETURN_NULL();
+}
+
+Datum
+jsonb_path_match(PG_FUNCTION_ARGS)
+{
+	return jsonb_path_match_internal(fcinfo, false);
+}
+
+Datum
+jsonb_path_match_tz(PG_FUNCTION_ARGS)
+{
+	return jsonb_path_match_internal(fcinfo, true);
 }
 
 /*
@@ -352,7 +384,7 @@ Datum
 jsonb_path_match_opr(PG_FUNCTION_ARGS)
 {
 	/* just call the other one -- it can handle both cases */
-	return jsonb_path_match(fcinfo);
+	return jsonb_path_match_internal(fcinfo, false);
 }
 
 /*
@@ -360,8 +392,8 @@ jsonb_path_match_opr(PG_FUNCTION_ARGS)
  *		Executes jsonpath for given jsonb document and returns result as
  *		rowset.
  */
-Datum
-jsonb_path_query(PG_FUNCTION_ARGS)
+static Datum
+jsonb_path_query_internal(FunctionCallInfo fcinfo, bool tz)
 {
 	FuncCallContext *funcctx;
 	List	   *found;
@@ -385,7 +417,7 @@ jsonb_path_query(PG_FUNCTION_ARGS)
 		vars = PG_GETARG_JSONB_P_COPY(2);
 		silent = PG_GETARG_BOOL(3);
 
-		(void) executeJsonPath(jp, vars, jb, !silent, &found);
+		(void) executeJsonPath(jp, vars, jb, !silent, &found, tz);
 
 		funcctx->user_fctx = JsonValueListGetList(&found);
 
@@ -406,13 +438,25 @@ jsonb_path_query(PG_FUNCTION_ARGS)
 	SRF_RETURN_NEXT(funcctx, JsonbPGetDatum(JsonbValueToJsonb(v)));
 }
 
+Datum
+jsonb_path_query(PG_FUNCTION_ARGS)
+{
+	return jsonb_path_query_internal(fcinfo, false);
+}
+
+Datum
+jsonb_path_query_tz(PG_FUNCTION_ARGS)
+{
+	return jsonb_path_query_internal(fcinfo, true);
+}
+
 /*
  * jsonb_path_query_array
  *		Executes jsonpath for given jsonb document and returns result as
  *		jsonb array.
  */
-Datum
-jsonb_path_query_array(PG_FUNCTION_ARGS)
+static Datum
+jsonb_path_query_array_internal(FunctionCallInfo fcinfo, bool tz)
 {
 	Jsonb	   *jb = PG_GETARG_JSONB_P(0);
 	JsonPath   *jp = PG_GETARG_JSONPATH_P(1);
@@ -420,9 +464,21 @@ jsonb_path_query_array(PG_FUNCTION_ARGS)
 	Jsonb	   *vars = PG_GETARG_JSONB_P(2);
 	bool		silent = PG_GETARG_BOOL(3);
 
-	(void) executeJsonPath(jp, vars, jb, !silent, &found);
+	(void) executeJsonPath(jp, vars, jb, !silent, &found, tz);
 
 	PG_RETURN_JSONB_P(JsonbValueToJsonb(wrapItemsInArray(&found)));
+}
+
+Datum
+jsonb_path_query_array(PG_FUNCTION_ARGS)
+{
+	return jsonb_path_query_array_internal(fcinfo, false);
+}
+
+Datum
+jsonb_path_query_array_tz(PG_FUNCTION_ARGS)
+{
+	return jsonb_path_query_array_internal(fcinfo, true);
 }
 
 /*
@@ -430,8 +486,8 @@ jsonb_path_query_array(PG_FUNCTION_ARGS)
  *		Executes jsonpath for given jsonb document and returns first result
  *		item.  If there are no items, NULL returned.
  */
-Datum
-jsonb_path_query_first(PG_FUNCTION_ARGS)
+static Datum
+jsonb_path_query_first_internal(FunctionCallInfo fcinfo, bool tz)
 {
 	Jsonb	   *jb = PG_GETARG_JSONB_P(0);
 	JsonPath   *jp = PG_GETARG_JSONPATH_P(1);
@@ -439,12 +495,24 @@ jsonb_path_query_first(PG_FUNCTION_ARGS)
 	Jsonb	   *vars = PG_GETARG_JSONB_P(2);
 	bool		silent = PG_GETARG_BOOL(3);
 
-	(void) executeJsonPath(jp, vars, jb, !silent, &found);
+	(void) executeJsonPath(jp, vars, jb, !silent, &found, tz);
 
 	if (JsonValueListLength(&found) >= 1)
 		PG_RETURN_JSONB_P(JsonbValueToJsonb(JsonValueListHead(&found)));
 	else
 		PG_RETURN_NULL();
+}
+
+Datum
+jsonb_path_query_first(PG_FUNCTION_ARGS)
+{
+	return jsonb_path_query_first_internal(fcinfo, false);
+}
+
+Datum
+jsonb_path_query_first_tz(PG_FUNCTION_ARGS)
+{
+	return jsonb_path_query_first_internal(fcinfo, true);
 }
 
 /********************Execute functions for JsonPath**************************/
@@ -470,7 +538,7 @@ jsonb_path_query_first(PG_FUNCTION_ARGS)
  */
 static JsonPathExecResult
 executeJsonPath(JsonPath *path, Jsonb *vars, Jsonb *json, bool throwErrors,
-				JsonValueList *result)
+				JsonValueList *result, bool useTz)
 {
 	JsonPathExecContext cxt;
 	JsonPathExecResult res;
@@ -500,6 +568,7 @@ executeJsonPath(JsonPath *path, Jsonb *vars, Jsonb *json, bool throwErrors,
 	cxt.lastGeneratedObjectId = vars ? 2 : 1;
 	cxt.innermostArraySize = -1;
 	cxt.throwErrors = throwErrors;
+	cxt.useTz = useTz;
 
 	if (jspStrictAbsenseOfErrors(&cxt) && !result)
 	{
@@ -602,7 +671,7 @@ executeItemOptUnwrapTarget(JsonPathExecContext *cxt, JsonPathItem *jsp,
 						return jperError;
 
 					ereport(ERROR,
-							(errcode(ERRCODE_JSON_MEMBER_NOT_FOUND), \
+							(errcode(ERRCODE_SQL_JSON_MEMBER_NOT_FOUND), \
 							 errmsg("JSON object does not contain key \"%s\"",
 									pnstrdup(key.val.string.val,
 											 key.val.string.len))));
@@ -614,7 +683,7 @@ executeItemOptUnwrapTarget(JsonPathExecContext *cxt, JsonPathItem *jsp,
 			{
 				Assert(found);
 				RETURN_ERROR(ereport(ERROR,
-									 (errcode(ERRCODE_JSON_MEMBER_NOT_FOUND),
+									 (errcode(ERRCODE_SQL_JSON_MEMBER_NOT_FOUND),
 									  errmsg("jsonpath member accessor can only be applied to an object"))));
 			}
 			break;
@@ -643,7 +712,7 @@ executeItemOptUnwrapTarget(JsonPathExecContext *cxt, JsonPathItem *jsp,
 				res = executeNextItem(cxt, jsp, NULL, jb, found, true);
 			else if (!jspIgnoreStructuralErrors(cxt))
 				RETURN_ERROR(ereport(ERROR,
-									 (errcode(ERRCODE_JSON_ARRAY_NOT_FOUND),
+									 (errcode(ERRCODE_SQL_JSON_ARRAY_NOT_FOUND),
 									  errmsg("jsonpath wildcard array accessor can only be applied to an array"))));
 			break;
 
@@ -691,7 +760,7 @@ executeItemOptUnwrapTarget(JsonPathExecContext *cxt, JsonPathItem *jsp,
 						 index_from > index_to ||
 						 index_to >= size))
 						RETURN_ERROR(ereport(ERROR,
-											 (errcode(ERRCODE_INVALID_JSON_SUBSCRIPT),
+											 (errcode(ERRCODE_INVALID_SQL_JSON_SUBSCRIPT),
 											  errmsg("jsonpath array subscript is out of bounds"))));
 
 					if (index_from < 0)
@@ -748,7 +817,7 @@ executeItemOptUnwrapTarget(JsonPathExecContext *cxt, JsonPathItem *jsp,
 			else if (!jspIgnoreStructuralErrors(cxt))
 			{
 				RETURN_ERROR(ereport(ERROR,
-									 (errcode(ERRCODE_JSON_ARRAY_NOT_FOUND),
+									 (errcode(ERRCODE_SQL_JSON_ARRAY_NOT_FOUND),
 									  errmsg("jsonpath array accessor can only be applied to an array"))));
 			}
 			break;
@@ -802,7 +871,7 @@ executeItemOptUnwrapTarget(JsonPathExecContext *cxt, JsonPathItem *jsp,
 			{
 				Assert(found);
 				RETURN_ERROR(ereport(ERROR,
-									 (errcode(ERRCODE_JSON_OBJECT_NOT_FOUND),
+									 (errcode(ERRCODE_SQL_JSON_OBJECT_NOT_FOUND),
 									  errmsg("jsonpath wildcard member accessor can only be applied to an object"))));
 			}
 			break;
@@ -932,7 +1001,7 @@ executeItemOptUnwrapTarget(JsonPathExecContext *cxt, JsonPathItem *jsp,
 					{
 						if (!jspIgnoreStructuralErrors(cxt))
 							RETURN_ERROR(ereport(ERROR,
-												 (errcode(ERRCODE_JSON_ARRAY_NOT_FOUND),
+												 (errcode(ERRCODE_SQL_JSON_ARRAY_NOT_FOUND),
 												  errmsg("jsonpath item method .%s() can only be applied to an array",
 														 jspOperationName(jsp->type)))));
 						break;
@@ -986,7 +1055,7 @@ executeItemOptUnwrapTarget(JsonPathExecContext *cxt, JsonPathItem *jsp,
 
 					if (have_error)
 						RETURN_ERROR(ereport(ERROR,
-											 (errcode(ERRCODE_NON_NUMERIC_JSON_ITEM),
+											 (errcode(ERRCODE_NON_NUMERIC_SQL_JSON_ITEM),
 											  errmsg("jsonpath item method .%s() can only be applied to a numeric value",
 													 jspOperationName(jsp->type)))));
 					res = jperOk;
@@ -1007,7 +1076,7 @@ executeItemOptUnwrapTarget(JsonPathExecContext *cxt, JsonPathItem *jsp,
 
 					if (have_error || isinf(val))
 						RETURN_ERROR(ereport(ERROR,
-											 (errcode(ERRCODE_NON_NUMERIC_JSON_ITEM),
+											 (errcode(ERRCODE_NON_NUMERIC_SQL_JSON_ITEM),
 											  errmsg("jsonpath item method .%s() can only be applied to a numeric value",
 													 jspOperationName(jsp->type)))));
 
@@ -1020,13 +1089,19 @@ executeItemOptUnwrapTarget(JsonPathExecContext *cxt, JsonPathItem *jsp,
 
 				if (res == jperNotFound)
 					RETURN_ERROR(ereport(ERROR,
-										 (errcode(ERRCODE_NON_NUMERIC_JSON_ITEM),
+										 (errcode(ERRCODE_NON_NUMERIC_SQL_JSON_ITEM),
 										  errmsg("jsonpath item method .%s() can only be applied to a string or numeric value",
 												 jspOperationName(jsp->type)))));
 
 				res = executeNextItem(cxt, jsp, NULL, jb, found, true);
 			}
 			break;
+
+		case jpiDatetime:
+			if (unwrap && JsonbType(jb) == jbvArray)
+				return executeItemUnwrapTargetArray(cxt, jsp, jb, found, false);
+
+			return executeDateTimeMethod(cxt, jsp, jb, found);
 
 		case jpiKeyValue:
 			if (unwrap && JsonbType(jb) == jbvArray)
@@ -1214,7 +1289,7 @@ executeBoolItem(JsonPathExecContext *cxt, JsonPathItem *jsp,
 			jspGetLeftArg(jsp, &larg);
 			jspGetRightArg(jsp, &rarg);
 			return executePredicate(cxt, jsp, &larg, &rarg, jb, true,
-									executeComparison, NULL);
+									executeComparison, cxt);
 
 		case jpiStartsWith:		/* 'whole STARTS WITH initial' */
 			jspGetLeftArg(jsp, &larg);	/* 'whole' */
@@ -1504,14 +1579,14 @@ executeBinaryArithmExpr(JsonPathExecContext *cxt, JsonPathItem *jsp,
 	if (JsonValueListLength(&lseq) != 1 ||
 		!(lval = getScalar(JsonValueListHead(&lseq), jbvNumeric)))
 		RETURN_ERROR(ereport(ERROR,
-							 (errcode(ERRCODE_SINGLETON_JSON_ITEM_REQUIRED),
+							 (errcode(ERRCODE_SINGLETON_SQL_JSON_ITEM_REQUIRED),
 							  errmsg("left operand of jsonpath operator %s is not a single numeric value",
 									 jspOperationName(jsp->type)))));
 
 	if (JsonValueListLength(&rseq) != 1 ||
 		!(rval = getScalar(JsonValueListHead(&rseq), jbvNumeric)))
 		RETURN_ERROR(ereport(ERROR,
-							 (errcode(ERRCODE_SINGLETON_JSON_ITEM_REQUIRED),
+							 (errcode(ERRCODE_SINGLETON_SQL_JSON_ITEM_REQUIRED),
 							  errmsg("right operand of jsonpath operator %s is not a single numeric value",
 									 jspOperationName(jsp->type)))));
 
@@ -1579,7 +1654,7 @@ executeUnaryArithmExpr(JsonPathExecContext *cxt, JsonPathItem *jsp,
 				continue;		/* skip non-numerics processing */
 
 			RETURN_ERROR(ereport(ERROR,
-								 (errcode(ERRCODE_JSON_NUMBER_NOT_FOUND),
+								 (errcode(ERRCODE_SQL_JSON_NUMBER_NOT_FOUND),
 								  errmsg("operand of unary jsonpath operator %s is not a numeric value",
 										 jspOperationName(jsp->type)))));
 		}
@@ -1646,34 +1721,10 @@ executeLikeRegex(JsonPathItem *jsp, JsonbValue *str, JsonbValue *rarg,
 	/* Cache regex text and converted flags. */
 	if (!cxt->regex)
 	{
-		uint32		flags = jsp->content.like_regex.flags;
-
 		cxt->regex =
 			cstring_to_text_with_len(jsp->content.like_regex.pattern,
 									 jsp->content.like_regex.patternlen);
-
-		/* Convert regex flags. */
-		cxt->cflags = REG_ADVANCED;
-
-		if (flags & JSP_REGEX_ICASE)
-			cxt->cflags |= REG_ICASE;
-		if (flags & JSP_REGEX_MLINE)
-			cxt->cflags |= REG_NEWLINE;
-		if (flags & JSP_REGEX_SLINE)
-			cxt->cflags &= ~REG_NEWLINE;
-		if (flags & JSP_REGEX_WSPACE)
-			cxt->cflags |= REG_EXPANDED;
-
-		/*
-		 * 'q' flag can work together only with 'i'.  When other is specified,
-		 * then 'q' has no effect.
-		 */
-		if ((flags & JSP_REGEX_QUOTE) &&
-			!(flags & (JSP_REGEX_MLINE | JSP_REGEX_SLINE | JSP_REGEX_WSPACE)))
-		{
-			cxt->cflags &= ~REG_ADVANCED;
-			cxt->cflags |= REG_QUOTE;
-		}
+		cxt->cflags = jspConvertRegexFlags(jsp->content.like_regex.flags);
 	}
 
 	if (RE_compile_and_execute(cxt->regex, str->val.string.val,
@@ -1701,7 +1752,7 @@ executeNumericItemMethod(JsonPathExecContext *cxt, JsonPathItem *jsp,
 
 	if (!(jb = getScalar(jb, jbvNumeric)))
 		RETURN_ERROR(ereport(ERROR,
-							 (errcode(ERRCODE_NON_NUMERIC_JSON_ITEM),
+							 (errcode(ERRCODE_NON_NUMERIC_SQL_JSON_ITEM),
 							  errmsg("jsonpath item method .%s() can only be applied to a numeric value",
 									 jspOperationName(jsp->type)))));
 
@@ -1715,6 +1766,136 @@ executeNumericItemMethod(JsonPathExecContext *cxt, JsonPathItem *jsp,
 	jb->val.numeric = DatumGetNumeric(datum);
 
 	return executeNextItem(cxt, jsp, &next, jb, found, false);
+}
+
+/*
+ * Implementation of the .datetime() method.
+ *
+ * Converts a string into a date/time value. The actual type is determined at run time.
+ * If an argument is provided, this argument is used as a template string.
+ * Otherwise, the first fitting ISO format is selected.
+ */
+static JsonPathExecResult
+executeDateTimeMethod(JsonPathExecContext *cxt, JsonPathItem *jsp,
+					  JsonbValue *jb, JsonValueList *found)
+{
+	JsonbValue	jbvbuf;
+	Datum		value;
+	text	   *datetime;
+	Oid			typid;
+	int32		typmod = -1;
+	int			tz = 0;
+	bool		hasNext;
+	JsonPathExecResult res = jperNotFound;
+	JsonPathItem elem;
+
+	if (!(jb = getScalar(jb, jbvString)))
+		RETURN_ERROR(ereport(ERROR,
+							 (errcode(ERRCODE_INVALID_ARGUMENT_FOR_JSON_DATETIME_FUNCTION),
+							  errmsg("jsonpath item method .%s() can only be applied to a string",
+									 jspOperationName(jsp->type)))));
+
+	datetime = cstring_to_text_with_len(jb->val.string.val,
+										jb->val.string.len);
+
+	if (jsp->content.arg)
+	{
+		text	   *template;
+		char	   *template_str;
+		int			template_len;
+		bool		have_error = false;
+
+		jspGetArg(jsp, &elem);
+
+		if (elem.type != jpiString)
+			elog(ERROR, "invalid jsonpath item type for .datetime() argument");
+
+		template_str = jspGetString(&elem, &template_len);
+
+		template = cstring_to_text_with_len(template_str,
+											template_len);
+
+		value = parse_datetime(datetime, template, true,
+							   &typid, &typmod, &tz,
+							   jspThrowErrors(cxt) ? NULL : &have_error);
+
+		if (have_error)
+			res = jperError;
+		else
+			res = jperOk;
+	}
+	else
+	{
+		/*
+		 * According to SQL/JSON standard enumerate ISO formats for: date,
+		 * timetz, time, timestamptz, timestamp.
+		 */
+		static const char *fmt_str[] =
+		{
+			"yyyy-mm-dd",
+			"HH24:MI:SS TZH:TZM",
+			"HH24:MI:SS TZH",
+			"HH24:MI:SS",
+			"yyyy-mm-dd HH24:MI:SS TZH:TZM",
+			"yyyy-mm-dd HH24:MI:SS TZH",
+			"yyyy-mm-dd HH24:MI:SS"
+		};
+
+		/* cache for format texts */
+		static text *fmt_txt[lengthof(fmt_str)] = {0};
+		int			i;
+
+		/* loop until datetime format fits */
+		for (i = 0; i < lengthof(fmt_str); i++)
+		{
+			bool		have_error = false;
+
+			if (!fmt_txt[i])
+			{
+				MemoryContext oldcxt =
+				MemoryContextSwitchTo(TopMemoryContext);
+
+				fmt_txt[i] = cstring_to_text(fmt_str[i]);
+				MemoryContextSwitchTo(oldcxt);
+			}
+
+			value = parse_datetime(datetime, fmt_txt[i], true,
+								   &typid, &typmod, &tz,
+								   &have_error);
+
+			if (!have_error)
+			{
+				res = jperOk;
+				break;
+			}
+		}
+
+		if (res == jperNotFound)
+			RETURN_ERROR(ereport(ERROR,
+								 (errcode(ERRCODE_INVALID_ARGUMENT_FOR_JSON_DATETIME_FUNCTION),
+								  errmsg("datetime format is not unrecognized"),
+								  errhint("use datetime template argument for explicit format specification"))));
+	}
+
+	pfree(datetime);
+
+	if (jperIsError(res))
+		return res;
+
+	hasNext = jspGetNext(jsp, &elem);
+
+	if (!hasNext && !found)
+		return res;
+
+	jb = hasNext ? &jbvbuf : palloc(sizeof(*jb));
+
+	jb->type = jbvDatetime;
+	jb->val.datetime.value = value;
+	jb->val.datetime.typid = typid;
+	jb->val.datetime.typmod = typmod;
+	jb->val.datetime.tz = tz;
+
+	return executeNextItem(cxt, jsp, &elem, jb, found, hasNext);
 }
 
 /*
@@ -1760,7 +1941,7 @@ executeKeyValueMethod(JsonPathExecContext *cxt, JsonPathItem *jsp,
 
 	if (JsonbType(jb) != jbvObject || jb->type != jbvBinary)
 		RETURN_ERROR(ereport(ERROR,
-							 (errcode(ERRCODE_JSON_OBJECT_NOT_FOUND),
+							 (errcode(ERRCODE_SQL_JSON_OBJECT_NOT_FOUND),
 							  errmsg("jsonpath item method .%s() can only be applied to an object",
 									 jspOperationName(jsp->type)))));
 
@@ -1977,14 +2158,104 @@ JsonbArraySize(JsonbValue *jb)
 static JsonPathBool
 executeComparison(JsonPathItem *cmp, JsonbValue *lv, JsonbValue *rv, void *p)
 {
-	return compareItems(cmp->type, lv, rv);
+	JsonPathExecContext *cxt = (JsonPathExecContext *) p;
+
+	return compareItems(cmp->type, lv, rv, cxt->useTz);
+}
+
+/*
+ * Perform per-byte comparison of two strings.
+ */
+static int
+binaryCompareStrings(const char *s1, int len1,
+					 const char *s2, int len2)
+{
+	int			cmp;
+
+	cmp = memcmp(s1, s2, Min(len1, len2));
+
+	if (cmp != 0)
+		return cmp;
+
+	if (len1 == len2)
+		return 0;
+
+	return len1 < len2 ? -1 : 1;
+}
+
+/*
+ * Compare two strings in the current server encoding using Unicode codepoint
+ * collation.
+ */
+static int
+compareStrings(const char *mbstr1, int mblen1,
+			   const char *mbstr2, int mblen2)
+{
+	if (GetDatabaseEncoding() == PG_SQL_ASCII ||
+		GetDatabaseEncoding() == PG_UTF8)
+	{
+		/*
+		 * It's known property of UTF-8 strings that their per-byte comparison
+		 * result matches codepoints comparison result.  ASCII can be
+		 * considered as special case of UTF-8.
+		 */
+		return binaryCompareStrings(mbstr1, mblen1, mbstr2, mblen2);
+	}
+	else
+	{
+		char	   *utf8str1,
+				   *utf8str2;
+		int			cmp,
+					utf8len1,
+					utf8len2;
+
+		/*
+		 * We have to convert other encodings to UTF-8 first, then compare.
+		 * Input strings may be not null-terminated and pg_server_to_any() may
+		 * return them "as is".  So, use strlen() only if there is real
+		 * conversion.
+		 */
+		utf8str1 = pg_server_to_any(mbstr1, mblen1, PG_UTF8);
+		utf8str2 = pg_server_to_any(mbstr2, mblen2, PG_UTF8);
+		utf8len1 = (mbstr1 == utf8str1) ? mblen1 : strlen(utf8str1);
+		utf8len2 = (mbstr2 == utf8str2) ? mblen2 : strlen(utf8str2);
+
+		cmp = binaryCompareStrings(utf8str1, utf8len1, utf8str2, utf8len2);
+
+		/*
+		 * If pg_server_to_any() did no real conversion, then we actually
+		 * compared original strings.  So, we already done.
+		 */
+		if (mbstr1 == utf8str1 && mbstr2 == utf8str2)
+			return cmp;
+
+		/* Free memory if needed */
+		if (mbstr1 != utf8str1)
+			pfree(utf8str1);
+		if (mbstr2 != utf8str2)
+			pfree(utf8str2);
+
+		/*
+		 * When all Unicode codepoints are equal, return result of binary
+		 * comparison.  In some edge cases, same characters may have different
+		 * representations in encoding.  Then our behavior could diverge from
+		 * standard.  However, that allow us to do simple binary comparison
+		 * for "==" operator, which is performance critical in typical cases.
+		 * In future to implement strict standard conformance, we can do
+		 * normalization of input JSON strings.
+		 */
+		if (cmp == 0)
+			return binaryCompareStrings(mbstr1, mblen1, mbstr2, mblen2);
+		else
+			return cmp;
+	}
 }
 
 /*
  * Compare two SQL/JSON items using comparison operation 'op'.
  */
 static JsonPathBool
-compareItems(int32 op, JsonbValue *jb1, JsonbValue *jb2)
+compareItems(int32 op, JsonbValue *jb1, JsonbValue *jb2, bool useTz)
 {
 	int			cmp;
 	bool		res;
@@ -2022,9 +2293,23 @@ compareItems(int32 op, JsonbValue *jb1, JsonbValue *jb2)
 						   jb2->val.string.val,
 						   jb1->val.string.len) ? jpbFalse : jpbTrue;
 
-			cmp = varstr_cmp(jb1->val.string.val, jb1->val.string.len,
-							 jb2->val.string.val, jb2->val.string.len,
-							 DEFAULT_COLLATION_OID);
+			cmp = compareStrings(jb1->val.string.val, jb1->val.string.len,
+								 jb2->val.string.val, jb2->val.string.len);
+			break;
+		case jbvDatetime:
+			{
+				bool		have_error = false;
+
+				cmp = compareDatetime(jb1->val.datetime.value,
+									  jb1->val.datetime.typid,
+									  jb2->val.datetime.value,
+									  jb2->val.datetime.typid,
+									  useTz,
+									  &have_error);
+
+				if (have_error)
+					return jpbUnknown;
+			}
 			break;
 
 		case jbvBinary:
@@ -2103,7 +2388,7 @@ getArrayIndex(JsonPathExecContext *cxt, JsonPathItem *jsp, JsonbValue *jb,
 	if (JsonValueListLength(&found) != 1 ||
 		!(jbv = getScalar(JsonValueListHead(&found), jbvNumeric)))
 		RETURN_ERROR(ereport(ERROR,
-							 (errcode(ERRCODE_INVALID_JSON_SUBSCRIPT),
+							 (errcode(ERRCODE_INVALID_SQL_JSON_SUBSCRIPT),
 							  errmsg("jsonpath array subscript is not a single numeric value"))));
 
 	numeric_index = DirectFunctionCall2(numeric_trunc,
@@ -2115,7 +2400,7 @@ getArrayIndex(JsonPathExecContext *cxt, JsonPathItem *jsp, JsonbValue *jb,
 
 	if (have_error)
 		RETURN_ERROR(ereport(ERROR,
-							 (errcode(ERRCODE_INVALID_JSON_SUBSCRIPT),
+							 (errcode(ERRCODE_INVALID_SQL_JSON_SUBSCRIPT),
 							  errmsg("jsonpath array subscript is out of integer range"))));
 
 	return jperOk;
@@ -2284,4 +2569,206 @@ wrapItemsInArray(const JsonValueList *items)
 		pushJsonbValue(&ps, WJB_ELEM, jbv);
 
 	return pushJsonbValue(&ps, WJB_END_ARRAY, NULL);
+}
+
+/*
+ * Cross-type comparison of two datetime SQL/JSON items.  If items are
+ * uncomparable, 'error' flag is set.
+ */
+static int
+compareDatetime(Datum val1, Oid typid1, Datum val2, Oid typid2,
+				bool useTz, bool *have_error)
+{
+	PGFunction cmpfunc = NULL;
+
+	switch (typid1)
+	{
+		case DATEOID:
+			switch (typid2)
+			{
+				case DATEOID:
+					cmpfunc = date_cmp;
+
+					break;
+
+				case TIMESTAMPOID:
+					val1 = TimestampGetDatum(date2timestamp_opt_error(DatumGetDateADT(val1), have_error));
+					if (have_error && *have_error)
+						return 0;
+					cmpfunc = timestamp_cmp;
+
+					break;
+
+				case TIMESTAMPTZOID:
+					if (!useTz)
+						ereport(ERROR,
+								(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+								 errmsg("cannot convert value from %s to %s without timezone usage",
+										"date", "timestamptz"),
+								 errhint("use *_tz() function for timezone support")));
+					val1 = TimestampTzGetDatum(date2timestamptz_opt_error(DatumGetDateADT(val1), have_error));
+					if (have_error && *have_error)
+						return 0;
+					cmpfunc = timestamp_cmp;
+
+					break;
+
+				case TIMEOID:
+				case TIMETZOID:
+					*have_error = true;
+					return 0;
+			}
+			break;
+
+		case TIMEOID:
+			switch (typid2)
+			{
+				case TIMEOID:
+					cmpfunc = time_cmp;
+
+					break;
+
+				case TIMETZOID:
+					if (!useTz)
+						ereport(ERROR,
+								(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+								 errmsg("cannot convert value from %s to %s without timezone usage",
+										"time", "timetz"),
+								 errhint("use *_tz() function for timezone support")));
+					val1 = DirectFunctionCall1(time_timetz, val1);
+					cmpfunc = timetz_cmp;
+
+					break;
+
+				case DATEOID:
+				case TIMESTAMPOID:
+				case TIMESTAMPTZOID:
+					*have_error = true;
+					return 0;
+			}
+			break;
+
+		case TIMETZOID:
+			switch (typid2)
+			{
+				case TIMEOID:
+					if (!useTz)
+						ereport(ERROR,
+								(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+								 errmsg("cannot convert value from %s to %s without timezone usage",
+										"time", "timetz"),
+								 errhint("use *_tz() function for timezone support")));
+					val2 = DirectFunctionCall1(time_timetz, val2);
+					cmpfunc = timetz_cmp;
+
+					break;
+
+				case TIMETZOID:
+					cmpfunc = timetz_cmp;
+
+					break;
+
+				case DATEOID:
+				case TIMESTAMPOID:
+				case TIMESTAMPTZOID:
+					*have_error = true;
+					return 0;
+			}
+			break;
+
+		case TIMESTAMPOID:
+			switch (typid2)
+			{
+				case DATEOID:
+					val2 = TimestampGetDatum(date2timestamp_opt_error(DatumGetDateADT(val2), have_error));
+					if (have_error && *have_error)
+						return 0;
+					cmpfunc = timestamp_cmp;
+
+					break;
+
+				case TIMESTAMPOID:
+					cmpfunc = timestamp_cmp;
+
+					break;
+
+				case TIMESTAMPTZOID:
+					if (!useTz)
+						ereport(ERROR,
+								(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+								 errmsg("cannot convert value from %s to %s without timezone usage",
+										"timestamp", "timestamptz"),
+								 errhint("use *_tz() function for timezone support")));
+					val1 = TimestampTzGetDatum(timestamp2timestamptz_opt_error(DatumGetTimestamp(val1), have_error));
+					if (have_error && *have_error)
+						return 0;
+					cmpfunc = timestamp_cmp;
+
+					break;
+
+				case TIMEOID:
+				case TIMETZOID:
+					*have_error = true;
+					return 0;
+			}
+			break;
+
+		case TIMESTAMPTZOID:
+			switch (typid2)
+			{
+				case DATEOID:
+					if (!useTz)
+						ereport(ERROR,
+								(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+								 errmsg("cannot convert value from %s to %s without timezone usage",
+										"date", "timestamptz"),
+								 errhint("use *_tz() function for timezone support")));
+					val2 = TimestampTzGetDatum(date2timestamptz_opt_error(DatumGetDateADT(val2), have_error));
+					if (have_error && *have_error)
+						return 0;
+					cmpfunc = timestamp_cmp;
+
+					break;
+
+				case TIMESTAMPOID:
+					if (!useTz)
+						ereport(ERROR,
+								(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+								 errmsg("cannot convert value from %s to %s without timezone usage",
+										"timestamp", "timestamptz"),
+								 errhint("use *_tz() function for timezone support")));
+					val2 = TimestampTzGetDatum(timestamp2timestamptz_opt_error(DatumGetTimestamp(val2), have_error));
+					if (have_error && *have_error)
+						return 0;
+					cmpfunc = timestamp_cmp;
+
+					break;
+
+				case TIMESTAMPTZOID:
+					cmpfunc = timestamp_cmp;
+
+					break;
+
+				case TIMEOID:
+				case TIMETZOID:
+					*have_error = true;
+					return 0;
+			}
+			break;
+
+		default:
+			elog(ERROR, "unrecognized SQL/JSON datetime type oid: %d",
+				 typid1);
+	}
+
+	if (*have_error)
+		return 0;
+
+	if (!cmpfunc)
+		elog(ERROR, "unrecognized SQL/JSON datetime type oid: %d",
+			 typid2);
+
+	*have_error = false;
+
+	return DatumGetInt32(DirectFunctionCall2(cmpfunc, val1, val2));
 }

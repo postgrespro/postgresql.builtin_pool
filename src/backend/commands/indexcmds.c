@@ -516,8 +516,8 @@ DefineIndex(Oid relationId,
 	 * is part of the key columns, and anything equal to and over is part of
 	 * the INCLUDE columns.
 	 */
-	allIndexParams = list_concat(list_copy(stmt->indexParams),
-								 list_copy(stmt->indexIncludingParams));
+	allIndexParams = list_concat_copy(stmt->indexParams,
+									  stmt->indexIncludingParams);
 	numberOfAttributes = list_length(allIndexParams);
 
 	if (numberOfAttributes <= 0)
@@ -1086,8 +1086,7 @@ DefineIndex(Oid relationId,
 				childidxs = RelationGetIndexList(childrel);
 				attmap =
 					convert_tuples_by_name_map(RelationGetDescr(childrel),
-											   parentDesc,
-											   gettext_noop("could not convert row type"));
+											   parentDesc);
 				maplen = parentDesc->natts;
 
 				foreach(cell, childidxs)
@@ -2351,7 +2350,8 @@ ReindexIndex(RangeVar *indexRelation, int options, bool concurrent)
 	if (concurrent)
 		ReindexRelationConcurrently(indOid, options);
 	else
-		reindex_index(indOid, false, persistence, options);
+		reindex_index(indOid, false, persistence,
+					  options | REINDEXOPT_REPORT_PROGRESS);
 }
 
 /*
@@ -2454,7 +2454,7 @@ ReindexTable(RangeVar *relation, int options, bool concurrent)
 		result = reindex_relation(heapOid,
 								  REINDEX_REL_PROCESS_TOAST |
 								  REINDEX_REL_CHECK_CONSTRAINTS,
-								  options);
+								  options | REINDEXOPT_REPORT_PROGRESS);
 		if (!result)
 			ereport(NOTICE,
 					(errmsg("table \"%s\" has no indexes to reindex",
@@ -2658,7 +2658,7 @@ ReindexMultipleTables(const char *objectName, ReindexObjectType objectKind,
 			result = reindex_relation(relid,
 									  REINDEX_REL_PROCESS_TOAST |
 									  REINDEX_REL_CHECK_CONSTRAINTS,
-									  options);
+									  options | REINDEXOPT_REPORT_PROGRESS);
 
 			if (result && (options & REINDEXOPT_VERBOSE))
 				ereport(INFO,

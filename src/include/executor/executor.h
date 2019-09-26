@@ -15,6 +15,7 @@
 #define EXECUTOR_H
 
 #include "executor/execdesc.h"
+#include "fmgr.h"
 #include "nodes/lockoptions.h"
 #include "nodes/parsenodes.h"
 #include "utils/memutils.h"
@@ -197,9 +198,9 @@ extern void ExecWithCheckOptions(WCOKind kind, ResultRelInfo *resultRelInfo,
 extern LockTupleMode ExecUpdateLockMode(EState *estate, ResultRelInfo *relinfo);
 extern ExecRowMark *ExecFindRowMark(EState *estate, Index rti, bool missing_ok);
 extern ExecAuxRowMark *ExecBuildAuxRowMark(ExecRowMark *erm, List *targetlist);
-extern TupleTableSlot *EvalPlanQual(EState *estate, EPQState *epqstate,
-									Relation relation, Index rti, TupleTableSlot *testslot);
-extern void EvalPlanQualInit(EPQState *epqstate, EState *estate,
+extern TupleTableSlot *EvalPlanQual(EPQState *epqstate, Relation relation,
+									Index rti, TupleTableSlot *testslot);
+extern void EvalPlanQualInit(EPQState *epqstate, EState *parentestate,
 							 Plan *subplan, List *auxrowmarks, int epqParam);
 extern void EvalPlanQualSetPlan(EPQState *epqstate,
 								Plan *subplan, List *auxrowmarks);
@@ -207,9 +208,9 @@ extern TupleTableSlot *EvalPlanQualSlot(EPQState *epqstate,
 										Relation relation, Index rti);
 
 #define EvalPlanQualSetSlot(epqstate, slot)  ((epqstate)->origslot = (slot))
-extern void EvalPlanQualFetchRowMarks(EPQState *epqstate);
+extern bool EvalPlanQualFetchRowMark(EPQState *epqstate, Index rti, TupleTableSlot *slot);
 extern TupleTableSlot *EvalPlanQualNext(EPQState *epqstate);
-extern void EvalPlanQualBegin(EPQState *epqstate, EState *parentestate);
+extern void EvalPlanQualBegin(EPQState *epqstate);
 extern void EvalPlanQualEnd(EPQState *epqstate);
 
 /*
@@ -535,8 +536,7 @@ extern void ExecInitRangeTable(EState *estate, List *rangeTable);
 static inline RangeTblEntry *
 exec_rt_fetch(Index rti, EState *estate)
 {
-	Assert(rti > 0 && rti <= estate->es_range_table_size);
-	return estate->es_range_table_array[rti - 1];
+	return (RangeTblEntry *) list_nth(estate->es_range_table, rti - 1);
 }
 
 extern Relation ExecGetRangeTableRelation(EState *estate, Index rti);

@@ -17,8 +17,6 @@
 #ifndef _FORMATTING_H_
 #define _FORMATTING_H_
 
-#include "fmgr.h"
-
 
 extern char *str_tolower(const char *buff, size_t nbytes, Oid collid);
 extern char *str_toupper(const char *buff, size_t nbytes, Oid collid);
@@ -27,5 +25,9 @@ extern char *str_initcap(const char *buff, size_t nbytes, Oid collid);
 extern char *asc_tolower(const char *buff, size_t nbytes);
 extern char *asc_toupper(const char *buff, size_t nbytes);
 extern char *asc_initcap(const char *buff, size_t nbytes);
+
+extern Datum parse_datetime(text *date_txt, text *fmt, bool std,
+							Oid *typid, int32 *typmod, int *tz,
+							bool *have_error);
 
 #endif
