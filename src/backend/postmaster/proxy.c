@@ -135,7 +135,6 @@ static ssize_t socket_write(Channel* chan, char const* buf, size_t size);
  */
 #define ELOG(severity,fmt,...)
 
-
 static Proxy* proxy;
 int MyProxyId;
 pgsocket MyProxySocket;
@@ -594,9 +593,16 @@ channel_write(Channel* chan, bool synchronous)
 	while (peer->tx_pos < peer->tx_size) /* has something to write */
 	{
 		ssize_t rc = socket_write(chan, peer->buf + peer->tx_pos, peer->tx_size - peer->tx_pos);
+
 		ELOG(LOG, "%p: write %d tx_pos=%d, tx_size=%d: %m", chan, (int)rc, peer->tx_pos, peer->tx_size);
 		if (rc <= 0)
 			return false;
+
+		if (!chan->client_port)
+			ELOG(LOG, "Send command %c from client %d to backend %d (%p:ready=%d)", peer->buf[peer->tx_pos], peer->client_port->sock, chan->backend_pid, chan, chan->backend_is_ready);
+		else
+			ELOG(LOG, "Send reply %c to client %d from backend %d (%p:ready=%d)", peer->buf[peer->tx_pos], chan->client_port->sock, peer->backend_pid, peer, peer->backend_is_ready);
+
 		if (chan->client_port)
 			chan->proxy->state->tx_bytes += rc;
 		else
@@ -665,6 +671,7 @@ channel_read(Channel* chan)
 	while (chan->tx_size == 0) /* there is no pending write op */
 	{
 		ssize_t rc;
+		bool handshake = false;
 #ifdef USE_SSL
 		int waitfor = 0;
 		if (chan->client_port && chan->client_port->ssl_in_use)
@@ -674,8 +681,8 @@ channel_read(Channel* chan)
 			rc = chan->client_port
 				? secure_raw_read(chan->client_port, chan->buf + chan->rx_pos, chan->buf_size - chan->rx_pos)
 				: recv(chan->backend_socket, chan->buf + chan->rx_pos, chan->buf_size - chan->rx_pos, 0);
-
 		ELOG(LOG, "%p: read %d: %m", chan, (int)rc);
+
 		if (rc <= 0)
 		{
 			if (rc == 0 || (errno != EAGAIN && errno != EWOULDBLOCK))
@@ -688,6 +695,12 @@ channel_read(Channel* chan)
 			ModifyWaitEvent(chan->proxy->wait_events, chan->event_pos, WL_SOCKET_READABLE|WL_SOCKET_WRITEABLE|WL_SOCKET_EDGE, NULL);
 			chan->edge_triggered = false;
 		}
+
+		if (!chan->client_port)
+			ELOG(LOG, "Receive reply %c %d bytes from backend %d (%p:ready=%d) to client %d", chan->buf[0] ? chan->buf[0] : '?', (int)rc + chan->rx_pos, chan->backend_pid, chan, chan->backend_is_ready, chan->peer ? chan->peer->client_port->sock : -1);
+		else
+			ELOG(LOG, "Receive command %c %d bytes from client %d to backend %d (%p:ready=%d)", chan->buf[0] ? chan->buf[0] : '?', (int)rc + chan->rx_pos, chan->client_port->sock, chan->peer ? chan->peer->backend_pid : -1, chan->peer, chan->peer ? chan->peer->backend_is_ready : -1);
+
 		chan->rx_pos += rc;
 		msg_start = 0;
 
@@ -696,7 +709,6 @@ channel_read(Channel* chan)
 		{
 			int msg_len;
 			uint32 new_msg_len;
-			bool handshake = false;
 			if (chan->pool == NULL) /* process startup packet */
 			{
 				Assert(msg_start == 0);
@@ -718,7 +730,6 @@ channel_read(Channel* chan)
 			}
 			if (chan->rx_pos - msg_start >= msg_len) /* Message is completely fetched */
 			{
-				int response_size = msg_start + msg_len;
 				if (chan->pool == NULL) /* receive startup packet */
 				{
 					Assert(chan->client_port);
@@ -811,15 +822,22 @@ channel_read(Channel* chan)
 						else if (chan->gucs && is_transactional_statement(stmt))
 						{
 							size_t gucs_len = strlen(chan->gucs);
-							if (chan->rx_pos + gucs_len > chan->buf_size)
+							if (chan->rx_pos + gucs_len + 1 > chan->buf_size)
 							{
 								/* Reallocate buffer to fit concatenated GUCs */
-								chan->buf_size = chan->rx_pos + gucs_len;
+								chan->buf_size = chan->rx_pos + gucs_len + 1;
 								chan->buf = repalloc(chan->buf, chan->buf_size);
 							}
 							if (is_transaction_start(stmt))
 							{
 								/* Append GUCs after BEGIN command to include them in transaction body */
+								Assert(chan->buf[chan->rx_pos-1] == '\0');
+								if (chan->buf[chan->rx_pos-2] != ';')
+								{
+									chan->buf[chan->rx_pos-1] = ';';
+									chan->rx_pos += 1;
+									msg_len += 1;
+								}
 								memcpy(&chan->buf[chan->rx_pos-1], chan->gucs, gucs_len+1);
 								chan->in_transaction = true;
 							}
@@ -838,49 +856,52 @@ channel_read(Channel* chan)
 							chan->in_transaction = true;
 					}
 				}
-				if (chan->peer == NULL)	 /* client is not yet connected to backend */
-				{
-					if (!chan->client_port)
-					{
-						/* We are not expecting messages from idle backend. Assume that it some error or shutdown. */
-						channel_hangout(chan, "idle");
-						return false;
-					}
-					client_attach(chan);
-					if (handshake) /* Send handshake response to the client */
-					{
-						/* If we attach new client to the existed backend, then we need to send handshake response to the client */
-						Channel* backend = chan->peer;
-						Assert(chan->rx_pos == msg_len && msg_start == 0);
-						chan->rx_pos = 0; /* Skip startup packet */
-						if (backend != NULL) /* Backend was assigned */
-						{
-							Assert(backend->handshake_response != NULL); /* backend has already sent handshake responses */
-							Assert(backend->handshake_response_size < backend->buf_size);
-							memcpy(backend->buf, backend->handshake_response, backend->handshake_response_size);
-							backend->rx_pos = backend->tx_size = backend->handshake_response_size;
-							backend->backend_is_ready = true;
-							return channel_write(chan, false);
-						}
-						else
-						{
-							/* Handshake response will be send to client later when backend is assigned */
-							return false;
-						}
-					}
-					else if (chan->peer == NULL) /* Backend was not assigned */
-					{
-						chan->tx_size = response_size; /* query will be send later once backend is assigned */
-						return false;
-					}
-				}
 				msg_start += msg_len;
 			}
 			else break; /* Incomplete message. */
 		}
+		elog(LOG, "Message size %d", msg_start);
 		if (msg_start != 0)
 		{
 			/* Has some complete messages to send to peer */
+			if (chan->peer == NULL)	 /* client is not yet connected to backend */
+			{
+				if (!chan->client_port)
+				{
+					/* We are not expecting messages from idle backend. Assume that it some error or shutdown. */
+					channel_hangout(chan, "idle");
+					return false;
+				}
+				client_attach(chan);
+				if (handshake) /* Send handshake response to the client */
+				{
+					/* If we attach new client to the existed backend, then we need to send handshake response to the client */
+					Channel* backend = chan->peer;
+					chan->rx_pos = 0; /* Skip startup packet */
+					if (backend != NULL) /* Backend was assigned */
+					{
+						Assert(backend->handshake_response != NULL); /* backend has already sent handshake responses */
+						Assert(backend->handshake_response_size < backend->buf_size);
+						memcpy(backend->buf, backend->handshake_response, backend->handshake_response_size);
+						backend->rx_pos = backend->tx_size = backend->handshake_response_size;
+						backend->backend_is_ready = true;
+						elog(LOG, "Send handshake response to the client");
+						return channel_write(chan, false);
+					}
+					else
+					{
+						/* Handshake response will be send to client later when backend is assigned */
+						elog(LOG, "Handshake response will be sent to the client later when backed is assigned");
+						return false;
+					}
+				}
+				else if (chan->peer == NULL) /* Backend was not assigned */
+				{
+					chan->tx_size = msg_start; /* query will be send later once backend is assigned */
+					elog(LOG, "Query will be sent to this client later when backed is assigned");
+					return false;
+				}
+			}
 			Assert(chan->tx_pos == 0);
 			Assert(chan->rx_pos >= msg_start);
 			chan->tx_size = msg_start;
