@@ -25,6 +25,7 @@
 #include "utils/lsyscache.h"
 #include "utils/selfuncs.h"
 #include "statistics/statistics.h"
+#include "catalog/pg_statistic_ext.h"
 
 
 /*
@@ -159,6 +160,9 @@ clauselist_selectivity_simple(PlannerInfo *root,
 	RangeQueryClause *rqlist = NULL;
 	ListCell   *l;
 	int			listidx;
+	Bitmapset  *clauses_attnums = NULL;
+	int			n_clauses_attnums = 0;
+	int         innerRelid = varRelid;
 
 	/*
 	 * If there's exactly one clause (and it was not estimated yet), just go
@@ -169,6 +173,9 @@ clauselist_selectivity_simple(PlannerInfo *root,
 		bms_num_members(estimatedclauses) == 0)
 		return clause_selectivity(root, (Node *) linitial(clauses),
 								  varRelid, jointype, sjinfo);
+
+	if (innerRelid == 0 && sjinfo)
+		bms_get_singleton_member(sjinfo->min_righthand, &innerRelid);
 
 	/*
 	 * Anything that doesn't look like a potential rangequery clause gets
@@ -181,7 +188,6 @@ clauselist_selectivity_simple(PlannerInfo *root,
 		Node	   *clause = (Node *) lfirst(l);
 		RestrictInfo *rinfo;
 		Selectivity s2;
-
 		listidx++;
 
 		/*
@@ -213,6 +219,7 @@ clauselist_selectivity_simple(PlannerInfo *root,
 		else
 			rinfo = NULL;
 
+
 		/*
 		 * See if it looks like a restriction clause with a pseudoconstant on
 		 * one side.  (Anything more complicated than that might not behave in
@@ -224,6 +231,55 @@ clauselist_selectivity_simple(PlannerInfo *root,
 			OpExpr	   *expr = (OpExpr *) clause;
 			bool		varonleft = true;
 			bool		ok;
+			int         oprrest = get_oprrest(expr->opno);
+
+			/* Try to take in account functional dependencies between attributes */
+			if (oprrest == F_EQSEL && rinfo != NULL && innerRelid != 0)
+			{
+				Var* var = (Var*)linitial(expr->args);
+				if (!IsA(var, Var) || var->varno != innerRelid)
+				{
+					var = (Var*)lsecond(expr->args);
+				}
+				if (IsA(var, Var) && var->varno == innerRelid)
+				{
+					clauses_attnums = bms_add_member(clauses_attnums, var->varattno);
+					if (n_clauses_attnums++ != 0)
+					{
+						RelOptInfo* rel = find_base_rel(root, innerRelid);
+						if (rel->rtekind == RTE_RELATION && rel->statlist != NIL)
+						{
+							StatisticExtInfo *stat = choose_best_statistics(rel->statlist, clauses_attnums,
+																			STATS_EXT_DEPENDENCIES);
+							if (stat != NULL)
+							{
+								MVDependencies *dependencies = statext_dependencies_load(stat->statOid);
+								MVDependency *strongest = NULL;
+								int i;
+								for (i = 0; i < dependencies->ndeps; i++)
+								{
+									MVDependency *dependency = dependencies->deps[i];
+									int n_dep_vars = dependency->nattributes - 1;
+									/* Dependency implies attribute */
+									if (var->varattno == dependency->attributes[n_dep_vars])
+									{
+										while (--n_dep_vars >= 0
+											   && bms_is_member(dependency->attributes[n_dep_vars], clauses_attnums));
+										if (n_dep_vars < 0 && (!strongest || strongest->degree < dependency->degree))
+											strongest = dependency;
+									}
+								}
+								if (strongest)
+								{
+									Selectivity dep_sel = (strongest->degree + (1 - strongest->degree) * s1);
+									s1 = Min(dep_sel, s2);
+									continue;
+								}
+							}
+						}
+					}
+				}
+			}
 
 			if (rinfo)
 			{
@@ -249,7 +305,7 @@ clauselist_selectivity_simple(PlannerInfo *root,
 				 * selectivity in generically.  But if it's the right oprrest,
 				 * add the clause to rqlist for later processing.
 				 */
-				switch (get_oprrest(expr->opno))
+				switch (oprrest)
 				{
 					case F_SCALARLTSEL:
 					case F_SCALARLESEL:
