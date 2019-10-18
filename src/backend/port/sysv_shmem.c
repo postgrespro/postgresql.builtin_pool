@@ -125,7 +125,7 @@ InternalIpcMemoryCreate(IpcMemoryKey memKey, Size size)
 	IpcMemoryId shmid;
 	void	   *requestedAddress = NULL;
 	void	   *memAddress;
-
+	int         mode = IPC_CREAT | IPC_EXCL | IPCProtection;
 	/*
 	 * Normally we just pass requestedAddress = NULL to shmat(), allowing the
 	 * system to choose where the segment gets mapped.  But in an EXEC_BACKEND
@@ -143,14 +143,16 @@ InternalIpcMemoryCreate(IpcMemoryKey memKey, Size size)
 		if (pg_shmem_addr)
 			requestedAddress = (void *) strtoul(pg_shmem_addr, NULL, 0);
 	}
+	if (IsOnlineUpgrade)
+	{
+		mode &= ~IPC_EXCL;
+	}
 #endif
 
-	shmid = shmget(memKey, size, IPC_CREAT | IPC_EXCL | IPCProtection);
-
+	shmid = shmget(memKey, size, mode);
 	if (shmid < 0)
 	{
 		int			shmget_errno = errno;
-
 		/*
 		 * Fail quietly if error indicates a collision with existing segment.
 		 * One would expect EEXIST, given that we said IPC_EXCL, but perhaps
@@ -175,7 +177,7 @@ InternalIpcMemoryCreate(IpcMemoryKey memKey, Size size)
 		 */
 		if (shmget_errno == EINVAL)
 		{
-			shmid = shmget(memKey, 0, IPC_CREAT | IPC_EXCL | IPCProtection);
+			shmid = shmget(memKey, 0, mode);
 
 			if (shmid < 0)
 			{
@@ -216,7 +218,7 @@ InternalIpcMemoryCreate(IpcMemoryKey memKey, Size size)
 				(errmsg("could not create shared memory segment: %m"),
 				 errdetail("Failed system call was shmget(key=%lu, size=%zu, 0%o).",
 						   (unsigned long) memKey, size,
-						   IPC_CREAT | IPC_EXCL | IPCProtection),
+						   mode),
 				 (shmget_errno == EINVAL) ?
 				 errhint("This error usually means that PostgreSQL's request for a shared memory "
 						 "segment exceeded your kernel's SHMMAX parameter, or possibly that "
@@ -241,7 +243,7 @@ InternalIpcMemoryCreate(IpcMemoryKey memKey, Size size)
 	}
 
 	/* Register on-exit routine to delete the new segment */
-	on_shmem_exit(IpcMemoryDelete, Int32GetDatum(shmid));
+	//on_shmem_exit(IpcMemoryDelete, Int32GetDatum(shmid));
 
 	/* OK, should be able to attach to the segment */
 	memAddress = shmat(shmid, requestedAddress, PG_SHMAT_FLAGS);
@@ -752,6 +754,11 @@ PGSharedMemoryCreate(Size size,
 
 	/* Initialize new segment. */
 	hdr = (PGShmemHeader *) memAddress;
+
+	*shim = hdr;
+	if (IsOnlineUpgrade)
+		return hdr;
+
 	hdr->creatorPID = getpid();
 	hdr->magic = PGShmemMagic;
 	hdr->dsm_control = 0;
@@ -765,7 +772,6 @@ PGSharedMemoryCreate(Size size,
 	 */
 	hdr->totalsize = size;
 	hdr->freeoffset = MAXALIGN(sizeof(PGShmemHeader));
-	*shim = hdr;
 
 	/* Save info for possible future use */
 	UsedShmemSegAddr = memAddress;
@@ -806,7 +812,7 @@ PGSharedMemoryReAttach(void)
 	void	   *origUsedShmemSegAddr = UsedShmemSegAddr;
 
 	Assert(UsedShmemSegAddr != NULL);
-	Assert(IsUnderPostmaster);
+	Assert(IsUnderPostmaster || IsOnlineUpgrade);
 
 #ifdef __CYGWIN__
 	/* cygipc (currently) appears to not detach on exec. */

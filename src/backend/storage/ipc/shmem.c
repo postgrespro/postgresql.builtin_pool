@@ -383,7 +383,7 @@ ShmemInitStruct(const char *name, Size size, bool *foundPtr)
 		/* Must be trying to create/attach to ShmemIndex itself */
 		Assert(strcmp(name, "ShmemIndex") == 0);
 
-		if (IsUnderPostmaster)
+		if (IsUnderPostmaster || IsOnlineUpgrade)
 		{
 			/* Must be initializing a (non-standalone) backend */
 			Assert(shmemseghdr->index != NULL);

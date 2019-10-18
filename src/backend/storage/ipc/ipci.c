@@ -194,7 +194,7 @@ CreateSharedMemoryAndSemaphores(void)
 	/*
 	 * Set up shared memory allocation mechanism
 	 */
-	if (!IsUnderPostmaster)
+	if (!IsUnderPostmaster && !IsOnlineUpgrade)
 		InitShmemAllocation();
 
 	/*

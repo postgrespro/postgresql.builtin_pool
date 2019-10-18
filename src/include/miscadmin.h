@@ -150,6 +150,7 @@ extern PGDLLIMPORT bool IsPostmasterEnvironment;
 extern PGDLLIMPORT bool IsUnderPostmaster;
 extern PGDLLIMPORT bool IsBackgroundWorker;
 extern PGDLLIMPORT bool IsBinaryUpgrade;
+extern PGDLLIMPORT bool IsOnlineUpgrade;
 
 extern PGDLLIMPORT bool ExitOnAnyError;
 

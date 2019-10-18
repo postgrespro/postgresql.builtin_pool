@@ -503,6 +503,17 @@ StreamServerPort(int family, char *hostName, unsigned short portNumber,
 				closesocket(fd);
 				continue;
 			}
+			if ((setsockopt(fd, SOL_SOCKET, SO_REUSEPORT,
+							(char *) &one, sizeof(one))) == -1)
+			{
+				ereport(LOG,
+						(errcode_for_socket_access(),
+				/* translator: first %s is IPv4, IPv6, or Unix */
+						 errmsg("setsockopt(SO_REUSEADDR) failed for %s address \"%s\": %m",
+								familyDesc, addrDesc)));
+				closesocket(fd);
+				continue;
+			}
 		}
 #endif
 

@@ -169,6 +169,8 @@ find_my_exec(const char *argv0, char *retpath)
 	 * Since no explicit path was supplied, the user must have been relying on
 	 * PATH.  We'll search the same PATH.
 	 */
+	path = getenv("PATH");
+	Assert(path != NULL);
 	if ((path = getenv("PATH")) && *path)
 	{
 		char	   *startp = NULL,
@@ -195,7 +197,6 @@ find_my_exec(const char *argv0, char *retpath)
 				join_path_components(retpath, retpath, argv0);
 			}
 			canonicalize_path(retpath);
-
 			switch (validate_exec(retpath))
 			{
 				case 0:			/* found ok */
@@ -210,7 +211,6 @@ find_my_exec(const char *argv0, char *retpath)
 			}
 		} while (*endp);
 	}
-
 	log_error(errcode(ERRCODE_UNDEFINED_FILE),
 			  _("could not find a \"%s\" to execute"), argv0);
 	return -1;

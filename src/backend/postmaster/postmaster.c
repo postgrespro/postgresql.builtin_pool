@@ -391,7 +391,7 @@ static void pmdie(SIGNAL_ARGS);
 static void reaper(SIGNAL_ARGS);
 static void sigusr1_handler(SIGNAL_ARGS);
 static void startup_die(SIGNAL_ARGS);
-static void dummy_handler(SIGNAL_ARGS);
+static void upgrade_handler(SIGNAL_ARGS);
 static void StartupPacketTimeoutHandler(void);
 static void CleanupBackend(int pid, int exitstatus);
 static bool CleanupBackgroundWorker(int pid, int exitstatus);
@@ -560,6 +560,48 @@ int			postmaster_alive_fds[2] = {-1, -1};
 HANDLE		PostmasterHandle;
 #endif
 
+static void
+UpgradePostgres(void)
+{
+	char* PostmasterArgs[] = {"/home/knizhnik/postgresql/dist/bin/postgres", "-U", "-D", "." ,NULL};
+	BackendParameters param;
+	FILE	   *fp;
+
+	if (!save_backend_variables(&param, NULL))
+		return;				/* log made by save_backend_variables */
+
+	/* Open file */
+	fp = AllocateFile("postmaster.params", PG_BINARY_W);
+	if (!fp)
+	{
+		ereport(LOG,
+				(errcode_for_file_access(),
+				 errmsg("could not create file \"postmaster.params\": %m")));
+		return;
+	}
+
+	if (fwrite(&param, sizeof(param), 1, fp) != 1)
+	{
+		ereport(LOG,
+				(errcode_for_file_access(),
+				 errmsg("could not write to file \"postmaster.params\": %m")));
+		FreeFile(fp);
+		return;
+	}
+
+	/* Release file */
+	if (FreeFile(fp))
+	{
+		ereport(LOG,
+				(errcode_for_file_access(),
+				 errmsg("could not write to file \"postmaster.params\": %m")));
+		return;
+	}
+
+	elog(LOG, "Upgrade postgres");
+	execv(PostmasterArgs[0], PostmasterArgs);
+}
+
 /*
  * Postmaster main entry point
  */
@@ -634,8 +676,9 @@ PostmasterMain(int argc, char *argv[])
 	pqsignal(SIGPIPE, SIG_IGN); /* ignored */
 	pqsignal_no_restart(SIGUSR1, sigusr1_handler);	/* message from child
 													 * process */
-	pqsignal_no_restart(SIGUSR2, dummy_handler);	/* unused, reserve for
+	pqsignal_no_restart(SIGUSR2, upgrade_handler);	/* unused, reserve for
 													 * children */
+	pqsignal_no_restart(SIGCHLD, reaper);	/* handle child termination */
 	pqsignal_no_restart(SIGCHLD, reaper);	/* handle child termination */
 
 	/*
@@ -669,12 +712,15 @@ PostmasterMain(int argc, char *argv[])
 	 * tcop/postgres.c (the option sets should not conflict) and with the
 	 * common help() function in main/main.c.
 	 */
-	while ((opt = getopt(argc, argv, "B:bc:C:D:d:EeFf:h:ijk:lN:nOo:Pp:r:S:sTt:W:-:")) != -1)
+	while ((opt = getopt(argc, argv, "B:bc:C:D:d:EeFf:h:ijk:lN:nOo:Pp:r:S:sTt:UW:-:")) != -1)
 	{
 		switch (opt)
 		{
 			case 'B':
 				SetConfigOption("shared_buffers", optarg, PGC_POSTMASTER, PGC_S_ARGV);
+				break;
+		  	case 'U':
+			  	IsOnlineUpgrade = true;
 				break;
 
 			case 'b':
@@ -853,6 +899,10 @@ PostmasterMain(int argc, char *argv[])
 		ExitPostmaster(1);
 	}
 
+	if (IsOnlineUpgrade)
+		read_backend_variables("postmaster.params", NULL);
+
+
 	/*
 	 * Locate the proper configuration files and data directory, and read
 	 * postgresql.conf for the first time.
@@ -950,7 +1000,8 @@ PostmasterMain(int argc, char *argv[])
 	 * so it must happen before opening sockets so that at exit, the socket
 	 * lockfiles go away after CloseServerPorts runs.
 	 */
-	CreateDataDirLockFile(true);
+	if (!IsOnlineUpgrade)
+		CreateDataDirLockFile(true);
 
 	/*
 	 * Read the control file (for error checking and config info).
@@ -991,12 +1042,16 @@ PostmasterMain(int argc, char *argv[])
 	 * Now that loadable modules have had their chance to register background
 	 * workers, calculate MaxBackends.
 	 */
-	InitializeMaxBackends();
+	if (!IsOnlineUpgrade)
+		InitializeMaxBackends();
 
 	/*
 	 * Set up shared memory and semaphores.
 	 */
-	reset_shared();
+	if (IsOnlineUpgrade)
+		PGSharedMemoryReAttach();
+	else
+		reset_shared();
 
 	/*
 	 * Estimate number of openable files.  This must happen after setting up
@@ -4980,6 +5035,10 @@ SubPostmasterMain(int argc, char *argv[])
 		/* And run the backend */
 		BackendRun(&port);		/* does not return */
 	}
+	if (strcmp(argv[1], "--forkpostmaster") == 0)
+	{
+		InitShmemAccess(UsedShmemSegAddr);
+	}
 	if (strcmp(argv[1], "--forkboot") == 0)
 	{
 		/* Restore basic shared memory pointers */
@@ -5296,8 +5355,9 @@ startup_die(SIGNAL_ARGS)
  * tcop/postgres.c.)
  */
 static void
-dummy_handler(SIGNAL_ARGS)
+upgrade_handler(SIGNAL_ARGS)
 {
+	UpgradePostgres();
 }
 
 /*
@@ -6079,10 +6139,12 @@ save_backend_variables(BackendParameters *param, Port *port,
 					   HANDLE childProcess, pid_t childPid)
 #endif
 {
-	memcpy(&param->port, port, sizeof(Port));
-	if (!write_inheritable_socket(&param->portsocket, port->sock, childPid))
-		return false;
-
+	if (port)
+	{
+		memcpy(&param->port, port, sizeof(Port));
+		if (!write_inheritable_socket(&param->portsocket, port->sock, childPid))
+			return false;
+	}
 	strlcpy(param->DataDir, DataDir, MAXPGPATH);
 
 	memcpy(&param->ListenSocket, &ListenSocket, sizeof(ListenSocket));
@@ -6316,9 +6378,11 @@ read_backend_variables(char *id, Port *port)
 static void
 restore_backend_variables(BackendParameters *param, Port *port)
 {
-	memcpy(port, &param->port, sizeof(Port));
-	read_inheritable_socket(&port->sock, &param->portsocket);
-
+	if (port)
+	{
+		memcpy(port, &param->port, sizeof(Port));
+		read_inheritable_socket(&port->sock, &param->portsocket);
+	}
 	SetDataDir(param->DataDir);
 
 	memcpy(&ListenSocket, &param->ListenSocket, sizeof(ListenSocket));
