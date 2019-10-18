@@ -107,6 +107,47 @@ clauselist_selectivity(PlannerInfo *root,
 }
 
 /*
+ * Find functional dependency between attributes using multicolumn statistic.
+ * relid:   index of relation to which all considered attributes belong
+ * var:     variable which dependencies are inspected
+ * attnums: set of considered attributes included specified variables
+ * This function return degree of strongest dependency between some subset of this attributes
+ * and specified variable or 0.0 if on dependency is found.
+ */
+double
+find_var_dependency(PlannerInfo *root, Index relid, Var *var, Bitmapset *attnums)
+{
+	RelOptInfo* rel = find_base_rel(root, relid);
+	if (rel->rtekind == RTE_RELATION && rel->statlist != NIL)
+	{
+		StatisticExtInfo *stat = choose_best_statistics(rel->statlist, attnums,
+														STATS_EXT_DEPENDENCIES);
+		if (stat != NULL)
+		{
+			MVDependencies *dependencies = statext_dependencies_load(stat->statOid);
+			MVDependency *strongest = NULL;
+			int i;
+			for (i = 0; i < dependencies->ndeps; i++)
+			{
+				MVDependency *dependency = dependencies->deps[i];
+				int n_dep_vars = dependency->nattributes - 1;
+				/* Dependency implies attribute */
+				if (var->varattno == dependency->attributes[n_dep_vars])
+				{
+					while (--n_dep_vars >= 0
+						   && bms_is_member(dependency->attributes[n_dep_vars], attnums));
+					if (n_dep_vars < 0 && (!strongest || strongest->degree < dependency->degree))
+						strongest = dependency;
+				}
+			}
+			if (strongest)
+				return strongest->degree;
+		}
+	}
+	return 0.0;
+}
+
+/*
  * clauselist_selectivity_simple -
  *	  Compute the selectivity of an implicitly-ANDed list of boolean
  *	  expression clauses.  The list can be empty, in which case 1.0
@@ -237,45 +278,20 @@ clauselist_selectivity_simple(PlannerInfo *root,
 			if (oprrest == F_EQSEL && rinfo != NULL && innerRelid != 0)
 			{
 				Var* var = (Var*)linitial(expr->args);
-				if (!IsA(var, Var) || var->varno != innerRelid)
+				if (!IsA(var, Var) || var->varnoold != innerRelid)
 				{
 					var = (Var*)lsecond(expr->args);
 				}
-				if (IsA(var, Var) && var->varno == innerRelid)
+				if (IsA(var, Var) && var->varattno >= 0 && var->varnoold == innerRelid)
 				{
 					clauses_attnums = bms_add_member(clauses_attnums, var->varattno);
 					if (n_clauses_attnums++ != 0)
 					{
-						RelOptInfo* rel = find_base_rel(root, innerRelid);
-						if (rel->rtekind == RTE_RELATION && rel->statlist != NIL)
+						double dep = find_var_dependency(root, innerRelid, var, clauses_attnums);
+						if (dep != 0.0)
 						{
-							StatisticExtInfo *stat = choose_best_statistics(rel->statlist, clauses_attnums,
-																			STATS_EXT_DEPENDENCIES);
-							if (stat != NULL)
-							{
-								MVDependencies *dependencies = statext_dependencies_load(stat->statOid);
-								MVDependency *strongest = NULL;
-								int i;
-								for (i = 0; i < dependencies->ndeps; i++)
-								{
-									MVDependency *dependency = dependencies->deps[i];
-									int n_dep_vars = dependency->nattributes - 1;
-									/* Dependency implies attribute */
-									if (var->varattno == dependency->attributes[n_dep_vars])
-									{
-										while (--n_dep_vars >= 0
-											   && bms_is_member(dependency->attributes[n_dep_vars], clauses_attnums));
-										if (n_dep_vars < 0 && (!strongest || strongest->degree < dependency->degree))
-											strongest = dependency;
-									}
-								}
-								if (strongest)
-								{
-									Selectivity dep_sel = (strongest->degree + (1 - strongest->degree) * s1);
-									s1 = Min(dep_sel, s2);
-									continue;
-								}
-							}
+							s1 *= dep + (1 - dep) * s2;
+							continue;
 						}
 					}
 				}

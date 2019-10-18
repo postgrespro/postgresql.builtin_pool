@@ -55,4 +55,6 @@ extern void CommuteOpExpr(OpExpr *clause);
 extern Query *inline_set_returning_function(PlannerInfo *root,
 											RangeTblEntry *rte);
 
+extern double find_var_dependency(PlannerInfo *root, Index relid, Var *var, Bitmapset *attnums);
+
 #endif							/* CLAUSES_H */

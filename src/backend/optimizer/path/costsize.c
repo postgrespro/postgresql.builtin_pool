@@ -4543,6 +4543,30 @@ get_parameterized_joinrel_size(PlannerInfo *root, RelOptInfo *rel,
 	return nrows;
 }
 
+
+/*
+ * Try to find dependency between variables.
+ * var: varaibles which dependencies are considered
+ * join_vars: list of variables used in other clauses
+ * This functions return strongest dependency and some subset of variables from the same relation
+ * or 0.0 if no dependency was found.
+ */
+static double
+var_depends_on(PlannerInfo *root, Var* var, List* clause_vars)
+{
+	ListCell* lc;
+	Bitmapset *attnums = NULL;
+	Index relid = var->varnoold;
+
+	foreach (lc, clause_vars)
+	{
+		Var* join_var = (Var*)lfirst(lc);
+		if (join_var->varnoold == relid && join_var->varattno >= 0)
+			attnums = bms_add_member(attnums, join_var->varattno);
+	}
+	return attnums ? find_var_dependency(root, relid, var, bms_add_member(attnums, var->varattno)) : 0.0;
+}
+
 /*
  * calc_joinrel_size_estimate
  *		Workhorse for set_joinrel_size_estimates and
@@ -4639,6 +4663,39 @@ calc_joinrel_size_estimate(PlannerInfo *root,
 		pselec = 0.0;			/* not used, keep compiler quiet */
 	}
 
+	/* Try to take in account functional dependencies between attributes of clauses pushed-down to joined relations and
+	 * retstrictlist clause. Right now we consider only case of restrictlist consists of one clause.
+	 */
+	if (list_length(restrictlist) == 1)
+	{
+		RestrictInfo* rinfo = linitial(restrictlist);
+		Expr* clause = rinfo->clause;
+
+		Assert(IsA(rinfo, RestrictInfo));
+
+		if (is_opclause(clause))
+		{
+			OpExpr *expr = (OpExpr *) clause;
+			ListCell* lc;
+			List* join_vars = NULL;
+
+			/* Get list of all attributes in pushed-down clauses */
+			foreach (lc, outer_rel->baserestrictinfo)
+				join_vars = list_concat(join_vars, pull_vars_of_level((Node*)((RestrictInfo*)lfirst(lc))->clause, 0));
+			foreach (lc, inner_rel->baserestrictinfo)
+				join_vars = list_concat(join_vars, pull_vars_of_level((Node*)((RestrictInfo*)lfirst(lc))->clause, 0));
+
+			foreach (lc, expr->args)
+			{
+				Var *var = (Var*) lfirst(lc);
+				if (IsA(var, Var) && var->varattno >= 0)
+				{
+					double dep = var_depends_on(root, var, join_vars);
+					jselec = jselec*(1.0 - dep) + dep;
+				}
+			}
+		}
+	}
 	/*
 	 * Basically, we multiply size of Cartesian product by selectivity.
 	 *
