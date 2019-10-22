@@ -243,7 +243,7 @@ InternalIpcMemoryCreate(IpcMemoryKey memKey, Size size)
 	}
 
 	/* Register on-exit routine to delete the new segment */
-	//on_shmem_exit(IpcMemoryDelete, Int32GetDatum(shmid));
+	on_shmem_exit(IpcMemoryDelete, Int32GetDatum(shmid));
 
 	/* OK, should be able to attach to the segment */
 	memAddress = shmat(shmid, requestedAddress, PG_SHMAT_FLAGS);
@@ -291,9 +291,12 @@ IpcMemoryDetach(int status, Datum shmaddr)
 static void
 IpcMemoryDelete(int status, Datum shmId)
 {
-	if (shmctl(DatumGetInt32(shmId), IPC_RMID, NULL) < 0)
-		elog(LOG, "shmctl(%d, %d, 0) failed: %m",
-			 DatumGetInt32(shmId), IPC_RMID);
+	if (!IsOnlineUpgrade)
+	{
+		if (shmctl(DatumGetInt32(shmId), IPC_RMID, NULL) < 0)
+			elog(LOG, "shmctl(%d, %d, 0) failed: %m",
+				 DatumGetInt32(shmId), IPC_RMID);
+	}
 }
 
 /*

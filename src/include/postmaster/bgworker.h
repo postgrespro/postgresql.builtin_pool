@@ -157,5 +157,6 @@ extern void BackgroundWorkerInitializeConnectionByOid(Oid dboid, Oid useroid, ui
 /* Block/unblock signals in a background worker process */
 extern void BackgroundWorkerBlockSignals(void);
 extern void BackgroundWorkerUnblockSignals(void);
+extern void BackgroundWorkerShmemAttach(void);
 
 #endif							/* BGWORKER_H */

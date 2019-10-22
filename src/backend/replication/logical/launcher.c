@@ -978,6 +978,9 @@ ApplyLauncherMain(Datum main_arg)
 
 	before_shmem_exit(logicalrep_launcher_onexit, (Datum) 0);
 
+	while (LogicalRepCtx->launcher_pid != 0)
+		pg_usleep(1000000);
+
 	Assert(LogicalRepCtx->launcher_pid == 0);
 	LogicalRepCtx->launcher_pid = MyProcPid;
 

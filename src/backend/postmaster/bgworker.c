@@ -152,6 +152,24 @@ BackgroundWorkerShmemSize(void)
 	return size;
 }
 
+void
+BackgroundWorkerShmemAttach(void)
+{
+	slist_iter	siter;
+	int			slotno = 0;
+
+	slist_foreach(siter, &BackgroundWorkerList)
+	{
+		RegisteredBgWorker *rw;
+
+		rw = slist_container(RegisteredBgWorker, rw_lnode, siter.cur);
+		Assert(slotno < max_worker_processes);
+		rw->rw_shmem_slot = slotno;
+		rw->rw_worker.bgw_notify_pid = 0;	/* might be reinit after crash */
+		++slotno;
+	}
+}
+
 /*
  * Initialize shared memory.
  */
@@ -377,7 +395,7 @@ BackgroundWorkerStateChange(void)
 		rw->rw_worker.bgw_notify_pid = slot->worker.bgw_notify_pid;
 		if (!PostmasterMarkPIDForWorkerNotify(rw->rw_worker.bgw_notify_pid))
 		{
-			elog(DEBUG1, "worker notification PID %lu is not valid",
+			elog(LOG, "worker notification PID %lu is not valid",
 				 (long) rw->rw_worker.bgw_notify_pid);
 			rw->rw_worker.bgw_notify_pid = 0;
 		}
@@ -480,6 +498,7 @@ ReportBackgroundWorkerExit(slist_mutable_iter *cur)
 		rw->rw_worker.bgw_restart_time == BGW_NEVER_RESTART)
 		ForgetBackgroundWorker(cur);
 
+	elog(LOG, "Notify PID=%d", notify_pid);
 	if (notify_pid != 0)
 		kill(notify_pid, SIGUSR1);
 }
@@ -571,6 +590,18 @@ BackgroundWorkerEntry(int slotno)
 	/* must copy this in case we don't intend to retain shmem access */
 	memcpy(&myEntry, &slot->worker, sizeof myEntry);
 	return &myEntry;
+}
+
+void*
+GetBackgroundWorkerEntries(void)
+{
+	return BackgroundWorkerData;
+}
+
+void
+SetBackgroundWorkerEntries(void* entries)
+{
+	BackgroundWorkerData = entries;
 }
 #endif
 
@@ -1147,6 +1178,7 @@ WaitForBackgroundWorkerShutdown(BackgroundWorkerHandle *handle)
 		CHECK_FOR_INTERRUPTS();
 
 		status = GetBackgroundWorkerPid(handle, &pid);
+		elog(LOG, "GetBackgroundWorkerPid(%d) = %d", pid, status);
 		if (status == BGWH_STOPPED)
 			break;
 
@@ -1184,6 +1216,7 @@ TerminateBackgroundWorker(BackgroundWorkerHandle *handle)
 
 	/* Set terminate flag in shared memory, unless slot has been reused. */
 	LWLockAcquire(BackgroundWorkerLock, LW_EXCLUSIVE);
+	elog(LOG, "Terminate worker slot %d", handle->slot);
 	if (handle->generation == slot->generation)
 	{
 		slot->terminate = true;

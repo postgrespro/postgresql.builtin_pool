@@ -511,6 +511,7 @@ typedef struct
 	bool		IsBinaryUpgrade;
 	int			max_safe_fds;
 	int			MaxBackends;
+	void*       BackgroundWorkers;
 #ifdef WIN32
 	HANDLE		PostmasterHandle;
 	HANDLE		initial_signal_pipe;
@@ -563,9 +564,15 @@ HANDLE		PostmasterHandle;
 static void
 UpgradePostgres(void)
 {
+#ifdef EXEC_BACKEND
 	char* PostmasterArgs[] = {"/home/knizhnik/postgresql/dist/bin/postgres", "-U", "-D", "." ,NULL};
 	BackendParameters param;
 	FILE	   *fp;
+
+	IsOnlineUpgrade = true;
+	TerminateChildren(SIGTERM);
+	if (CheckpointerPID != 0)
+		signal_child(CheckpointerPID, SIGUSR2);
 
 	if (!save_backend_variables(&param, NULL))
 		return;				/* log made by save_backend_variables */
@@ -600,7 +607,26 @@ UpgradePostgres(void)
 
 	elog(LOG, "Upgrade postgres");
 	execv(PostmasterArgs[0], PostmasterArgs);
+#else
+	elog(LOG, "Online upgrade is possible only postgres configured with EXEC_BACKEND");
+#endif
 }
+
+
+static void
+RestoreBackendList(void)
+{
+#ifdef EXEC_BACKEND
+	int i;
+	for (i = MaxLivePostmasterChildren() - 1; i >= 0; i--)
+	{
+		Backend* bp = (Backend *) &ShmemBackendArray[i];
+		if (bp->bkend_type == BACKEND_TYPE_NORMAL)
+			dlist_push_head(&BackendList, &bp->elem);
+	}
+#endif
+}
+
 
 /*
  * Postmaster main entry point
@@ -900,8 +926,10 @@ PostmasterMain(int argc, char *argv[])
 	}
 
 	if (IsOnlineUpgrade)
+	{
 		read_backend_variables("postmaster.params", NULL);
-
+		RegisterUnlinkLockFileCallback();
+	}
 
 	/*
 	 * Locate the proper configuration files and data directory, and read
@@ -1039,19 +1067,22 @@ PostmasterMain(int argc, char *argv[])
 	process_shared_preload_libraries();
 
 	/*
-	 * Now that loadable modules have had their chance to register background
-	 * workers, calculate MaxBackends.
-	 */
-	if (!IsOnlineUpgrade)
-		InitializeMaxBackends();
-
-	/*
 	 * Set up shared memory and semaphores.
 	 */
 	if (IsOnlineUpgrade)
+	{
 		PGSharedMemoryReAttach();
+		RestoreBackendList();
+	}
 	else
+	{
+		/*
+		 * Now that loadable modules have had their chance to register background
+		 * workers, calculate MaxBackends.
+		 */
+		InitializeMaxBackends();
 		reset_shared();
+	}
 
 	/*
 	 * Estimate number of openable files.  This must happen after setting up
@@ -1435,10 +1466,18 @@ PostmasterMain(int argc, char *argv[])
 	/*
 	 * We're ready to rock and roll...
 	 */
-	StartupPID = StartupDataBase();
-	Assert(StartupPID != 0);
-	StartupStatus = STARTUP_RUNNING;
-	pmState = PM_STARTUP;
+	if (!IsOnlineUpgrade)
+	{
+		StartupPID = StartupDataBase();
+		Assert(StartupPID != 0);
+		StartupStatus = STARTUP_RUNNING;
+		pmState = PM_STARTUP;
+	}
+	else
+	{
+		BackgroundWorkerShmemAttach();
+		pmState = PM_RUN;
+	}
 
 	/* Some workers may be scheduled to start now */
 	maybe_start_bgworkers();
@@ -1696,6 +1735,7 @@ ServerLoop(void)
 	last_lockfile_recheck_time = last_touch_time = time(NULL);
 
 	nSockets = initMasks(&readmask);
+	IsOnlineUpgrade = false;
 
 	for (;;)
 	{
@@ -4103,7 +4143,10 @@ SignalSomeChildren(int signal, int target)
 static void
 TerminateChildren(int signal)
 {
-	SignalChildren(signal);
+	if (IsOnlineUpgrade)
+		SignalSomeChildren(signal, BACKEND_TYPE_WALSND | BACKEND_TYPE_WORKER);
+	else
+		SignalChildren(signal);
 	if (StartupPID != 0)
 	{
 		signal_child(StartupPID, signal);
@@ -6180,6 +6223,7 @@ save_backend_variables(BackendParameters *param, Port *port,
 	param->PgStartTime = PgStartTime;
 	param->PgReloadTime = PgReloadTime;
 	param->first_syslogger_file_time = first_syslogger_file_time;
+	param->BackgroundWorkers = GetBackgroundWorkerEntries();
 
 	param->redirection_done = redirection_done;
 	param->IsBinaryUpgrade = IsBinaryUpgrade;
@@ -6417,6 +6461,7 @@ restore_backend_variables(BackendParameters *param, Port *port)
 	PgStartTime = param->PgStartTime;
 	PgReloadTime = param->PgReloadTime;
 	first_syslogger_file_time = param->first_syslogger_file_time;
+	SetBackgroundWorkerEntries(param->BackgroundWorkers);
 
 	redirection_done = param->redirection_done;
 	IsBinaryUpgrade = param->IsBinaryUpgrade;

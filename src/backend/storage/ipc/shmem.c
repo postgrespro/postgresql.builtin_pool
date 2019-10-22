@@ -101,6 +101,7 @@ InitShmemAccess(void *seghdr)
 	ShmemSegHdr = shmhdr;
 	ShmemBase = (void *) shmhdr;
 	ShmemEnd = (char *) ShmemBase + shmhdr->totalsize;
+
 }
 
 /*

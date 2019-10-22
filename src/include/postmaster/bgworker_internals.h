@@ -58,6 +58,8 @@ extern void StartBackgroundWorker(void) pg_attribute_noreturn();
 
 #ifdef EXEC_BACKEND
 extern BackgroundWorker *BackgroundWorkerEntry(int slotno);
+extern void SetBackgroundWorkerEntries(void* entries);
+extern void* GetBackgroundWorkerEntries(void);
 #endif
 
 #endif							/* BGWORKER_INTERNALS_H */

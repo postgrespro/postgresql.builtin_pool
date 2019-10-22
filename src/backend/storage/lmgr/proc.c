@@ -542,11 +542,20 @@ InitAuxiliaryProcess(void)
 	/*
 	 * Find a free auxproc ... *big* trouble if there isn't one ...
 	 */
-	for (proctype = 0; proctype < NUM_AUXILIARY_PROCS; proctype++)
+	while (true)
 	{
-		auxproc = &AuxiliaryProcs[proctype];
-		if (auxproc->pid == 0)
-			break;
+		for (proctype = 0; proctype < NUM_AUXILIARY_PROCS; proctype++)
+		{
+			auxproc = &AuxiliaryProcs[proctype];
+			if (auxproc->pid == 0)
+				break;
+		}
+		if (IsOnlineUpgrade && proctype >= NUM_AUXILIARY_PROCS)
+		{
+			pg_usleep(1000000);
+			continue;
+		}
+		break;
 	}
 	if (proctype >= NUM_AUXILIARY_PROCS)
 	{

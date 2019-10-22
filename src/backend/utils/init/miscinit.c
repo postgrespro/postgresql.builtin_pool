@@ -860,6 +860,20 @@ UnlinkLockFiles(int status, Datum arg)
 			(errmsg("database system is shut down")));
 }
 
+
+static void
+UnlinkPostmasterLock(int status, Datum arg)
+{
+	unlink("postmaster.pid");
+}
+
+void
+RegisterUnlinkLockFileCallback(void)
+{
+	on_proc_exit(UnlinkPostmasterLock, 0);
+}
+
+
 /*
  * Create a lockfile.
  *
