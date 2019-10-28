@@ -29,6 +29,7 @@ extern bool log_hostname;
 extern bool enable_bonjour;
 extern char *bonjour_name;
 extern bool restart_after_crash;
+extern char* OnlineUpgradePath;
 
 #ifdef WIN32
 extern HANDLE PostmasterHandle;

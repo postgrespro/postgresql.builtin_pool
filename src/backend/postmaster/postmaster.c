@@ -354,6 +354,8 @@ bool		ClientAuthInProgress = false;	/* T during new-client
 
 bool		redirection_done = false;	/* stderr redirected for syslogger? */
 
+char* OnlineUpgradePath = (char*)"";
+
 /* received START_AUTOVAC_LAUNCHER signal */
 static volatile sig_atomic_t start_autovac_launcher = false;
 
@@ -565,9 +567,12 @@ static void
 UpgradePostgres(void)
 {
 #ifdef EXEC_BACKEND
-	char* PostmasterArgs[] = {"/home/knizhnik/postgresql/dist/bin/postgres", "-U", "-D", "." ,NULL};
+	char* PostmasterArgs[] = {"postgres", "-U", "-D", "." ,NULL};
 	BackendParameters param;
 	FILE	   *fp;
+
+	if (*OnlineUpgradePath == '\0')
+		elog(ERROR, "Online upgrade path was not specified: alter system set online_ugrade_path='...' ; select pg_reload_conf()");
 
 	IsOnlineUpgrade = true;
 	TerminateChildren(SIGTERM);
@@ -605,10 +610,11 @@ UpgradePostgres(void)
 		return;
 	}
 
-	elog(LOG, "Upgrade postgres");
+	elog(LOG, "Upgrade postgres to %s", OnlineUpgradePath);
+	PostmasterArgs[0] = psprintf("%s/postgres", OnlineUpgradePath);
 	execv(PostmasterArgs[0], PostmasterArgs);
 #else
-	elog(LOG, "Online upgrade is possible only postgres configured with EXEC_BACKEND");
+	elog(LOG, "Online upgrade is possible only for postgres configured with EXEC_BACKEND");
 #endif
 }
 

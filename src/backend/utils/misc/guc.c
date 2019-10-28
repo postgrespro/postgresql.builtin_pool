@@ -3669,6 +3669,17 @@ static struct config_string ConfigureNamesString[] =
 	},
 
 	{
+		{"online_upgrade_path", PGC_SIGHUP, FILE_LOCATIONS,
+		 gettext_noop("Specify path to binaries of new Postgres version for online upgrade"),
+		 NULL,
+		 GUC_SUPERUSER_ONLY
+		},
+		&OnlineUpgradePath,
+		"",
+		NULL, NULL, NULL
+	},
+
+	{
 		{"krb_server_keyfile", PGC_SIGHUP, CONN_AUTH_AUTH,
 			gettext_noop("Sets the location of the Kerberos server key file."),
 			NULL,
