@@ -164,7 +164,7 @@ static void FreePagePushSpanLeader(FreePageManager *fpm, Size first_page,
 static Size FreePageManagerLargestContiguous(FreePageManager *fpm);
 static void FreePageManagerUpdateLargest(FreePageManager *fpm);
 
-#if FPM_EXTRA_ASSERTS
+#ifdef FPM_EXTRA_ASSERTS
 static Size sum_free_pages(FreePageManager *fpm);
 #endif
 
@@ -742,8 +742,8 @@ FreePageBtreeConsolidate(FreePageManager *fpm, FreePageBtree *btp)
 
 	/*
 	 * If we can fit our keys onto our left sibling's page, consolidate. In
-	 * this case, we move our keys onto the other page rather than visca
-	 * versa, to avoid having to adjust ancestor keys.
+	 * this case, we move our keys onto the other page rather than vice versa,
+	 * to avoid having to adjust ancestor keys.
 	 */
 	np = FreePageBtreeFindLeftSibling(base, btp);
 	if (np != NULL && btp->hdr.nused + np->hdr.nused <= max)

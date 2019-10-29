@@ -26,6 +26,7 @@
 #include "postgres.h"
 
 #include "catalog/pg_type.h"
+#include "funcapi.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
 #include "optimizer/clauses.h"
@@ -1683,6 +1684,9 @@ pull_up_constant_function(PlannerInfo *root, Node *jtnode,
 {
 	Query	   *parse = root->parse;
 	RangeTblFunction *rtf;
+	TypeFuncClass functypclass;
+	Oid			funcrettype;
+	TupleDesc	tupdesc;
 	pullup_replace_vars_context rvcontext;
 
 	/* Fail if the RTE has ORDINALITY - we don't implement that here. */
@@ -1695,6 +1699,20 @@ pull_up_constant_function(PlannerInfo *root, Node *jtnode,
 	rtf = linitial_node(RangeTblFunction, rte->functions);
 	if (!IsA(rtf->funcexpr, Const))
 		return jtnode;
+
+	/*
+	 * If the function's result is not a scalar, we punt.  In principle we
+	 * could break the composite constant value apart into per-column
+	 * constants, but for now it seems not worth the work.
+	 */
+	if (rtf->funccolcount != 1)
+		return jtnode;			/* definitely composite */
+
+	functypclass = get_expr_result_type(rtf->funcexpr,
+										&funcrettype,
+										&tupdesc);
+	if (functypclass != TYPEFUNC_SCALAR)
+		return jtnode;			/* must be a one-column composite type */
 
 	/* Create context for applying pullup_replace_vars */
 	rvcontext.root = root;
@@ -2659,7 +2677,6 @@ reduce_outer_joins_pass2(Node *jtnode,
 		pass_nonnullable_rels = find_nonnullable_rels(f->quals);
 		pass_nonnullable_rels = bms_add_members(pass_nonnullable_rels,
 												nonnullable_rels);
-		/* NB: we rely on list_concat to not damage its second argument */
 		pass_nonnullable_vars = find_nonnullable_vars(f->quals);
 		pass_nonnullable_vars = list_concat(pass_nonnullable_vars,
 											nonnullable_vars);

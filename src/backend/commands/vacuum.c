@@ -418,6 +418,15 @@ vacuum(List *relations, VacuumParams *params,
 					PopActiveSnapshot();
 					CommitTransactionCommand();
 				}
+				else
+				{
+					/*
+					 * If we're not using separate xacts, better separate the
+					 * ANALYZE actions with CCIs.  This avoids trouble if user
+					 * says "ANALYZE t, t".
+					 */
+					CommandCounterIncrement();
+				}
 			}
 		}
 	}
@@ -854,7 +863,7 @@ get_all_vacuum_rels(int options)
  *	 DEAD or RECENTLY_DEAD (see HeapTupleSatisfiesVacuum).
  * - freezeLimit is the Xid below which all Xids are replaced by
  *	 FrozenTransactionId during vacuum.
- * - xidFullScanLimit (computed from table_freeze_age parameter)
+ * - xidFullScanLimit (computed from freeze_table_age parameter)
  *	 represents a minimum Xid value; a table whose relfrozenxid is older than
  *	 this will have a full-table vacuum applied to it, to freeze tuples across
  *	 the whole table.  Vacuuming a table younger than this value can use a
@@ -884,6 +893,7 @@ vacuum_set_xid_limits(Relation rel,
 	int			effective_multixact_freeze_max_age;
 	TransactionId limit;
 	TransactionId safeLimit;
+	MultiXactId oldestMxact;
 	MultiXactId mxactLimit;
 	MultiXactId safeMxactLimit;
 
@@ -961,7 +971,8 @@ vacuum_set_xid_limits(Relation rel,
 	Assert(mxid_freezemin >= 0);
 
 	/* compute the cutoff multi, being careful to generate a valid value */
-	mxactLimit = GetOldestMultiXactId() - mxid_freezemin;
+	oldestMxact = GetOldestMultiXactId();
+	mxactLimit = oldestMxact - mxid_freezemin;
 	if (mxactLimit < FirstMultiXactId)
 		mxactLimit = FirstMultiXactId;
 
@@ -975,7 +986,11 @@ vacuum_set_xid_limits(Relation rel,
 		ereport(WARNING,
 				(errmsg("oldest multixact is far in the past"),
 				 errhint("Close open transactions with multixacts soon to avoid wraparound problems.")));
-		mxactLimit = safeMxactLimit;
+		/* Use the safe limit, unless an older mxact is still running */
+		if (MultiXactIdPrecedes(oldestMxact, safeMxactLimit))
+			mxactLimit = oldestMxact;
+		else
+			mxactLimit = safeMxactLimit;
 	}
 
 	*multiXactCutoff = mxactLimit;

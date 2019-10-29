@@ -109,9 +109,9 @@
 
 #include "access/heapam.h"
 #include "access/heapam_xlog.h"
+#include "access/heaptoast.h"
 #include "access/rewriteheap.h"
 #include "access/transam.h"
-#include "access/tuptoaster.h"
 #include "access/xact.h"
 #include "access/xloginsert.h"
 
@@ -664,8 +664,8 @@ raw_heap_insert(RewriteState state, HeapTuple tup)
 		 */
 		options |= HEAP_INSERT_NO_LOGICAL;
 
-		heaptup = toast_insert_or_update(state->rs_new_rel, tup, NULL,
-										 options);
+		heaptup = heap_toast_insert_or_update(state->rs_new_rel, tup, NULL,
+											  options);
 	}
 	else
 		heaptup = tup;
@@ -703,10 +703,9 @@ raw_heap_insert(RewriteState state, HeapTuple tup)
 							true);
 
 			/*
-			 * Now write the page. We say isTemp = true even if it's not a
-			 * temp table, because there's no need for smgr to schedule an
-			 * fsync for this write; we'll do it ourselves in
-			 * end_heap_rewrite.
+			 * Now write the page. We say skipFsync = true because there's no
+			 * need for smgr to schedule an fsync for this write; we'll do it
+			 * ourselves in end_heap_rewrite.
 			 */
 			RelationOpenSmgr(state->rs_new_rel);
 
@@ -1280,7 +1279,8 @@ CheckPointLogicalRewriteHeap(void)
 		}
 		else
 		{
-			int			fd = OpenTransientFile(path, O_RDONLY | PG_BINARY);
+			/* on some operating systems fsyncing a file requires O_RDWR */
+			int			fd = OpenTransientFile(path, O_RDWR | PG_BINARY);
 
 			/*
 			 * The file cannot vanish due to concurrency since this function

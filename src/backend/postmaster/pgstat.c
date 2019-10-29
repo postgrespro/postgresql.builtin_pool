@@ -893,7 +893,7 @@ pgstat_report_stat(bool force)
 				this_msg->m_nentries = 0;
 			}
 		}
-		/* zero out TableStatus structs after use */
+		/* zero out PgStat_TableStatus structs after use */
 		MemSet(tsa->tsa_entries, 0,
 			   tsa->tsa_used * sizeof(PgStat_TableStatus));
 		tsa->tsa_used = 0;
@@ -3272,10 +3272,10 @@ pgstat_progress_end_command(void)
 {
 	volatile PgBackendStatus *beentry = MyBEEntry;
 
-	if (!beentry)
+	if (!beentry || !pgstat_track_activities)
 		return;
-	if (!pgstat_track_activities
-		&& beentry->st_progress_command == PROGRESS_COMMAND_INVALID)
+
+	if (beentry->st_progress_command == PROGRESS_COMMAND_INVALID)
 		return;
 
 	PGSTAT_BEGIN_WRITE_ACTIVITY(beentry);

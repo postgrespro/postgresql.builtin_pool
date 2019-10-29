@@ -4092,20 +4092,7 @@ convert_string_datum(Datum value, Oid typid, Oid collid, bool *failure)
 		 * crashes since it will only give an estimation error and nothing
 		 * fatal.
 		 */
-#if _MSC_VER == 1400			/* VS.Net 2005 */
-
-		/*
-		 *
-		 * http://connect.microsoft.com/VisualStudio/feedback/ViewFeedback.aspx?FeedbackID=99694
-		 */
-		{
-			char		x[1];
-
-			xfrmlen = strxfrm(x, val, 0);
-		}
-#else
 		xfrmlen = strxfrm(NULL, val, 0);
-#endif
 #ifdef WIN32
 
 		/*
@@ -5768,7 +5755,6 @@ add_predicate_to_index_quals(IndexOptInfo *index, List *indexQuals)
 		if (!predicate_implied_by(oneQual, indexQuals, false))
 			predExtraQuals = list_concat(predExtraQuals, oneQual);
 	}
-	/* list_concat avoids modifying the passed-in indexQuals list */
 	return list_concat(predExtraQuals, indexQuals);
 }
 

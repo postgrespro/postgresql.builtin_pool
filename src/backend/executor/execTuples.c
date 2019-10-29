@@ -57,14 +57,15 @@
  */
 #include "postgres.h"
 
+#include "access/heaptoast.h"
 #include "access/htup_details.h"
 #include "access/tupdesc_details.h"
-#include "access/tuptoaster.h"
 #include "funcapi.h"
 #include "catalog/pg_type.h"
 #include "nodes/nodeFuncs.h"
 #include "storage/bufmgr.h"
 #include "utils/builtins.h"
+#include "utils/expandeddatum.h"
 #include "utils/lsyscache.h"
 #include "utils/typcache.h"
 
@@ -243,7 +244,7 @@ tts_virtual_materialize(TupleTableSlot *slot)
 static void
 tts_virtual_copyslot(TupleTableSlot *dstslot, TupleTableSlot *srcslot)
 {
-	TupleDesc	srcdesc = dstslot->tts_tupleDescriptor;
+	TupleDesc	srcdesc = srcslot->tts_tupleDescriptor;
 
 	Assert(srcdesc->natts <= dstslot->tts_tupleDescriptor->natts);
 

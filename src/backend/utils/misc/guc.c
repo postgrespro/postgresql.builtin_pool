@@ -1042,7 +1042,7 @@ static struct config_bool ConfigureNamesBool[] =
 	},
 	{
 		{"enable_partition_pruning", PGC_USERSET, QUERY_TUNING_METHOD,
-			gettext_noop("Enable plan-time and run-time partition pruning."),
+			gettext_noop("Enables plan-time and run-time partition pruning."),
 			gettext_noop("Allows the query planner and executor to compare partition "
 						 "bounds to conditions in the query to determine which "
 						 "partitions must be scanned."),
@@ -3493,7 +3493,7 @@ static struct config_string ConfigureNamesString[] =
 
 	{
 		{"recovery_target_timeline", PGC_POSTMASTER, WAL_RECOVERY_TARGET,
-			gettext_noop("Specifies the timeline to recovery into."),
+			gettext_noop("Specifies the timeline to recover into."),
 			NULL
 		},
 		&recovery_target_timeline_string,
@@ -3503,7 +3503,7 @@ static struct config_string ConfigureNamesString[] =
 
 	{
 		{"recovery_target", PGC_POSTMASTER, WAL_RECOVERY_TARGET,
-			gettext_noop("Set to 'immediate' to end recovery as soon as a consistent state is reached."),
+			gettext_noop("Set to \"immediate\" to end recovery as soon as a consistent state is reached."),
 			NULL
 		},
 		&recovery_target_string,
@@ -7837,40 +7837,37 @@ replace_auto_config_value(ConfigVariable **head_p, ConfigVariable **tail_p,
 						  const char *name, const char *value)
 {
 	ConfigVariable *item,
+			   *next,
 			   *prev = NULL;
 
-	/* Search the list for an existing match (we assume there's only one) */
-	for (item = *head_p; item != NULL; item = item->next)
+	/*
+	 * Remove any existing match(es) for "name".  Normally there'd be at most
+	 * one, but if external tools have modified the config file, there could
+	 * be more.
+	 */
+	for (item = *head_p; item != NULL; item = next)
 	{
-		if (strcmp(item->name, name) == 0)
+		next = item->next;
+		if (guc_name_compare(item->name, name) == 0)
 		{
-			/* found a match, replace it */
-			pfree(item->value);
-			if (value != NULL)
-			{
-				/* update the parameter value */
-				item->value = pstrdup(value);
-			}
+			/* found a match, delete it */
+			if (prev)
+				prev->next = next;
 			else
-			{
-				/* delete the configuration parameter from list */
-				if (*head_p == item)
-					*head_p = item->next;
-				else
-					prev->next = item->next;
-				if (*tail_p == item)
-					*tail_p = prev;
+				*head_p = next;
+			if (next == NULL)
+				*tail_p = prev;
 
-				pfree(item->name);
-				pfree(item->filename);
-				pfree(item);
-			}
-			return;
+			pfree(item->name);
+			pfree(item->value);
+			pfree(item->filename);
+			pfree(item);
 		}
-		prev = item;
+		else
+			prev = item;
 	}
 
-	/* Not there; no work if we're trying to delete it */
+	/* Done if we're trying to delete it */
 	if (value == NULL)
 		return;
 
@@ -10213,6 +10210,21 @@ read_gucstate_binary(char **srcptr, char *srcend, void *dest, Size size)
 }
 
 /*
+ * Callback used to add a context message when reporting errors that occur
+ * while trying to restore GUCs in parallel workers.
+ */
+static void
+guc_restore_error_context_callback(void *arg)
+{
+	char	  **error_context_name_and_value = (char **) arg;
+
+	if (error_context_name_and_value)
+		errcontext("while setting parameter \"%s\" to \"%s\"",
+				   error_context_name_and_value[0],
+				   error_context_name_and_value[1]);
+}
+
+/*
  * RestoreGUCState:
  * Reads the GUC state at the specified address and updates the GUCs with the
  * values read from the GUC state.
@@ -10230,6 +10242,7 @@ RestoreGUCState(void *gucstate)
 	char	   *srcend;
 	Size		len;
 	int			i;
+	ErrorContextCallback error_context_callback;
 
 	/* See comment at can_skip_gucvar(). */
 	for (i = 0; i < num_guc_variables; i++)
@@ -10242,9 +10255,16 @@ RestoreGUCState(void *gucstate)
 	srcptr += sizeof(len);
 	srcend = srcptr + len;
 
+	/* If the GUC value check fails, we want errors to show useful context. */
+	error_context_callback.callback = guc_restore_error_context_callback;
+	error_context_callback.previous = error_context_stack;
+	error_context_callback.arg = NULL;
+	error_context_stack = &error_context_callback;
+
 	while (srcptr < srcend)
 	{
 		int			result;
+		char	   *error_context_name_and_value[2];
 
 		varname = read_gucstate(&srcptr, srcend);
 		varvalue = read_gucstate(&srcptr, srcend);
@@ -10259,6 +10279,9 @@ RestoreGUCState(void *gucstate)
 		read_gucstate_binary(&srcptr, srcend,
 							 &varscontext, sizeof(varscontext));
 
+		error_context_name_and_value[0] = varname;
+		error_context_name_and_value[1] = varvalue;
+		error_context_callback.arg = &error_context_name_and_value[0];
 		result = set_config_option(varname, varvalue, varscontext, varsource,
 								   GUC_ACTION_SET, true, ERROR, true);
 		if (result <= 0)
@@ -10267,7 +10290,10 @@ RestoreGUCState(void *gucstate)
 					 errmsg("parameter \"%s\" could not be set", varname)));
 		if (varsourcefile[0])
 			set_config_sourcefile(varname, varsourcefile, varsourceline);
+		error_context_callback.arg = NULL;
 	}
+
+	error_context_stack = error_context_callback.previous;
 }
 
 /*

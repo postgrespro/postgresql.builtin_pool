@@ -818,7 +818,7 @@ CheckPWChallengeAuth(Port *port, char **logdetail)
 	 * If 'md5' authentication is allowed, decide whether to perform 'md5' or
 	 * 'scram-sha-256' authentication based on the type of password the user
 	 * has.  If it's an MD5 hash, we must do MD5 authentication, and if it's a
-	 * SCRAM verifier, we must do SCRAM authentication.
+	 * SCRAM secret, we must do SCRAM authentication.
 	 *
 	 * If MD5 authentication is not allowed, always use SCRAM.  If the user
 	 * had an MD5 password, CheckSCRAMAuth() will fail.
@@ -1797,7 +1797,7 @@ interpret_ident_response(const char *ident_response,
 /*
  *	Talk to the ident server on "remote_addr" and find out who
  *	owns the tcp connection to "local_addr"
- *	It the username successfully retrieved, check the usermap.
+ *	If the username is successfully retrieved, check the usermap.
  *
  *	XXX: Using WaitLatchOrSocket() and doing a CHECK_FOR_INTERRUPTS() if the
  *	latch was set would improve the responsiveness to timeouts/cancellations.
@@ -2859,7 +2859,7 @@ CheckCertAuth(Port *port)
 		if (port->hba->clientcert == clientCertFull && port->hba->auth_method != uaCert)
 		{
 			ereport(LOG,
-					(errmsg("certificate validation (clientcert=verify-full) failed for user \"%s\": cn mismatch",
+					(errmsg("certificate validation (clientcert=verify-full) failed for user \"%s\": CN mismatch",
 							port->user_name)));
 		}
 	}

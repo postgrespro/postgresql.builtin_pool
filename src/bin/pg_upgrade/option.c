@@ -14,12 +14,10 @@
 #include <io.h>
 #endif
 
-#include "getopt_long.h"
 #include "common/string.h"
-#include "utils/pidfile.h"
-
+#include "getopt_long.h"
 #include "pg_upgrade.h"
-
+#include "utils/pidfile.h"
 
 static void usage(void);
 static void check_required_directory(char **dirpath,
@@ -169,18 +167,12 @@ parseCommandLine(int argc, char *argv[])
 				 */
 			case 'p':
 				if ((old_cluster.port = atoi(optarg)) <= 0)
-				{
 					pg_fatal("invalid old port number\n");
-					exit(1);
-				}
 				break;
 
 			case 'P':
 				if ((new_cluster.port = atoi(optarg)) <= 0)
-				{
 					pg_fatal("invalid new port number\n");
-					exit(1);
-				}
 				break;
 
 			case 'r':
@@ -217,6 +209,9 @@ parseCommandLine(int argc, char *argv[])
 				exit(1);
 		}
 	}
+
+	if (optind < argc)
+		pg_fatal("too many command-line arguments (first is \"%s\")\n", argv[optind]);
 
 	if ((log_opts.internal = fopen_priv(INTERNAL_LOG_FILE, "a")) == NULL)
 		pg_fatal("could not open log file \"%s\": %m\n", INTERNAL_LOG_FILE);
@@ -296,7 +291,7 @@ usage(void)
 	printf(_("Options:\n"));
 	printf(_("  -b, --old-bindir=BINDIR       old cluster executable directory\n"));
 	printf(_("  -B, --new-bindir=BINDIR       new cluster executable directory (default\n"
-			 "                                same directory as pg_upgrade)"));
+			 "                                same directory as pg_upgrade)\n"));
 	printf(_("  -c, --check                   check clusters only, don't change any data\n"));
 	printf(_("  -d, --old-datadir=DATADIR     old cluster data directory\n"));
 	printf(_("  -D, --new-datadir=DATADIR     new cluster data directory\n"));

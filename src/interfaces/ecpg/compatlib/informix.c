@@ -7,14 +7,14 @@
 #include <ctype.h>
 #include <limits.h>
 
-#include <ecpgtype.h>
-#include <ecpg_informix.h>
-#include <pgtypes_error.h>
-#include <pgtypes_date.h>
-#include <pgtypes_numeric.h>
-#include <sqltypes.h>
-#include <sqlca.h>
-#include <ecpgerrno.h>
+#include "ecpg_informix.h"
+#include "ecpgerrno.h"
+#include "ecpgtype.h"
+#include "pgtypes_date.h"
+#include "pgtypes_error.h"
+#include "pgtypes_numeric.h"
+#include "sqlca.h"
+#include "sqltypes.h"
 
 /* this is also defined in ecpglib/misc.c, by defining it twice we don't have to export the symbol */
 
@@ -679,11 +679,6 @@ intoasc(interval * i, char *str)
 	return 0;
 }
 
-/*
- *	rfmt.c	-  description
- *	by Carsten Wolff <carsten.wolff@credativ.de>, Wed Apr 2 2003
- */
-
 static struct
 {
 	long		val;
@@ -745,7 +740,7 @@ initValue(long lng_val)
 	return 0;
 }
 
-/* return the position oft the right-most dot in some string */
+/* return the position of the right-most dot in some string */
 static int
 getRightMostDot(const char *str)
 {

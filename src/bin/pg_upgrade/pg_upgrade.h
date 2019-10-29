@@ -15,9 +15,6 @@
 /* Use port in the private/dynamic port number range */
 #define DEF_PGUPORT			50432
 
-/* Allocate for null byte */
-#define USER_NAME_SIZE		128
-
 #define MAX_STRING			1024
 #define QUERY_ALLOC			8192
 
@@ -138,7 +135,7 @@ typedef struct
 	char	   *nspname;		/* namespace name */
 	char	   *relname;		/* relation name */
 	Oid			reloid;			/* relation OID */
-	Oid			relfilenode;	/* relation relfile node */
+	Oid			relfilenode;	/* relation file node */
 	Oid			indtable;		/* if index, OID of its table, else 0 */
 	Oid			toastheap;		/* if toast table, OID of base table, else 0 */
 	char	   *tablespace;		/* tablespace path; "" for cluster default */
@@ -453,6 +450,8 @@ void		old_9_3_check_for_line_data_type_usage(ClusterInfo *cluster);
 void		old_9_6_check_for_unknown_data_type_usage(ClusterInfo *cluster);
 void		old_9_6_invalidate_hash_indexes(ClusterInfo *cluster,
 											bool check_mode);
+
+void		old_11_check_for_sql_identifier_data_type_usage(ClusterInfo *cluster);
 
 /* parallel.c */
 void		parallel_exec_prog(const char *log_file, const char *opt_log_file,

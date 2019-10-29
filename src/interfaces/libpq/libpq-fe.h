@@ -67,7 +67,8 @@ typedef enum
 								 * connection. */
 	CONNECTION_CONSUME,			/* Wait for any pending message and consume
 								 * them. */
-	CONNECTION_GSS_STARTUP		/* Negotiating GSSAPI. */
+	CONNECTION_GSS_STARTUP,		/* Negotiating GSSAPI. */
+	CONNECTION_CHECK_TARGET		/* Check if we have a proper target connection */
 } ConnStatusType;
 
 typedef enum
@@ -287,7 +288,7 @@ extern PQconninfoOption *PQconninfo(PGconn *conn);
 extern void PQconninfoFree(PQconninfoOption *connOptions);
 
 /*
- * close the current connection and restablish a new one with the same
+ * close the current connection and reestablish a new one with the same
  * parameters
  */
 /* Asynchronous (non-blocking) */

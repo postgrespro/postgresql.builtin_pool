@@ -53,6 +53,7 @@
 #include "partitioning/partbounds.h"
 #include "partitioning/partprune.h"
 #include "rewrite/rewriteManip.h"
+#include "utils/array.h"
 #include "utils/lsyscache.h"
 
 
@@ -619,31 +620,16 @@ gen_partprune_steps(RelOptInfo *rel, List *clauses, PartClauseTarget target,
 	context->target = target;
 
 	/*
-	 * For sub-partitioned tables there's a corner case where if the
-	 * sub-partitioned table shares any partition keys with its parent, then
-	 * it's possible that the partitioning hierarchy allows the parent
-	 * partition to only contain a narrower range of values than the
-	 * sub-partitioned table does.  In this case it is possible that we'd
-	 * include partitions that could not possibly have any tuples matching
-	 * 'clauses'.  The possibility of such a partition arrangement is perhaps
-	 * unlikely for non-default partitions, but it may be more likely in the
-	 * case of default partitions, so we'll add the parent partition table's
-	 * partition qual to the clause list in this case only.  This may result
-	 * in the default partition being eliminated.
+	 * If this partitioned table is in turn a partition, and it shares any
+	 * partition keys with its parent, then it's possible that the hierarchy
+	 * allows the parent a narrower range of values than some of its
+	 * partitions (particularly the default one).  This is normally not
+	 * useful, but it can be to prune the default partition.
 	 */
-	if (partition_bound_has_default(rel->boundinfo) &&
-		rel->partition_qual != NIL)
+	if (partition_bound_has_default(rel->boundinfo) && rel->partition_qual)
 	{
-		List	   *partqual = rel->partition_qual;
-
-		partqual = (List *) expression_planner((Expr *) partqual);
-
-		/* Fix Vars to have the desired varno */
-		if (rel->relid != 1)
-			ChangeVarNodes((Node *) partqual, 1, rel->relid, 0);
-
-		/* Use list_copy to avoid modifying the passed-in List */
-		clauses = list_concat(list_copy(clauses), partqual);
+		/* Make a copy to avoid modifying the passed-in List */
+		clauses = list_concat_copy(clauses, rel->partition_qual);
 	}
 
 	/* Down into the rabbit-hole. */
@@ -867,6 +853,25 @@ gen_partprune_steps_internal(GeneratePruningStepsContext *context,
 	List	   *result = NIL;
 	ListCell   *lc;
 
+	/*
+	 * If this partitioned relation has a default partition and is itself
+	 * a partition (as evidenced by partition_qual being not NIL), we first
+	 * check if the clauses contradict the partition constraint.  If they do,
+	 * there's no need to generate any steps as it'd already be proven that no
+	 * partitions need to be scanned.
+	 *
+	 * This is a measure of last resort only to be used because the default
+	 * partition cannot be pruned using the steps generated from clauses that
+	 * contradict the parent's partition constraint; regular pruning, which is
+	 * cheaper, is sufficient when no default partition exists.
+	 */
+	if (partition_bound_has_default(context->rel->boundinfo) &&
+		predicate_refuted_by(context->rel->partition_qual, clauses, false))
+	{
+		context->contradictory = true;
+		return NIL;
+	}
+
 	memset(keyclauses, 0, sizeof(keyclauses));
 	foreach(lc, clauses)
 	{
@@ -1017,29 +1022,6 @@ gen_partprune_steps_internal(GeneratePruningStepsContext *context,
 			 * currently don't perform any pruning for more complex NOT
 			 * clauses.
 			 */
-		}
-
-		/*
-		 * If the clause contradicts the partition constraint, mark the clause
-		 * as contradictory and we're done.  This is particularly helpful to
-		 * prune the default partition.
-		 */
-		if (context->rel->partition_qual)
-		{
-			List	   *partconstr;
-
-			partconstr = (List *)
-				expression_planner((Expr *) context->rel->partition_qual);
-			if (context->rel->relid != 1)
-				ChangeVarNodes((Node *) partconstr, 1,
-							   context->rel->relid, 0);
-			if (predicate_refuted_by(partconstr,
-									 list_make1(clause),
-									 false))
-			{
-				context->contradictory = true;
-				return NIL;
-			}
 		}
 
 		/*
@@ -1485,7 +1467,7 @@ gen_prune_steps_from_opexps(GeneratePruningStepsContext *context,
 														  pc->keyno,
 														  NULL,
 														  prefix);
-						opsteps = list_concat(opsteps, list_copy(pc_steps));
+						opsteps = list_concat(opsteps, pc_steps);
 					}
 				}
 				break;
@@ -1556,7 +1538,7 @@ gen_prune_steps_from_opexps(GeneratePruningStepsContext *context,
 												   pc->keyno,
 												   nullkeys,
 												   prefix);
-						opsteps = list_concat(opsteps, list_copy(pc_steps));
+						opsteps = list_concat(opsteps, pc_steps);
 					}
 				}
 				break;
@@ -2059,7 +2041,7 @@ match_clause_to_partition_key(GeneratePruningStepsContext *context,
 			 * nodes, one for each array element (excepting nulls).
 			 */
 			Const	   *arr = (Const *) rightop;
-			ArrayType  *arrval = DatumGetArrayTypeP(arr->constvalue);
+			ArrayType  *arrval;
 			int16		elemlen;
 			bool		elembyval;
 			char		elemalign;
@@ -2068,6 +2050,11 @@ match_clause_to_partition_key(GeneratePruningStepsContext *context,
 			int			num_elems,
 						i;
 
+			/* If the array itself is null, the saop returns null */
+			if (arr->constisnull)
+				return PARTCLAUSE_MATCH_CONTRADICT;
+
+			arrval = DatumGetArrayTypeP(arr->constvalue);
 			get_typlenbyvalalign(ARR_ELEMTYPE(arrval),
 								 &elemlen, &elembyval, &elemalign);
 			deconstruct_array(arrval,
@@ -2122,7 +2109,7 @@ match_clause_to_partition_key(GeneratePruningStepsContext *context,
 
 		/*
 		 * Now generate a list of clauses, one for each array element, of the
-		 * form saop_leftop saop_op elem_expr
+		 * form leftop saop_op elem_expr
 		 */
 		elem_clauses = NIL;
 		foreach(lc1, elem_exprs)
