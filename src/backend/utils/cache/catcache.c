@@ -1191,6 +1191,111 @@ SearchCatCache4(CatCache *cache,
 	return SearchCatCacheInternal(cache, 4, v1, v2, v3, v4);
 }
 
+
+void InsertCatCache(CatCache *cache,
+					Datum v1, Datum v2, Datum v3, Datum v4,
+					HeapTuple tuple)
+{
+	Datum		arguments[CATCACHE_MAXKEYS];
+	uint32		hashValue;
+	Index		hashIndex;
+	CatCTup    *ct;
+	dlist_iter	iter;
+	dlist_head *bucket;
+	int         nkeys = cache->cc_nkeys;
+	MemoryContext oldcxt;
+	int         i;
+
+	/*
+	 * one-time startup overhead for each cache
+	 */
+	if (unlikely(cache->cc_tupdesc == NULL))
+		CatalogCacheInitializeCache(cache);
+
+	/* Initialize local parameter array */
+	arguments[0] = v1;
+	arguments[1] = v2;
+	arguments[2] = v3;
+	arguments[3] = v4;
+	/*
+	 * find the hash bucket in which to look for the tuple
+	 */
+	hashValue = CatalogCacheComputeHashValue(cache, nkeys, v1, v2, v3, v4);
+	hashIndex = HASH_INDEX(hashValue, cache->cc_nbuckets);
+
+	/*
+	 * scan the hash bucket until we find a match or exhaust our tuples
+	 *
+	 * Note: it's okay to use dlist_foreach here, even though we modify the
+	 * dlist within the loop, because we don't continue the loop afterwards.
+	 */
+	bucket = &cache->cc_bucket[hashIndex];
+	dlist_foreach(iter, bucket)
+	{
+		ct = dlist_container(CatCTup, cache_elem, iter.cur);
+
+		if (ct->dead)
+			continue;			/* ignore dead entries */
+
+		if (ct->hash_value != hashValue)
+			continue;			/* quickly skip entry if wrong hash val */
+
+		if (!CatalogCacheCompareTuple(cache, nkeys, ct->keys, arguments))
+			continue;
+
+		/*
+		 * If it's a positive entry, bump its refcount and return it. If it's
+		 * negative, we can report failure to the caller.
+		 */
+		if (ct->tuple.t_len == tuple->t_len)
+		{
+			memcpy((char *) ct->tuple.t_data,
+				   (const char *) tuple->t_data,
+				   tuple->t_len);
+			return;
+		}
+		dlist_delete(&ct->cache_elem);
+		pfree(ct);
+		cache->cc_ntup -= 1;
+		CacheHdr->ch_ntup -= 1;
+		break;
+	}
+	/* Allocate memory for CatCTup and the cached tuple in one go */
+	oldcxt = MemoryContextSwitchTo(CacheMemoryContext);
+
+	ct = (CatCTup *) palloc(sizeof(CatCTup) +
+							MAXIMUM_ALIGNOF + tuple->t_len);
+	ct->tuple.t_len = tuple->t_len;
+	ct->tuple.t_self = tuple->t_self;
+	ct->tuple.t_tableOid = tuple->t_tableOid;
+	ct->tuple.t_data = (HeapTupleHeader)
+		MAXALIGN(((char *) ct) + sizeof(CatCTup));
+	/* copy tuple contents */
+	memcpy((char *) ct->tuple.t_data,
+		   (const char *) tuple->t_data,
+		   tuple->t_len);
+	ct->ct_magic = CT_MAGIC;
+	ct->my_cache = cache;
+	ct->c_list = NULL;
+	ct->refcount = 1;			/* pinned*/
+	ct->dead = false;
+	ct->negative = false;
+	ct->hash_value = hashValue;
+	dlist_push_head(&cache->cc_bucket[hashIndex], &ct->cache_elem);
+	memcpy(ct->keys, arguments, nkeys*sizeof(Datum));
+
+	cache->cc_ntup++;
+	CacheHdr->ch_ntup++;
+	MemoryContextSwitchTo(oldcxt);
+
+	/*
+	 * If the hash table has become too full, enlarge the buckets array. Quite
+	 * arbitrarily, we enlarge when fill factor > 2.
+	 */
+	if (cache->cc_ntup > cache->cc_nbuckets * 2)
+		RehashCatCache(cache);
+}
+
 /*
  * Work-horse for SearchCatCache/SearchCatCacheN.
  */

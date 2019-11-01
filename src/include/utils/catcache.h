@@ -228,4 +228,8 @@ extern void PrepareToInvalidateCacheTuple(Relation relation,
 extern void PrintCatCacheLeakWarning(HeapTuple tuple);
 extern void PrintCatCacheListLeakWarning(CatCList *list);
 
+extern void InsertCatCache(CatCache *cache,
+						   Datum v1, Datum v2, Datum v3, Datum v4,
+						   HeapTuple tuple);
+
 #endif							/* CATCACHE_H */

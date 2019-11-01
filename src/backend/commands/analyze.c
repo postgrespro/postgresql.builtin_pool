@@ -102,7 +102,7 @@ static int	acquire_inherited_sample_rows(Relation onerel, int elevel,
 										  HeapTuple *rows, int targrows,
 										  double *totalrows, double *totaldeadrows);
 static void update_attstats(Oid relid, bool inh,
-							int natts, VacAttrStats **vacattrstats);
+							int natts, VacAttrStats **vacattrstats, bool is_global_temp);
 static Datum std_fetch_func(VacAttrStatsP stats, int rownum, bool *isNull);
 static Datum ind_fetch_func(VacAttrStatsP stats, int rownum, bool *isNull);
 
@@ -318,6 +318,7 @@ do_analyze_rel(Relation onerel, VacuumParams *params,
 	Oid			save_userid;
 	int			save_sec_context;
 	int			save_nestlevel;
+	bool        is_global_temp = onerel->rd_rel->relpersistence == RELPERSISTENCE_SESSION;
 
 	if (inh)
 		ereport(elevel,
@@ -575,14 +576,14 @@ do_analyze_rel(Relation onerel, VacuumParams *params,
 		 * pg_statistic for columns we didn't process, we leave them alone.)
 		 */
 		update_attstats(RelationGetRelid(onerel), inh,
-						attr_cnt, vacattrstats);
+						attr_cnt, vacattrstats, is_global_temp);
 
 		for (ind = 0; ind < nindexes; ind++)
 		{
 			AnlIndexData *thisdata = &indexdata[ind];
 
 			update_attstats(RelationGetRelid(Irel[ind]), false,
-							thisdata->attr_cnt, thisdata->vacattrstats);
+							thisdata->attr_cnt, thisdata->vacattrstats, is_global_temp);
 		}
 
 		/*
@@ -1425,7 +1426,7 @@ acquire_inherited_sample_rows(Relation onerel, int elevel,
  *		by taking a self-exclusive lock on the relation in analyze_rel().
  */
 static void
-update_attstats(Oid relid, bool inh, int natts, VacAttrStats **vacattrstats)
+update_attstats(Oid relid, bool inh, int natts, VacAttrStats **vacattrstats, bool is_global_temp)
 {
 	Relation	sd;
 	int			attno;
@@ -1527,30 +1528,42 @@ update_attstats(Oid relid, bool inh, int natts, VacAttrStats **vacattrstats)
 			}
 		}
 
-		/* Is there already a pg_statistic tuple for this attribute? */
-		oldtup = SearchSysCache3(STATRELATTINH,
-								 ObjectIdGetDatum(relid),
-								 Int16GetDatum(stats->attr->attnum),
-								 BoolGetDatum(inh));
-
-		if (HeapTupleIsValid(oldtup))
+		if (is_global_temp)
 		{
-			/* Yes, replace it */
-			stup = heap_modify_tuple(oldtup,
-									 RelationGetDescr(sd),
-									 values,
-									 nulls,
-									 replaces);
-			ReleaseSysCache(oldtup);
-			CatalogTupleUpdate(sd, &stup->t_self, stup);
+			stup = heap_form_tuple(RelationGetDescr(sd), values, nulls);
+			InsertSysCache(STATRELATTINH,
+						   ObjectIdGetDatum(relid),
+						   Int16GetDatum(stats->attr->attnum),
+						   BoolGetDatum(inh),
+						   0,
+						   stup);
 		}
 		else
 		{
-			/* No, insert new tuple */
-			stup = heap_form_tuple(RelationGetDescr(sd), values, nulls);
-			CatalogTupleInsert(sd, stup);
-		}
+			/* Is there already a pg_statistic tuple for this attribute? */
+			oldtup = SearchSysCache3(STATRELATTINH,
+									 ObjectIdGetDatum(relid),
+									 Int16GetDatum(stats->attr->attnum),
+									 BoolGetDatum(inh));
 
+			if (HeapTupleIsValid(oldtup))
+			{
+				/* Yes, replace it */
+				stup = heap_modify_tuple(oldtup,
+										 RelationGetDescr(sd),
+										 values,
+										 nulls,
+										 replaces);
+				ReleaseSysCache(oldtup);
+				CatalogTupleUpdate(sd, &stup->t_self, stup);
+			}
+			else
+			{
+				/* No, insert new tuple */
+				stup = heap_form_tuple(RelationGetDescr(sd), values, nulls);
+				CatalogTupleInsert(sd, stup);
+			}
+		}
 		heap_freetuple(stup);
 	}
 
