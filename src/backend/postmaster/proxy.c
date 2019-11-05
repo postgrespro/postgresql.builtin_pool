@@ -860,7 +860,7 @@ channel_read(Channel* chan)
 			}
 			else break; /* Incomplete message. */
 		}
-		elog(LOG, "Message size %d", msg_start);
+		elog(DEBUG1, "Message size %d", msg_start);
 		if (msg_start != 0)
 		{
 			/* Has some complete messages to send to peer */
@@ -885,20 +885,20 @@ channel_read(Channel* chan)
 						memcpy(backend->buf, backend->handshake_response, backend->handshake_response_size);
 						backend->rx_pos = backend->tx_size = backend->handshake_response_size;
 						backend->backend_is_ready = true;
-						elog(LOG, "Send handshake response to the client");
+						elog(DEBUG1, "Send handshake response to the client");
 						return channel_write(chan, false);
 					}
 					else
 					{
 						/* Handshake response will be send to client later when backend is assigned */
-						elog(LOG, "Handshake response will be sent to the client later when backed is assigned");
+						elog(DEBUG1, "Handshake response will be sent to the client later when backed is assigned");
 						return false;
 					}
 				}
 				else if (chan->peer == NULL) /* Backend was not assigned */
 				{
 					chan->tx_size = msg_start; /* query will be send later once backend is assigned */
-					elog(LOG, "Query will be sent to this client later when backed is assigned");
+					elog(DEBUG1, "Query will be sent to this client later when backed is assigned");
 					return false;
 				}
 			}
