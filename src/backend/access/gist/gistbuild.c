@@ -156,7 +156,7 @@ gistbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 	 * We expect to be called exactly once for any index relation. If that's
 	 * not the case, big trouble's what we have.
 	 */
-	if (RelationGetNumberOfBlocks(index) != 0)
+	if (RelationGetNumberOfBlocks(index) != 0 && index->rd_rel->relpersistence != RELPERSISTENCE_SESSION)
 		elog(ERROR, "index \"%s\" already contains data",
 			 RelationGetRelationName(index));
 
@@ -171,8 +171,16 @@ gistbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 	buildstate.giststate->tempCxt = createTempGistContext();
 
 	/* initialize the root page */
-	buffer = gistNewBuffer(index);
-	Assert(BufferGetBlockNumber(buffer) == GIST_ROOT_BLKNO);
+	if (index->rd_rel->relpersistence != RELPERSISTENCE_SESSION)
+	{
+		buffer = gistNewBuffer(index);
+		Assert(BufferGetBlockNumber(buffer) == GIST_ROOT_BLKNO);
+	}
+	else
+	{
+		buffer = ReadBuffer(index, GIST_ROOT_BLKNO);
+		LockBuffer(buffer, GIST_SHARE);
+	}
 	page = BufferGetPage(buffer);
 
 	START_CRIT_SECTION();

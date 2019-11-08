@@ -81,21 +81,32 @@ spgbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 				rootbuffer,
 				nullbuffer;
 
-	if (RelationGetNumberOfBlocks(index) != 0)
-		elog(ERROR, "index \"%s\" already contains data",
-			 RelationGetRelationName(index));
+	if (index->rd_rel->relpersistence != RELPERSISTENCE_SESSION)
+	{
+		if (RelationGetNumberOfBlocks(index) != 0)
+			elog(ERROR, "index \"%s\" already contains data",
+				 RelationGetRelationName(index));
 
-	/*
-	 * Initialize the meta page and root pages
-	 */
-	metabuffer = SpGistNewBuffer(index);
-	rootbuffer = SpGistNewBuffer(index);
-	nullbuffer = SpGistNewBuffer(index);
+		/*
+		 * Initialize the meta page and root pages
+		 */
+		metabuffer = SpGistNewBuffer(index);
+		rootbuffer = SpGistNewBuffer(index);
+		nullbuffer = SpGistNewBuffer(index);
 
-	Assert(BufferGetBlockNumber(metabuffer) == SPGIST_METAPAGE_BLKNO);
-	Assert(BufferGetBlockNumber(rootbuffer) == SPGIST_ROOT_BLKNO);
-	Assert(BufferGetBlockNumber(nullbuffer) == SPGIST_NULL_BLKNO);
-
+		Assert(BufferGetBlockNumber(metabuffer) == SPGIST_METAPAGE_BLKNO);
+		Assert(BufferGetBlockNumber(rootbuffer) == SPGIST_ROOT_BLKNO);
+		Assert(BufferGetBlockNumber(nullbuffer) == SPGIST_NULL_BLKNO);
+	}
+	else
+	{
+		metabuffer = ReadBuffer(index, SPGIST_METAPAGE_BLKNO);
+		rootbuffer = ReadBuffer(index, SPGIST_ROOT_BLKNO);
+		nullbuffer = ReadBuffer(index, SPGIST_NULL_BLKNO);
+		LockBuffer(metabuffer, BUFFER_LOCK_SHARE);
+		LockBuffer(rootbuffer, BUFFER_LOCK_SHARE);
+		LockBuffer(nullbuffer, BUFFER_LOCK_SHARE);
+	}
 	START_CRIT_SECTION();
 
 	SpGistInitMetapage(BufferGetPage(metabuffer));

@@ -17,8 +17,10 @@
 #include "access/genam.h"
 #include "access/gist_private.h"
 #include "access/relscan.h"
+#include "catalog/index.h"
 #include "miscadmin.h"
 #include "storage/lmgr.h"
+#include "storage/freespace.h"
 #include "storage/predicate.h"
 #include "pgstat.h"
 #include "lib/pairingheap.h"
@@ -345,7 +347,7 @@ gistScanPage(IndexScanDesc scan, GISTSearchItem *pageItem,
 	LockBuffer(buffer, GIST_SHARE);
 	PredicateLockPage(r, BufferGetBlockNumber(buffer), scan->xs_snapshot);
 	if (pageItem->blkno == GIST_ROOT_BLKNO && GlobalTempRelationPageIsNotInitialized(r, BufferGetPage(buffer)))
-		GISTInitBuffer(buffer, F_LEAF);
+		gistbuild(scan->heapRelation, r, BuildIndexInfo(r));
 	else
 		gistcheckpage(scan->indexRelation, buffer);
 	page = BufferGetPage(buffer);

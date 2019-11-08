@@ -243,12 +243,9 @@ ginHeapTupleFastInsert(GinState *ginstate, GinTupleCollector *collector)
 
 	if (GlobalTempRelationPageIsNotInitialized(index, metapage))
 	{
-		Buffer rootbuffer = ReadBuffer(index, GIN_ROOT_BLKNO);
-		LockBuffer(rootbuffer, BUFFER_LOCK_EXCLUSIVE);
-		GinInitMetabuffer(metabuffer);
-		GinInitBuffer(rootbuffer, GIN_LEAF);
-		MarkBufferDirty(rootbuffer);
-		UnlockReleaseBuffer(rootbuffer);
+		Relation heap = RelationIdGetRelation(index->rd_index->indrelid);
+		ginbuild(heap, index, BuildIndexInfo(index));
+		RelationClose(heap);
 	}
 
 	/*

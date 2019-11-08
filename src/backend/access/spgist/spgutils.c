@@ -21,6 +21,7 @@
 #include "access/spgist_private.h"
 #include "access/transam.h"
 #include "access/xact.h"
+#include "catalog/index.h"
 #include "catalog/pg_amop.h"
 #include "storage/bufmgr.h"
 #include "storage/indexfsm.h"
@@ -163,20 +164,9 @@ spgGetCache(Relation index)
 		{
 			if (GlobalTempRelationPageIsNotInitialized(index, metapage))
 			{
-				Buffer rootbuffer = ReadBuffer(index, SPGIST_ROOT_BLKNO);
-				Buffer nullbuffer = ReadBuffer(index, SPGIST_NULL_BLKNO);
-
-				SpGistInitMetapage(metapage);
-
-				LockBuffer(rootbuffer, BUFFER_LOCK_EXCLUSIVE);
-				SpGistInitPage(BufferGetPage(rootbuffer), SPGIST_LEAF);
-				MarkBufferDirty(rootbuffer);
-				UnlockReleaseBuffer(rootbuffer);
-
-				LockBuffer(nullbuffer, BUFFER_LOCK_EXCLUSIVE);
-				SpGistInitPage(BufferGetPage(nullbuffer), SPGIST_LEAF | SPGIST_NULLS);
-				MarkBufferDirty(nullbuffer);
-				UnlockReleaseBuffer(nullbuffer);
+				Relation heap = RelationIdGetRelation(index->rd_index->indrelid);
+				spgbuild(heap, index, BuildIndexInfo(index));
+				RelationClose(heap);
 			}
 			else
 				elog(ERROR, "index \"%s\" is not an SP-GiST index",

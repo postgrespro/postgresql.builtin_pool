@@ -79,7 +79,9 @@ _hash_getbuf(Relation rel, BlockNumber blkno, int access, int flags)
 
 	if (blkno == HASH_METAPAGE && GlobalTempRelationPageIsNotInitialized(rel, BufferGetPage(buf)))
 	{
-		_hash_init(rel, 0, MAIN_FORKNUM);
+		Relation heap = RelationIdGetRelation(rel->rd_index->indrelid);
+		hashbuild(heap, rel, BuildIndexInfo(rel));
+		RelationClose(heap);
 		if (access != HASH_NOLOCK)
 			LockBuffer(buf, access);
 	}

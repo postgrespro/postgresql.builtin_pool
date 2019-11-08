@@ -672,7 +672,7 @@ brinbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 	/*
 	 * We expect to be called exactly once for any index relation.
 	 */
-	if (RelationGetNumberOfBlocks(index) != 0)
+	if (RelationGetNumberOfBlocks(index) != 0 && index->rd_rel->relpersistence != RELPERSISTENCE_SESSION)
 		elog(ERROR, "index \"%s\" already contains data",
 			 RelationGetRelationName(index));
 
@@ -681,9 +681,17 @@ brinbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 	 * whole relation will be rolled back.
 	 */
 
-	meta = ReadBuffer(index, P_NEW);
-	Assert(BufferGetBlockNumber(meta) == BRIN_METAPAGE_BLKNO);
-	LockBuffer(meta, BUFFER_LOCK_EXCLUSIVE);
+	if (index->rd_rel->relpersistence != RELPERSISTENCE_SESSION)
+	{
+		meta = ReadBuffer(index, P_NEW);
+		Assert(BufferGetBlockNumber(meta) == BRIN_METAPAGE_BLKNO);
+		LockBuffer(meta, BUFFER_LOCK_EXCLUSIVE);
+	}
+	else
+	{
+		meta = ReadBuffer(index, BRIN_METAPAGE_BLKNO);
+		LockBuffer(meta, BUFFER_LOCK_SHARE);
+	}
 
 	brin_metapage_init(BufferGetPage(meta), BrinGetPagesPerRange(index),
 					   BRIN_CURRENT_VERSION);

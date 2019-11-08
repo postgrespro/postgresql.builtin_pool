@@ -328,7 +328,7 @@ ginbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 	MemoryContext oldCtx;
 	OffsetNumber attnum;
 
-	if (RelationGetNumberOfBlocks(index) != 0)
+	if (RelationGetNumberOfBlocks(index) != 0 && index->rd_rel->relpersistence != RELPERSISTENCE_SESSION)
 		elog(ERROR, "index \"%s\" already contains data",
 			 RelationGetRelationName(index));
 
@@ -337,7 +337,15 @@ ginbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 	memset(&buildstate.buildStats, 0, sizeof(GinStatsData));
 
 	/* initialize the meta page */
-	MetaBuffer = GinNewBuffer(index);
+	if (index->rd_rel->relpersistence == RELPERSISTENCE_SESSION)
+	{
+		MetaBuffer = ReadBuffer(index, 0);
+		LockBuffer(MetaBuffer, GIN_SHARE);
+	}
+	else
+	{
+		MetaBuffer = GinNewBuffer(index);
+	}
 
 	/* initialize the root page */
 	RootBuffer = GinNewBuffer(index);

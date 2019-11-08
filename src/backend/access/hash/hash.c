@@ -119,7 +119,7 @@ hashbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 	 * We expect to be called exactly once for any index relation. If that's
 	 * not the case, big trouble's what we have.
 	 */
-	if (RelationGetNumberOfBlocks(index) != 0)
+	if (RelationGetNumberOfBlocks(index) != 0 && index->rd_rel->relpersistence != RELPERSISTENCE_SESSION)
 		elog(ERROR, "index \"%s\" already contains data",
 			 RelationGetRelationName(index));
 

@@ -1750,7 +1750,7 @@ collectMatchesForHeapRow(IndexScanDesc scan, pendingPosition *pos)
 /*
  * Collect all matched rows from pending list into bitmap.
  */
-static bool
+static void
 scanPendingInsert(IndexScanDesc scan, TIDBitmap *tbm, int64 *ntids)
 {
 	GinScanOpaque so = (GinScanOpaque) scan->opaque;
@@ -1759,7 +1759,8 @@ scanPendingInsert(IndexScanDesc scan, TIDBitmap *tbm, int64 *ntids)
 				match;
 	int			i;
 	pendingPosition pos;
-	Buffer		metabuffer = ReadBuffer(scan->indexRelation, GIN_METAPAGE_BLKNO);
+	Relation    index = scan->indexRelation;
+	Buffer		metabuffer = ReadBuffer(index, GIN_METAPAGE_BLKNO);
 	Page		page;
 	BlockNumber blkno;
 
@@ -1769,16 +1770,18 @@ scanPendingInsert(IndexScanDesc scan, TIDBitmap *tbm, int64 *ntids)
 	 * Acquire predicate lock on the metapage, to conflict with any fastupdate
 	 * insertions.
 	 */
-	PredicateLockPage(scan->indexRelation, GIN_METAPAGE_BLKNO, scan->xs_snapshot);
+	PredicateLockPage(index, GIN_METAPAGE_BLKNO, scan->xs_snapshot);
 
 	LockBuffer(metabuffer, GIN_SHARE);
 	page = BufferGetPage(metabuffer);
-	TestForOldSnapshot(scan->xs_snapshot, scan->indexRelation, page);
+	TestForOldSnapshot(scan->xs_snapshot, index, page);
 
-	if (GlobalTempRelationPageIsNotInitialized(scan->indexRelation, page))
+	if (GlobalTempRelationPageIsNotInitialized(index, page))
 	{
+		Relation heap = RelationIdGetRelation(index->rd_index->indrelid);
+		ginbuild(heap, index, BuildIndexInfo(index));
+		RelationClose(heap);
 		UnlockReleaseBuffer(metabuffer);
-		return false;
 	}
 	blkno = GinPageGetMeta(page)->head;
 
@@ -1793,7 +1796,7 @@ scanPendingInsert(IndexScanDesc scan, TIDBitmap *tbm, int64 *ntids)
 		return true;
 	}
 
-	pos.pendingBuffer = ReadBuffer(scan->indexRelation, blkno);
+	pos.pendingBuffer = ReadBuffer(index, blkno);
 	LockBuffer(pos.pendingBuffer, GIN_SHARE);
 	pos.firstOffset = FirstOffsetNumber;
 	UnlockReleaseBuffer(metabuffer);
@@ -1846,7 +1849,6 @@ scanPendingInsert(IndexScanDesc scan, TIDBitmap *tbm, int64 *ntids)
 	}
 
 	pfree(pos.hasMatchKey);
-	return true;
 }
 
 
@@ -1882,8 +1884,7 @@ gingetbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 	 * to scan the main index before the pending list, since concurrent
 	 * cleanup could then make us miss entries entirely.
 	 */
-	if (!scanPendingInsert(scan, tbm, &ntids))
-		return 0;
+	scanPendingInsert(scan, tbm, &ntids);
 
 	/*
 	 * Now scan the main index.

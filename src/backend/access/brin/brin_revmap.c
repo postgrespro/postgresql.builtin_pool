@@ -82,9 +82,11 @@ brinRevmapInitialize(Relation idxrel, BlockNumber *pagesPerRange,
 	page = BufferGetPage(meta);
 
 	if (GlobalTempRelationPageIsNotInitialized(idxrel, page))
-		brin_metapage_init(page, BrinGetPagesPerRange(idxrel),
-						   BRIN_CURRENT_VERSION);
-
+	{
+		Relation heap = RelationIdGetRelation(idxrel->rd_index->indrelid);
+		brinbuild(heap, idxrel,  BuildIndexInfo(idxrel));
+		RelationClose(heap);
+	}
 	TestForOldSnapshot(snapshot, idxrel, page);
 	metadata = (BrinMetaPageData *) PageGetContents(page);
 

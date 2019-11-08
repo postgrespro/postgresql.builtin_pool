@@ -27,8 +27,10 @@
 #include "access/transam.h"
 #include "access/xlog.h"
 #include "access/xloginsert.h"
+#include "catalog/index.h"
 #include "miscadmin.h"
 #include "storage/indexfsm.h"
+#include "storage/buf_internals.h"
 #include "storage/lmgr.h"
 #include "storage/predicate.h"
 #include "utils/snapmgr.h"
@@ -762,12 +764,22 @@ _bt_getbuf(Relation rel, BlockNumber blkno, int access)
 	{
 		/* Read an existing block of the relation */
 		buf = ReadBuffer(rel, blkno);
-		LockBuffer(buf, access);
 		/* Session temporary relation may be not yet initialized for this backend. */
 		if (blkno == BTREE_METAPAGE && GlobalTempRelationPageIsNotInitialized(rel, BufferGetPage(buf)))
-			_bt_initmetapage(BufferGetPage(buf), P_NONE, 0);
+		{
+			Relation heap = RelationIdGetRelation(rel->rd_index->indrelid);
+			ReleaseBuffer(buf);
+			DropRelFileNodeLocalBuffers(rel->rd_node, MAIN_FORKNUM, blkno);
+			btbuild(heap, rel, BuildIndexInfo(rel));
+			RelationClose(heap);
+			buf = ReadBuffer(rel, blkno);
+			LockBuffer(buf, access);
+		}
 		else
+		{
+			LockBuffer(buf, access);
 			_bt_checkpage(rel, buf);
+		}
 	}
 	else
 	{
