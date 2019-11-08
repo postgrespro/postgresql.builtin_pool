@@ -48,6 +48,7 @@
 #include "partitioning/partprune.h"
 #include "rewrite/rewriteManip.h"
 #include "utils/lsyscache.h"
+#include "utils/rel.h"
 
 
 /* results of subquery_is_pushdown_safe */
@@ -618,7 +619,7 @@ set_rel_consider_parallel(PlannerInfo *root, RelOptInfo *rel,
 			 * the rest of the necessary infrastructure right now anyway.  So
 			 * for now, bail out if we see a temporary table.
 			 */
-			if (get_rel_persistence(rte->relid) == RELPERSISTENCE_TEMP)
+			if (IsLocalRelpersistence(get_rel_persistence(rte->relid)))
 				return;
 
 			/*

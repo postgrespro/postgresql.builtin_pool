@@ -6307,7 +6307,7 @@ plan_create_index_workers(Oid tableOid, Oid indexOid)
 	 * Furthermore, any index predicate or index expressions must be parallel
 	 * safe.
 	 */
-	if (heap->rd_rel->relpersistence == RELPERSISTENCE_TEMP ||
+	if (RelationHasSessionScope(heap) ||
 		!is_parallel_safe(root, (Node *) RelationGetIndexExpressions(index)) ||
 		!is_parallel_safe(root, (Node *) RelationGetIndexPredicate(index)))
 	{
