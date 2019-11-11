@@ -3450,6 +3450,26 @@ AlterTableLookupRelation(AlterTableStmt *stmt, LOCKMODE lockmode)
 									(void *) stmt);
 }
 
+
+static bool
+CheckGlobalTempTableNotInUse(Relation rel)
+{
+	int id;
+	for (id = 1; id <= MaxBackends; id++)
+	{
+		if (id != MyBackendId)
+		{
+			struct stat fst;
+			char* path = relpathbackend(rel->rd_node, id, MAIN_FORKNUM);
+			int rc = stat(path, &fst);
+			pfree(path);
+			if (rc == 0 && fst.st_size != 0)
+				return false;
+		}
+	}
+	return true;
+}
+
 /*
  * AlterTable
  *		Execute ALTER TABLE, which can be a list of subcommands
@@ -3501,6 +3521,9 @@ AlterTable(Oid relid, LOCKMODE lockmode, AlterTableStmt *stmt)
 	rel = relation_open(relid, NoLock);
 
 	CheckTableNotInUse(rel, "ALTER TABLE");
+	if (rel->rd_rel->relpersistence == RELPERSISTENCE_SESSION
+		&& !CheckGlobalTempTableNotInUse(rel))
+		elog(ERROR, "Global temp table used by active backends can not be altered");
 
 	ATController(stmt, rel, stmt->cmds, stmt->relation->inh, lockmode);
 }

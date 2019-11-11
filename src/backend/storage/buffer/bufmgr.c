@@ -2933,7 +2933,7 @@ DropRelFileNodeBuffers(RelFileNodeBackend rnode, ForkNumber *forkNum,
 	/* If it's a local relation, it's localbuf.c's problem. */
 	if (RelFileNodeBackendIsTemp(rnode))
 	{
-		if (rnode.backend == MyBackendId)
+		if (GetRelationBackendId(rnode.backend) == MyBackendId)
 		{
 			for (j = 0; j < nforks; j++)
 				DropRelFileNodeLocalBuffers(rnode.node, forkNum[j],

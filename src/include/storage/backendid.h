@@ -47,4 +47,6 @@ extern PGDLLIMPORT BackendId ParallelMasterBackendId;
 
 #define IsSessionRelationBackendId(id) ((id) >= SessionRelFirstBackendId)
 
+#define GetRelationBackendId(id) ((id) & ~SessionRelFirstBackendId)
+
 #endif							/* BACKENDID_H */
