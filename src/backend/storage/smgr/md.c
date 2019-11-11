@@ -28,6 +28,7 @@
 #include "miscadmin.h"
 #include "access/xlogutils.h"
 #include "access/xlog.h"
+#include "commands/tablecmds.h"
 #include "commands/tablespace.h"
 #include "pgstat.h"
 #include "postmaster/bgwriter.h"
@@ -40,6 +41,7 @@
 #include "storage/sync.h"
 #include "utils/hsearch.h"
 #include "utils/memutils.h"
+#include "utils/rel.h"
 #include "pg_trace.h"
 
 /*
@@ -95,6 +97,7 @@ static MemoryContext MdCxt;		/* context for all MdfdVec objects */
 typedef struct SessionRelation
 {
 	RelFileNodeBackend rnode;
+	ForkNumber forknum;
 	struct SessionRelation* next;
 } SessionRelation;
 
@@ -177,7 +180,7 @@ TruncateSessionRelations(int code, Datum arg)
 	for (rel = SessionRelations; rel != NULL; rel = rel->next)
 	{
 		/* Delete relation files */
-		mdunlink(rel->rnode, InvalidForkNumber, false);
+		mdunlink(rel->rnode, rel->forknum, false);
 	}
 }
 
@@ -188,7 +191,7 @@ TruncateSessionRelations(int code, Datum arg)
  * Such procedure guarantee that each relation is linked into list only once.
  */
 static void
-RegisterSessionRelation(SMgrRelation reln)
+RegisterSessionRelation(SMgrRelation reln, ForkNumber forknum)
 {
 	SessionRelation* rel = (SessionRelation*)MemoryContextAlloc(TopMemoryContext, sizeof(SessionRelation));
 
@@ -200,8 +203,23 @@ RegisterSessionRelation(SMgrRelation reln)
 		on_shmem_exit(TruncateSessionRelations, 0);
 
 	rel->rnode = reln->smgr_rnode;
+	rel->forknum = forknum;
 	rel->next = SessionRelations;
 	SessionRelations = rel;
+}
+
+static void
+RegisterOnCommitAction(SMgrRelation reln, ForkNumber forknum)
+{
+	if (reln->smgr_owner && forknum == MAIN_FORKNUM)
+	{
+		Relation rel = (Relation)((char*)reln->smgr_owner - offsetof(RelationData, rd_smgr));
+		if (rel->rd_options
+			&& ((StdRdOptions *)rel->rd_options)->on_commit_delete_rows)
+		{
+			register_on_commit_action(rel->rd_id, ONCOMMIT_DELETE_ROWS);
+		}
+	}
 }
 
 /*
@@ -271,7 +289,7 @@ mdcreate(SMgrRelation reln, ForkNumber forkNum, bool isRedo)
 		}
 	}
 	if (RelFileNodeBackendIsGlobalTemp(reln->smgr_rnode))
-		RegisterSessionRelation(reln);
+		RegisterSessionRelation(reln, forkNum);
 
 	pfree(path);
 
@@ -528,7 +546,9 @@ mdopenfork(SMgrRelation reln, ForkNumber forknum, int behavior)
 			fd = PathNameOpenFile(path, O_RDWR | PG_BINARY | O_CREAT);
 			if (fd >= 0)
 			{
-				RegisterSessionRelation(reln);
+				RegisterSessionRelation(reln, forknum);
+				if (!(behavior & EXTENSION_RETURN_NULL))
+					RegisterOnCommitAction(reln, forknum);
 				goto NewSegment;
 			}
 		}
@@ -811,12 +831,7 @@ mdwrite(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
 BlockNumber
 mdnblocks(SMgrRelation reln, ForkNumber forknum)
 {
-	/*
-	 * If we access session relation, there may be no files yet of this relation for this backend.
-	 * Pass EXTENSION_RETURN_NULL to make mdopen return NULL in this case instead of reporting error.
-	 */
-	MdfdVec    *v = mdopenfork(reln, forknum, RelFileNodeBackendIsGlobalTemp(reln->smgr_rnode)
-							   ? EXTENSION_RETURN_NULL : EXTENSION_FAIL);
+	MdfdVec    *v = mdopenfork(reln, forknum, EXTENSION_FAIL);
 	BlockNumber nblocks;
 	BlockNumber segno = 0;
 

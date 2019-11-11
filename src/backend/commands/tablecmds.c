@@ -12,6 +12,9 @@
  *
  *-------------------------------------------------------------------------
  */
+#include <sys/stat.h>
+#include <unistd.h>
+
 #include "postgres.h"
 
 #include "access/genam.h"
@@ -533,6 +536,23 @@ static List *GetParentedForeignKeyRefs(Relation partition);
 static void ATDetachCheckNoForeignKeyRefs(Relation partition);
 
 
+static bool
+has_oncommit_option(List *options)
+{
+	ListCell   *listptr;
+
+	foreach(listptr, options)
+	{
+		DefElem    *def = (DefElem *) lfirst(listptr);
+
+		if (pg_strcasecmp(def->defname, "on_commit_delete_rows") == 0)
+			return true;
+	}
+
+	return false;
+}
+
+
 /* ----------------------------------------------------------------
  *		DefineRelation
  *				Creates a new relation.
@@ -576,6 +596,7 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 	LOCKMODE	parentLockmode;
 	const char *accessMethod = NULL;
 	Oid			accessMethodId = InvalidOid;
+	bool		has_oncommit_clause = false;
 
 	/*
 	 * Truncate relname to appropriate length (probably a waste of time, as
@@ -611,17 +632,6 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 	 */
 	namespaceId =
 		RangeVarGetAndCheckCreationNamespace(stmt->relation, NoLock, NULL);
-
-	/*
-	 * Security check: disallow creating temp tables from security-restricted
-	 * code.  This is needed because calling code might not expect untrusted
-	 * tables to appear in pg_temp at the front of its search path.
-	 */
-	if (stmt->relation->relpersistence == RELPERSISTENCE_TEMP
-		&& InSecurityRestrictedOperation())
-		ereport(ERROR,
-				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-				 errmsg("cannot create temporary table within security-restricted operation")));
 
 	/*
 	 * Determine the lockmode to use when scanning parents.  A self-exclusive
@@ -718,6 +728,38 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 	/*
 	 * Parse and validate reloptions, if any.
 	 */
+	/* global temp table */
+	has_oncommit_clause = has_oncommit_option(stmt->options);
+	if (stmt->relation->relpersistence == RELPERSISTENCE_SESSION)
+	{
+		if (has_oncommit_clause)
+		{
+			if (stmt->oncommit != ONCOMMIT_NOOP)
+				elog(ERROR, "can not defeine global temp table with on commit and with clause at same time");
+		}
+		else if (stmt->oncommit != ONCOMMIT_NOOP)
+		{
+			DefElem *opt = makeNode(DefElem);
+
+			opt->type = T_DefElem;
+			opt->defnamespace = NULL;
+			opt->defname = "on_commit_delete_rows";
+			opt->defaction = DEFELEM_UNSPEC;
+
+			/* use reloptions to remember on commit clause */
+			if (stmt->oncommit == ONCOMMIT_DELETE_ROWS)
+				opt->arg  = (Node *)makeString("true");
+			else if (stmt->oncommit == ONCOMMIT_PRESERVE_ROWS)
+				opt->arg  = (Node *)makeString("false");
+			else
+				elog(ERROR, "global temp table not support on commit drop clause");
+
+			stmt->options = lappend(stmt->options, opt);
+		}
+	}
+	else if (has_oncommit_clause)
+		elog(ERROR, "regular table cannot specifie on_commit_delete_rows");
+
 	reloptions = transformRelOptions((Datum) 0, stmt->options, NULL, validnsps,
 									 true, false);
 
