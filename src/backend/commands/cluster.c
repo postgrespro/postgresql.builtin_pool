@@ -392,6 +392,13 @@ cluster_rel(Oid tableOid, Oid indexOid, int options)
 					 errmsg("cannot vacuum temporary tables of other sessions")));
 	}
 
+	/* not support cluster global temp table yet */
+	if (OldHeap->rd_rel->relpersistence == RELPERSISTENCE_SESSION)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				errmsg("not support cluster global temporary tables yet")));
+
+
 	/*
 	 * Also check for active uses of the relation in the current transaction,
 	 * including open scans and pending AFTER trigger events.
