@@ -744,6 +744,19 @@
 #include_if_exists = ''			# include file only if it exists
 #include = ''				# include file
 
+#------------------------------------------------------------------------------
+# BUILTIN CONNECTION PROXY
+#------------------------------------------------------------------------------
+
+#proxy_port = 6543              # TCP port for the connection pooler
+#connection_proxies = 0         # number of connection proxies. Setting it to non-zero value enables builtin connection proxy.
+#idle_pool_worker_timeout = 0   # maximum allowed duration of any idling connection pool worker.
+#session_pool_size = 10         # number of backends serving client sessions.
+#restart_pooler_on_reload = off # restart session pool workers on pg_reload_conf().
+#proxying_gucs = off            # support setting parameters in connection pooler sessions.
+#multitenant_proxy = off        # one pool worker can serve clients with different roles (otherwise separate pool is created for each database/role pair
+#max_sessions = 1000            # maximum number of client sessions which can be handled by one connection proxy.
+#session_schedule = 'round-robin' # session schedule policy for connection pool.
 
 #------------------------------------------------------------------------------
 # CUSTOMIZED OPTIONS

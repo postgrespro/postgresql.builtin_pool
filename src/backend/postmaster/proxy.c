@@ -154,10 +154,9 @@ backend_reschedule(Channel* chan, bool is_new)
 		chan->backend_proc = BackendPidGetProc(chan->backend_pid);
 		Assert(chan->backend_proc); /* If backend completes execution of some query, then it has definitely registered itself in procarray */
 	}
-	if (is_new || !chan->backend_proc->is_tainted) /* If backend is not storing some session context */
+	if (is_new || (!chan->backend_is_tainted && !chan->backend_proc->is_tainted)) /* If backend is not storing some session context */
 	{
 		Channel* pending = chan->pool->pending_clients;
-		Assert(!chan->backend_is_tainted);
 		if (chan->peer)
 		{
 			chan->peer->peer = NULL;
@@ -767,8 +766,17 @@ channel_read(Channel* chan)
 				{
 					if (chan->buf[msg_start] == 'X')	/* Terminate message */
 					{
+						Channel* backend = chan->peer;
+						elog(DEBUG1, "Receive 'X' to backend %d", backend != NULL ? backend->backend_pid : 0);
 						chan->is_interrupted = true;
-						if (chan->peer == NULL || !chan->peer->backend_is_tainted)
+						if (backend != NULL && !backend->backend_is_ready && !backend->backend_is_tainted)
+						{
+							/* If client send abort inside transaction, then mark backend as tainted */
+							backend->backend_is_tainted = true;
+							chan->proxy->state->n_dedicated_backends += 1;
+							chan->pool->n_dedicated_backends += 1;
+						}
+						if (backend == NULL || !backend->backend_is_tainted)
 						{
 							/* Skip terminate message to idle and non-tainted backends */
 							channel_hangout(chan, "terminate");

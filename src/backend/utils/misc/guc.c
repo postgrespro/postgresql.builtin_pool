@@ -2214,7 +2214,7 @@ static struct config_int ConfigureNamesInt[] =
  	{
 		{"max_sessions", PGC_POSTMASTER, CONN_POOLING,
 			gettext_noop("Sets the maximum number of client session."),
-			gettext_noop("Maximal number of client sessions which can be handled by ont connection proxy."
+			gettext_noop("Maximal number of client sessions which can be handled by one connection proxy."
 						 "It can be greater than max_connections and actually be arbitrary large.")
 		},
 		&MaxSessions,
@@ -2270,7 +2270,7 @@ static struct config_int ConfigureNamesInt[] =
 	},
 
 	{
-		{"proxy_port", PGC_POSTMASTER, CONN_AUTH_SETTINGS,
+		{"proxy_port", PGC_POSTMASTER, CONN_POOLING,
 			gettext_noop("Sets the TCP port for the connection pooler."),
 			NULL
 		},
@@ -4646,7 +4646,7 @@ static struct config_enum ConfigureNamesEnum[] =
 	},
 
 	{
-		{"session_schedule", PGC_POSTMASTER, RESOURCES_MEM,
+		{"session_schedule", PGC_POSTMASTER, CONN_POOLING,
 			gettext_noop("Session schedule policy for connection pool."),
 			NULL
 		},
