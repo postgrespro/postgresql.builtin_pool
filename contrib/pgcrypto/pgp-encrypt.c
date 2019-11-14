@@ -34,9 +34,8 @@
 #include <time.h>
 
 #include "mbuf.h"
-#include "px.h"
 #include "pgp.h"
-
+#include "px.h"
 
 #define MDC_DIGEST_LEN 20
 #define STREAM_ID 0xE0
@@ -618,7 +617,7 @@ pgp_encrypt(PGP_Context *ctx, MBuf *src, MBuf *dst)
 		goto out;
 
 	/*
-	 * initialize symkey
+	 * initialize sym_key
 	 */
 	if (ctx->sym_key)
 	{

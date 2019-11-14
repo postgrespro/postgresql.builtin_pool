@@ -33,8 +33,6 @@
  */
 #include "postgres.h"
 
-#include "postgres_fdw.h"
-
 #include "access/htup_details.h"
 #include "access/sysattr.h"
 #include "access/table.h"
@@ -52,12 +50,12 @@
 #include "optimizer/prep.h"
 #include "optimizer/tlist.h"
 #include "parser/parsetree.h"
+#include "postgres_fdw.h"
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
 #include "utils/syscache.h"
 #include "utils/typcache.h"
-
 
 /*
  * Global context for foreign_expr_walker's search of an expression tree.
@@ -1497,7 +1495,7 @@ deparseFromExprForRel(StringInfo buf, PlannerInfo *root, RelOptInfo *foreignrel,
 			if (fpinfo->jointype == JOIN_INNER)
 			{
 				*ignore_conds = list_concat(*ignore_conds,
-											list_copy(fpinfo->joinclauses));
+											fpinfo->joinclauses);
 				fpinfo->joinclauses = NIL;
 			}
 

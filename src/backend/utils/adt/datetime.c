@@ -31,7 +31,6 @@
 #include "utils/memutils.h"
 #include "utils/tzparser.h"
 
-
 static int	DecodeNumber(int flen, char *field, bool haveTextMonth,
 						 int fmask, int *tmask,
 						 struct pg_tm *tm, fsec_t *fsec, bool *is2digits);
@@ -2280,6 +2279,9 @@ DecodeTimeOnly(char **field, int *ftype, int nf,
 			GetCurrentDateTime(tmp);
 		else
 		{
+			/* a date has to be specified */
+			if ((fmask & DTK_DATE_M) != DTK_DATE_M)
+				return DTERR_BAD_FORMAT;
 			tmp->tm_year = tm->tm_year;
 			tmp->tm_mon = tm->tm_mon;
 			tmp->tm_mday = tm->tm_mday;
@@ -2307,6 +2309,9 @@ DecodeTimeOnly(char **field, int *ftype, int nf,
 			GetCurrentDateTime(tmp);
 		else
 		{
+			/* a date has to be specified */
+			if ((fmask & DTK_DATE_M) != DTK_DATE_M)
+				return DTERR_BAD_FORMAT;
 			tmp->tm_year = tm->tm_year;
 			tmp->tm_mon = tm->tm_mon;
 			tmp->tm_mday = tm->tm_mday;

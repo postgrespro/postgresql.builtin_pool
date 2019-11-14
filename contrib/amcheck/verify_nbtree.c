@@ -35,6 +35,7 @@
 #include "lib/bloomfilter.h"
 #include "miscadmin.h"
 #include "storage/lmgr.h"
+#include "storage/smgr.h"
 #include "utils/memutils.h"
 #include "utils/snapmgr.h"
 
@@ -128,6 +129,7 @@ PG_FUNCTION_INFO_V1(bt_index_parent_check);
 static void bt_index_check_internal(Oid indrelid, bool parentcheck,
 									bool heapallindexed, bool rootdescend);
 static inline void btree_index_checkable(Relation rel);
+static inline bool btree_index_mainfork_expected(Relation rel);
 static void bt_check_every_level(Relation rel, Relation heaprel,
 								 bool heapkeyspace, bool readonly, bool heapallindexed,
 								 bool rootdescend);
@@ -138,7 +140,7 @@ static BTScanInsert bt_right_page_check_scankey(BtreeCheckState *state);
 static void bt_downlink_check(BtreeCheckState *state, BTScanInsert targetkey,
 							  BlockNumber childblock);
 static void bt_downlink_missing_check(BtreeCheckState *state);
-static void bt_tuple_present_callback(Relation index, HeapTuple htup,
+static void bt_tuple_present_callback(Relation index, ItemPointer tid,
 									  Datum *values, bool *isnull,
 									  bool tupleIsAlive, void *checkstate);
 static IndexTuple bt_normalize_tuple(BtreeCheckState *state,
@@ -225,7 +227,6 @@ bt_index_check_internal(Oid indrelid, bool parentcheck, bool heapallindexed,
 	Oid			heapid;
 	Relation	indrel;
 	Relation	heaprel;
-	bool		heapkeyspace;
 	LOCKMODE	lockmode;
 
 	if (parentcheck)
@@ -275,10 +276,22 @@ bt_index_check_internal(Oid indrelid, bool parentcheck, bool heapallindexed,
 	/* Relation suitable for checking as B-Tree? */
 	btree_index_checkable(indrel);
 
-	/* Check index, possibly against table it is an index on */
-	heapkeyspace = _bt_heapkeyspace(indrel);
-	bt_check_every_level(indrel, heaprel, heapkeyspace, parentcheck,
-						 heapallindexed, rootdescend);
+	if (btree_index_mainfork_expected(indrel))
+	{
+		bool	heapkeyspace;
+
+		RelationOpenSmgr(indrel);
+		if (!smgrexists(indrel->rd_smgr, MAIN_FORKNUM))
+			ereport(ERROR,
+					(errcode(ERRCODE_INDEX_CORRUPTED),
+					 errmsg("index \"%s\" lacks a main relation fork",
+							RelationGetRelationName(indrel))));
+
+		/* Check index, possibly against table it is an index on */
+		heapkeyspace = _bt_heapkeyspace(indrel);
+		bt_check_every_level(indrel, heaprel, heapkeyspace, parentcheck,
+							 heapallindexed, rootdescend);
+	}
 
 	/*
 	 * Release locks early. That's ok here because nothing in the called
@@ -322,6 +335,28 @@ btree_index_checkable(Relation rel)
 				 errmsg("cannot check index \"%s\"",
 						RelationGetRelationName(rel)),
 				 errdetail("Index is not valid.")));
+}
+
+/*
+ * Check if B-Tree index relation should have a file for its main relation
+ * fork.  Verification uses this to skip unlogged indexes when in hot standby
+ * mode, where there is simply nothing to verify.
+ *
+ * NB: Caller should call btree_index_checkable() before calling here.
+ */
+static inline bool
+btree_index_mainfork_expected(Relation rel)
+{
+	if (rel->rd_rel->relpersistence != RELPERSISTENCE_UNLOGGED ||
+		!RecoveryInProgress())
+		return true;
+
+	ereport(NOTICE,
+			(errcode(ERRCODE_READ_ONLY_SQL_TRANSACTION),
+			 errmsg("cannot verify unlogged index \"%s\" during recovery, skipping",
+					RelationGetRelationName(rel))));
+
+	return false;
 }
 
 /*
@@ -1855,7 +1890,7 @@ bt_downlink_missing_check(BtreeCheckState *state)
  * also allows us to detect the corruption in many cases.
  */
 static void
-bt_tuple_present_callback(Relation index, HeapTuple htup, Datum *values,
+bt_tuple_present_callback(Relation index, ItemPointer tid, Datum *values,
 						  bool *isnull, bool tupleIsAlive, void *checkstate)
 {
 	BtreeCheckState *state = (BtreeCheckState *) checkstate;
@@ -1866,7 +1901,7 @@ bt_tuple_present_callback(Relation index, HeapTuple htup, Datum *values,
 
 	/* Generate a normalized index tuple for fingerprinting */
 	itup = index_form_tuple(RelationGetDescr(index), values, isnull);
-	itup->t_tid = htup->t_self;
+	itup->t_tid = *tid;
 	norm = bt_normalize_tuple(state, itup);
 
 	/* Probe Bloom filter -- tuple should be present */

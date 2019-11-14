@@ -205,7 +205,7 @@ struct ColumnIOData
 	Oid			typid;			/* column type id */
 	int32		typmod;			/* column type modifier */
 	TypeCat		typcat;			/* column type category */
-	ScalarIOData scalar_io;		/* metadata cache for directi conversion
+	ScalarIOData scalar_io;		/* metadata cache for direct conversion
 								 * through input function */
 	union
 	{
@@ -225,13 +225,13 @@ struct RecordIOData
 	ColumnIOData columns[FLEXIBLE_ARRAY_MEMBER];
 };
 
-/* per-query cache for populate_recordset */
-typedef struct PopulateRecordsetCache
+/* per-query cache for populate_record_worker and populate_recordset_worker */
+typedef struct PopulateRecordCache
 {
 	Oid			argtype;		/* declared type of the record argument */
 	ColumnIOData c;				/* metadata cache for populate_composite() */
 	MemoryContext fn_mcxt;		/* where this is stored */
-} PopulateRecordsetCache;
+} PopulateRecordCache;
 
 /* per-call state for populate_recordset */
 typedef struct PopulateRecordsetState
@@ -244,15 +244,8 @@ typedef struct PopulateRecordsetState
 	JsonTokenType saved_token_type;
 	Tuplestorestate *tuple_store;
 	HeapTupleHeader rec;
-	PopulateRecordsetCache *cache;
+	PopulateRecordCache *cache;
 } PopulateRecordsetState;
-
-/* structure to cache metadata needed for populate_record_worker() */
-typedef struct PopulateRecordCache
-{
-	Oid			argtype;		/* declared type of the record argument */
-	ColumnIOData c;				/* metadata cache for populate_composite() */
-} PopulateRecordCache;
 
 /* common data for populate_array_json() and populate_array_dim_jsonb() */
 typedef struct PopulateArrayContext
@@ -356,6 +349,7 @@ static Datum get_path_all(FunctionCallInfo fcinfo, bool as_text);
 static text *get_worker(text *json, char **tpath, int *ipath, int npath,
 						bool normalize_results);
 static Datum get_jsonb_path_all(FunctionCallInfo fcinfo, bool as_text);
+static text *JsonbValueAsText(JsonbValue *v);
 
 /* semantic action functions for json_array_length */
 static void alen_object_start(void *state);
@@ -429,6 +423,12 @@ static Datum populate_record_worker(FunctionCallInfo fcinfo, const char *funcnam
 static HeapTupleHeader populate_record(TupleDesc tupdesc, RecordIOData **record_p,
 									   HeapTupleHeader defaultval, MemoryContext mcxt,
 									   JsObject *obj);
+static void get_record_type_from_argument(FunctionCallInfo fcinfo,
+										  const char *funcname,
+										  PopulateRecordCache *cache);
+static void get_record_type_from_query(FunctionCallInfo fcinfo,
+									   const char *funcname,
+									   PopulateRecordCache *cache);
 static void JsValueToJsObject(JsValue *jsv, JsObject *jso);
 static Datum populate_composite(CompositeIOData *io, Oid typid,
 								const char *colname, MemoryContext mcxt,
@@ -453,12 +453,6 @@ static Datum populate_array(ArrayIOData *aio, const char *colname,
 							MemoryContext mcxt, JsValue *jsv);
 static Datum populate_domain(DomainIOData *io, Oid typid, const char *colname,
 							 MemoryContext mcxt, JsValue *jsv, bool isnull);
-
-/* Worker that takes care of common setup for us */
-static JsonbValue *findJsonbValueFromContainerLen(JsonbContainer *container,
-												  uint32 flags,
-												  char *key,
-												  uint32 keylen);
 
 /* functions supporting jsonb_delete, jsonb_set and jsonb_concat */
 static JsonbValue *IteratorConcat(JsonbIterator **it1, JsonbIterator **it2,
@@ -718,13 +712,15 @@ jsonb_object_field(PG_FUNCTION_ARGS)
 	Jsonb	   *jb = PG_GETARG_JSONB_P(0);
 	text	   *key = PG_GETARG_TEXT_PP(1);
 	JsonbValue *v;
+	JsonbValue	vbuf;
 
 	if (!JB_ROOT_IS_OBJECT(jb))
 		PG_RETURN_NULL();
 
-	v = findJsonbValueFromContainerLen(&jb->root, JB_FOBJECT,
-									   VARDATA_ANY(key),
-									   VARSIZE_ANY_EXHDR(key));
+	v = getKeyJsonValueFromContainer(&jb->root,
+									 VARDATA_ANY(key),
+									 VARSIZE_ANY_EXHDR(key),
+									 &vbuf);
 
 	if (v != NULL)
 		PG_RETURN_JSONB_P(JsonbValueToJsonb(v));
@@ -754,47 +750,18 @@ jsonb_object_field_text(PG_FUNCTION_ARGS)
 	Jsonb	   *jb = PG_GETARG_JSONB_P(0);
 	text	   *key = PG_GETARG_TEXT_PP(1);
 	JsonbValue *v;
+	JsonbValue	vbuf;
 
 	if (!JB_ROOT_IS_OBJECT(jb))
 		PG_RETURN_NULL();
 
-	v = findJsonbValueFromContainerLen(&jb->root, JB_FOBJECT,
-									   VARDATA_ANY(key),
-									   VARSIZE_ANY_EXHDR(key));
+	v = getKeyJsonValueFromContainer(&jb->root,
+									 VARDATA_ANY(key),
+									 VARSIZE_ANY_EXHDR(key),
+									 &vbuf);
 
-	if (v != NULL)
-	{
-		text	   *result = NULL;
-
-		switch (v->type)
-		{
-			case jbvNull:
-				break;
-			case jbvBool:
-				result = cstring_to_text(v->val.boolean ? "true" : "false");
-				break;
-			case jbvString:
-				result = cstring_to_text_with_len(v->val.string.val, v->val.string.len);
-				break;
-			case jbvNumeric:
-				result = cstring_to_text(DatumGetCString(DirectFunctionCall1(numeric_out,
-																			 PointerGetDatum(v->val.numeric))));
-				break;
-			case jbvBinary:
-				{
-					StringInfo	jtext = makeStringInfo();
-
-					(void) JsonbToCString(jtext, v->val.binary.data, -1);
-					result = cstring_to_text_with_len(jtext->data, jtext->len);
-				}
-				break;
-			default:
-				elog(ERROR, "unrecognized jsonb type: %d", (int) v->type);
-		}
-
-		if (result)
-			PG_RETURN_TEXT_P(result);
-	}
+	if (v != NULL && v->type != jbvNull)
+		PG_RETURN_TEXT_P(JsonbValueAsText(v));
 
 	PG_RETURN_NULL();
 }
@@ -879,39 +846,9 @@ jsonb_array_element_text(PG_FUNCTION_ARGS)
 	}
 
 	v = getIthJsonbValueFromContainer(&jb->root, element);
-	if (v != NULL)
-	{
-		text	   *result = NULL;
 
-		switch (v->type)
-		{
-			case jbvNull:
-				break;
-			case jbvBool:
-				result = cstring_to_text(v->val.boolean ? "true" : "false");
-				break;
-			case jbvString:
-				result = cstring_to_text_with_len(v->val.string.val, v->val.string.len);
-				break;
-			case jbvNumeric:
-				result = cstring_to_text(DatumGetCString(DirectFunctionCall1(numeric_out,
-																			 PointerGetDatum(v->val.numeric))));
-				break;
-			case jbvBinary:
-				{
-					StringInfo	jtext = makeStringInfo();
-
-					(void) JsonbToCString(jtext, v->val.binary.data, -1);
-					result = cstring_to_text_with_len(jtext->data, jtext->len);
-				}
-				break;
-			default:
-				elog(ERROR, "unrecognized jsonb type: %d", (int) v->type);
-		}
-
-		if (result)
-			PG_RETURN_TEXT_P(result);
-	}
+	if (v != NULL && v->type != jbvNull)
+		PG_RETURN_TEXT_P(JsonbValueAsText(v));
 
 	PG_RETURN_NULL();
 }
@@ -1389,7 +1326,6 @@ get_jsonb_path_all(FunctionCallInfo fcinfo, bool as_text)
 {
 	Jsonb	   *jb = PG_GETARG_JSONB_P(0);
 	ArrayType  *path = PG_GETARG_ARRAYTYPE_P(1);
-	Jsonb	   *res;
 	Datum	   *pathtext;
 	bool	   *pathnulls;
 	int			npath;
@@ -1397,7 +1333,7 @@ get_jsonb_path_all(FunctionCallInfo fcinfo, bool as_text)
 	bool		have_object = false,
 				have_array = false;
 	JsonbValue *jbvp = NULL;
-	JsonbValue	tv;
+	JsonbValue	jbvbuf;
 	JsonbContainer *container;
 
 	/*
@@ -1455,10 +1391,10 @@ get_jsonb_path_all(FunctionCallInfo fcinfo, bool as_text)
 	{
 		if (have_object)
 		{
-			jbvp = findJsonbValueFromContainerLen(container,
-												  JB_FOBJECT,
-												  VARDATA(pathtext[i]),
-												  VARSIZE(pathtext[i]) - VARHDRSZ);
+			jbvp = getKeyJsonValueFromContainer(container,
+												VARDATA(pathtext[i]),
+												VARSIZE(pathtext[i]) - VARHDRSZ,
+												&jbvbuf);
 		}
 		else if (have_array)
 		{
@@ -1509,43 +1445,79 @@ get_jsonb_path_all(FunctionCallInfo fcinfo, bool as_text)
 
 		if (jbvp->type == jbvBinary)
 		{
-			JsonbIterator *it = JsonbIteratorInit((JsonbContainer *) jbvp->val.binary.data);
-			JsonbIteratorToken r;
-
-			r = JsonbIteratorNext(&it, &tv, true);
-			container = (JsonbContainer *) jbvp->val.binary.data;
-			have_object = r == WJB_BEGIN_OBJECT;
-			have_array = r == WJB_BEGIN_ARRAY;
+			container = jbvp->val.binary.data;
+			have_object = JsonContainerIsObject(container);
+			have_array = JsonContainerIsArray(container);
+			Assert(!JsonContainerIsScalar(container));
 		}
 		else
 		{
-			have_object = jbvp->type == jbvObject;
-			have_array = jbvp->type == jbvArray;
+			Assert(IsAJsonbScalar(jbvp));
+			have_object = false;
+			have_array = false;
 		}
 	}
 
 	if (as_text)
 	{
-		/* special-case outputs for string and null values */
-		if (jbvp->type == jbvString)
-			PG_RETURN_TEXT_P(cstring_to_text_with_len(jbvp->val.string.val,
-													  jbvp->val.string.len));
 		if (jbvp->type == jbvNull)
 			PG_RETURN_NULL();
-	}
 
-	res = JsonbValueToJsonb(jbvp);
-
-	if (as_text)
-	{
-		PG_RETURN_TEXT_P(cstring_to_text(JsonbToCString(NULL,
-														&res->root,
-														VARSIZE(res))));
+		PG_RETURN_TEXT_P(JsonbValueAsText(jbvp));
 	}
 	else
 	{
+		Jsonb	   *res = JsonbValueToJsonb(jbvp);
+
 		/* not text mode - just hand back the jsonb */
 		PG_RETURN_JSONB_P(res);
+	}
+}
+
+/*
+ * Return the text representation of the given JsonbValue.
+ */
+static text *
+JsonbValueAsText(JsonbValue *v)
+{
+	switch (v->type)
+	{
+		case jbvNull:
+			return NULL;
+
+		case jbvBool:
+			return v->val.boolean ?
+				cstring_to_text_with_len("true", 4) :
+				cstring_to_text_with_len("false", 5);
+
+		case jbvString:
+			return cstring_to_text_with_len(v->val.string.val,
+											v->val.string.len);
+
+		case jbvNumeric:
+			{
+				Datum		cstr;
+
+				cstr = DirectFunctionCall1(numeric_out,
+										   PointerGetDatum(v->val.numeric));
+
+				return cstring_to_text(DatumGetCString(cstr));
+			}
+
+		case jbvBinary:
+			{
+				StringInfoData jtext;
+
+				initStringInfo(&jtext);
+				(void) JsonbToCString(&jtext, v->val.binary.data,
+									  v->val.binary.len);
+
+				return cstring_to_text_with_len(jtext.data, jtext.len);
+			}
+
+		default:
+			elog(ERROR, "unrecognized jsonb type: %d", (int) v->type);
+			return NULL;
 	}
 }
 
@@ -1759,26 +1731,7 @@ each_worker_jsonb(FunctionCallInfo fcinfo, const char *funcname, bool as_text)
 					values[1] = (Datum) NULL;
 				}
 				else
-				{
-					text	   *sv;
-
-					if (v.type == jbvString)
-					{
-						/* In text mode, scalar strings should be dequoted */
-						sv = cstring_to_text_with_len(v.val.string.val, v.val.string.len);
-					}
-					else
-					{
-						/* Turn anything else into a json string */
-						StringInfo	jtext = makeStringInfo();
-						Jsonb	   *jb = JsonbValueToJsonb(&v);
-
-						(void) JsonbToCString(jtext, &jb->root, 0);
-						sv = cstring_to_text_with_len(jtext->data, jtext->len);
-					}
-
-					values[1] = PointerGetDatum(sv);
-				}
+					values[1] = PointerGetDatum(JsonbValueAsText(&v));
 			}
 			else
 			{
@@ -2054,13 +2007,7 @@ elements_worker_jsonb(FunctionCallInfo fcinfo, const char *funcname,
 			/* use the tmp context so we can clean up after each tuple is done */
 			old_cxt = MemoryContextSwitchTo(tmp_cxt);
 
-			if (!as_text)
-			{
-				Jsonb	   *val = JsonbValueToJsonb(&v);
-
-				values[0] = PointerGetDatum(val);
-			}
-			else
+			if (as_text)
 			{
 				if (v.type == jbvNull)
 				{
@@ -2069,26 +2016,14 @@ elements_worker_jsonb(FunctionCallInfo fcinfo, const char *funcname,
 					values[0] = (Datum) NULL;
 				}
 				else
-				{
-					text	   *sv;
+					values[0] = PointerGetDatum(JsonbValueAsText(&v));
+			}
+			else
+			{
+				/* Not in text mode, just return the Jsonb */
+				Jsonb	   *val = JsonbValueToJsonb(&v);
 
-					if (v.type == jbvString)
-					{
-						/* in text mode scalar strings should be dequoted */
-						sv = cstring_to_text_with_len(v.val.string.val, v.val.string.len);
-					}
-					else
-					{
-						/* turn anything else into a json string */
-						StringInfo	jtext = makeStringInfo();
-						Jsonb	   *jb = JsonbValueToJsonb(&v);
-
-						(void) JsonbToCString(jtext, &jb->root, 0);
-						sv = cstring_to_text_with_len(jtext->data, jtext->len);
-					}
-
-					values[0] = PointerGetDatum(sv);
-				}
+				values[0] = PointerGetDatum(val);
 			}
 
 			tuple = heap_form_tuple(ret_tdesc, values, nulls);
@@ -3086,8 +3021,8 @@ JsObjectGetField(JsObject *obj, char *field, JsValue *jsv)
 	else
 	{
 		jsv->val.jsonb = !obj->val.jsonb_cont ? NULL :
-			findJsonbValueFromContainerLen(obj->val.jsonb_cont, JB_FOBJECT,
-										   field, strlen(field));
+			getKeyJsonValueFromContainer(obj->val.jsonb_cont, field, strlen(field),
+										 NULL);
 
 		return jsv->val.jsonb != NULL;
 	}
@@ -3203,6 +3138,70 @@ populate_record(TupleDesc tupdesc,
 }
 
 /*
+ * Setup for json{b}_populate_record{set}: result type will be same as first
+ * argument's type --- unless first argument is "null::record", which we can't
+ * extract type info from; we handle that later.
+ */
+static void
+get_record_type_from_argument(FunctionCallInfo fcinfo,
+							  const char *funcname,
+							  PopulateRecordCache *cache)
+{
+	cache->argtype = get_fn_expr_argtype(fcinfo->flinfo, 0);
+	prepare_column_cache(&cache->c,
+						 cache->argtype, -1,
+						 cache->fn_mcxt, false);
+	if (cache->c.typcat != TYPECAT_COMPOSITE &&
+		cache->c.typcat != TYPECAT_COMPOSITE_DOMAIN)
+		ereport(ERROR,
+				(errcode(ERRCODE_DATATYPE_MISMATCH),
+		/* translator: %s is a function name, eg json_to_record */
+				 errmsg("first argument of %s must be a row type",
+						funcname)));
+}
+
+/*
+ * Setup for json{b}_to_record{set}: result type is specified by calling
+ * query.  We'll also use this code for json{b}_populate_record{set},
+ * if we discover that the first argument is a null of type RECORD.
+ *
+ * Here it is syntactically impossible to specify the target type
+ * as domain-over-composite.
+ */
+static void
+get_record_type_from_query(FunctionCallInfo fcinfo,
+						   const char *funcname,
+						   PopulateRecordCache *cache)
+{
+	TupleDesc	tupdesc;
+	MemoryContext old_cxt;
+
+	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+		/* translator: %s is a function name, eg json_to_record */
+				 errmsg("could not determine row type for result of %s",
+						funcname),
+				 errhint("Provide a non-null record argument, "
+						 "or call the function in the FROM clause "
+						 "using a column definition list.")));
+
+	Assert(tupdesc);
+	cache->argtype = tupdesc->tdtypeid;
+
+	/* If we go through this more than once, avoid memory leak */
+	if (cache->c.io.composite.tupdesc)
+		FreeTupleDesc(cache->c.io.composite.tupdesc);
+
+	/* Save identified tupdesc */
+	old_cxt = MemoryContextSwitchTo(cache->fn_mcxt);
+	cache->c.io.composite.tupdesc = CreateTupleDescCopy(tupdesc);
+	cache->c.io.composite.base_typid = tupdesc->tdtypeid;
+	cache->c.io.composite.base_typmod = tupdesc->tdtypmod;
+	MemoryContextSwitchTo(old_cxt);
+}
+
+/*
  * common worker for json{b}_populate_record() and json{b}_to_record()
  * is_json and have_record_arg identify the specific function
  */
@@ -3227,63 +3226,24 @@ populate_record_worker(FunctionCallInfo fcinfo, const char *funcname,
 	{
 		fcinfo->flinfo->fn_extra = cache =
 			MemoryContextAllocZero(fnmcxt, sizeof(*cache));
+		cache->fn_mcxt = fnmcxt;
 
 		if (have_record_arg)
-		{
-			/*
-			 * json{b}_populate_record case: result type will be same as first
-			 * argument's.
-			 */
-			cache->argtype = get_fn_expr_argtype(fcinfo->flinfo, 0);
-			prepare_column_cache(&cache->c,
-								 cache->argtype, -1,
-								 fnmcxt, false);
-			if (cache->c.typcat != TYPECAT_COMPOSITE &&
-				cache->c.typcat != TYPECAT_COMPOSITE_DOMAIN)
-				ereport(ERROR,
-						(errcode(ERRCODE_DATATYPE_MISMATCH),
-						 errmsg("first argument of %s must be a row type",
-								funcname)));
-		}
+			get_record_type_from_argument(fcinfo, funcname, cache);
 		else
-		{
-			/*
-			 * json{b}_to_record case: result type is specified by calling
-			 * query.  Here it is syntactically impossible to specify the
-			 * target type as domain-over-composite.
-			 */
-			TupleDesc	tupdesc;
-			MemoryContext old_cxt;
-
-			if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
-				ereport(ERROR,
-						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-						 errmsg("function returning record called in context "
-								"that cannot accept type record"),
-						 errhint("Try calling the function in the FROM clause "
-								 "using a column definition list.")));
-
-			Assert(tupdesc);
-			cache->argtype = tupdesc->tdtypeid;
-
-			/* Save identified tupdesc */
-			old_cxt = MemoryContextSwitchTo(fnmcxt);
-			cache->c.io.composite.tupdesc = CreateTupleDescCopy(tupdesc);
-			cache->c.io.composite.base_typid = tupdesc->tdtypeid;
-			cache->c.io.composite.base_typmod = tupdesc->tdtypmod;
-			MemoryContextSwitchTo(old_cxt);
-		}
+			get_record_type_from_query(fcinfo, funcname, cache);
 	}
 
 	/* Collect record arg if we have one */
-	if (have_record_arg && !PG_ARGISNULL(0))
+	if (!have_record_arg)
+		rec = NULL;				/* it's json{b}_to_record() */
+	else if (!PG_ARGISNULL(0))
 	{
 		rec = PG_GETARG_HEAPTUPLEHEADER(0);
 
 		/*
 		 * When declared arg type is RECORD, identify actual record type from
-		 * the tuple itself.  Note the lookup_rowtype_tupdesc call in
-		 * update_cached_tupdesc will fail if we're unable to do this.
+		 * the tuple itself.
 		 */
 		if (cache->argtype == RECORDOID)
 		{
@@ -3292,7 +3252,20 @@ populate_record_worker(FunctionCallInfo fcinfo, const char *funcname,
 		}
 	}
 	else
+	{
 		rec = NULL;
+
+		/*
+		 * When declared arg type is RECORD, identify actual record type from
+		 * calling query, or fail if we can't.
+		 */
+		if (cache->argtype == RECORDOID)
+		{
+			get_record_type_from_query(fcinfo, funcname, cache);
+			/* This can't change argtype, which is important for next time */
+			Assert(cache->argtype == RECORDOID);
+		}
+	}
 
 	/* If no JSON argument, just return the record (if any) unchanged */
 	if (PG_ARGISNULL(json_arg_num))
@@ -3517,7 +3490,7 @@ json_to_recordset(PG_FUNCTION_ARGS)
 static void
 populate_recordset_record(PopulateRecordsetState *state, JsObject *obj)
 {
-	PopulateRecordsetCache *cache = state->cache;
+	PopulateRecordCache *cache = state->cache;
 	HeapTupleHeader tuphead;
 	HeapTupleData tuple;
 
@@ -3559,7 +3532,7 @@ populate_recordset_worker(FunctionCallInfo fcinfo, const char *funcname,
 	ReturnSetInfo *rsi;
 	MemoryContext old_cxt;
 	HeapTupleHeader rec;
-	PopulateRecordsetCache *cache = fcinfo->flinfo->fn_extra;
+	PopulateRecordCache *cache = fcinfo->flinfo->fn_extra;
 	PopulateRecordsetState *state;
 
 	rsi = (ReturnSetInfo *) fcinfo->resultinfo;
@@ -3585,60 +3558,21 @@ populate_recordset_worker(FunctionCallInfo fcinfo, const char *funcname,
 		cache->fn_mcxt = fcinfo->flinfo->fn_mcxt;
 
 		if (have_record_arg)
-		{
-			/*
-			 * json{b}_populate_recordset case: result type will be same as
-			 * first argument's.
-			 */
-			cache->argtype = get_fn_expr_argtype(fcinfo->flinfo, 0);
-			prepare_column_cache(&cache->c,
-								 cache->argtype, -1,
-								 cache->fn_mcxt, false);
-			if (cache->c.typcat != TYPECAT_COMPOSITE &&
-				cache->c.typcat != TYPECAT_COMPOSITE_DOMAIN)
-				ereport(ERROR,
-						(errcode(ERRCODE_DATATYPE_MISMATCH),
-						 errmsg("first argument of %s must be a row type",
-								funcname)));
-		}
+			get_record_type_from_argument(fcinfo, funcname, cache);
 		else
-		{
-			/*
-			 * json{b}_to_recordset case: result type is specified by calling
-			 * query.  Here it is syntactically impossible to specify the
-			 * target type as domain-over-composite.
-			 */
-			TupleDesc	tupdesc;
-
-			if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
-				ereport(ERROR,
-						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-						 errmsg("function returning record called in context "
-								"that cannot accept type record"),
-						 errhint("Try calling the function in the FROM clause "
-								 "using a column definition list.")));
-
-			Assert(tupdesc);
-			cache->argtype = tupdesc->tdtypeid;
-
-			/* Save identified tupdesc */
-			old_cxt = MemoryContextSwitchTo(cache->fn_mcxt);
-			cache->c.io.composite.tupdesc = CreateTupleDescCopy(tupdesc);
-			cache->c.io.composite.base_typid = tupdesc->tdtypeid;
-			cache->c.io.composite.base_typmod = tupdesc->tdtypmod;
-			MemoryContextSwitchTo(old_cxt);
-		}
+			get_record_type_from_query(fcinfo, funcname, cache);
 	}
 
 	/* Collect record arg if we have one */
-	if (have_record_arg && !PG_ARGISNULL(0))
+	if (!have_record_arg)
+		rec = NULL;				/* it's json{b}_to_recordset() */
+	else if (!PG_ARGISNULL(0))
 	{
 		rec = PG_GETARG_HEAPTUPLEHEADER(0);
 
 		/*
 		 * When declared arg type is RECORD, identify actual record type from
-		 * the tuple itself.  Note the lookup_rowtype_tupdesc call in
-		 * update_cached_tupdesc will fail if we're unable to do this.
+		 * the tuple itself.
 		 */
 		if (cache->argtype == RECORDOID)
 		{
@@ -3647,7 +3581,20 @@ populate_recordset_worker(FunctionCallInfo fcinfo, const char *funcname,
 		}
 	}
 	else
+	{
 		rec = NULL;
+
+		/*
+		 * When declared arg type is RECORD, identify actual record type from
+		 * calling query, or fail if we can't.
+		 */
+		if (cache->argtype == RECORDOID)
+		{
+			get_record_type_from_query(fcinfo, funcname, cache);
+			/* This can't change argtype, which is important for next time */
+			Assert(cache->argtype == RECORDOID);
+		}
+	}
 
 	/* if the json is null send back an empty set */
 	if (PG_ARGISNULL(json_arg_num))
@@ -3897,22 +3844,6 @@ populate_recordset_object_field_end(void *state, char *fname, bool isnull)
 		/* must have had a scalar instead */
 		hashentry->val = _state->saved_scalar;
 	}
-}
-
-/*
- * findJsonbValueFromContainer() wrapper that sets up JsonbValue key string.
- */
-static JsonbValue *
-findJsonbValueFromContainerLen(JsonbContainer *container, uint32 flags,
-							   char *key, uint32 keylen)
-{
-	JsonbValue	k;
-
-	k.type = jbvString;
-	k.val.string.val = key;
-	k.val.string.len = keylen;
-
-	return findJsonbValueFromContainer(container, flags, &k);
 }
 
 /*
@@ -4419,7 +4350,6 @@ jsonb_delete_idx(PG_FUNCTION_ARGS)
 
 /*
  * SQL function jsonb_set(jsonb, text[], jsonb, boolean)
- *
  */
 Datum
 jsonb_set(PG_FUNCTION_ARGS)
@@ -4511,7 +4441,6 @@ jsonb_delete_path(PG_FUNCTION_ARGS)
 
 /*
  * SQL function jsonb_insert(jsonb, text[], jsonb, boolean)
- *
  */
 Datum
 jsonb_insert(PG_FUNCTION_ARGS)

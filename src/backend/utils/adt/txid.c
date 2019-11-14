@@ -26,14 +26,14 @@
 #include "access/xact.h"
 #include "access/xlog.h"
 #include "funcapi.h"
-#include "miscadmin.h"
+#include "lib/qunique.h"
 #include "libpq/pqformat.h"
+#include "miscadmin.h"
 #include "postmaster/postmaster.h"
 #include "storage/lwlock.h"
 #include "utils/builtins.h"
 #include "utils/memutils.h"
 #include "utils/snapmgr.h"
-
 
 /* txid will be signed int8 in database, so must limit to 63 bits */
 #define MAX_TXID   ((uint64) PG_INT64_MAX)
@@ -213,26 +213,10 @@ cmp_txid(const void *aa, const void *bb)
 static void
 sort_snapshot(TxidSnapshot *snap)
 {
-	txid		last = 0;
-	int			nxip,
-				idx1,
-				idx2;
-
 	if (snap->nxip > 1)
 	{
 		qsort(snap->xip, snap->nxip, sizeof(txid), cmp_txid);
-
-		/* remove duplicates */
-		nxip = snap->nxip;
-		idx1 = idx2 = 0;
-		while (idx1 < nxip)
-		{
-			if (snap->xip[idx1] != last)
-				last = snap->xip[idx2++] = snap->xip[idx1];
-			else
-				snap->nxip--;
-			idx1++;
-		}
+		snap->nxip = qunique(snap->xip, snap->nxip, sizeof(txid), cmp_txid);
 	}
 }
 
@@ -705,7 +689,7 @@ txid_snapshot_xip(PG_FUNCTION_ARGS)
 	TxidSnapshot *snap;
 	txid		value;
 
-	/* on first call initialize snap_state and get copy of snapshot */
+	/* on first call initialize fctx and get copy of snapshot */
 	if (SRF_IS_FIRSTCALL())
 	{
 		TxidSnapshot *arg = (TxidSnapshot *) PG_GETARG_VARLENA_P(0);

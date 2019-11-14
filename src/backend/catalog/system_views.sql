@@ -826,7 +826,8 @@ CREATE VIEW pg_stat_ssl AS
             S.ssl_client_dn AS client_dn,
             S.ssl_client_serial AS client_serial,
             S.ssl_issuer_dn AS issuer_dn
-    FROM pg_stat_get_activity(NULL) AS S;
+    FROM pg_stat_get_activity(NULL) AS S
+    WHERE S.client_port IS NOT NULL;
 
 CREATE VIEW pg_stat_gssapi AS
     SELECT
@@ -834,7 +835,8 @@ CREATE VIEW pg_stat_gssapi AS
             S.gss_auth AS gss_authenticated,
             S.gss_princ AS principal,
             S.gss_enc AS encrypted
-    FROM pg_stat_get_activity(NULL) AS S;
+    FROM pg_stat_get_activity(NULL) AS S
+    WHERE S.client_port IS NOT NULL;
 
 CREATE VIEW pg_replication_slots AS
     SELECT
@@ -1286,6 +1288,46 @@ RETURNS jsonb
 LANGUAGE INTERNAL
 STRICT IMMUTABLE PARALLEL SAFE
 AS 'jsonb_path_query_first';
+
+CREATE OR REPLACE FUNCTION
+  jsonb_path_exists_tz(target jsonb, path jsonpath, vars jsonb DEFAULT '{}',
+                    silent boolean DEFAULT false)
+RETURNS boolean
+LANGUAGE INTERNAL
+STRICT STABLE PARALLEL SAFE
+AS 'jsonb_path_exists_tz';
+
+CREATE OR REPLACE FUNCTION
+  jsonb_path_match_tz(target jsonb, path jsonpath, vars jsonb DEFAULT '{}',
+                   silent boolean DEFAULT false)
+RETURNS boolean
+LANGUAGE INTERNAL
+STRICT STABLE PARALLEL SAFE
+AS 'jsonb_path_match_tz';
+
+CREATE OR REPLACE FUNCTION
+  jsonb_path_query_tz(target jsonb, path jsonpath, vars jsonb DEFAULT '{}',
+                   silent boolean DEFAULT false)
+RETURNS SETOF jsonb
+LANGUAGE INTERNAL
+STRICT STABLE PARALLEL SAFE
+AS 'jsonb_path_query_tz';
+
+CREATE OR REPLACE FUNCTION
+  jsonb_path_query_array_tz(target jsonb, path jsonpath, vars jsonb DEFAULT '{}',
+                         silent boolean DEFAULT false)
+RETURNS jsonb
+LANGUAGE INTERNAL
+STRICT STABLE PARALLEL SAFE
+AS 'jsonb_path_query_array_tz';
+
+CREATE OR REPLACE FUNCTION
+  jsonb_path_query_first_tz(target jsonb, path jsonpath, vars jsonb DEFAULT '{}',
+                         silent boolean DEFAULT false)
+RETURNS jsonb
+LANGUAGE INTERNAL
+STRICT STABLE PARALLEL SAFE
+AS 'jsonb_path_query_first_tz';
 
 --
 -- The default permissions for functions mean that anyone can execute them.

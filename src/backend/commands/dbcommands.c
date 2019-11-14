@@ -26,6 +26,7 @@
 #include "access/genam.h"
 #include "access/heapam.h"
 #include "access/htup_details.h"
+#include "access/multixact.h"
 #include "access/tableam.h"
 #include "access/xact.h"
 #include "access/xloginsert.h"
@@ -52,8 +53,8 @@
 #include "replication/slot.h"
 #include "storage/copydir.h"
 #include "storage/fd.h"
-#include "storage/lmgr.h"
 #include "storage/ipc.h"
+#include "storage/lmgr.h"
 #include "storage/md.h"
 #include "storage/procarray.h"
 #include "storage/smgr.h"
@@ -63,7 +64,6 @@
 #include "utils/pg_locale.h"
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
-
 
 typedef struct
 {
@@ -103,14 +103,14 @@ createdb(ParseState *pstate, const CreatedbStmt *stmt)
 	Relation	rel;
 	Oid			src_dboid;
 	Oid			src_owner;
-	int			src_encoding;
-	char	   *src_collate;
-	char	   *src_ctype;
+	int			src_encoding = -1;
+	char	   *src_collate = NULL;
+	char	   *src_ctype = NULL;
 	bool		src_istemplate;
 	bool		src_allowconn;
-	Oid			src_lastsysoid;
-	TransactionId src_frozenxid;
-	MultiXactId src_minmxid;
+	Oid			src_lastsysoid = InvalidOid;
+	TransactionId src_frozenxid = InvalidTransactionId;
+	MultiXactId src_minmxid = InvalidMultiXactId;
 	Oid			src_deftablespace;
 	volatile Oid dst_deftablespace;
 	Relation	pg_database_rel;
@@ -810,7 +810,7 @@ createdb_failure_callback(int code, Datum arg)
  * DROP DATABASE
  */
 void
-dropdb(const char *dbname, bool missing_ok)
+dropdb(const char *dbname, bool missing_ok, bool force)
 {
 	Oid			db_id;
 	bool		db_istemplate;
@@ -896,19 +896,6 @@ dropdb(const char *dbname, bool missing_ok)
 	}
 
 	/*
-	 * Check for other backends in the target database.  (Because we hold the
-	 * database lock, no new ones can start after this.)
-	 *
-	 * As in CREATE DATABASE, check this after other error conditions.
-	 */
-	if (CountOtherDBBackends(db_id, &notherbackends, &npreparedxacts))
-		ereport(ERROR,
-				(errcode(ERRCODE_OBJECT_IN_USE),
-				 errmsg("database \"%s\" is being accessed by other users",
-						dbname),
-				 errdetail_busy_db(notherbackends, npreparedxacts)));
-
-	/*
 	 * Check if there are subscriptions defined in the target database.
 	 *
 	 * We can't drop them automatically because they might be holding
@@ -922,6 +909,27 @@ dropdb(const char *dbname, bool missing_ok)
 				 errdetail_plural("There is %d subscription.",
 								  "There are %d subscriptions.",
 								  nsubscriptions, nsubscriptions)));
+
+
+	/*
+	 * Attempt to terminate all existing connections to the target database if
+	 * the user has requested to do so.
+	 */
+	if (force)
+		TerminateOtherDBBackends(db_id);
+
+	/*
+	 * Check for other backends in the target database.  (Because we hold the
+	 * database lock, no new ones can start after this.)
+	 *
+	 * As in CREATE DATABASE, check this after other error conditions.
+	 */
+	if (CountOtherDBBackends(db_id, &notherbackends, &npreparedxacts))
+		ereport(ERROR,
+				(errcode(ERRCODE_OBJECT_IN_USE),
+				 errmsg("database \"%s\" is being accessed by other users",
+						dbname),
+				 errdetail_busy_db(notherbackends, npreparedxacts)));
 
 	/*
 	 * Remove the database's tuple from pg_database.
@@ -1430,6 +1438,30 @@ movedb_failure_callback(int code, Datum arg)
 	(void) rmtree(dstpath, true);
 }
 
+/*
+ * Process options and call dropdb function.
+ */
+void
+DropDatabase(ParseState *pstate, DropdbStmt *stmt)
+{
+	bool		force = false;
+	ListCell   *lc;
+
+	foreach(lc, stmt->options)
+	{
+		DefElem    *opt = (DefElem *) lfirst(lc);
+
+		if (strcmp(opt->defname, "force") == 0)
+			force = true;
+		else
+			ereport(ERROR,
+					(errcode(ERRCODE_SYNTAX_ERROR),
+					 errmsg("unrecognized DROP DATABASE option \"%s\"", opt->defname),
+					 parser_errposition(pstate, opt->location)));
+	}
+
+	dropdb(stmt->dbname, stmt->missing_ok, force);
+}
 
 /*
  * ALTER DATABASE name ...

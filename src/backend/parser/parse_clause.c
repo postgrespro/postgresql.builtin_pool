@@ -15,8 +15,6 @@
 
 #include "postgres.h"
 
-#include "miscadmin.h"
-
 #include "access/htup_details.h"
 #include "access/nbtree.h"
 #include "access/table.h"
@@ -29,12 +27,11 @@
 #include "catalog/pg_constraint.h"
 #include "catalog/pg_type.h"
 #include "commands/defrem.h"
+#include "miscadmin.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
 #include "optimizer/optimizer.h"
 #include "parser/analyze.h"
-#include "parser/parsetree.h"
-#include "parser/parser.h"
 #include "parser/parse_clause.h"
 #include "parser/parse_coerce.h"
 #include "parser/parse_collate.h"
@@ -44,14 +41,15 @@
 #include "parser/parse_relation.h"
 #include "parser/parse_target.h"
 #include "parser/parse_type.h"
+#include "parser/parser.h"
+#include "parser/parsetree.h"
 #include "rewrite/rewriteManip.h"
 #include "utils/builtins.h"
-#include "utils/guc.h"
 #include "utils/catcache.h"
+#include "utils/guc.h"
 #include "utils/lsyscache.h"
-#include "utils/syscache.h"
 #include "utils/rel.h"
-
+#include "utils/syscache.h"
 
 /* Convenience macro for the most common makeNamespaceItem() case */
 #define makeDefaultNSItem(rte)	makeNamespaceItem(rte, true, true, false, true)
@@ -1214,9 +1212,6 @@ transformFromClauseItem(ParseState *pstate, Node *n,
 		 *
 		 * Notice that we don't require the merged namespace list to be
 		 * conflict-free.  See the comments for scanNameSpaceForRefname().
-		 *
-		 * NB: this coding relies on the fact that list_concat is not
-		 * destructive to its second argument.
 		 */
 		lateral_ok = (j->jointype == JOIN_INNER || j->jointype == JOIN_LEFT);
 		setNamespaceLateralState(l_namespace, true, lateral_ok);
@@ -2116,9 +2111,7 @@ flatten_grouping_sets(Node *expr, bool toplevel, bool *hasGroupingSets)
 
 					if (IsA(n1, GroupingSet) &&
 						((GroupingSet *) n1)->kind == GROUPING_SET_SETS)
-					{
 						result_set = list_concat(result_set, (List *) n2);
-					}
 					else
 						result_set = lappend(result_set, n2);
 				}

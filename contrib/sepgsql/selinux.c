@@ -657,10 +657,8 @@ sepgsql_getenforce(void)
 /*
  * sepgsql_audit_log
  *
- * It generates a security audit record. In the default, it writes out
- * audit records into standard PG's logfile. It also allows to set up
- * external audit log receiver, such as auditd in Linux, using the
- * sepgsql_audit_hook.
+ * It generates a security audit record. It writes out audit records
+ * into standard PG's logfile.
  *
  * SELinux can control what should be audited and should not using
  * "auditdeny" and "auditallow" rules in the security policy. In the
@@ -873,13 +871,11 @@ sepgsql_compute_create(const char *scontext,
 	{
 		result = pstrdup(ncontext);
 	}
-	PG_CATCH();
+	PG_FINALLY();
 	{
 		freecon(ncontext);
-		PG_RE_THROW();
 	}
 	PG_END_TRY();
-	freecon(ncontext);
 
 	return result;
 }

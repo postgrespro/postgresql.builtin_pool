@@ -96,6 +96,9 @@
 /* Define to 1 if you have the <atomic.h> header file. */
 #undef HAVE_ATOMIC_H
 
+/* Define to 1 if you have the `backtrace_symbols' function. */
+#undef HAVE_BACKTRACE_SYMBOLS
+
 /* Define to 1 if you have the `BIO_get_data' function. */
 #undef HAVE_BIO_GET_DATA
 
@@ -123,14 +126,8 @@
 /* Define to 1 if you have the <crtdefs.h> header file. */
 #undef HAVE_CRTDEFS_H
 
-/* Define to 1 if you have the `crypt' function. */
-#undef HAVE_CRYPT
-
 /* Define to 1 if you have the `CRYPTO_lock' function. */
 #undef HAVE_CRYPTO_LOCK
-
-/* Define to 1 if you have the <crypt.h> header file. */
-#undef HAVE_CRYPT_H
 
 /* Define to 1 if you have the declaration of `fdatasync', and to 0 if you
    don't. */
@@ -200,6 +197,12 @@
 
 /* Define to 1 if you have the <editline/readline.h> header file. */
 #undef HAVE_EDITLINE_READLINE_H
+
+/* Define to 1 if you have the <execinfo.h> header file. */
+#undef HAVE_EXECINFO_H
+
+/* Define to 1 if you have the `explicit_bzero' function. */
+#undef HAVE_EXPLICIT_BZERO
 
 /* Define to 1 if you have the `fdatasync' function. */
 #undef HAVE_FDATASYNC
@@ -332,6 +335,9 @@
 /* Define to 1 if you have isinf(). */
 #undef HAVE_ISINF
 
+/* Define to 1 if __builtin_constant_p(x) implies "i"(x) acceptance. */
+#undef HAVE_I_CONSTRAINT__BUILTIN_CONSTANT_P
+
 /* Define to 1 if you have the <langinfo.h> header file. */
 #undef HAVE_LANGINFO_H
 
@@ -383,9 +389,6 @@
 /* Define to 1 if `long int' works and is 64 bits. */
 #undef HAVE_LONG_INT_64
 
-/* Define to 1 if the system has the type `long long int'. */
-#undef HAVE_LONG_LONG_INT
-
 /* Define to 1 if `long long int' works and is 64 bits. */
 #undef HAVE_LONG_LONG_INT_64
 
@@ -400,6 +403,9 @@
 
 /* Define to 1 if you have the <memory.h> header file. */
 #undef HAVE_MEMORY_H
+
+/* Define to 1 if you have the `memset_s' function. */
+#undef HAVE_MEMSET_S
 
 /* Define to 1 if the system has the type `MINIDUMP_TYPE'. */
 #undef HAVE_MINIDUMP_TYPE
@@ -654,15 +660,8 @@
 /* Define to 1 if you have the <termios.h> header file. */
 #undef HAVE_TERMIOS_H
 
-/* Define to 1 if your `struct tm' has `tm_zone'. Deprecated, use
-   `HAVE_STRUCT_TM_TM_ZONE' instead. */
-#undef HAVE_TM_ZONE
-
 /* Define to 1 if your compiler understands `typeof' or something similar. */
 #undef HAVE_TYPEOF
-
-/* Define to 1 if you have the external array `tzname'. */
-#undef HAVE_TZNAME
 
 /* Define to 1 if you have the <ucred.h> header file. */
 #undef HAVE_UCRED_H
@@ -687,9 +686,6 @@
 
 /* Define to 1 if you have the `unsetenv' function. */
 #undef HAVE_UNSETENV
-
-/* Define to 1 if the system has the type `unsigned long long int'. */
-#undef HAVE_UNSIGNED_LONG_LONG_INT
 
 /* Define to 1 if you have the `uselocale' function. */
 #undef HAVE_USELOCALE
@@ -833,6 +829,9 @@
 /* Define to best printf format archetype, usually gnu_printf if available. */
 #undef PG_PRINTF_ATTRIBUTE
 
+/* Define to 1 to use <stdbool.h> to define type bool. */
+#undef PG_USE_STDBOOL
+
 /* PostgreSQL version as a string */
 #undef PG_VERSION
 
@@ -883,9 +882,6 @@
 
 /* Define to 1 if strerror_r() returns int. */
 #undef STRERROR_R_INT
-
-/* Define to 1 if your <sys/time.h> declares `struct tm'. */
-#undef TM_IN_SYS_TIME
 
 /* Define to 1 to use ARMv8 CRC Extension. */
 #undef USE_ARMV8_CRC32C

@@ -991,7 +991,7 @@ backend_start(SessionPool* pool, char** error)
 		load_file("libpqconn", false);
 		libpqconn_loaded = true;
 	}
-	pg_itoa(PostPortNumber, postmaster_port);
+	pg_ltoa(PostPortNumber, postmaster_port);
 
 	gucopts = list_head(pool->startup_gucs);
 	if (pool->cmdline_options)

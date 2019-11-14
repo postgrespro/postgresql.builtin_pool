@@ -17,8 +17,8 @@
 #include "access/gin_private.h"
 #include "access/ginxlog.h"
 #include "access/xloginsert.h"
-#include "storage/predicate.h"
 #include "miscadmin.h"
+#include "storage/predicate.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
 
@@ -650,7 +650,7 @@ ginPlaceToPage(GinBtree btree, GinBtreeStack *stack,
 	}
 	else
 	{
-		elog(ERROR, "invalid return code from GIN placeToPage method: %d", rc);
+		elog(ERROR, "invalid return code from GIN beginPlaceToPage method: %d", rc);
 		result = false;			/* keep compiler quiet */
 	}
 

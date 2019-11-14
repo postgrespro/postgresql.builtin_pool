@@ -120,29 +120,24 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-#include "miscadmin.h"
-
 #include "access/heapam_xlog.h"
 #include "access/transam.h"
 #include "access/xact.h"
-
+#include "miscadmin.h"
 #include "pgstat.h"
-
 #include "replication/logical.h"
 #include "replication/reorderbuffer.h"
 #include "replication/snapbuild.h"
-
-#include "utils/builtins.h"
-#include "utils/memutils.h"
-#include "utils/snapshot.h"
-#include "utils/snapmgr.h"
-
 #include "storage/block.h"		/* debugging output */
 #include "storage/fd.h"
 #include "storage/lmgr.h"
 #include "storage/proc.h"
 #include "storage/procarray.h"
 #include "storage/standby.h"
+#include "utils/builtins.h"
+#include "utils/memutils.h"
+#include "utils/snapmgr.h"
+#include "utils/snapshot.h"
 
 /*
  * This struct contains the current state of the snapshot building
@@ -269,7 +264,7 @@ static void SnapBuildSnapIncRefcount(Snapshot snap);
 
 static void SnapBuildDistributeNewCatalogSnapshot(SnapBuild *builder, XLogRecPtr lsn);
 
-/* xlog reading helper functions for SnapBuildProcessRecord */
+/* xlog reading helper functions for SnapBuildProcessRunningXacts */
 static bool SnapBuildFindSnapshot(SnapBuild *builder, XLogRecPtr lsn, xl_running_xacts *running);
 static void SnapBuildWaitSnapshot(xl_running_xacts *running, TransactionId cutoff);
 

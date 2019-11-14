@@ -40,6 +40,7 @@
 #include "libpq/be-fsstubs.h"
 #include "libpq/pqsignal.h"
 #include "miscadmin.h"
+#include "pg_trace.h"
 #include "pgstat.h"
 #include "replication/logical.h"
 #include "replication/logicallauncher.h"
@@ -65,8 +66,6 @@
 #include "utils/snapmgr.h"
 #include "utils/timeout.h"
 #include "utils/timestamp.h"
-#include "pg_trace.h"
-
 
 /*
  *	User-tweakable parameters
@@ -92,8 +91,8 @@ int			synchronous_commit = SYNCHRONOUS_COMMIT_ON;
  * in the user backend, so we need some additional bookkeeping.
  *
  * XactTopFullTransactionId stores the XID of our toplevel transaction, which
- * will be the same as TopTransactionState.fullTransactionId in an ordinary
- * backend; but in a parallel backend, which does not have the entire
+ * will be the same as TopTransactionStateData.fullTransactionId in an
+ * ordinary backend; but in a parallel backend, which does not have the entire
  * transaction state, it will instead be copied from the backend that started
  * the parallel operation.
  *
@@ -871,6 +870,9 @@ TransactionIdIsCurrentTransactionId(TransactionId xid)
 	if (!TransactionIdIsNormal(xid))
 		return false;
 
+	if (TransactionIdEquals(xid, GetTopTransactionIdIfAny()))
+		return true;
+
 	/*
 	 * In parallel workers, the XIDs we must consider as current are stored in
 	 * ParallelCurrentXids rather than the transaction-state stack.  Note that
@@ -1232,7 +1234,7 @@ RecordTransactionCommit(void)
 	if (!markXidCommitted)
 	{
 		/*
-		 * We expect that every smgrscheduleunlink is followed by a catalog
+		 * We expect that every RelationDropStorage is followed by a catalog
 		 * update, and hence XID assignment, so we shouldn't get here with any
 		 * pending deletes.  Use a real test not just an Assert to check this,
 		 * since it's a bit fragile.
@@ -3721,13 +3723,21 @@ EndTransactionBlock(bool chain)
 			break;
 
 			/*
-			 * In an implicit transaction block, commit, but issue a warning
+			 * We are in an implicit transaction block.  If AND CHAIN was
+			 * specified, error.  Otherwise commit, but issue a warning
 			 * because there was no explicit BEGIN before this.
 			 */
 		case TBLOCK_IMPLICIT_INPROGRESS:
-			ereport(WARNING,
-					(errcode(ERRCODE_NO_ACTIVE_SQL_TRANSACTION),
-					 errmsg("there is no transaction in progress")));
+			if (chain)
+				ereport(ERROR,
+						(errcode(ERRCODE_NO_ACTIVE_SQL_TRANSACTION),
+						 /* translator: %s represents an SQL statement name */
+						 errmsg("%s can only be used in transaction blocks",
+								"COMMIT AND CHAIN")));
+			else
+				ereport(WARNING,
+						(errcode(ERRCODE_NO_ACTIVE_SQL_TRANSACTION),
+						 errmsg("there is no transaction in progress")));
 			s->blockState = TBLOCK_END;
 			result = true;
 			break;
@@ -3789,15 +3799,24 @@ EndTransactionBlock(bool chain)
 			break;
 
 			/*
-			 * The user issued COMMIT when not inside a transaction.  Issue a
-			 * WARNING, staying in TBLOCK_STARTED state.  The upcoming call to
+			 * The user issued COMMIT when not inside a transaction.  For
+			 * COMMIT without CHAIN, issue a WARNING, staying in
+			 * TBLOCK_STARTED state.  The upcoming call to
 			 * CommitTransactionCommand() will then close the transaction and
-			 * put us back into the default state.
+			 * put us back into the default state.  For COMMIT AND CHAIN,
+			 * error.
 			 */
 		case TBLOCK_STARTED:
-			ereport(WARNING,
-					(errcode(ERRCODE_NO_ACTIVE_SQL_TRANSACTION),
-					 errmsg("there is no transaction in progress")));
+			if (chain)
+				ereport(ERROR,
+						(errcode(ERRCODE_NO_ACTIVE_SQL_TRANSACTION),
+						 /* translator: %s represents an SQL statement name */
+						 errmsg("%s can only be used in transaction blocks",
+								"COMMIT AND CHAIN")));
+			else
+				ereport(WARNING,
+						(errcode(ERRCODE_NO_ACTIVE_SQL_TRANSACTION),
+						 errmsg("there is no transaction in progress")));
 			result = true;
 			break;
 
@@ -3899,10 +3918,10 @@ UserAbortTransactionBlock(bool chain)
 			break;
 
 			/*
-			 * The user issued ABORT when not inside a transaction. Issue a
-			 * WARNING and go to abort state.  The upcoming call to
-			 * CommitTransactionCommand() will then put us back into the
-			 * default state.
+			 * The user issued ABORT when not inside a transaction.  For
+			 * ROLLBACK without CHAIN, issue a WARNING and go to abort state.
+			 * The upcoming call to CommitTransactionCommand() will then put
+			 * us back into the default state.  For ROLLBACK AND CHAIN, error.
 			 *
 			 * We do the same thing with ABORT inside an implicit transaction,
 			 * although in this case we might be rolling back actual database
@@ -3911,9 +3930,16 @@ UserAbortTransactionBlock(bool chain)
 			 */
 		case TBLOCK_STARTED:
 		case TBLOCK_IMPLICIT_INPROGRESS:
-			ereport(WARNING,
-					(errcode(ERRCODE_NO_ACTIVE_SQL_TRANSACTION),
-					 errmsg("there is no transaction in progress")));
+			if (chain)
+				ereport(ERROR,
+						(errcode(ERRCODE_NO_ACTIVE_SQL_TRANSACTION),
+						 /* translator: %s represents an SQL statement name */
+						 errmsg("%s can only be used in transaction blocks",
+								"ROLLBACK AND CHAIN")));
+			else
+				ereport(WARNING,
+						(errcode(ERRCODE_NO_ACTIVE_SQL_TRANSACTION),
+						 errmsg("there is no transaction in progress")));
 			s->blockState = TBLOCK_ABORT_PENDING;
 			break;
 
@@ -4719,7 +4745,6 @@ StartSubTransaction(void)
 	 */
 	AtSubStart_Memory();
 	AtSubStart_ResourceOwner();
-	AtSubStart_Notify();
 	AfterTriggerBeginSubXact();
 
 	s->state = TRANS_INPROGRESS;

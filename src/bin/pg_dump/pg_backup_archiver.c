@@ -30,14 +30,13 @@
 #include <io.h>
 #endif
 
+#include "dumputils.h"
+#include "fe_utils/string_utils.h"
+#include "libpq/libpq-fs.h"
 #include "parallel.h"
 #include "pg_backup_archiver.h"
 #include "pg_backup_db.h"
 #include "pg_backup_utils.h"
-#include "dumputils.h"
-#include "fe_utils/string_utils.h"
-
-#include "libpq/libpq-fs.h"
 
 #define TEXT_DUMP_HEADER "--\n-- PostgreSQL database dump\n--\n\n"
 #define TEXT_DUMPALL_HEADER "--\n-- PostgreSQL database cluster dump\n--\n\n"
@@ -1989,7 +1988,7 @@ WriteInt(ArchiveHandle *AH, int i)
 	 * This is a bit yucky, but I don't want to make the binary format very
 	 * dependent on representation, and not knowing much about it, I write out
 	 * a sign byte. If you change this, don't forget to change the file
-	 * version #, and modify readInt to read the new format AS WELL AS the old
+	 * version #, and modify ReadInt to read the new format AS WELL AS the old
 	 * formats.
 	 */
 

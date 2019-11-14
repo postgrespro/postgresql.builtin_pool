@@ -21,6 +21,7 @@
 #include "access/reloptions.h"
 #include "access/relscan.h"
 #include "commands/progress.h"
+#include "lib/qunique.h"
 #include "miscadmin.h"
 #include "utils/array.h"
 #include "utils/datum.h"
@@ -435,8 +436,6 @@ _bt_sort_array_elements(IndexScanDesc scan, ScanKey skey,
 	Oid			elemtype;
 	RegProcedure cmp_proc;
 	BTSortArrayContext cxt;
-	int			last_non_dup;
-	int			i;
 
 	if (nelems <= 1)
 		return nelems;			/* no work to do */
@@ -475,20 +474,8 @@ _bt_sort_array_elements(IndexScanDesc scan, ScanKey skey,
 			  _bt_compare_array_elements, (void *) &cxt);
 
 	/* Now scan the sorted elements and remove duplicates */
-	last_non_dup = 0;
-	for (i = 1; i < nelems; i++)
-	{
-		int32		compare;
-
-		compare = DatumGetInt32(FunctionCall2Coll(&cxt.flinfo,
-												  cxt.collation,
-												  elems[last_non_dup],
-												  elems[i]));
-		if (compare != 0)
-			elems[++last_non_dup] = elems[i];
-	}
-
-	return last_non_dup + 1;
+	return qunique_arg(elems, nelems, sizeof(Datum),
+					   _bt_compare_array_elements, &cxt);
 }
 
 /*
@@ -664,7 +651,7 @@ _bt_restore_array_keys(IndexScanDesc scan)
  * scan->numberOfKeys is the number of input keys, so->numberOfKeys gets
  * the number of output keys (possibly less, never greater).
  *
- * The output keys are marked with additional sk_flag bits beyond the
+ * The output keys are marked with additional sk_flags bits beyond the
  * system-standard bits supplied by the caller.  The DESC and NULLS_FIRST
  * indoption bits for the relevant index attribute are copied into the flags.
  * Also, for a DESC column, we commute (flip) all the sk_strategy numbers
@@ -2092,25 +2079,20 @@ btbuildphasename(int64 phasenum)
  * Caller's insertion scankey is used to compare the tuples; the scankey's
  * argument values are not considered here.
  *
- * Sometimes this routine will return a new pivot tuple that takes up more
- * space than firstright, because a new heap TID attribute had to be added to
- * distinguish lastleft from firstright.  This should only happen when the
- * caller is in the process of splitting a leaf page that has many logical
- * duplicates, where it's unavoidable.
- *
  * Note that returned tuple's t_tid offset will hold the number of attributes
  * present, so the original item pointer offset is not represented.  Caller
  * should only change truncated tuple's downlink.  Note also that truncated
  * key attributes are treated as containing "minus infinity" values by
  * _bt_compare().
  *
- * In the worst case (when a heap TID is appended) the size of the returned
- * tuple is the size of the first right tuple plus an additional MAXALIGN()'d
- * item pointer.  This guarantee is important, since callers need to stay
- * under the 1/3 of a page restriction on tuple size.  If this routine is ever
- * taught to truncate within an attribute/datum, it will need to avoid
- * returning an enlarged tuple to caller when truncation + TOAST compression
- * ends up enlarging the final datum.
+ * In the worst case (when a heap TID must be appended to distinguish lastleft
+ * from firstright), the size of the returned tuple is the size of firstright
+ * plus the size of an additional MAXALIGN()'d item pointer.  This guarantee
+ * is important, since callers need to stay under the 1/3 of a page
+ * restriction on tuple size.  If this routine is ever taught to truncate
+ * within an attribute/datum, it will need to avoid returning an enlarged
+ * tuple to caller when truncation + TOAST compression ends up enlarging the
+ * final datum.
  */
 IndexTuple
 _bt_truncate(Relation rel, IndexTuple lastleft, IndexTuple firstright,
@@ -2321,9 +2303,7 @@ _bt_keep_natts(Relation rel, IndexTuple lastleft, IndexTuple firstright,
  * The approach taken here usually provides the same answer as _bt_keep_natts
  * will (for the same pair of tuples from a heapkeyspace index), since the
  * majority of btree opclasses can never indicate that two datums are equal
- * unless they're bitwise equal (once detoasted).  Similarly, result may
- * differ from the _bt_keep_natts result when either tuple has TOASTed datums,
- * though this is barely possible in practice.
+ * unless they're bitwise equal after detoasting.
  *
  * These issues must be acceptable to callers, typically because they're only
  * concerned about making suffix truncation as effective as possible without
@@ -2355,7 +2335,7 @@ _bt_keep_natts_fast(Relation rel, IndexTuple lastleft, IndexTuple firstright)
 			break;
 
 		if (!isNull1 &&
-			!datumIsEqual(datum1, datum2, att->attbyval, att->attlen))
+			!datum_image_eq(datum1, datum2, att->attbyval, att->attlen))
 			break;
 
 		keepnatts++;
@@ -2388,7 +2368,7 @@ _bt_check_natts(Relation rel, bool heapkeyspace, Page page, OffsetNumber offnum)
 	int			tupnatts;
 
 	/*
-	 * We cannot reliably test a deleted or half-deleted page, since they have
+	 * We cannot reliably test a deleted or half-dead page, since they have
 	 * dummy high keys
 	 */
 	if (P_IGNORE(opaque))

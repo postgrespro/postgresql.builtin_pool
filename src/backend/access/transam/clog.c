@@ -39,8 +39,8 @@
 #include "access/xloginsert.h"
 #include "access/xlogutils.h"
 #include "miscadmin.h"
-#include "pgstat.h"
 #include "pg_trace.h"
+#include "pgstat.h"
 #include "storage/proc.h"
 
 /*
@@ -92,7 +92,7 @@ static int	ZeroCLOGPage(int pageno, bool writeXlog);
 static bool CLOGPagePrecedes(int page1, int page2);
 static void WriteZeroPageXlogRec(int pageno);
 static void WriteTruncateXlogRec(int pageno, TransactionId oldestXact,
-								 Oid oldestXidDb);
+								 Oid oldestXactDb);
 static void TransactionIdSetPageStatus(TransactionId xid, int nsubxids,
 									   TransactionId *subxids, XidStatus status,
 									   XLogRecPtr lsn, int pageno,

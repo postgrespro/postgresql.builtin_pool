@@ -535,6 +535,7 @@ DropSubscriptionStmt
 DropTableSpaceStmt
 DropUserMappingStmt
 DropdbStmt
+DummyIndexOptions
 DumpComponents
 DumpId
 DumpOptions
@@ -1043,6 +1044,7 @@ IndexList
 IndexOnlyScan
 IndexOnlyScanState
 IndexOptInfo
+IndexOrderByDistance
 IndexPath
 IndexRuntimeKeyInfo
 IndexScan
@@ -2349,6 +2351,8 @@ TBlockState
 TIDBitmap
 TM_FailureData
 TM_Result
+ToastAttrInfo
+ToastTupleContext
 TOKEN_DEFAULT_DACL
 TOKEN_INFORMATION_CLASS
 TOKEN_PRIVILEGES

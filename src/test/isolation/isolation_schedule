@@ -17,6 +17,7 @@ test: partial-index
 test: two-ids
 test: multiple-row-versions
 test: index-only-scan
+test: predicate-lock-hot-tuple
 test: deadlock-simple
 test: deadlock-hard
 test: deadlock-soft
@@ -28,6 +29,7 @@ test: fk-deadlock2
 test: fk-partitioned-1
 test: fk-partitioned-2
 test: eval-plan-qual
+test: eval-plan-qual-trigger
 test: lock-update-delete
 test: lock-update-traversal
 test: inherit-temp

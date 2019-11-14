@@ -1366,6 +1366,16 @@ _equalCreateStatsStmt(const CreateStatsStmt *a, const CreateStatsStmt *b)
 }
 
 static bool
+_equalAlterStatsStmt(const AlterStatsStmt *a, const AlterStatsStmt *b)
+{
+	COMPARE_NODE_FIELD(defnames);
+	COMPARE_SCALAR_FIELD(stxstattarget);
+	COMPARE_SCALAR_FIELD(missing_ok);
+
+	return true;
+}
+
+static bool
 _equalCreateFunctionStmt(const CreateFunctionStmt *a, const CreateFunctionStmt *b)
 {
 	COMPARE_SCALAR_FIELD(is_procedure);
@@ -1666,6 +1676,7 @@ _equalDropdbStmt(const DropdbStmt *a, const DropdbStmt *b)
 {
 	COMPARE_STRING_FIELD(dbname);
 	COMPARE_SCALAR_FIELD(missing_ok);
+	COMPARE_NODE_FIELD(options);
 
 	return true;
 }
@@ -3308,6 +3319,9 @@ equal(const void *a, const void *b)
 			break;
 		case T_CreateStatsStmt:
 			retval = _equalCreateStatsStmt(a, b);
+			break;
+		case T_AlterStatsStmt:
+			retval = _equalAlterStatsStmt(a, b);
 			break;
 		case T_CreateFunctionStmt:
 			retval = _equalCreateFunctionStmt(a, b);

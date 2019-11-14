@@ -45,16 +45,12 @@
 #include <termios.h>
 #endif
 
-#include "getopt_long.h"
-
 #include "dumputils.h"
+#include "getopt_long.h"
 #include "parallel.h"
 #include "pg_backup_utils.h"
 
-
 static void usage(const char *progname);
-
-typedef struct option optType;
 
 int
 main(int argc, char **argv)

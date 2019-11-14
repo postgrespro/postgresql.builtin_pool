@@ -38,10 +38,10 @@
 #include "catalog/pg_authid.h"
 #include "commands/async.h"
 #include "commands/prepare.h"
+#include "commands/trigger.h"
 #include "commands/user.h"
 #include "commands/vacuum.h"
 #include "commands/variable.h"
-#include "commands/trigger.h"
 #include "common/string.h"
 #include "funcapi.h"
 #include "jit/jit.h"
@@ -72,18 +72,18 @@
 #include "replication/walsender.h"
 #include "storage/bufmgr.h"
 #include "storage/dsm_impl.h"
-#include "storage/standby.h"
 #include "storage/fd.h"
 #include "storage/large_object.h"
 #include "storage/pg_shmem.h"
-#include "storage/proc.h"
 #include "storage/predicate.h"
+#include "storage/proc.h"
+#include "storage/standby.h"
 #include "tcop/tcopprot.h"
 #include "tsearch/ts_cache.h"
 #include "utils/builtins.h"
 #include "utils/bytea.h"
-#include "utils/guc_tables.h"
 #include "utils/float.h"
+#include "utils/guc_tables.h"
 #include "utils/memutils.h"
 #include "utils/pg_locale.h"
 #include "utils/pg_lsn.h"
@@ -201,6 +201,8 @@ static bool check_cluster_name(char **newval, void **extra, GucSource source);
 static const char *show_unix_socket_permissions(void);
 static const char *show_log_file_mode(void);
 static const char *show_data_directory_mode(void);
+static bool check_backtrace_functions(char **newval, void **extra, GucSource source);
+static void assign_backtrace_functions(const char *newval, void *extra);
 static bool check_recovery_target_timeline(char **newval, void **extra, GucSource source);
 static void assign_recovery_target_timeline(const char *newval, void *extra);
 static bool check_recovery_target(char **newval, void **extra, GucSource source);
@@ -517,11 +519,14 @@ bool		session_auth_is_superuser;
 int			log_min_error_statement = ERROR;
 int			log_min_messages = WARNING;
 int			client_min_messages = NOTICE;
+int			log_min_duration_sample = -1;
 int			log_min_duration_statement = -1;
 int			log_temp_files = -1;
 double		log_statement_sample_rate = 1.0;
 double		log_xact_sample_rate = 0;
 int			trace_recovery_messages = LOG;
+char	   *backtrace_functions;
+char	   *backtrace_symbol_list;
 
 int			temp_file_limit = -1;
 
@@ -1051,7 +1056,7 @@ static struct config_bool ConfigureNamesBool[] =
 	},
 	{
 		{"enable_partition_pruning", PGC_USERSET, QUERY_TUNING_METHOD,
-			gettext_noop("Enable plan-time and run-time partition pruning."),
+			gettext_noop("Enables plan-time and run-time partition pruning."),
 			gettext_noop("Allows the query planner and executor to compare partition "
 						 "bounds to conditions in the query to determine which "
 						 "partitions must be scanned."),
@@ -2797,11 +2802,23 @@ static struct config_int ConfigureNamesInt[] =
 	},
 
 	{
+		{"log_min_duration_sample", PGC_SUSET, LOGGING_WHEN,
+			gettext_noop("Sets the minimum execution time above which "
+						 "a sample of statements will be logged."
+						 " Sampling is determined by log_statement_sample_rate."),
+			gettext_noop("Zero log a sample of all queries. -1 turns this feature off."),
+			GUC_UNIT_MS
+		},
+		&log_min_duration_sample,
+		-1, -1, INT_MAX,
+		NULL, NULL, NULL
+	},
+
+	{
 		{"log_min_duration_statement", PGC_SUSET, LOGGING_WHEN,
 			gettext_noop("Sets the minimum execution time above which "
-						 "statements will be logged."),
-			gettext_noop("Zero prints all queries, subject to log_statement_sample_rate. "
-						 "-1 turns this feature off."),
+						 "all statements will be logged."),
+			gettext_noop("Zero prints all queries. -1 turns this feature off."),
 			GUC_UNIT_MS
 		},
 		&log_min_duration_statement,
@@ -3529,9 +3546,8 @@ static struct config_real ConfigureNamesReal[] =
 
 	{
 		{"log_statement_sample_rate", PGC_SUSET, LOGGING_WHEN,
-			gettext_noop("Fraction of statements exceeding log_min_duration_statement to be logged."),
-			gettext_noop("If you only want a sample, use a value between 0.0 (never "
-						 "log) and 1.0 (always log).")
+			gettext_noop("Fraction of statements exceeding log_min_duration_sample to be logged."),
+			gettext_noop("Use a value between 0.0 (never log) and 1.0 (always log).")
 		},
 		&log_statement_sample_rate,
 		1.0, 0.0, 1.0,
@@ -3601,7 +3617,7 @@ static struct config_string ConfigureNamesString[] =
 
 	{
 		{"recovery_target_timeline", PGC_POSTMASTER, WAL_RECOVERY_TARGET,
-			gettext_noop("Specifies the timeline to recovery into."),
+			gettext_noop("Specifies the timeline to recover into."),
 			NULL
 		},
 		&recovery_target_timeline_string,
@@ -3611,7 +3627,7 @@ static struct config_string ConfigureNamesString[] =
 
 	{
 		{"recovery_target", PGC_POSTMASTER, WAL_RECOVERY_TARGET,
-			gettext_noop("Set to 'immediate' to end recovery as soon as a consistent state is reached."),
+			gettext_noop("Set to \"immediate\" to end recovery as soon as a consistent state is reached."),
 			NULL
 		},
 		&recovery_target_string,
@@ -4305,6 +4321,17 @@ static struct config_string ConfigureNamesString[] =
 		&jit_provider,
 		"llvmjit",
 		NULL, NULL, NULL
+	},
+
+	{
+		{"backtrace_functions", PGC_SUSET, DEVELOPER_OPTIONS,
+			gettext_noop("Log backtrace for errors in these functions."),
+			NULL,
+			GUC_NOT_IN_SAMPLE
+		},
+		&backtrace_functions,
+		"",
+		check_backtrace_functions, assign_backtrace_functions, NULL
 	},
 
 	/* End-of-list marker */
@@ -7955,40 +7982,37 @@ replace_auto_config_value(ConfigVariable **head_p, ConfigVariable **tail_p,
 						  const char *name, const char *value)
 {
 	ConfigVariable *item,
+			   *next,
 			   *prev = NULL;
 
-	/* Search the list for an existing match (we assume there's only one) */
-	for (item = *head_p; item != NULL; item = item->next)
+	/*
+	 * Remove any existing match(es) for "name".  Normally there'd be at most
+	 * one, but if external tools have modified the config file, there could
+	 * be more.
+	 */
+	for (item = *head_p; item != NULL; item = next)
 	{
-		if (strcmp(item->name, name) == 0)
+		next = item->next;
+		if (guc_name_compare(item->name, name) == 0)
 		{
-			/* found a match, replace it */
-			pfree(item->value);
-			if (value != NULL)
-			{
-				/* update the parameter value */
-				item->value = pstrdup(value);
-			}
+			/* found a match, delete it */
+			if (prev)
+				prev->next = next;
 			else
-			{
-				/* delete the configuration parameter from list */
-				if (*head_p == item)
-					*head_p = item->next;
-				else
-					prev->next = item->next;
-				if (*tail_p == item)
-					*tail_p = prev;
+				*head_p = next;
+			if (next == NULL)
+				*tail_p = prev;
 
-				pfree(item->name);
-				pfree(item->filename);
-				pfree(item);
-			}
-			return;
+			pfree(item->name);
+			pfree(item->value);
+			pfree(item->filename);
+			pfree(item);
 		}
-		prev = item;
+		else
+			prev = item;
 	}
 
-	/* Not there; no work if we're trying to delete it */
+	/* Done if we're trying to delete it */
 	if (value == NULL)
 		return;
 
@@ -10334,6 +10358,21 @@ read_gucstate_binary(char **srcptr, char *srcend, void *dest, Size size)
 }
 
 /*
+ * Callback used to add a context message when reporting errors that occur
+ * while trying to restore GUCs in parallel workers.
+ */
+static void
+guc_restore_error_context_callback(void *arg)
+{
+	char	  **error_context_name_and_value = (char **) arg;
+
+	if (error_context_name_and_value)
+		errcontext("while setting parameter \"%s\" to \"%s\"",
+				   error_context_name_and_value[0],
+				   error_context_name_and_value[1]);
+}
+
+/*
  * RestoreGUCState:
  * Reads the GUC state at the specified address and updates the GUCs with the
  * values read from the GUC state.
@@ -10351,6 +10390,7 @@ RestoreGUCState(void *gucstate)
 	char	   *srcend;
 	Size		len;
 	int			i;
+	ErrorContextCallback error_context_callback;
 
 	/* See comment at can_skip_gucvar(). */
 	for (i = 0; i < num_guc_variables; i++)
@@ -10363,9 +10403,16 @@ RestoreGUCState(void *gucstate)
 	srcptr += sizeof(len);
 	srcend = srcptr + len;
 
+	/* If the GUC value check fails, we want errors to show useful context. */
+	error_context_callback.callback = guc_restore_error_context_callback;
+	error_context_callback.previous = error_context_stack;
+	error_context_callback.arg = NULL;
+	error_context_stack = &error_context_callback;
+
 	while (srcptr < srcend)
 	{
 		int			result;
+		char	   *error_context_name_and_value[2];
 
 		varname = read_gucstate(&srcptr, srcend);
 		varvalue = read_gucstate(&srcptr, srcend);
@@ -10380,6 +10427,9 @@ RestoreGUCState(void *gucstate)
 		read_gucstate_binary(&srcptr, srcend,
 							 &varscontext, sizeof(varscontext));
 
+		error_context_name_and_value[0] = varname;
+		error_context_name_and_value[1] = varvalue;
+		error_context_callback.arg = &error_context_name_and_value[0];
 		result = set_config_option(varname, varvalue, varscontext, varsource,
 								   GUC_ACTION_SET, true, ERROR, true);
 		if (result <= 0)
@@ -10388,7 +10438,10 @@ RestoreGUCState(void *gucstate)
 					 errmsg("parameter \"%s\" could not be set", varname)));
 		if (varsourcefile[0])
 			set_config_sourcefile(varname, varsourcefile, varsourceline);
+		error_context_callback.arg = NULL;
 	}
+
+	error_context_stack = error_context_callback.previous;
 }
 
 /*
@@ -11555,6 +11608,76 @@ show_data_directory_mode(void)
 
 	snprintf(buf, sizeof(buf), "%04o", data_directory_mode);
 	return buf;
+}
+
+/*
+ * We split the input string, where commas separate function names
+ * and certain whitespace chars are ignored, into a \0-separated (and
+ * \0\0-terminated) list of function names.  This formulation allows
+ * easy scanning when an error is thrown while avoiding the use of
+ * non-reentrant strtok(), as well as keeping the output data in a
+ * single palloc() chunk.
+ */
+static bool
+check_backtrace_functions(char **newval, void **extra, GucSource source)
+{
+	int			newvallen = strlen(*newval);
+	char	   *someval;
+	int			validlen;
+	int			i;
+	int			j;
+
+	/*
+	 * Allow characters that can be C identifiers and commas as separators, as
+	 * well as some whitespace for readability.
+	 */
+	validlen = strspn(*newval,
+					  "0123456789_"
+					  "abcdefghijklmnopqrstuvwxyz"
+					  "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+					  ", \n\t");
+	if (validlen != newvallen)
+	{
+		GUC_check_errdetail("invalid character");
+		return false;
+	}
+
+	if (*newval[0] == '\0')
+	{
+		*extra = NULL;
+		return true;
+	}
+
+	/*
+	 * Allocate space for the output and create the copy.  We could discount
+	 * whitespace chars to save some memory, but it doesn't seem worth the
+	 * trouble.
+	 */
+	someval = guc_malloc(ERROR, newvallen + 1 + 1);
+	for (i = 0, j = 0; i < newvallen; i++)
+	{
+		if ((*newval)[i] == ',')
+			someval[j++] = '\0';	/* next item */
+		else if ((*newval)[i] == ' ' ||
+				 (*newval)[i] == '\n' ||
+				 (*newval)[i] == '\t')
+			;	/* ignore these */
+		else
+			someval[j++] = (*newval)[i];	/* copy anything else */
+	}
+
+	/* two \0s end the setting */
+	someval[j] = '\0';
+	someval[j + 1] = '\0';
+
+	*extra = someval;
+	return true;
+}
+
+static void
+assign_backtrace_functions(const char *newval, void *extra)
+{
+	backtrace_symbol_list = (char *) extra;
 }
 
 static bool

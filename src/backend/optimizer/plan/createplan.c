@@ -559,8 +559,8 @@ create_scan_plan(PlannerInfo *root, Path *best_path, int flags)
 	 * For paranoia's sake, don't modify the stored baserestrictinfo list.
 	 */
 	if (best_path->param_info)
-		scan_clauses = list_concat(list_copy(scan_clauses),
-								   best_path->param_info->ppi_clauses);
+		scan_clauses = list_concat_copy(scan_clauses,
+										best_path->param_info->ppi_clauses);
 
 	/*
 	 * Detect whether we have any pseudoconstant quals to deal with.  Then, if
@@ -2397,10 +2397,13 @@ create_windowagg_plan(PlannerInfo *root, WindowAggPath *best_path)
 	ListCell   *lc;
 
 	/*
-	 * WindowAgg can project, so no need to be terribly picky about child
-	 * tlist, but we do need grouping columns to be available
+	 * Choice of tlist here is motivated by the fact that WindowAgg will be
+	 * storing the input rows of window frames in a tuplestore; it therefore
+	 * behooves us to request a small tlist to avoid wasting space. We do of
+	 * course need grouping columns to be available.
 	 */
-	subplan = create_plan_recurse(root, best_path->subpath, CP_LABEL_TLIST);
+	subplan = create_plan_recurse(root, best_path->subpath,
+								  CP_LABEL_TLIST | CP_SMALL_TLIST);
 
 	tlist = build_path_tlist(root, &best_path->path);
 

@@ -170,7 +170,7 @@ struct pg_result
 	int			ntups;
 	int			numAttributes;
 	PGresAttDesc *attDescs;
-	PGresAttValue **tuples;		/* each PGresTuple is an array of
+	PGresAttValue **tuples;		/* each PGresult tuple is an array of
 								 * PGresAttValue's */
 	int			tupArrSize;		/* allocated size of tuples array */
 	int			numParameters;
@@ -233,7 +233,8 @@ typedef enum
 	PGQUERY_DESCRIBE			/* Describe Statement or Portal */
 } PGQueryClass;
 
-/* PGSetenvStatusType defines the state of the PQSetenv state machine */
+/* PGSetenvStatusType defines the state of the pqSetenv state machine */
+
 /* (this is used only for 2.0-protocol connections) */
 typedef enum
 {
@@ -347,6 +348,8 @@ struct pg_conn
 	char	   *pguser;			/* Postgres username and password, if any */
 	char	   *pgpass;
 	char	   *pgpassfile;		/* path to a file containing password(s) */
+	char	   *channel_binding;	/* channel binding mode
+									 * (require,prefer,disable) */
 	char	   *keepalives;		/* use TCP keepalives? */
 	char	   *keepalives_idle;	/* time between TCP keepalives */
 	char	   *keepalives_interval;	/* time between TCP keepalive

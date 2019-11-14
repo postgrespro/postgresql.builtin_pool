@@ -1089,6 +1089,8 @@ UpdateWorkerStats(XLogRecPtr last_lsn, TimestampTz send_time, bool reply)
 static void
 LogicalRepApplyLoop(XLogRecPtr last_received)
 {
+	TimestampTz last_recv_timestamp = GetCurrentTimestamp();
+
 	/*
 	 * Init the ApplyMessageContext which we clean up after each replication
 	 * protocol message.
@@ -1107,7 +1109,6 @@ LogicalRepApplyLoop(XLogRecPtr last_received)
 		int			len;
 		char	   *buf = NULL;
 		bool		endofstream = false;
-		TimestampTz last_recv_timestamp = GetCurrentTimestamp();
 		bool		ping_sent = false;
 		long		wait_time;
 
@@ -1658,7 +1659,7 @@ ApplyWorkerMain(Datum main_arg)
 	{
 		char	   *syncslotname;
 
-		/* This is table synchroniation worker, call initial sync. */
+		/* This is table synchronization worker, call initial sync. */
 		syncslotname = LogicalRepSyncTableStart(&origin_startpos);
 
 		/* The slot name needs to be allocated in permanent memory context. */

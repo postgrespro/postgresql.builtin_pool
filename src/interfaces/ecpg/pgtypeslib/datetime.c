@@ -6,10 +6,10 @@
 #include <ctype.h>
 #include <limits.h>
 
-#include "pgtypeslib_extern.h"
 #include "dt.h"
-#include "pgtypes_error.h"
 #include "pgtypes_date.h"
+#include "pgtypes_error.h"
+#include "pgtypeslib_extern.h"
 
 date *
 PGTYPESdate_new(void)
@@ -623,7 +623,7 @@ PGTYPESdate_defmt_asc(date * d, const char *fmt, const char *str)
 
 			/*
 			 * evil[tm] hack: if we read the pgtypes_date_months and haven't
-			 * found a match, reset list to point to pgtypes_date_months_short
+			 * found a match, reset list to point to months (abbreviations)
 			 * and reset the counter variable i
 			 */
 			if (list == pgtypes_date_months)

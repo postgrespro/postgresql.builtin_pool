@@ -814,7 +814,7 @@ _bt_bestsplitloc(FindSplitData *state, int perfectpenalty,
 		final->firstoldonright < state->newitemoff + MAX_LEAF_INTERVAL)
 	{
 		/*
-		 * Avoid the problem by peforming a 50:50 split when the new item is
+		 * Avoid the problem by performing a 50:50 split when the new item is
 		 * just to the right of the would-be "many duplicates" split point.
 		 */
 		final = &state->splits[0];
@@ -1060,7 +1060,7 @@ _bt_split_penalty(FindSplitData *state, SplitPoint *split)
 }
 
 /*
- * Subroutine to get a lastleft IndexTuple for a spit point from page
+ * Subroutine to get a lastleft IndexTuple for a split point from page
  */
 static inline IndexTuple
 _bt_split_lastleft(FindSplitData *state, SplitPoint *split)
@@ -1076,7 +1076,7 @@ _bt_split_lastleft(FindSplitData *state, SplitPoint *split)
 }
 
 /*
- * Subroutine to get a firstright IndexTuple for a spit point from page
+ * Subroutine to get a firstright IndexTuple for a split point from page
  */
 static inline IndexTuple
 _bt_split_firstright(FindSplitData *state, SplitPoint *split)

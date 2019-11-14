@@ -18,14 +18,13 @@
 #include "access/gistscan.h"
 #include "catalog/pg_collation.h"
 #include "miscadmin.h"
+#include "nodes/execnodes.h"
 #include "storage/lmgr.h"
 #include "storage/predicate.h"
-#include "nodes/execnodes.h"
 #include "utils/builtins.h"
 #include "utils/index_selfuncs.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
-
 
 /* non-export function prototypes */
 static void gistfixsplit(GISTInsertState *state, GISTSTATE *giststate);
@@ -37,7 +36,7 @@ static bool gistinserttuples(GISTInsertState *state, GISTInsertStack *stack,
 							 Buffer leftchild, Buffer rightchild,
 							 bool unlockbuf, bool unlockleftchild);
 static void gistfinishsplit(GISTInsertState *state, GISTInsertStack *stack,
-							GISTSTATE *giststate, List *splitinfo, bool releasebuf);
+							GISTSTATE *giststate, List *splitinfo, bool unlockbuf);
 static void gistprunepage(Relation rel, Page page, Buffer buffer,
 						  Relation heapRel);
 
@@ -1047,7 +1046,7 @@ gistFindCorrectParent(Relation r, GISTInsertStack *child)
 			{
 				/*
 				 * End of chain and still didn't find parent. It's a very-very
-				 * rare situation when root splited.
+				 * rare situation when root splitted.
 				 */
 				break;
 			}

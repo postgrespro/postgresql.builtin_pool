@@ -47,8 +47,8 @@
 #include "catalog/pg_am.h"
 #include "catalog/pg_amproc.h"
 #include "catalog/pg_attrdef.h"
-#include "catalog/pg_authid.h"
 #include "catalog/pg_auth_members.h"
+#include "catalog/pg_authid.h"
 #include "catalog/pg_constraint.h"
 #include "catalog/pg_database.h"
 #include "catalog/pg_namespace.h"
@@ -89,7 +89,6 @@
 #include "utils/resowner_private.h"
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
-
 
 #define RELCACHE_INIT_FILEMAGIC		0x573266	/* version ID value */
 
@@ -5911,48 +5910,6 @@ RelationIdIsInInitFile(Oid relationId)
 		return true;
 	}
 	return RelationSupportsSysCache(relationId);
-}
-
-/*
- * Tells whether any index for the relation is unlogged.
- *
- * Note: There doesn't seem to be any way to have an unlogged index attached
- * to a permanent table, but it seems best to keep this general so that it
- * returns sensible results even when they seem obvious (like for an unlogged
- * table) and to handle possible future unlogged indexes on permanent tables.
- */
-bool
-RelationHasUnloggedIndex(Relation rel)
-{
-	List	   *indexoidlist;
-	ListCell   *indexoidscan;
-	bool		result = false;
-
-	indexoidlist = RelationGetIndexList(rel);
-
-	foreach(indexoidscan, indexoidlist)
-	{
-		Oid			indexoid = lfirst_oid(indexoidscan);
-		HeapTuple	tp;
-		Form_pg_class reltup;
-
-		tp = SearchSysCache1(RELOID, ObjectIdGetDatum(indexoid));
-		if (!HeapTupleIsValid(tp))
-			elog(ERROR, "cache lookup failed for relation %u", indexoid);
-		reltup = (Form_pg_class) GETSTRUCT(tp);
-
-		if (reltup->relpersistence == RELPERSISTENCE_UNLOGGED)
-			result = true;
-
-		ReleaseSysCache(tp);
-
-		if (result == true)
-			break;
-	}
-
-	list_free(indexoidlist);
-
-	return result;
 }
 
 /*

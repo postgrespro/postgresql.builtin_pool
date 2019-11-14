@@ -18,6 +18,7 @@
 #include "postgres.h"
 
 #include "nodes/pg_list.h"
+#include "utils/memdebug.h"
 #include "utils/memutils.h"
 
 
@@ -172,8 +173,6 @@ enlarge_list(List *list, int min_size)
 
 	if (list->elements == list->initial_elements)
 	{
-		List	   *newlist PG_USED_FOR_ASSERTS_ONLY;
-
 		/*
 		 * Replace original in-line allocation with a separate palloc block.
 		 * Ensure it is in the same memory context as the List header.  (The
@@ -188,16 +187,18 @@ enlarge_list(List *list, int min_size)
 			   list->length * sizeof(ListCell));
 
 		/*
-		 * Currently, asking aset.c to reduce the allocated size of the List
-		 * header is pointless in terms of reclaiming space, unless the list
-		 * is very long.  However, it seems worth doing anyway to cause the
-		 * no-longer-needed initial_elements[] space to be cleared in
-		 * debugging builds.
+		 * We must not move the list header, so it's unsafe to try to reclaim
+		 * the initial_elements[] space via repalloc.  In debugging builds,
+		 * however, we can clear that space and/or mark it inaccessible.
+		 * (wipe_mem includes VALGRIND_MAKE_MEM_NOACCESS.)
 		 */
-		newlist = (List *) repalloc(list, offsetof(List, initial_elements));
-
-		/* That better not have failed, nor moved the list header */
-		Assert(newlist == list);
+#ifdef CLOBBER_FREED_MEMORY
+		wipe_mem(list->initial_elements,
+				 list->max_length * sizeof(ListCell));
+#else
+		VALGRIND_MAKE_MEM_NOACCESS(list->initial_elements,
+								   list->max_length * sizeof(ListCell));
+#endif
 	}
 	else
 	{
@@ -501,12 +502,15 @@ lcons_oid(Oid datum, List *list)
 }
 
 /*
- * Concatenate list2 to the end of list1, and return list1. list1 is
- * destructively changed, list2 is not. (However, in the case of pointer
- * lists, list1 and list2 will point to the same structures.) Callers
- * should be sure to use the return value as the new pointer to the
- * concatenated list: the 'list1' input pointer may or may not be the
- * same as the returned pointer.
+ * Concatenate list2 to the end of list1, and return list1.
+ *
+ * This is equivalent to lappend'ing each element of list2, in order, to list1.
+ * list1 is destructively changed, list2 is not.  (However, in the case of
+ * pointer lists, list1 and list2 will point to the same structures.)
+ *
+ * Callers should be sure to use the return value as the new pointer to the
+ * concatenated list: the 'list1' input pointer may or may not be the same
+ * as the returned pointer.
  */
 List *
 list_concat(List *list1, const List *list2)
@@ -532,6 +536,41 @@ list_concat(List *list1, const List *list2)
 
 	check_list_invariants(list1);
 	return list1;
+}
+
+/*
+ * Form a new list by concatenating the elements of list1 and list2.
+ *
+ * Neither input list is modified.  (However, if they are pointer lists,
+ * the output list will point to the same structures.)
+ *
+ * This is equivalent to, but more efficient than,
+ * list_concat(list_copy(list1), list2).
+ * Note that some pre-v13 code might list_copy list2 as well, but that's
+ * pointless now.
+ */
+List *
+list_concat_copy(const List *list1, const List *list2)
+{
+	List	   *result;
+	int			new_len;
+
+	if (list1 == NIL)
+		return list_copy(list2);
+	if (list2 == NIL)
+		return list_copy(list1);
+
+	Assert(list1->type == list2->type);
+
+	new_len = list1->length + list2->length;
+	result = new_list(list1->type, new_len);
+	memcpy(result->elements, list1->elements,
+		   list1->length * sizeof(ListCell));
+	memcpy(result->elements + list1->length, list2->elements,
+		   list2->length * sizeof(ListCell));
+
+	check_list_invariants(result);
+	return result;
 }
 
 /*
@@ -698,13 +737,16 @@ list_delete_nth_cell(List *list, int n)
 		else
 		{
 			/*
-			 * As in enlarge_list(), tell palloc code we're not using the
-			 * initial_elements space anymore.
+			 * As in enlarge_list(), clear the initial_elements[] space and/or
+			 * mark it inaccessible.
 			 */
-			List	   *newlist PG_USED_FOR_ASSERTS_ONLY;
-
-			newlist = (List *) repalloc(list, offsetof(List, initial_elements));
-			Assert(newlist == list);
+#ifdef CLOBBER_FREED_MEMORY
+			wipe_mem(list->initial_elements,
+					 list->max_length * sizeof(ListCell));
+#else
+			VALGRIND_MAKE_MEM_NOACCESS(list->initial_elements,
+									   list->max_length * sizeof(ListCell));
+#endif
 		}
 		list->elements = newelems;
 		list->max_length = newmaxlen;

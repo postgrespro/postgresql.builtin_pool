@@ -43,11 +43,11 @@
 #include "catalog/pg_am.h"
 #include "catalog/pg_collation.h"
 #include "catalog/pg_constraint.h"
-#include "catalog/pg_description.h"
 #include "catalog/pg_depend.h"
+#include "catalog/pg_description.h"
 #include "catalog/pg_inherits.h"
-#include "catalog/pg_operator.h"
 #include "catalog/pg_opclass.h"
+#include "catalog/pg_operator.h"
 #include "catalog/pg_tablespace.h"
 #include "catalog/pg_trigger.h"
 #include "catalog/pg_type.h"
@@ -76,10 +76,9 @@
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/pg_rusage.h"
+#include "utils/snapmgr.h"
 #include "utils/syscache.h"
 #include "utils/tuplesort.h"
-#include "utils/snapmgr.h"
-
 
 /* Potentially set by pg_upgrade_support functions */
 Oid			binary_upgrade_next_index_pg_class_oid = InvalidOid;
@@ -763,6 +762,51 @@ index_create(Relation heapRelation,
 				 errmsg("user-defined indexes on system catalog tables are not supported")));
 
 	/*
+	 * Btree text_pattern_ops uses text_eq as the equality operator, which is
+	 * fine as long as the collation is deterministic; text_eq then reduces to
+	 * bitwise equality and so it is semantically compatible with the other
+	 * operators and functions in that opclass.  But with a nondeterministic
+	 * collation, text_eq could yield results that are incompatible with the
+	 * actual behavior of the index (which is determined by the opclass's
+	 * comparison function).  We prevent such problems by refusing creation of
+	 * an index with that opclass and a nondeterministic collation.
+	 *
+	 * The same applies to varchar_pattern_ops and bpchar_pattern_ops.  If we
+	 * find more cases, we might decide to create a real mechanism for marking
+	 * opclasses as incompatible with nondeterminism; but for now, this small
+	 * hack suffices.
+	 *
+	 * Another solution is to use a special operator, not text_eq, as the
+	 * equality opclass member; but that is undesirable because it would
+	 * prevent index usage in many queries that work fine today.
+	 */
+	for (i = 0; i < indexInfo->ii_NumIndexKeyAttrs; i++)
+	{
+		Oid			collation = collationObjectId[i];
+		Oid			opclass = classObjectId[i];
+
+		if (collation)
+		{
+			if ((opclass == TEXT_BTREE_PATTERN_OPS_OID ||
+				 opclass == VARCHAR_BTREE_PATTERN_OPS_OID ||
+				 opclass == BPCHAR_BTREE_PATTERN_OPS_OID) &&
+				!get_collation_isdeterministic(collation))
+			{
+				HeapTuple	classtup;
+
+				classtup = SearchSysCache1(CLAOID, ObjectIdGetDatum(opclass));
+				if (!HeapTupleIsValid(classtup))
+					elog(ERROR, "cache lookup failed for operator class %u", opclass);
+				ereport(ERROR,
+						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+						 errmsg("nondeterministic collations are not supported for operator class \"%s\"",
+								NameStr(((Form_pg_opclass) GETSTRUCT(classtup))->opcname))));
+				ReleaseSysCache(classtup);
+			}
+		}
+	}
+
+	/*
 	 * Concurrent index build on a system catalog is unsafe because we tend to
 	 * release locks before committing in catalogs.
 	 */
@@ -1417,6 +1461,7 @@ index_concurrently_swap(Oid newIndexId, Oid oldIndexId, const char *oldName)
 				newIndexTuple;
 	Form_pg_index oldIndexForm,
 				newIndexForm;
+	bool		isPartition;
 	Oid			indexConstraintOid;
 	List	   *constraintOids = NIL;
 	ListCell   *lc;
@@ -1446,8 +1491,10 @@ index_concurrently_swap(Oid newIndexId, Oid oldIndexId, const char *oldName)
 	namestrcpy(&newClassForm->relname, NameStr(oldClassForm->relname));
 	namestrcpy(&oldClassForm->relname, oldName);
 
-	/* Copy partition flag to track inheritance properly */
+	/* Swap the partition flags to track inheritance properly */
+	isPartition = newClassForm->relispartition;
 	newClassForm->relispartition = oldClassForm->relispartition;
+	oldClassForm->relispartition = isPartition;
 
 	CatalogTupleUpdate(pg_class, &oldClassTuple->t_self, oldClassTuple);
 	CatalogTupleUpdate(pg_class, &newClassTuple->t_self, newClassTuple);
@@ -1623,8 +1670,12 @@ index_concurrently_swap(Oid newIndexId, Oid oldIndexId, const char *oldName)
 	}
 
 	/*
-	 * Move all dependencies of and on the old index to the new one
+	 * Move all dependencies of and on the old index to the new one.  First
+	 * remove any dependencies that the new index may have to provide an
+	 * initial clean state for the dependency switch, and then move all the
+	 * dependencies from the old index to the new one.
 	 */
+	deleteDependencyRecordsFor(RelationRelationId, newIndexId, false);
 	changeDependenciesOf(RelationRelationId, oldIndexId, newIndexId);
 	changeDependenciesOn(RelationRelationId, oldIndexId, newIndexId);
 
@@ -2097,6 +2148,10 @@ index_drop(Oid indexId, bool concurrent, bool concurrent_lock_mode)
 		 * possible if one of the transactions in question is blocked trying
 		 * to acquire an exclusive lock on our table.  The lock code will
 		 * detect deadlock and error out properly.
+		 *
+		 * Note: we report progress through WaitForLockers() unconditionally
+		 * here, even though it will only be used when we're called by REINDEX
+		 * CONCURRENTLY and not when called by DROP INDEX CONCURRENTLY.
 		 */
 		WaitForLockers(heaplocktag, AccessExclusiveLock, true);
 
@@ -2112,7 +2167,7 @@ index_drop(Oid indexId, bool concurrent, bool concurrent_lock_mode)
 
 		/*
 		 * Wait till every transaction that saw the old index state has
-		 * finished.
+		 * finished.  See above about progress reporting.
 		 */
 		WaitForLockers(heaplocktag, AccessExclusiveLock, true);
 
@@ -2229,7 +2284,7 @@ index_drop(Oid indexId, bool concurrent, bool concurrent_lock_mode)
 IndexInfo *
 BuildIndexInfo(Relation index)
 {
-	IndexInfo  *ii = makeNode(IndexInfo);
+	IndexInfo  *ii;
 	Form_pg_index indexStruct = index->rd_index;
 	int			i;
 	int			numAtts;
@@ -2239,21 +2294,23 @@ BuildIndexInfo(Relation index)
 	if (numAtts < 1 || numAtts > INDEX_MAX_KEYS)
 		elog(ERROR, "invalid indnatts %d for index %u",
 			 numAtts, RelationGetRelid(index));
-	ii->ii_NumIndexAttrs = numAtts;
-	ii->ii_NumIndexKeyAttrs = indexStruct->indnkeyatts;
-	Assert(ii->ii_NumIndexKeyAttrs != 0);
-	Assert(ii->ii_NumIndexKeyAttrs <= ii->ii_NumIndexAttrs);
 
+	/*
+	 * Create the node, fetching any expressions needed for expressional
+	 * indexes and index predicate if any.
+	 */
+	ii = makeIndexInfo(indexStruct->indnatts,
+					   indexStruct->indnkeyatts,
+					   index->rd_rel->relam,
+					   RelationGetIndexExpressions(index),
+					   RelationGetIndexPredicate(index),
+					   indexStruct->indisunique,
+					   indexStruct->indisready,
+					   false);
+
+	/* fill in attribute numbers */
 	for (i = 0; i < numAtts; i++)
 		ii->ii_IndexAttrNumbers[i] = indexStruct->indkey.values[i];
-
-	/* fetch any expressions needed for expressional indexes */
-	ii->ii_Expressions = RelationGetIndexExpressions(index);
-	ii->ii_ExpressionsState = NIL;
-
-	/* fetch index predicate if any */
-	ii->ii_Predicate = RelationGetIndexPredicate(index);
-	ii->ii_PredicateState = NULL;
 
 	/* fetch exclusion constraint info if any */
 	if (indexStruct->indisexclusion)
@@ -2263,30 +2320,6 @@ BuildIndexInfo(Relation index)
 								 &ii->ii_ExclusionProcs,
 								 &ii->ii_ExclusionStrats);
 	}
-	else
-	{
-		ii->ii_ExclusionOps = NULL;
-		ii->ii_ExclusionProcs = NULL;
-		ii->ii_ExclusionStrats = NULL;
-	}
-
-	/* other info */
-	ii->ii_Unique = indexStruct->indisunique;
-	ii->ii_ReadyForInserts = indexStruct->indisready;
-	/* assume not doing speculative insertion for now */
-	ii->ii_UniqueOps = NULL;
-	ii->ii_UniqueProcs = NULL;
-	ii->ii_UniqueStrats = NULL;
-
-	/* initialize index-build state to default */
-	ii->ii_Concurrent = false;
-	ii->ii_BrokenHotChain = false;
-	ii->ii_ParallelWorkers = 0;
-
-	/* set up for possible use by index AM */
-	ii->ii_Am = index->rd_rel->relam;
-	ii->ii_AmCache = NULL;
-	ii->ii_Context = CurrentMemoryContext;
 
 	return ii;
 }
@@ -3328,6 +3361,7 @@ reindex_index(Oid indexId, bool skip_constraint_checks, char persistence,
 	IndexInfo  *indexInfo;
 	volatile bool skipped_constraint = false;
 	PGRUsage	ru0;
+	bool		progress = (options & REINDEXOPT_REPORT_PROGRESS) != 0;
 
 	pg_rusage_init(&ru0);
 
@@ -3338,12 +3372,15 @@ reindex_index(Oid indexId, bool skip_constraint_checks, char persistence,
 	heapId = IndexGetRelation(indexId, false);
 	heapRelation = table_open(heapId, ShareLock);
 
-	pgstat_progress_start_command(PROGRESS_COMMAND_CREATE_INDEX,
-								  heapId);
-	pgstat_progress_update_param(PROGRESS_CREATEIDX_COMMAND,
-								 PROGRESS_CREATEIDX_COMMAND_REINDEX);
-	pgstat_progress_update_param(PROGRESS_CREATEIDX_INDEX_OID,
-								 indexId);
+	if (progress)
+	{
+		pgstat_progress_start_command(PROGRESS_COMMAND_CREATE_INDEX,
+									  heapId);
+		pgstat_progress_update_param(PROGRESS_CREATEIDX_COMMAND,
+									 PROGRESS_CREATEIDX_COMMAND_REINDEX);
+		pgstat_progress_update_param(PROGRESS_CREATEIDX_INDEX_OID,
+									 indexId);
+	}
 
 	/*
 	 * Open the target index relation and get an exclusive lock on it, to
@@ -3351,8 +3388,9 @@ reindex_index(Oid indexId, bool skip_constraint_checks, char persistence,
 	 */
 	iRel = index_open(indexId, AccessExclusiveLock);
 
-	pgstat_progress_update_param(PROGRESS_CREATEIDX_ACCESS_METHOD_OID,
-								 iRel->rd_rel->relam);
+	if (progress)
+		pgstat_progress_update_param(PROGRESS_CREATEIDX_ACCESS_METHOD_OID,
+									 iRel->rd_rel->relam);
 
 	/*
 	 * The case of reindexing partitioned tables and indexes is handled
@@ -3410,14 +3448,12 @@ reindex_index(Oid indexId, bool skip_constraint_checks, char persistence,
 		/* Note: we do not need to re-establish pkey setting */
 		index_build(heapRelation, iRel, indexInfo, true, true);
 	}
-	PG_CATCH();
+	PG_FINALLY();
 	{
 		/* Make sure flag gets cleared on error exit */
 		ResetReindexProcessing();
-		PG_RE_THROW();
 	}
 	PG_END_TRY();
-	ResetReindexProcessing();
 
 	/*
 	 * If the index is marked invalid/not-ready/dead (ie, it's from a failed
@@ -3505,7 +3541,8 @@ reindex_index(Oid indexId, bool skip_constraint_checks, char persistence,
 				 errdetail_internal("%s",
 									pg_rusage_show(&ru0))));
 
-	pgstat_progress_end_command();
+	if (progress)
+		pgstat_progress_end_command();
 
 	/* Close rels, but keep locks */
 	index_close(iRel, NoLock);
@@ -3636,14 +3673,12 @@ reindex_relation(Oid relid, int flags, int options)
 			i++;
 		}
 	}
-	PG_CATCH();
+	PG_FINALLY();
 	{
 		/* Make sure list gets cleared on error exit */
 		ResetReindexPending();
-		PG_RE_THROW();
 	}
 	PG_END_TRY();
-	ResetReindexPending();
 
 	/*
 	 * Close rel, but continue to hold the lock.

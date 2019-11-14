@@ -132,7 +132,8 @@ sub AddLibrary
 {
 	my ($self, $lib, $dbgsuffix) = @_;
 
-	if ($lib =~ m/\s/)
+	# quote lib name if it has spaces and isn't already quoted
+	if ($lib =~ m/\s/ && $lib !~ m/^[&]quot;/)
 	{
 		$lib = '&quot;' . $lib . "&quot;";
 	}
@@ -230,8 +231,7 @@ sub AddDir
 				if ($filter eq "LIBOBJS")
 				{
 					no warnings qw(once);
-					if (grep(/$p/, @main::pgportfiles, @main::pgcommonfiles)
-						== 1)
+					if (grep(/$p/, @main::pgportfiles) == 1)
 					{
 						$p =~ s/\.c/\.o/;
 						$matches .= $p . " ";

@@ -14,8 +14,8 @@
  */
 #include "postgres.h"
 
-#include "catalog/pg_type.h"
 #include "catalog/pg_class.h"
+#include "catalog/pg_type.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
 #include "optimizer/clauses.h"
@@ -33,7 +33,6 @@
 #include "parser/analyze.h"
 #include "rewrite/rewriteManip.h"
 #include "utils/lsyscache.h"
-
 
 /* These parameters are set by GUC */
 int			from_collapse_limit;
@@ -973,7 +972,6 @@ deconstruct_recurse(PlannerInfo *root, Node *jtnode, bool below_outer_join,
 				*postponed_qual_list = lappend(*postponed_qual_list, pq);
 			}
 		}
-		/* list_concat is nondestructive of its second argument */
 		my_quals = list_concat(my_quals, (List *) j->quals);
 
 		/*

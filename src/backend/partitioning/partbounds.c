@@ -36,8 +36,8 @@
 #include "utils/lsyscache.h"
 #include "utils/partcache.h"
 #include "utils/rel.h"
-#include "utils/snapmgr.h"
 #include "utils/ruleutils.h"
+#include "utils/snapmgr.h"
 #include "utils/syscache.h"
 
 /*
@@ -360,9 +360,8 @@ create_list_bounds(PartitionBoundSpec **boundspecs, int nparts,
 			else
 			{
 				/*
-				 * Never put a null into the values array, flag instead for
-				 * the code further down below where we construct the actual
-				 * relcache struct.
+				 * Never put a null into the values array; save the index of
+				 * the partition that stores nulls, instead.
 				 */
 				if (null_index != -1)
 					elog(ERROR, "found null more than once");
@@ -453,7 +452,7 @@ create_list_bounds(PartitionBoundSpec **boundspecs, int nparts,
 		boundinfo->default_index = (*mapping)[default_index];
 	}
 
-	/* All partition must now have been assigned canonical indexes. */
+	/* All partitions must now have been assigned canonical indexes. */
 	Assert(next_index == nparts);
 	return boundinfo;
 }
@@ -651,7 +650,7 @@ create_range_bounds(PartitionBoundSpec **boundspecs, int nparts,
 	Assert(i == ndatums);
 	boundinfo->indexes[i] = -1;
 
-	/* All partition must now have been assigned canonical indexes. */
+	/* All partitions must now have been assigned canonical indexes. */
 	Assert(next_index == nparts);
 	return boundinfo;
 }
@@ -1253,7 +1252,7 @@ check_default_partition_contents(Relation parent, Relation default_rel,
 	 */
 	if (PartConstraintImpliedByRelConstraint(default_rel, def_part_constraints))
 	{
-		ereport(INFO,
+		ereport(DEBUG1,
 				(errmsg("updated partition constraint for default partition \"%s\" is implied by existing constraints",
 						RelationGetRelationName(default_rel))));
 		return;
@@ -1304,7 +1303,7 @@ check_default_partition_contents(Relation parent, Relation default_rel,
 			if (PartConstraintImpliedByRelConstraint(part_rel,
 													 def_part_constraints))
 			{
-				ereport(INFO,
+				ereport(DEBUG1,
 						(errmsg("updated partition constraint for default partition \"%s\" is implied by existing constraints",
 								RelationGetRelationName(part_rel))));
 
@@ -1514,7 +1513,7 @@ partition_rbound_cmp(int partnatts, FmgrInfo *partsupfunc,
 /*
  * partition_rbound_datum_cmp
  *
- * Return whether range bound (specified in rb_datums, rb_kind, and rb_lower)
+ * Return whether range bound (specified in rb_datums and rb_kind)
  * is <, =, or > partition key of tuple (tuple_datums)
  *
  * n_tuple_datums, partsupfunc and partcollation give number of attributes in

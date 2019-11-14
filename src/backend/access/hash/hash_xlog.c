@@ -17,11 +17,11 @@
 #include "access/bufmask.h"
 #include "access/hash.h"
 #include "access/hash_xlog.h"
-#include "access/xlogutils.h"
-#include "access/xlog.h"
 #include "access/transam.h"
-#include "storage/procarray.h"
+#include "access/xlog.h"
+#include "access/xlogutils.h"
 #include "miscadmin.h"
+#include "storage/procarray.h"
 
 /*
  * replay a hash index meta page
@@ -706,7 +706,7 @@ hash_xlog_squeeze_page(XLogReaderState *record)
 
 		/*
 		 * if the page on which are adding tuples is a page previous to freed
-		 * overflow page, then update its nextblno.
+		 * overflow page, then update its nextblkno.
 		 */
 		if (xldata->is_prev_bucket_same_wrt)
 		{

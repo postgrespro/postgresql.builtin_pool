@@ -6,11 +6,10 @@
 #include "access/htup_details.h"
 #include "catalog/pg_type.h"
 #include "funcapi.h"
+#include "hstore.h"
 #include "utils/builtins.h"
 #include "utils/hashutils.h"
 #include "utils/memutils.h"
-
-#include "hstore.h"
 
 /* old names for C functions */
 HSTORE_POLLUTE(hstore_fetchval, fetchval);
@@ -682,8 +681,8 @@ hstore_slice_to_hstore(PG_FUNCTION_ARGS)
 	}
 
 	/*
-	 * we don't use uniquePairs here because we know that the pairs list is
-	 * already sorted and uniq'ed.
+	 * we don't use hstoreUniquePairs here because we know that the pairs list
+	 * is already sorted and uniq'ed.
 	 */
 
 	out = hstorePairs(out_pairs, out_count, bufsiz);

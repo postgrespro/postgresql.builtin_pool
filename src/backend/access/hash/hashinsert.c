@@ -18,10 +18,10 @@
 #include "access/hash.h"
 #include "access/hash_xlog.h"
 #include "miscadmin.h"
-#include "utils/rel.h"
-#include "storage/lwlock.h"
 #include "storage/buf_internals.h"
+#include "storage/lwlock.h"
 #include "storage/predicate.h"
+#include "utils/rel.h"
 
 static void _hash_vacuum_one_page(Relation rel, Relation hrel,
 								  Buffer metabuf, Buffer buf);
@@ -257,8 +257,8 @@ restart_insert:
  *	_hash_pgaddtup() -- add a tuple to a particular page in the index.
  *
  * This routine adds the tuple to the page as requested; it does not write out
- * the page.  It is an error to call pgaddtup() without pin and write lock on
- * the target buffer.
+ * the page.  It is an error to call this function without pin and write lock
+ * on the target buffer.
  *
  * Returns the offset number at which the tuple was inserted.  This function
  * is responsible for preserving the condition that tuples in a hash index

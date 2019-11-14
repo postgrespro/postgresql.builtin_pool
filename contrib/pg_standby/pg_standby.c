@@ -30,9 +30,8 @@
 #include <signal.h>
 #include <sys/time.h>
 
-#include "pg_getopt.h"
-
 #include "access/xlog_internal.h"
+#include "pg_getopt.h"
 
 const char *progname;
 
@@ -58,7 +57,6 @@ char	   *triggerPath;		/* where to find the trigger file? */
 char	   *xlogFilePath;		/* where we are going to restore to */
 char	   *nextWALFileName;	/* the file we need to get from archive */
 char	   *restartWALFileName; /* the file from which we can restart restore */
-char	   *priorWALFileName;	/* the file we need to get from archive */
 char		WALFilePath[MAXPGPATH * 2]; /* the file path including archive */
 char		restoreCommand[MAXPGPATH];	/* run this to restore */
 char		exclusiveCleanupFileName[MAXFNAMELEN];	/* the file we need to get
@@ -146,7 +144,7 @@ CustomizableInitialize(void)
 	switch (restoreCommandType)
 	{
 		case RESTORE_COMMAND_LINK:
-#if HAVE_WORKING_LINK
+#ifdef HAVE_WORKING_LINK
 			SET_RESTORE_COMMAND("ln -s -f", WALFilePath, xlogFilePath);
 			break;
 #endif

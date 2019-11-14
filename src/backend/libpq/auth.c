@@ -65,7 +65,7 @@ static int	CheckSCRAMAuth(Port *port, char *shadow_pass, char **logdetail);
  * Ident authentication
  *----------------------------------------------------------------
  */
-/* Max size of username ident server can return */
+/* Max size of username ident server can return (per RFC 1413) */
 #define IDENT_USERNAME_MAX 512
 
 /* Standard TCP port number for Ident service.  Assigned by IANA */
@@ -73,6 +73,11 @@ static int	CheckSCRAMAuth(Port *port, char *shadow_pass, char **logdetail);
 
 static int	ident_inet(hbaPort *port);
 
+
+/*----------------------------------------------------------------
+ * Peer authentication
+ *----------------------------------------------------------------
+ */
 #ifdef HAVE_UNIX_SOCKETS
 static int	auth_peer(hbaPort *port);
 #endif
@@ -105,6 +110,7 @@ static const char *pam_passwd = NULL;	/* Workaround for Solaris 2.6
 										 * brokenness */
 static Port *pam_port_cludge;	/* Workaround for passing "Port *port" into
 								 * pam_passwd_conv_proc */
+static bool pam_no_password;	/* For detecting no-password-given */
 #endif							/* USE_PAM */
 
 
@@ -818,7 +824,7 @@ CheckPWChallengeAuth(Port *port, char **logdetail)
 	 * If 'md5' authentication is allowed, decide whether to perform 'md5' or
 	 * 'scram-sha-256' authentication based on the type of password the user
 	 * has.  If it's an MD5 hash, we must do MD5 authentication, and if it's a
-	 * SCRAM verifier, we must do SCRAM authentication.
+	 * SCRAM secret, we must do SCRAM authentication.
 	 *
 	 * If MD5 authentication is not allowed, always use SCRAM.  If the user
 	 * had an MD5 password, CheckSCRAMAuth() will fail.
@@ -954,7 +960,7 @@ CheckSCRAMAuth(Port *port, char *shadow_pass, char **logdetail)
 			return STATUS_ERROR;
 		}
 
-		elog(DEBUG4, "Processing received SASL response of length %d", buf.len);
+		elog(DEBUG4, "processing received SASL response of length %d", buf.len);
 
 		/*
 		 * The first SASLInitialResponse message is different from the others.
@@ -1145,7 +1151,7 @@ pg_GSS_recvauth(Port *port)
 		gbuf.length = buf.len;
 		gbuf.value = buf.data;
 
-		elog(DEBUG4, "Processing received GSS token of length %u",
+		elog(DEBUG4, "processing received GSS token of length %u",
 			 (unsigned int) gbuf.length);
 
 		maj_stat = gss_accept_sec_context(
@@ -1422,8 +1428,7 @@ pg_SSPI_recvauth(Port *port)
 		outbuf.pBuffers = OutBuffers;
 		outbuf.ulVersion = SECBUFFER_VERSION;
 
-
-		elog(DEBUG4, "Processing received SSPI token of length %u",
+		elog(DEBUG4, "processing received SSPI token of length %u",
 			 (unsigned int) buf.len);
 
 		r = AcceptSecurityContext(&sspicred,
@@ -1797,7 +1802,7 @@ interpret_ident_response(const char *ident_response,
 /*
  *	Talk to the ident server on "remote_addr" and find out who
  *	owns the tcp connection to "local_addr"
- *	It the username successfully retrieved, check the usermap.
+ *	If the username is successfully retrieved, check the usermap.
  *
  *	XXX: Using WaitLatchOrSocket() and doing a CHECK_FOR_INTERRUPTS() if the
  *	latch was set would improve the responsiveness to timeouts/cancellations.
@@ -1967,6 +1972,12 @@ ident_inet_done:
 	return STATUS_ERROR;
 }
 
+
+/*----------------------------------------------------------------
+ * Peer authentication system
+ *----------------------------------------------------------------
+ */
+
 /*
  *	Ask kernel about the credentials of the connecting process,
  *	determine the symbolic name of the corresponding user, and check
@@ -1979,10 +1990,11 @@ ident_inet_done:
 static int
 auth_peer(hbaPort *port)
 {
-	char		ident_user[IDENT_USERNAME_MAX + 1];
 	uid_t		uid;
 	gid_t		gid;
 	struct passwd *pw;
+	char	   *peer_user;
+	int			ret;
 
 	if (getpeereid(port->sock, &uid, &gid) != 0)
 	{
@@ -2011,9 +2023,14 @@ auth_peer(hbaPort *port)
 		return STATUS_ERROR;
 	}
 
-	strlcpy(ident_user, pw->pw_name, IDENT_USERNAME_MAX + 1);
+	/* Make a copy of static getpw*() result area. */
+	peer_user = pstrdup(pw->pw_name);
 
-	return check_usermap(port->hba->usermap, port->user_name, ident_user, false);
+	ret = check_usermap(port->hba->usermap, port->user_name, peer_user, false);
+
+	pfree(peer_user);
+
+	return ret;
 }
 #endif							/* HAVE_UNIX_SOCKETS */
 
@@ -2082,8 +2099,10 @@ pam_passwd_conv_proc(int num_msg, const struct pam_message **msg,
 					{
 						/*
 						 * Client didn't want to send password.  We
-						 * intentionally do not log anything about this.
+						 * intentionally do not log anything about this,
+						 * either here or at higher levels.
 						 */
+						pam_no_password = true;
 						goto fail;
 					}
 				}
@@ -2142,6 +2161,7 @@ CheckPAMAuth(Port *port, const char *user, const char *password)
 	 */
 	pam_passwd = password;
 	pam_port_cludge = port;
+	pam_no_password = false;
 
 	/*
 	 * Set the application data portion of the conversation struct.  This is
@@ -2227,22 +2247,26 @@ CheckPAMAuth(Port *port, const char *user, const char *password)
 
 	if (retval != PAM_SUCCESS)
 	{
-		ereport(LOG,
-				(errmsg("pam_authenticate failed: %s",
-						pam_strerror(pamh, retval))));
+		/* If pam_passwd_conv_proc saw EOF, don't log anything */
+		if (!pam_no_password)
+			ereport(LOG,
+					(errmsg("pam_authenticate failed: %s",
+							pam_strerror(pamh, retval))));
 		pam_passwd = NULL;		/* Unset pam_passwd */
-		return STATUS_ERROR;
+		return pam_no_password ? STATUS_EOF : STATUS_ERROR;
 	}
 
 	retval = pam_acct_mgmt(pamh, 0);
 
 	if (retval != PAM_SUCCESS)
 	{
-		ereport(LOG,
-				(errmsg("pam_acct_mgmt failed: %s",
-						pam_strerror(pamh, retval))));
+		/* If pam_passwd_conv_proc saw EOF, don't log anything */
+		if (!pam_no_password)
+			ereport(LOG,
+					(errmsg("pam_acct_mgmt failed: %s",
+							pam_strerror(pamh, retval))));
 		pam_passwd = NULL;		/* Unset pam_passwd */
-		return STATUS_ERROR;
+		return pam_no_password ? STATUS_EOF : STATUS_ERROR;
 	}
 
 	retval = pam_end(pamh, retval);
@@ -2859,7 +2883,7 @@ CheckCertAuth(Port *port)
 		if (port->hba->clientcert == clientCertFull && port->hba->auth_method != uaCert)
 		{
 			ereport(LOG,
-					(errmsg("certificate validation (clientcert=verify-full) failed for user \"%s\": cn mismatch",
+					(errmsg("certificate validation (clientcert=verify-full) failed for user \"%s\": CN mismatch",
 							port->user_name)));
 		}
 	}
@@ -2932,7 +2956,7 @@ radius_add_attribute(radius_packet *packet, uint8 type, const unsigned char *dat
 		 * fail.
 		 */
 		elog(WARNING,
-			 "Adding attribute code %d with length %d to radius packet would create oversize packet, ignoring",
+			 "adding attribute code %d with length %d to radius packet would create oversize packet, ignoring",
 			 type, len);
 		return;
 	}
