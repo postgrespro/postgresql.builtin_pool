@@ -1327,7 +1327,17 @@ LANGUAGE INTERNAL
 STRICT STABLE PARALLEL SAFE
 AS 'jsonb_path_query_first_tz';
 
+
 --
+-- Statistic for global temporary tables
+--
+
+CREATE VIEW pg_sequence_params AS select s.* from pg_class c,pg_sequence_parameters(c.oid) s where c.relkind='S';
+
+CREATE VIEW pg_gtt_statistic AS
+   SELECT s.* from pg_class c,pg_gtt_statistic_for_relation(c.oid) s where c.relpersistence='s';
+
+
 -- The default permissions for functions mean that anyone can execute them.
 -- A number of functions shouldn't be executable by just anyone, but rather
 -- than use explicit 'superuser()' checks in those functions, we use the GRANT

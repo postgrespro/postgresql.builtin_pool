@@ -23,6 +23,7 @@
 #include "access/xloginsert.h"
 #include "access/xlog.h"
 #include "commands/vacuum.h"
+#include "catalog/index.h"
 #include "catalog/pg_am.h"
 #include "miscadmin.h"
 #include "utils/memutils.h"

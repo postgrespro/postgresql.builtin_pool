@@ -39,6 +39,7 @@
 #include "commands/vacuum.h"
 #include "executor/executor.h"
 #include "foreign/fdwapi.h"
+#include "funcapi.h"
 #include "miscadmin.h"
 #include "nodes/nodeFuncs.h"
 #include "parser/parse_oper.h"
@@ -2871,4 +2872,115 @@ analyze_mcv_list(int *mcv_counts,
 		}
 	}
 	return num_mcv;
+}
+
+PG_FUNCTION_INFO_V1(pg_gtt_statistic_for_relation);
+
+typedef struct
+{
+	int staattnum;
+	bool stainherit;
+} PgTempStatIteratorCtx;
+
+Datum
+pg_gtt_statistic_for_relation(PG_FUNCTION_ARGS)
+{
+	Oid starelid = PG_GETARG_OID(0);
+#if 1
+	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
+	Tuplestorestate *tupstore;
+	MemoryContext per_query_ctx;
+	MemoryContext oldcontext;
+	TupleDesc	  tupdesc;
+	bool stainherit = false;
+
+	/* check to see if caller supports us returning a tuplestore */
+	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
+		elog(ERROR, "return type must be a row type");
+
+	/* check to see if caller supports us returning a tuplestore */
+	if (rsinfo == NULL || !IsA(rsinfo, ReturnSetInfo))
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("set-valued function called in context that cannot accept a set")));
+	if (!(rsinfo->allowedModes & SFRM_Materialize))
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("materialize mode required, but it is not " \
+						"allowed in this context")));
+
+	/* Build tuplestore to hold the result rows */
+	per_query_ctx = rsinfo->econtext->ecxt_per_query_memory;
+	oldcontext = MemoryContextSwitchTo(per_query_ctx);
+
+	/* Build a tuple descriptor for our result type */
+
+	tupstore = tuplestore_begin_heap(true, false, work_mem);
+	rsinfo->returnMode = SFRM_Materialize;
+	rsinfo->setResult = tupstore;
+	rsinfo->setDesc = tupdesc;
+
+	do
+	{
+		int staattnum = 0;
+		while (true)
+		{
+			HeapTuple* statup = SearchSysCacheCopy3(STATRELATTINH,
+												ObjectIdGetDatum(starelid),
+												Int16GetDatum(++staattnum),
+												BoolGetDatum(stainherit));
+			if (statup != NULL)
+				tuplestore_puttuple(tupstore, statup);
+			else
+				break;
+		}
+		stainherit = !stainherit;
+	} while (stainherit);
+
+	MemoryContextSwitchTo(oldcontext);
+ 
+	tuplestore_donestoring(tupstore);
+
+	return (Datum) 0;
+#else
+	FuncCallContext *funcctx;
+	PgTempStatIteratorCtx *it;
+	HeapTuple statup;
+
+	if (SRF_IS_FIRSTCALL())
+	{
+		MemoryContext oldcontext;
+
+		/* create a function context for cross-call persistence */
+		funcctx = SRF_FIRSTCALL_INIT();
+
+		/* switch to memory context appropriate for multiple function calls */
+		oldcontext = MemoryContextSwitchTo(funcctx->multi_call_memory_ctx);
+		it = palloc0(sizeof(PgTempStatIteratorCtx));
+		funcctx->user_fctx = (void *)it;
+
+		MemoryContextSwitchTo(oldcontext);
+	}
+	else
+	{
+		funcctx = SRF_PERCALL_SETUP();
+		it = (PgTempStatIteratorCtx*)funcctx->user_fctx;
+	}
+	while (true)
+	{
+		it->staattnum += 1;
+		statup = SearchSysCacheCopy3(STATRELATTINH,
+								 ObjectIdGetDatum(starelid),
+								 Int16GetDatum(it->staattnum),
+								 BoolGetDatum(it->stainherit));
+		if (statup != NULL)
+			SRF_RETURN_NEXT(funcctx, statup);
+
+		if (it->stainherit)
+			SRF_RETURN_DONE(funcctx);
+
+		it->stainherit = true;
+		it->staattnum = 0;
+	}
+#endif
 }

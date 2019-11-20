@@ -30,6 +30,8 @@
 
 #include "access/hash.h"
 #include "access/hash_xlog.h"
+#include "catalog/index.h"
+#include "catalog/pg_am.h"
 #include "miscadmin.h"
 #include "storage/lmgr.h"
 #include "storage/smgr.h"

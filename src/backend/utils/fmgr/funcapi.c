@@ -18,6 +18,7 @@
 #include "catalog/namespace.h"
 #include "catalog/pg_proc.h"
 #include "catalog/pg_type.h"
+#include "catalog/pg_statistic_d.h"
 #include "funcapi.h"
 #include "nodes/nodeFuncs.h"
 #include "parser/parse_coerce.h"
@@ -341,7 +342,8 @@ internal_get_result_type(Oid funcid,
 
 		if (resolve_polymorphic_tupdesc(tupdesc,
 										&procform->proargtypes,
-										call_expr))
+										call_expr) ||
+			funcid == GttStatisticFunctionId)
 		{
 			if (tupdesc->tdtypeid == RECORDOID &&
 				tupdesc->tdtypmod < 0)

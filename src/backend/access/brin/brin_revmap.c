@@ -28,6 +28,7 @@
 #include "access/brin.h"
 #include "access/rmgr.h"
 #include "access/xloginsert.h"
+#include "catalog/index.h"
 #include "miscadmin.h"
 #include "storage/bufmgr.h"
 #include "storage/lmgr.h"
@@ -84,7 +85,7 @@ brinRevmapInitialize(Relation idxrel, BlockNumber *pagesPerRange,
 	if (GlobalTempRelationPageIsNotInitialized(idxrel, page))
 	{
 		Relation heap = RelationIdGetRelation(idxrel->rd_index->indrelid);
-		brinbuild(heap, idxrel,  BuildIndexInfo(idxrel));
+		brinbuild(heap, idxrel, BuildIndexInfo(idxrel));
 		RelationClose(heap);
 	}
 	TestForOldSnapshot(snapshot, idxrel, page);

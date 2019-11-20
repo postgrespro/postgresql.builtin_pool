@@ -1204,7 +1204,6 @@ void InsertCatCache(CatCache *cache,
 	dlist_head *bucket;
 	int         nkeys = cache->cc_nkeys;
 	MemoryContext oldcxt;
-	int         i;
 
 	/*
 	 * one-time startup overhead for each cache
