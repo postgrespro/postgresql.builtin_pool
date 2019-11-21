@@ -2886,7 +2886,6 @@ Datum
 pg_gtt_statistic_for_relation(PG_FUNCTION_ARGS)
 {
 	Oid starelid = PG_GETARG_OID(0);
-#if 1
 	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
 	Tuplestorestate *tupstore;
 	MemoryContext per_query_ctx;
@@ -2942,45 +2941,4 @@ pg_gtt_statistic_for_relation(PG_FUNCTION_ARGS)
 	tuplestore_donestoring(tupstore);
 
 	return (Datum) 0;
-#else
-	FuncCallContext *funcctx;
-	PgTempStatIteratorCtx *it;
-	HeapTuple statup;
-
-	if (SRF_IS_FIRSTCALL())
-	{
-		MemoryContext oldcontext;
-
-		/* create a function context for cross-call persistence */
-		funcctx = SRF_FIRSTCALL_INIT();
-
-		/* switch to memory context appropriate for multiple function calls */
-		oldcontext = MemoryContextSwitchTo(funcctx->multi_call_memory_ctx);
-		it = palloc0(sizeof(PgTempStatIteratorCtx));
-		funcctx->user_fctx = (void *)it;
-
-		MemoryContextSwitchTo(oldcontext);
-	}
-	else
-	{
-		funcctx = SRF_PERCALL_SETUP();
-		it = (PgTempStatIteratorCtx*)funcctx->user_fctx;
-	}
-	while (true)
-	{
-		it->staattnum += 1;
-		statup = SearchSysCacheCopy3(STATRELATTINH,
-								 ObjectIdGetDatum(starelid),
-								 Int16GetDatum(it->staattnum),
-								 BoolGetDatum(it->stainherit));
-		if (statup != NULL)
-			SRF_RETURN_NEXT(funcctx, statup);
-
-		if (it->stainherit)
-			SRF_RETURN_DONE(funcctx);
-
-		it->stainherit = true;
-		it->staattnum = 0;
-	}
-#endif
 }
