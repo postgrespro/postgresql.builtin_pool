@@ -16,6 +16,8 @@
 #include <math.h>
 
 #include "access/parallel.h"
+#include "access/table.h"
+#include "catalog/pg_statistic_ext_data_d.h"
 #include "commands/explain.h"
 #include "commands/defrem.h"
 #include "executor/instrument.h"
@@ -488,6 +490,7 @@ AddMultiColumnStatisticsForQual(void* qual, ExplainState *es)
 			char* stat_name = rel_name;
 			char* create_stat_stmt = (char*)"";
 			char const* sep = "ON";
+			Relation* stat;
 
 			list_sort(cols, vars_list_comparator);
 			/* Construct name for statistic by concatenating relation name with all columns */
@@ -515,12 +518,23 @@ AddMultiColumnStatisticsForQual(void* qual, ExplainState *es)
 				}
 				else
 				{
-					elog(LOG, "Add statistics %s", stat_name);
-					stats->defnames = list_make2(makeString(rel_namespace), makeString(stat_name));
-					stats->if_not_exists = true;
-					stats->relations = list_make1(rel);
-					stats->exprs = cols;
-					CreateStatistics(stats);
+					Relation stat = table_open(StatisticExtDataRelationId, AccessExclusiveLock);
+					if (stat == NULL)
+						elog(ERROR, "Failed to lock statistic table");
+
+					/* Recheck under lock */
+					if (!SearchSysCacheExists2(STATEXTNAMENSP,
+									   CStringGetDatum(stat_name),
+									   ObjectIdGetDatum(get_rel_namespace(rte->relid))))
+					{
+						elog(LOG, "Add statistics %s", stat_name);
+						stats->defnames = list_make2(makeString(rel_namespace), makeString(stat_name));
+						stats->if_not_exists = true;
+						stats->relations = list_make1(rel);
+						stats->exprs = cols;
+						CreateStatistics(stats);
+					}
+					table_close(stat, AccessExclusiveLock);
 				}
 			}
 		}
