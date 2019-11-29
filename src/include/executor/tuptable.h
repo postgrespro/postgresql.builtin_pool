@@ -108,6 +108,10 @@
 #define			TTS_FLAG_FIXED		(1 << 4)
 #define TTS_FIXED(slot) (((slot)->tts_flags & TTS_FLAG_FIXED) != 0)
 
+/* fixed tuple descriptor */
+#define			TTS_FLAG_PINNED		(1 << 5)
+#define TTS_PINNED(slot) (((slot)->tts_flags & TTS_FLAG_PINNED) != 0)
+
 struct TupleTableSlotOps;
 typedef struct TupleTableSlotOps TupleTableSlotOps;
 

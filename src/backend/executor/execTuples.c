@@ -156,7 +156,7 @@ tts_virtual_materialize(TupleTableSlot *slot)
 	char	   *data;
 
 	/* already materialized */
-	if (TTS_SHOULDFREE(slot))
+	if (TTS_SHOULDFREE(slot) || TTS_PINNED(slot))
 		return;
 
 	/* compute size of memory required */
