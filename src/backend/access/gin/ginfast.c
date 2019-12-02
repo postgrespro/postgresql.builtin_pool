@@ -20,20 +20,21 @@
 
 #include "access/gin_private.h"
 #include "access/ginxlog.h"
-#include "access/xloginsert.h"
 #include "access/xlog.h"
+#include "access/xloginsert.h"
 #include "commands/vacuum.h"
 #include "catalog/index.h"
 #include "catalog/pg_am.h"
+#include "commands/vacuum.h"
 #include "miscadmin.h"
-#include "utils/memutils.h"
-#include "utils/rel.h"
-#include "utils/acl.h"
 #include "postmaster/autovacuum.h"
 #include "storage/indexfsm.h"
 #include "storage/lmgr.h"
 #include "storage/predicate.h"
+#include "utils/acl.h"
 #include "utils/builtins.h"
+#include "utils/memutils.h"
+#include "utils/rel.h"
 
 /* GUC parameter */
 int			gin_pending_list_limit = 0;

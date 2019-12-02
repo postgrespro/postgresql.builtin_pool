@@ -1498,7 +1498,7 @@ update_attstats(Oid relid, bool inh, int natts, VacAttrStats **vacattrstats, boo
 				/* XXX knows more than it should about type float4: */
 				arry = construct_array(numdatums, nnum,
 									   FLOAT4OID,
-									   sizeof(float4), FLOAT4PASSBYVAL, 'i');
+									   sizeof(float4), true, 'i');
 				values[i++] = PointerGetDatum(arry);	/* stanumbersN */
 			}
 			else
@@ -2924,10 +2924,10 @@ pg_gtt_statistic_for_relation(PG_FUNCTION_ARGS)
 		int staattnum = 0;
 		while (true)
 		{
-			HeapTuple* statup = SearchSysCacheCopy3(STATRELATTINH,
-												ObjectIdGetDatum(starelid),
-												Int16GetDatum(++staattnum),
-												BoolGetDatum(stainherit));
+			HeapTuple statup = SearchSysCacheCopy3(STATRELATTINH,
+												   ObjectIdGetDatum(starelid),
+												   Int16GetDatum(++staattnum),
+												   BoolGetDatum(stainherit));
 			if (statup != NULL)
 				tuplestore_puttuple(tupstore, statup);
 			else

@@ -233,7 +233,7 @@ detoast_attr_slice(struct varlena *attr,
 			 * of a given length (after decompression).
 			 */
 			max_size = pglz_maximum_compressed_size(sliceoffset + slicelength,
-													TOAST_COMPRESS_SIZE(attr));
+													toast_pointer.va_extsize);
 
 			/*
 			 * Fetch enough compressed slices (compressed marker will get set
@@ -501,8 +501,8 @@ toast_fetch_datum(struct varlena *attr)
  *	in the toast relation
  *
  *	Note that this function supports non-compressed external datums
- *	and compressed external datums (in which case the requrested slice
- *  has to be a prefix, i.e. sliceoffset has to be 0).
+ *	and compressed external datums (in which case the requested slice
+ *	has to be a prefix, i.e. sliceoffset has to be 0).
  * ----------
  */
 static struct varlena *

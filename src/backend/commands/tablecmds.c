@@ -23,7 +23,6 @@
 #include "access/multixact.h"
 #include "access/reloptions.h"
 #include "access/relscan.h"
-#include "access/tableam.h"
 #include "access/sysattr.h"
 #include "access/tableam.h"
 #include "access/tupconvert.h"
@@ -102,7 +101,6 @@
 #include "utils/syscache.h"
 #include "utils/timestamp.h"
 #include "utils/typcache.h"
-
 
 /*
  * ON COMMIT action list
@@ -763,10 +761,17 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 	reloptions = transformRelOptions((Datum) 0, stmt->options, NULL, validnsps,
 									 true, false);
 
-	if (relkind == RELKIND_VIEW)
-		(void) view_reloptions(reloptions, true);
-	else
-		(void) heap_reloptions(relkind, reloptions, true);
+	switch (relkind)
+	{
+		case RELKIND_VIEW:
+			(void) view_reloptions(reloptions, true);
+			break;
+		case RELKIND_PARTITIONED_TABLE:
+			(void) partitioned_table_reloptions(reloptions, true);
+			break;
+		default:
+			(void) heap_reloptions(relkind, reloptions, true);
+	}
 
 	if (stmt->ofTypename)
 	{
@@ -1133,7 +1138,7 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 												RelationGetDescr(parent));
 			idxstmt =
 				generateClonedIndexStmt(NULL, idxRel,
-										attmap, RelationGetDescr(rel)->natts,
+										attmap, RelationGetDescr(parent)->natts,
 										&constraintOid);
 			DefineIndex(RelationGetRelid(rel),
 						idxstmt,
@@ -1975,6 +1980,8 @@ truncate_check_rel(Oid relid, Form_pg_class reltuple)
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
 				 errmsg("permission denied: \"%s\" is a system catalog",
 						relname)));
+
+	InvokeObjectTruncateHook(relid);
 }
 
 /*
@@ -12261,8 +12268,10 @@ ATExecSetRelOptions(Relation rel, List *defList, AlterTableType operation,
 		case RELKIND_RELATION:
 		case RELKIND_TOASTVALUE:
 		case RELKIND_MATVIEW:
-		case RELKIND_PARTITIONED_TABLE:
 			(void) heap_reloptions(rel->rd_rel->relkind, newOptions, true);
+			break;
+		case RELKIND_PARTITIONED_TABLE:
+			(void) partitioned_table_reloptions(newOptions, true);
 			break;
 		case RELKIND_VIEW:
 			(void) view_reloptions(newOptions, true);

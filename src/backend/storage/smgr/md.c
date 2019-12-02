@@ -25,16 +25,17 @@
 #include <fcntl.h>
 #include <sys/file.h>
 
-#include "miscadmin.h"
-#include "access/xlogutils.h"
 #include "access/xlog.h"
+#include "access/xlogutils.h"
 #include "commands/tablecmds.h"
 #include "commands/tablespace.h"
+#include "miscadmin.h"
+#include "pg_trace.h"
 #include "pgstat.h"
 #include "postmaster/bgwriter.h"
-#include "storage/fd.h"
 #include "storage/bufmgr.h"
 #include "storage/ipc.h"
+#include "storage/fd.h"
 #include "storage/md.h"
 #include "storage/relfilenode.h"
 #include "storage/smgr.h"
@@ -42,7 +43,6 @@
 #include "utils/hsearch.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
-#include "pg_trace.h"
 
 /*
  *	The magnetic disk storage manager keeps track of open file

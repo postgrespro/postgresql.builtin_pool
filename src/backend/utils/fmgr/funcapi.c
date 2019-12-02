@@ -31,6 +31,13 @@
 #include "utils/syscache.h"
 #include "utils/typcache.h"
 
+/*
+ * TODO: find less ugly way to declare core function returning pg_statistics.
+ * OID of pg_gtt_statistic_for_relation. This function should be handled in special way because it returns set of pg_statistics
+ * which contains attributes of anyarray type. Type of attributes can not be deduced from input parameters and
+ * it prevents using tuple descriptor in this case.
+ */
+#define GttStatisticFunctionId 3434
 
 static void shutdown_MultiFuncCall(Datum arg);
 static TypeFuncClass internal_get_result_type(Oid funcid,
