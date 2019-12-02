@@ -5433,7 +5433,7 @@ SELECT * FROM parent WHERE key = 2400;
      </varlistentry>
 
      <varlistentry id="guc-autoprepare-limit" xreflabel="autoprepare_limit">
-       <term><varname>autoprepare_limit</varname> (<type>integer/type>)
+       <term><varname>autoprepare_limit</varname> (<type>integer</type>)
            <indexterm>
              <primary><varname>autoprepare_limit</varname> configuration parameter</primary>
            </indexterm>
@@ -5449,7 +5449,7 @@ SELECT * FROM parent WHERE key = 2400;
      </varlistentry>
 
      <varlistentry id="guc-autoprepare-memory-limit" xreflabel="autoprepare_memory_limit">
-       <term><varname>autoprepare_memory_limit</varname> (<type>integer/type>)
+       <term><varname>autoprepare_memory_limit</varname> (<type>integer</type>)
            <indexterm>
              <primary><varname>autoprepare_memory_limit</varname> configuration parameter</primary>
            </indexterm>
