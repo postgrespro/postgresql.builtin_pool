@@ -123,7 +123,7 @@ sub mkvcbuild
 	  base64.c config_info.c controldata_utils.c d2s.c exec.c f2s.c file_perm.c ip.c
 	  keywords.c kwlookup.c link-canary.c md5.c
 	  pg_lzcompress.c pgfnames.c psprintf.c relpath.c rmtree.c
-	  saslprep.c scram-common.c string.c unicode_norm.c username.c
+	  saslprep.c scram-common.c string.c stringinfo.c unicode_norm.c username.c
 	  wait_error.c);
 
 	if ($solution->{options}->{openssl})
@@ -142,7 +142,7 @@ sub mkvcbuild
 	our @pgcommonbkndfiles = @pgcommonallfiles;
 
 	our @pgfeutilsfiles = qw(
-	  conditional.c mbprint.c print.c psqlscan.l psqlscan.c
+	  cancel.c conditional.c mbprint.c print.c psqlscan.l psqlscan.c
 	  simple_list.c string_utils.c recovery_gen.c);
 
 	$libpgport = $solution->AddProject('libpgport', 'lib', 'misc');

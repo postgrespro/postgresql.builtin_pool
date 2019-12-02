@@ -43,11 +43,11 @@
 #include "catalog/pg_am.h"
 #include "catalog/pg_collation.h"
 #include "catalog/pg_constraint.h"
-#include "catalog/pg_description.h"
 #include "catalog/pg_depend.h"
+#include "catalog/pg_description.h"
 #include "catalog/pg_inherits.h"
-#include "catalog/pg_operator.h"
 #include "catalog/pg_opclass.h"
+#include "catalog/pg_operator.h"
 #include "catalog/pg_tablespace.h"
 #include "catalog/pg_trigger.h"
 #include "catalog/pg_type.h"
@@ -76,10 +76,9 @@
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/pg_rusage.h"
+#include "utils/snapmgr.h"
 #include "utils/syscache.h"
 #include "utils/tuplesort.h"
-#include "utils/snapmgr.h"
-
 
 /* Potentially set by pg_upgrade_support functions */
 Oid			binary_upgrade_next_index_pg_class_oid = InvalidOid;
@@ -1462,6 +1461,7 @@ index_concurrently_swap(Oid newIndexId, Oid oldIndexId, const char *oldName)
 				newIndexTuple;
 	Form_pg_index oldIndexForm,
 				newIndexForm;
+	bool		isPartition;
 	Oid			indexConstraintOid;
 	List	   *constraintOids = NIL;
 	ListCell   *lc;
@@ -1491,8 +1491,10 @@ index_concurrently_swap(Oid newIndexId, Oid oldIndexId, const char *oldName)
 	namestrcpy(&newClassForm->relname, NameStr(oldClassForm->relname));
 	namestrcpy(&oldClassForm->relname, oldName);
 
-	/* Copy partition flag to track inheritance properly */
+	/* Swap the partition flags to track inheritance properly */
+	isPartition = newClassForm->relispartition;
 	newClassForm->relispartition = oldClassForm->relispartition;
+	oldClassForm->relispartition = isPartition;
 
 	CatalogTupleUpdate(pg_class, &oldClassTuple->t_self, oldClassTuple);
 	CatalogTupleUpdate(pg_class, &newClassTuple->t_self, newClassTuple);
@@ -1668,8 +1670,12 @@ index_concurrently_swap(Oid newIndexId, Oid oldIndexId, const char *oldName)
 	}
 
 	/*
-	 * Move all dependencies of and on the old index to the new one
+	 * Move all dependencies of and on the old index to the new one.  First
+	 * remove any dependencies that the new index may have to provide an
+	 * initial clean state for the dependency switch, and then move all the
+	 * dependencies from the old index to the new one.
 	 */
+	deleteDependencyRecordsFor(RelationRelationId, newIndexId, false);
 	changeDependenciesOf(RelationRelationId, oldIndexId, newIndexId);
 	changeDependenciesOn(RelationRelationId, oldIndexId, newIndexId);
 
@@ -2142,6 +2148,10 @@ index_drop(Oid indexId, bool concurrent, bool concurrent_lock_mode)
 		 * possible if one of the transactions in question is blocked trying
 		 * to acquire an exclusive lock on our table.  The lock code will
 		 * detect deadlock and error out properly.
+		 *
+		 * Note: we report progress through WaitForLockers() unconditionally
+		 * here, even though it will only be used when we're called by REINDEX
+		 * CONCURRENTLY and not when called by DROP INDEX CONCURRENTLY.
 		 */
 		WaitForLockers(heaplocktag, AccessExclusiveLock, true);
 
@@ -2157,7 +2167,7 @@ index_drop(Oid indexId, bool concurrent, bool concurrent_lock_mode)
 
 		/*
 		 * Wait till every transaction that saw the old index state has
-		 * finished.
+		 * finished.  See above about progress reporting.
 		 */
 		WaitForLockers(heaplocktag, AccessExclusiveLock, true);
 
@@ -2310,6 +2320,56 @@ BuildIndexInfo(Relation index)
 								 &ii->ii_ExclusionProcs,
 								 &ii->ii_ExclusionStrats);
 	}
+
+	return ii;
+}
+
+/* ----------------
+ *		BuildDummyIndexInfo
+ *			Construct a dummy IndexInfo record for an open index
+ *
+ * This differs from the real BuildIndexInfo in that it will never run any
+ * user-defined code that might exist in index expressions or predicates.
+ * Instead of the real index expressions, we return null constants that have
+ * the right types/typmods/collations.  Predicates and exclusion clauses are
+ * just ignored.  This is sufficient for the purpose of truncating an index,
+ * since we will not need to actually evaluate the expressions or predicates;
+ * the only thing that's likely to be done with the data is construction of
+ * a tupdesc describing the index's rowtype.
+ * ----------------
+ */
+IndexInfo *
+BuildDummyIndexInfo(Relation index)
+{
+	IndexInfo  *ii;
+	Form_pg_index indexStruct = index->rd_index;
+	int			i;
+	int			numAtts;
+
+	/* check the number of keys, and copy attr numbers into the IndexInfo */
+	numAtts = indexStruct->indnatts;
+	if (numAtts < 1 || numAtts > INDEX_MAX_KEYS)
+		elog(ERROR, "invalid indnatts %d for index %u",
+			 numAtts, RelationGetRelid(index));
+
+	/*
+	 * Create the node, using dummy index expressions, and pretending there is
+	 * no predicate.
+	 */
+	ii = makeIndexInfo(indexStruct->indnatts,
+					   indexStruct->indnkeyatts,
+					   index->rd_rel->relam,
+					   RelationGetDummyIndexExpressions(index),
+					   NIL,
+					   indexStruct->indisunique,
+					   indexStruct->indisready,
+					   false);
+
+	/* fill in attribute numbers */
+	for (i = 0; i < numAtts; i++)
+		ii->ii_IndexAttrNumbers[i] = indexStruct->indkey.values[i];
+
+	/* We ignore the exclusion constraint if any */
 
 	return ii;
 }
@@ -3438,14 +3498,12 @@ reindex_index(Oid indexId, bool skip_constraint_checks, char persistence,
 		/* Note: we do not need to re-establish pkey setting */
 		index_build(heapRelation, iRel, indexInfo, true, true);
 	}
-	PG_CATCH();
+	PG_FINALLY();
 	{
 		/* Make sure flag gets cleared on error exit */
 		ResetReindexProcessing();
-		PG_RE_THROW();
 	}
 	PG_END_TRY();
-	ResetReindexProcessing();
 
 	/*
 	 * If the index is marked invalid/not-ready/dead (ie, it's from a failed
@@ -3665,14 +3723,12 @@ reindex_relation(Oid relid, int flags, int options)
 			i++;
 		}
 	}
-	PG_CATCH();
+	PG_FINALLY();
 	{
 		/* Make sure list gets cleared on error exit */
 		ResetReindexPending();
-		PG_RE_THROW();
 	}
 	PG_END_TRY();
-	ResetReindexPending();
 
 	/*
 	 * Close rel, but continue to hold the lock.

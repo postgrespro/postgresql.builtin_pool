@@ -19,8 +19,6 @@
 
 #include "postgres.h"
 
-#include "miscadmin.h"
-
 #include "access/visibilitymap.h"
 #include "access/xact.h"
 #include "access/xlog.h"
@@ -28,6 +26,7 @@
 #include "access/xlogutils.h"
 #include "catalog/storage.h"
 #include "catalog/storage_xlog.h"
+#include "miscadmin.h"
 #include "storage/freespace.h"
 #include "storage/smgr.h"
 #include "utils/memutils.h"
@@ -390,9 +389,9 @@ RelationCopyStorage(SMgrRelation src, SMgrRelation dst,
 		PageSetChecksumInplace(page, blkno);
 
 		/*
-		 * Now write the page.  We say isTemp = true even if it's not a temp
-		 * rel, because there's no need for smgr to schedule an fsync for this
-		 * write; we'll do it ourselves below.
+		 * Now write the page.  We say skipFsync = true because there's no
+		 * need for smgr to schedule an fsync for this write; we'll do it
+		 * ourselves below.
 		 */
 		smgrextend(dst, forkNum, blkno, buf.data, true);
 	}

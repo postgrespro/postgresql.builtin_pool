@@ -279,7 +279,6 @@ pg_fe_scram_exchange(void *opaq, char *input, int inputlen,
 error:
 	*done = true;
 	*success = false;
-	return;
 }
 
 /*
@@ -822,10 +821,10 @@ verify_server_signature(fe_scram_state *state)
 }
 
 /*
- * Build a new SCRAM verifier.
+ * Build a new SCRAM secret.
  */
 char *
-pg_fe_scram_build_verifier(const char *password)
+pg_fe_scram_build_secret(const char *password)
 {
 	char	   *prep_password;
 	pg_saslprep_rc rc;
@@ -851,7 +850,7 @@ pg_fe_scram_build_verifier(const char *password)
 		return NULL;
 	}
 
-	result = scram_build_verifier(saltbuf, SCRAM_DEFAULT_SALT_LEN,
+	result = scram_build_secret(saltbuf, SCRAM_DEFAULT_SALT_LEN,
 								  SCRAM_DEFAULT_ITERATIONS, password);
 
 	if (prep_password)

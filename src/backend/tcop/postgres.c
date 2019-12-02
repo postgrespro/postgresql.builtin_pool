@@ -47,14 +47,15 @@
 #include "libpq/libpq.h"
 #include "libpq/pqformat.h"
 #include "libpq/pqsignal.h"
+#include "mb/pg_wchar.h"
 #include "miscadmin.h"
 #include "nodes/print.h"
 #include "optimizer/optimizer.h"
-#include "pgstat.h"
-#include "pg_trace.h"
 #include "parser/analyze.h"
 #include "parser/parser.h"
 #include "pg_getopt.h"
+#include "pg_trace.h"
+#include "pgstat.h"
 #include "postmaster/autovacuum.h"
 #include "postmaster/postmaster.h"
 #include "replication/logicallauncher.h"
@@ -79,8 +80,6 @@
 #include "utils/snapmgr.h"
 #include "utils/timeout.h"
 #include "utils/timestamp.h"
-#include "mb/pg_wchar.h"
-
 
 /* ----------------
  *		global variables
@@ -146,11 +145,6 @@ static bool DoingCommandRead = false;
  */
 static bool doing_extended_query_message = false;
 static bool ignore_till_sync = false;
-
-/*
- * Flag to keep track of whether statement timeout timer is active.
- */
-static bool stmt_timeout_active = false;
 
 /*
  * If an unnamed prepared statement exists, it's stored here.
@@ -1431,6 +1425,13 @@ exec_simple_query(const char *query_string)
 			 * those that start or end a transaction block.
 			 */
 			CommandCounterIncrement();
+
+			/*
+			 * Disable statement timeout between queries of a multi-query
+			 * string, so that the timeout applies separately to each query.
+			 * (Our next loop iteration will start a fresh timeout.)
+			 */
+			disable_statement_timeout();
 		}
 
 		/*
@@ -2395,7 +2396,10 @@ exec_execute_message(const char *portal_name, long max_rows)
 			 */
 			CommandCounterIncrement();
 
-			/* full command has been executed, reset timeout */
+			/*
+			 * Disable statement timeout whenever we complete an Execute
+			 * message.  The next protocol message will start a fresh timeout.
+			 */
 			disable_statement_timeout();
 		}
 
@@ -2490,12 +2494,15 @@ check_log_statement(List *stmt_list)
 int
 check_log_duration(char *msec_str, bool was_logged)
 {
-	if (log_duration || log_min_duration_statement >= 0 || xact_is_sampled)
+	if (log_duration || log_min_duration_sample >= 0 ||
+		log_min_duration_statement >= 0 || xact_is_sampled)
 	{
 		long		secs;
 		int			usecs;
 		int			msecs;
-		bool		exceeded;
+		bool		exceeded_duration;
+		bool		exceeded_sample_duration;
+		bool		in_sample = false;
 
 		TimestampDifference(GetCurrentStatementStartTimestamp(),
 							GetCurrentTimestamp(),
@@ -2503,20 +2510,35 @@ check_log_duration(char *msec_str, bool was_logged)
 		msecs = usecs / 1000;
 
 		/*
-		 * This odd-looking test for log_min_duration_statement being exceeded
-		 * is designed to avoid integer overflow with very long durations:
-		 * don't compute secs * 1000 until we've verified it will fit in int.
+		 * This odd-looking test for log_min_duration_* being exceeded is
+		 * designed to avoid integer overflow with very long durations: don't
+		 * compute secs * 1000 until we've verified it will fit in int.
 		 */
-		exceeded = (log_min_duration_statement == 0 ||
-					(log_min_duration_statement > 0 &&
-					 (secs > log_min_duration_statement / 1000 ||
-					  secs * 1000 + msecs >= log_min_duration_statement)));
+		exceeded_duration = (log_min_duration_statement == 0 ||
+							 (log_min_duration_statement > 0 &&
+							  (secs > log_min_duration_statement / 1000 ||
+							   secs * 1000 + msecs >= log_min_duration_statement)));
 
-		if (exceeded || log_duration || xact_is_sampled)
+		exceeded_sample_duration = (log_min_duration_sample == 0 ||
+									(log_min_duration_sample > 0 &&
+									 (secs > log_min_duration_sample / 1000 ||
+									  secs * 1000 + msecs >= log_min_duration_sample)));
+
+		/*
+		 * Do not log if log_statement_sample_rate = 0. Log a sample if
+		 * log_statement_sample_rate <= 1 and avoid unecessary random() call
+		 * if log_statement_sample_rate = 1.
+		 */
+		if (exceeded_sample_duration)
+			in_sample = log_statement_sample_rate != 0 &&
+				(log_statement_sample_rate == 1 ||
+				 random() <= log_statement_sample_rate * MAX_RANDOM_VALUE);
+
+		if (exceeded_duration || in_sample || log_duration || xact_is_sampled)
 		{
 			snprintf(msec_str, 32, "%ld.%03d",
 					 secs * 1000 + msecs, usecs % 1000);
-			if ((exceeded || xact_is_sampled) && !was_logged)
+			if ((exceeded_duration || in_sample || xact_is_sampled) && !was_logged)
 				return 2;
 			else
 				return 1;
@@ -4279,7 +4301,6 @@ PostgresMain(int argc, char *argv[],
 		 */
 		disable_all_timeouts(false);
 		QueryCancelPending = false; /* second to avoid race condition */
-		stmt_timeout_active = false;
 
 		/* Not reading from the client anymore. */
 		DoingCommandRead = false;
@@ -4433,7 +4454,18 @@ PostgresMain(int argc, char *argv[],
 			}
 			else
 			{
+				/* Send out notify signals and transmit self-notifies */
 				ProcessCompletedNotifies();
+
+				/*
+				 * Also process incoming notifies, if any.  This is mostly to
+				 * ensure stable behavior in tests: if any notifies were
+				 * received during the just-finished transaction, they'll be
+				 * seen by the client before ReadyForQuery is.
+				 */
+				if (notifyInterruptPending)
+					ProcessNotifyInterrupt();
+
 				pgstat_report_stat(false);
 
 				set_ps_display("idle", false);
@@ -4961,14 +4993,14 @@ enable_statement_timeout(void)
 
 	if (StatementTimeout > 0)
 	{
-		if (!stmt_timeout_active)
-		{
+		if (!get_timeout_active(STATEMENT_TIMEOUT))
 			enable_timeout_after(STATEMENT_TIMEOUT, StatementTimeout);
-			stmt_timeout_active = true;
-		}
 	}
 	else
-		disable_timeout(STATEMENT_TIMEOUT, false);
+	{
+		if (get_timeout_active(STATEMENT_TIMEOUT))
+			disable_timeout(STATEMENT_TIMEOUT, false);
+	}
 }
 
 /*
@@ -4977,10 +5009,6 @@ enable_statement_timeout(void)
 static void
 disable_statement_timeout(void)
 {
-	if (stmt_timeout_active)
-	{
+	if (get_timeout_active(STATEMENT_TIMEOUT))
 		disable_timeout(STATEMENT_TIMEOUT, false);
-
-		stmt_timeout_active = false;
-	}
 }
