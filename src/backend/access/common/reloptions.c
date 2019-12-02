@@ -1601,13 +1601,17 @@ build_reloptions(Datum reloptions, bool validate,
 bytea *
 partitioned_table_reloptions(Datum reloptions, bool validate)
 {
+	static const relopt_parse_elt tab[] = {
+		{"on_commit_delete_rows", RELOPT_TYPE_BOOL,
+		offsetof(StdRdOptions, on_commit_delete_rows)}
+	};
 	/*
 	 * There are no options for partitioned tables yet, but this is able to do
 	 * some validation.
 	 */
 	return (bytea *) build_reloptions(reloptions, validate,
 									  RELOPT_KIND_PARTITIONED,
-									  0, NULL, 0);
+									  sizeof(StdRdOptions), tab, lengthof(tab));
 }
 
 /*

@@ -1794,6 +1794,7 @@ scanPendingInsert(IndexScanDesc scan, TIDBitmap *tbm, int64 *ntids)
 	{
 		/* No pending list, so proceed with normal scan */
 		UnlockReleaseBuffer(metabuffer);
+		return;
 	}
 
 	pos.pendingBuffer = ReadBuffer(index, blkno);
