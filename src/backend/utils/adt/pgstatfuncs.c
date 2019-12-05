@@ -546,7 +546,8 @@ pg_stat_get_progress_info(PG_FUNCTION_ARGS)
 Datum
 pg_stat_get_activity(PG_FUNCTION_ARGS)
 {
-#define PG_STAT_GET_ACTIVITY_COLS	29
+
+	#define PG_STAT_GET_ACTIVITY_COLS	29
 	int			num_backends = pgstat_fetch_stat_numbackends();
 	int			curr_backend;
 	int			pid = PG_ARGISNULL(0) ? -1 : PG_GETARG_INT32(0);
@@ -915,6 +916,22 @@ pg_stat_get_activity(PG_FUNCTION_ARGS)
 	tuplestore_donestoring(tupstore);
 
 	return (Datum) 0;
+}
+
+
+Datum
+pg_stat_get_wal_activity(PG_FUNCTION_ARGS)
+{
+	int32	pid = PG_GETARG_INT32(0);
+	PGPROC* proc = BackendPidGetProc(pid);
+	if (proc == NULL)
+	{
+		proc = AuxiliaryPidGetProc(pid);
+	}
+	if (proc == NULL)
+		PG_RETURN_NULL();
+	else
+		PG_RETURN_INT64(proc->walWritten);
 }
 
 

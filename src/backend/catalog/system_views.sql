@@ -758,6 +758,9 @@ CREATE VIEW pg_stat_activity AS
         LEFT JOIN pg_database AS D ON (S.datid = D.oid)
         LEFT JOIN pg_authid AS U ON (S.usesysid = U.oid);
 
+CREATE VIEW pg_stat_wal_activity AS
+    SELECT a.*,pg_stat_get_wal_activity(a.pid) as wal_written FROM pg_stat_activity a;
+
 CREATE VIEW pg_stat_replication AS
     SELECT
             S.pid,
