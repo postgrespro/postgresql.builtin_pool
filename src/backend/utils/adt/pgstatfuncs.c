@@ -546,8 +546,7 @@ pg_stat_get_progress_info(PG_FUNCTION_ARGS)
 Datum
 pg_stat_get_activity(PG_FUNCTION_ARGS)
 {
-
-	#define PG_STAT_GET_ACTIVITY_COLS	29
+#define PG_STAT_GET_ACTIVITY_COLS	29
 	int			num_backends = pgstat_fetch_stat_numbackends();
 	int			curr_backend;
 	int			pid = PG_ARGISNULL(0) ? -1 : PG_GETARG_INT32(0);
@@ -931,7 +930,7 @@ pg_stat_get_wal_activity(PG_FUNCTION_ARGS)
 	if (proc == NULL)
 		PG_RETURN_NULL();
 	else
-		PG_RETURN_INT64(proc->walWritten);
+		PG_RETURN_INT64(pg_atomic_read_u64(&proc->walWritten));
 }
 
 

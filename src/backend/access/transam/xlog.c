@@ -1487,7 +1487,7 @@ CopyXLogRecordToWAL(int write_len, bool isLogSwitch, XLogRecData *rdata,
 	freespace = INSERT_FREESPACE(CurrPos);
 
 	/* Accumulate amount of data written to WAL for pg_xact_activity */
-	MyProc->walWritten += write_len;
+	pg_atomic_write_u64(&MyProc->walWritten, pg_atomic_read_u64(&MyProc->walWritten) + write_len);
 
 	/*
 	 * there should be enough space for at least the first field (xl_tot_len)

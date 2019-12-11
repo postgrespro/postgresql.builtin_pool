@@ -207,7 +207,7 @@ struct PGPROC
 	/*
 	 * Amount of data written to the WAL by this process
 	 */
-	uint64      walWritten;
+	pg_atomic_uint64 walWritten;
 };
 
 /* NOTE: "typedef struct PGPROC PGPROC" appears in storage/lock.h. */
