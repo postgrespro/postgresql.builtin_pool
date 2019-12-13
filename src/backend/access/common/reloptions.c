@@ -166,6 +166,15 @@ static relopt_int intRelOpts[] =
 {
 	{
 		{
+			"max_files",
+			"Limit number of files in tablespace",
+			RELOPT_KIND_TABLESPACE,
+			AccessExclusiveLock
+		},
+		0, 0, 10000 /* by default: no limit, restrict max value to 10k otherwise counting files in tablespace on each DDL will become too expensive  */
+	},
+	{
+		{
 			"fillfactor",
 			"Packs table pages only to this percentage",
 			RELOPT_KIND_HEAP,
@@ -1690,7 +1699,8 @@ tablespace_reloptions(Datum reloptions, bool validate)
 	static const relopt_parse_elt tab[] = {
 		{"random_page_cost", RELOPT_TYPE_REAL, offsetof(TableSpaceOpts, random_page_cost)},
 		{"seq_page_cost", RELOPT_TYPE_REAL, offsetof(TableSpaceOpts, seq_page_cost)},
-		{"effective_io_concurrency", RELOPT_TYPE_INT, offsetof(TableSpaceOpts, effective_io_concurrency)}
+		{"effective_io_concurrency", RELOPT_TYPE_INT, offsetof(TableSpaceOpts, effective_io_concurrency)},
+		{"max_files", RELOPT_TYPE_INT, offsetof(TableSpaceOpts, max_files)}
 	};
 
 	return (bytea *) build_reloptions(reloptions, validate,

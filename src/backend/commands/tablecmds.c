@@ -528,7 +528,6 @@ static void refuseDupeIndexAttach(Relation parentIdx, Relation partIdx,
 static List *GetParentedForeignKeyRefs(Relation partition);
 static void ATDetachCheckNoForeignKeyRefs(Relation partition);
 
-
 /* ----------------------------------------------------------------
  *		DefineRelation
  *				Creates a new relation.
@@ -699,8 +698,9 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 		if (aclresult != ACLCHECK_OK)
 			aclcheck_error(aclresult, OBJECT_TABLESPACE,
 						   get_tablespace_name(tablespaceId));
-	}
 
+		tablespaceId = GetCurrentTablespaceSegment(tablespaceId);
+	}
 	/* In all cases disallow placing user relations in pg_global */
 	if (tablespaceId == GLOBALTABLESPACE_OID)
 		ereport(ERROR,

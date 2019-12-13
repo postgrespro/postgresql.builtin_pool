@@ -40,6 +40,7 @@ typedef struct TableSpaceOpts
 	float8		random_page_cost;
 	float8		seq_page_cost;
 	int			effective_io_concurrency;
+	int         max_files;
 } TableSpaceOpts;
 
 extern Oid	CreateTableSpace(CreateTableSpaceStmt *stmt);
@@ -52,6 +53,8 @@ extern void TablespaceCreateDbspace(Oid spcNode, Oid dbNode, bool isRedo);
 extern Oid	GetDefaultTablespace(char relpersistence, bool partitioned);
 
 extern void PrepareTempTablespaces(void);
+
+extern Oid  GetCurrentTablespaceSegment(Oid tablespaceId);
 
 extern Oid	get_tablespace_oid(const char *tablespacename, bool missing_ok);
 extern char *get_tablespace_name(Oid spc_oid);

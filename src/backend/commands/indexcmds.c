@@ -666,6 +666,8 @@ DefineIndex(Oid relationId,
 		if (aclresult != ACLCHECK_OK)
 			aclcheck_error(aclresult, OBJECT_TABLESPACE,
 						   get_tablespace_name(tablespaceId));
+
+		tablespaceId = GetCurrentTablespaceSegment(tablespaceId);
 	}
 
 	/*

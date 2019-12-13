@@ -221,3 +221,21 @@ get_tablespace_io_concurrency(Oid spcid)
 	else
 		return spc->opts->effective_io_concurrency;
 }
+
+/*
+ * get_tablespace_max_files
+ *
+ *		This value is not locked by the transaction, so this value may
+ *		be changed while a SELECT that has used these values for planning
+ *		is still executing.
+ */
+int
+get_tablespace_max_files(Oid spcid)
+{
+	TableSpaceCacheEntry *spc = get_tablespace(spcid);
+
+	if (!spc->opts || spc->opts->max_files <= 0)
+		return 0; /* no limit by default */
+	else
+		return spc->opts->max_files;
+}

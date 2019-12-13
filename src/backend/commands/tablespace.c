@@ -82,6 +82,7 @@
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
+#include "utils/spccache.h"
 #include "utils/varlena.h"
 
 /* GUC variables */
@@ -220,6 +221,54 @@ TablespaceCreateDbspace(Oid spcNode, Oid dbNode, bool isRedo)
 	}
 
 	pfree(dir);
+}
+
+static int
+getIntOption(List *options, char const *name, int defaultValue)
+{
+	ListCell   *cell;
+
+	foreach(cell, options)
+	{
+		DefElem    *def = (DefElem *) lfirst(cell);
+		if (strcmp(def->defname, name) == 0)
+		{
+			if (def->arg != NULL)
+			{
+				switch (nodeTag(def->arg))
+				{
+				  case T_Integer:
+					return (int32) intVal(def->arg);
+				  case T_String:
+					return atoi(strVal(def->arg));
+				  default:
+					ereport(ERROR,
+							(errcode(ERRCODE_SYNTAX_ERROR),
+							 errmsg("%s requires an integer value",
+									name)));
+				}
+				break;
+			}
+		}
+	}
+	return defaultValue;
+}
+
+static void
+AtomicChangeLink(char const* link_path, char const* new_location)
+{
+	char* tmp_link_path = psprintf("%s.tmp", link_path);
+	(void)unlink(tmp_link_path); /* remove temporary link if exists */
+	if (symlink(new_location, tmp_link_path) < 0)
+		ereport(ERROR,
+					(errcode_for_file_access(),
+					 errmsg("could not create symbolic link \"%s\": %m",
+							tmp_link_path)));
+	if (rename(tmp_link_path, link_path) < 0)
+		ereport(ERROR,
+					(errcode_for_file_access(),
+					 errmsg("could not rename symbolic link \"%s\": %m",
+							link_path)));
 }
 
 /*
@@ -365,6 +414,30 @@ CreateTableSpace(CreateTableSpaceStmt *stmt)
 
 	/* Post creation hook for new tablespace */
 	InvokeObjectPostCreateHook(TableSpaceRelationId, tablespaceoid, 0);
+
+	if (getIntOption(stmt->options, "max_files", 0) != 0)
+	{
+		/* Limited tablespace */
+		char* segment = psprintf("%s/%u", location, tablespaceoid);
+		char* link_path = psprintf("%s/current_segment", location);
+
+		pfree(location);
+		location = segment;
+		if (MakePGDirectory(location) < 0)
+		{
+			if (errno == EEXIST)
+				ereport(ERROR,
+						(errcode(ERRCODE_OBJECT_IN_USE),
+						 errmsg("directory \"%s\" already in use as a tablespace",
+								location)));
+			else
+				ereport(ERROR,
+						(errcode_for_file_access(),
+						 errmsg("could not create directory \"%s\": %m",
+								location)));
+		}
+		AtomicChangeLink(link_path, location);
+	}
 
 	create_tablespace_directories(location, tablespaceoid);
 
@@ -1553,4 +1626,162 @@ tblspc_redo(XLogReaderState *record)
 	}
 	else
 		elog(PANIC, "tblspc_redo: unknown op code %u", info);
+}
+
+
+static int
+RecursiveCountFiles(char const* linkloc_with_version_dir, int level)
+{
+	char *subfile;
+	int count = 0;
+	DIR	 *dirdesc = AllocateDir(linkloc_with_version_dir);
+	struct dirent *de;
+
+	if (dirdesc == NULL)
+	{
+		return 0;
+	}
+	while ((de = ReadDir(dirdesc, linkloc_with_version_dir)) != NULL)
+	{
+		if (strcmp(de->d_name, ".") == 0 ||
+			strcmp(de->d_name, "..") == 0)
+			continue;
+
+		subfile = psprintf("%s/%s", linkloc_with_version_dir, de->d_name);
+		/* Assume that relations files are always at second level */
+		count += level > 0 ? RecursiveCountFiles(subfile, level - 1) : 1;
+	}
+	FreeDir(dirdesc);
+	return count;
+}
+
+static int
+CountTablespaceFiles(char const* curr_segment)
+{
+	char* linkloc_with_version_dir = psprintf("%s/%s", curr_segment, TABLESPACE_VERSION_DIRECTORY);
+	return RecursiveCountFiles(linkloc_with_version_dir, 1);
+}
+
+static Oid
+GetCurrentTablespaceSegmentId(char* segment_path)
+{
+	char* tblspc = strrchr(segment_path, '/');
+	if (tblspc == NULL)
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("Invalid current tablespace segment \"%s\"",
+						segment_path)));
+	*tblspc++ = '\0';
+	return atoi(tblspc);
+}
+
+static char*
+GetCurrentTablespaceSegmentLocation(Oid tablespaceId)
+{
+	char link_target[MAXPGPATH];
+	char* link_path = psprintf("pg_tblspc/%u", tablespaceId);
+	int len = readlink(link_path, link_target, sizeof(link_target));
+	if (len < 0)
+		ereport(ERROR,
+				(errcode_for_file_access(),
+				 errmsg("could not read symbolic link \"%s\": %m",
+						link_path)));
+	link_target[len] = '\0';
+	pfree(link_path);
+	GetCurrentTablespaceSegmentId(link_target);
+	link_path = psprintf("%s/current_segment", link_target);
+	len = readlink(link_path, link_target, sizeof(link_target));
+	if (len < 0)
+		ereport(ERROR,
+				(errcode_for_file_access(),
+				 errmsg("could not read symbolic link \"%s\": %m",
+						link_path)));
+	link_target[len] = '\0';
+	pfree(link_path);
+	return pstrdup(link_target);
+}
+
+Oid
+GetCurrentTablespaceSegment(Oid tablespaceId)
+{
+	CreateTableSpaceStmt* stmt;
+	Relation	rel;
+	ScanKeyData entry[1];
+	TableScanDesc scan;
+	HeapTuple	tup;
+	Oid         spcowner;
+	bool		isnull;
+	List*       relopt;
+	int         num_files;
+	char*       orig_spcname;
+	char*       new_spcname;
+	char*       curr_segment;
+	bool        segment_is_used;
+	int         limit;
+	Oid         segmentId;
+
+	/* If there is limit for maximal files in tablespace, then count files in the current segment and create new one if needed */
+	limit = get_tablespace_max_files(tablespaceId);
+	if (limit == 0)
+		return tablespaceId;
+
+	curr_segment = GetCurrentTablespaceSegmentLocation(tablespaceId);
+	num_files = CountTablespaceFiles(curr_segment);
+	segmentId = GetCurrentTablespaceSegmentId(curr_segment);
+
+	if (num_files >= limit) /* Check for tablespace overflow */
+	{
+		/* Search pg_tablespace */
+		rel = table_open(TableSpaceRelationId, RowExclusiveLock);
+
+		/* Extract information about original tablespace */
+		ScanKeyInit(&entry[0],
+					Anum_pg_tablespace_oid,
+					BTEqualStrategyNumber, F_OIDEQ,
+					ObjectIdGetDatum(tablespaceId));
+		scan = table_beginscan_catalog(rel, 1, entry);
+		tup = heap_getnext(scan, ForwardScanDirection);
+		if (!HeapTupleIsValid(tup)) /* If tablespace with specified OID was not found, then most likely it was removed */
+			ereport(ERROR,
+					(errcode(ERRCODE_UNDEFINED_OBJECT),
+					 errmsg("tablespace with OID %d was removed",
+							tablespaceId)));
+		/* Extract tablespace options */
+		relopt = untransformRelOptions(heap_getattr(tup, Anum_pg_tablespace_spcoptions,
+													RelationGetDescr(rel), &isnull));
+		/* Original tablespace name */
+		orig_spcname = pstrdup(NameStr(((Form_pg_tablespace) GETSTRUCT(tup))->spcname));
+		spcowner = ((Form_pg_tablespace) GETSTRUCT(tup))->spcowner;
+
+		table_endscan(scan);
+
+		/* Choose new unused tablespace name by concatanating segno suffix */
+		do
+		{
+			new_spcname = psprintf("%s.%d", orig_spcname, segmentId++);
+			ScanKeyInit(&entry[0],
+						Anum_pg_tablespace_spcname,
+						BTEqualStrategyNumber, F_NAMEEQ,
+						CStringGetDatum(new_spcname));
+			scan = table_beginscan_catalog(rel, 1, entry);
+			tup = heap_getnext(scan, ForwardScanDirection);
+			segment_is_used = HeapTupleIsValid(tup);
+			table_endscan(scan);
+		} while (segment_is_used);
+
+		table_close(rel, RowExclusiveLock);
+
+		stmt = makeNode(CreateTableSpaceStmt);
+		stmt->tablespacename = new_spcname;
+		stmt->owner = makeNode(RoleSpec);
+		stmt->owner->roletype = ROLESPEC_CSTRING;
+		stmt->owner->rolename = GetUserNameFromId(spcowner, false);
+		stmt->location = curr_segment;
+		stmt->options = relopt;
+
+		/* Create new tablespace */
+		segmentId = CreateTableSpace(stmt);
+		Assert(OidIsValid(segmentId));
+	}
+	return segmentId;
 }
