@@ -456,8 +456,8 @@ AddMultiColumnStatisticsForQual(void* qual, ExplainState *es)
 				if (cols == NULL || var->varnoold == varno)
 				{
 					varno = var->varnoold;
-					if (var->varattno > 0 &&
-						!bms_is_member(var->varattno, colmap) &&
+					if (var->varoattno > 0 &&
+						!bms_is_member(var->varoattno, colmap) &&
 						varno >= 1 &&
 						varno <= list_length(es->rtable) &&
 						list_length(cols) < STATS_MAX_DIMENSIONS)
@@ -466,10 +466,10 @@ AddMultiColumnStatisticsForQual(void* qual, ExplainState *es)
 						if (rte->rtekind == RTE_RELATION)
 						{
 							ColumnRef  *col = makeNode(ColumnRef);
-							char *colname = get_rte_attribute_name(rte, var->varattno);
+							char *colname = get_rte_attribute_name(rte, var->varoattno);
 							col->fields = list_make1(makeString(colname));
 							cols = lappend(cols, col);
-							colmap = bms_add_member(colmap, var->varattno);
+							colmap = bms_add_member(colmap, var->varoattno);
 						}
 					}
 				}
