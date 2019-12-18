@@ -517,7 +517,6 @@ AddMultiColumnStatisticsForQual(void* qual, ExplainState *es)
 				char* stat_name = rel_name;
 				char* create_stat_stmt = (char*)"";
 				char const* sep = "ON";
-				Relation* stat;
 
 				list_sort(cols, vars_list_comparator);
 				/* Construct name for statistic by concatenating relation name with all columns */
