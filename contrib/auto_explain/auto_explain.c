@@ -15,9 +15,13 @@
 #include <limits.h>
 #include <math.h>
 
+#include "access/hash.h"
 #include "access/parallel.h"
+#include "access/relscan.h"
+#include "access/skey.h"
 #include "access/table.h"
-#include "catalog/pg_statistic_ext_data_d.h"
+#include "access/tableam.h"
+#include "catalog/pg_statistic_ext.h"
 #include "commands/explain.h"
 #include "commands/defrem.h"
 #include "executor/instrument.h"
@@ -30,6 +34,7 @@
 #include "parser/parsetree.h"
 #include "storage/ipc.h"
 #include "statistics/statistics.h"
+#include "utils/fmgroids.h"
 #include "utils/guc.h"
 #include "utils/syscache.h"
 #include "utils/lsyscache.h"
@@ -428,31 +433,12 @@ vars_list_comparator(const ListCell *a, const ListCell *b)
 	return strcmp(va, vb);
 }
 
-typedef struct
-{
-	Oid rel_oid;
-	int n_attrs;
-	uint64 attrs_mask;
-} StatHashKey;
-
-static HTAB* ext_stat_hash;
-
 static void
 AddMultiColumnStatisticsForQual(void* qual, ExplainState *es)
 {
 	List *vars = NULL;
 	ListCell* lc;
-	StatHashKey key;
-	key.attrs_mask = 0;
-	key.n_attrs = 0;
 
-	if (ext_stat_hash == NULL)
-	{
-		HASHCTL	ctl;
-		MemSet(&ctl, 0, sizeof(ctl));
-		ctl.keysize = ctl.entrysize = sizeof(StatHashKey);
-		ext_stat_hash = hash_create("ext_stat_hash", 113, &ctl, HASH_ELEM|HASH_BLOBS);
-	}
 	foreach (lc, qual)
 	{
 		Node* node = (Node*)lfirst(lc);
@@ -490,8 +476,6 @@ AddMultiColumnStatisticsForQual(void* qual, ExplainState *es)
 							col->fields = list_make1(makeString(colname));
 							cols = lappend(cols, col);
 							colmap = bms_add_member(colmap, var->varoattno);
-							key.attrs_mask |= 1LL << (var->varoattno & 63);
-							key.n_attrs += 1;
 						}
 					}
 				}
@@ -505,65 +489,73 @@ AddMultiColumnStatisticsForQual(void* qual, ExplainState *es)
 		if (list_length(cols) >= 2)
 		{
 			RangeTblEntry *rte = rt_fetch(varno, es->rtable);
-			bool found;
-			key.rel_oid = rte->relid;
-			hash_search(ext_stat_hash, &key, HASH_ENTER, &found);
-			if (!found)
- 			{
-				CreateStatsStmt* stats = makeNode(CreateStatsStmt);
-				char *rel_namespace = get_namespace_name(get_rel_namespace(rte->relid));
-				char *rel_name = get_rel_name(rte->relid);
-				RangeVar* rel = makeRangeVar(rel_namespace, rel_name, 0);
-				char* stat_name = rel_name;
-				char* create_stat_stmt = (char*)"";
-				char const* sep = "ON";
+			CreateStatsStmt* stats = makeNode(CreateStatsStmt);
+			char *rel_namespace = get_namespace_name(get_rel_namespace(rte->relid));
+			char *rel_name = get_rel_name(rte->relid);
+			RangeVar* rel = makeRangeVar(rel_namespace, rel_name, 0);
+			char* stat_name = rel_name;
+			char* create_stat_stmt = (char*)"";
+			char const* sep = "ON";
+			ScanKeyData entry[2];
+			TableScanDesc scan;
+			Relation stat_rel;
+			size_t name_len;
+			TupleTableSlot *slot;
 
-				list_sort(cols, vars_list_comparator);
-				/* Construct name for statistic by concatenating relation name with all columns */
-				foreach (cell, cols)
+			list_sort(cols, vars_list_comparator);
+			/* Construct name for statistic by concatenating relation name with all columns */
+			foreach (cell, cols)
+			{
+				char* col_name = strVal((Value *) linitial(((ColumnRef *)lfirst(cell))->fields));
+				stat_name = psprintf("%s_%s", stat_name, col_name);
+				create_stat_stmt = psprintf("%s%s %s", create_stat_stmt, sep, col_name);
+				sep = ",";
+			}
+
+			name_len = strlen(stat_name);
+			if (name_len >= NAMEDATALEN)
+				stat_name = psprintf("%.*s_%08x", NAMEDATALEN - 10, stat_name, (unsigned)hash_any((uint8*)stat_name, name_len));
+
+			ScanKeyInit(&entry[0],
+						Anum_pg_statistic_ext_stxname,
+						BTEqualStrategyNumber, F_NAMEEQ,
+						CStringGetDatum(stat_name));
+			ScanKeyInit(&entry[1],
+						Anum_pg_statistic_ext_stxnamespace,
+						BTEqualStrategyNumber, F_OIDEQ,
+						ObjectIdGetDatum(get_rel_namespace(rte->relid)));
+
+			/*
+			 * Prevent concurrent access to extended statistic table
+			 */
+			stat_rel = table_open(StatisticExtRelationId, AccessExclusiveLock);
+			slot = table_slot_create(stat_rel, NULL);
+			scan = table_beginscan_catalog(stat_rel, 2, entry);
+
+			/*
+			 * Check if multicolumn statistic object with such name already exists.
+			 * Most likely if was already created by auto_explain, but either ANALYZE was not performed since
+			 * this time, either presence of this multicolumn statistic doesn't help to provide more precise estimation.
+			 * Despite to the fact that we create statistics with "if_not_exist" option, presence of such check
+			 * allows to eliminate notice message that statistics object already exists.
+			 */
+			if (!table_scan_getnextslot(scan, ForwardScanDirection, slot))
+			{
+				if (auto_explain_suggest_only)
 				{
-					char* col_name = strVal((Value *) linitial(((ColumnRef *)lfirst(cell))->fields));
-					stat_name = psprintf("%s_%s", stat_name, col_name);
-					create_stat_stmt = psprintf("%s%s %s", create_stat_stmt, sep, col_name);
-					sep = ",";
+					elog(NOTICE, "Auto_explain suggestion: CREATE STATISTICS %s %s FROM %s", stat_name, create_stat_stmt, rel_name);
 				}
-				/*
-				 * Check if multicolumn statistic object with such name already exists.
-				 * Most likely if was already created by auto_explain, but either ANALYZE was not performed since
-				 * this time, either presence of this multicolumn statistic doesn't help to provide more precise estimation.
-				 * Despite to the fact that we create statistics with "if_not_exist" option, presence of such check
-				 * allows to eliminate notice message that statistics object already exists.
-				 */
-				if (!SearchSysCacheExists2(STATEXTNAMENSP,
-										   CStringGetDatum(stat_name),
-										   ObjectIdGetDatum(get_rel_namespace(rte->relid))))
+				else
 				{
-					if (auto_explain_suggest_only)
-					{
-						elog(NOTICE, "Auto_explain suggestion: CREATE STATISTICS %s %s FROM %s", stat_name, create_stat_stmt, rel_name);
-					}
-					else
-					{
-						Relation stat = table_open(StatisticExtDataRelationId, AccessExclusiveLock);
-						if (stat == NULL)
-							elog(ERROR, "Failed to lock statistic table");
-
-						/* Recheck under lock */
-						if (!SearchSysCacheExists2(STATEXTNAMENSP,
-												   CStringGetDatum(stat_name),
-												   ObjectIdGetDatum(get_rel_namespace(rte->relid))))
-						{
-							elog(LOG, "Add statistics %s", stat_name);
-							stats->defnames = list_make2(makeString(rel_namespace), makeString(stat_name));
-							stats->if_not_exists = true;
-							stats->relations = list_make1(rel);
-							stats->exprs = cols;
-							CreateStatistics(stats);
-						}
-						table_close(stat, AccessExclusiveLock);
-					}
+					elog(LOG, "Add statistics %s", stat_name);
+					stats->defnames = list_make2(makeString(rel_namespace), makeString(stat_name));
+					stats->if_not_exists = true;
+					stats->relations = list_make1(rel);
+					stats->exprs = cols;
+					CreateStatistics(stats);
 				}
 			}
+			table_close(stat_rel, AccessExclusiveLock);
 		}
 	}
 }
