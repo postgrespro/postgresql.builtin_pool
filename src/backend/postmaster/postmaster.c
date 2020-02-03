@@ -931,11 +931,13 @@ PostmasterMain(int argc, char *argv[])
 		ExitPostmaster(1);
 	}
 
+#ifdef EXEC_BACKEND
 	if (IsOnlineUpgrade)
 	{
 		read_backend_variables("postmaster.params", NULL);
 		RegisterUnlinkLockFileCallback();
 	}
+#endif
 
 	/*
 	 * Locate the proper configuration files and data directory, and read
@@ -1075,12 +1077,14 @@ PostmasterMain(int argc, char *argv[])
 	/*
 	 * Set up shared memory and semaphores.
 	 */
+#ifdef EXEC_BACKEND
 	if (IsOnlineUpgrade)
 	{
 		PGSharedMemoryReAttach();
 		RestoreBackendList();
 	}
 	else
+#endif
 	{
 		/*
 		 * Now that loadable modules have had their chance to register background
