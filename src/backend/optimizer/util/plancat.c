@@ -83,7 +83,7 @@ static void set_baserel_partition_constraint(Relation relation,
 											 RelOptInfo *rel);
 
 static bool
-index_is_valid(Relation index)
+is_index_valid(Relation index)
 {
 	if (!index->rd_index->indisvalid)
 		return false;
@@ -93,12 +93,12 @@ index_is_valid(Relation index)
 		Buffer metapage = ReadBuffer(index, 0);
 		bool isNew = PageIsNew(BufferGetPage(metapage));
 		ReleaseBuffer(metapage);
-		DropRelFileNodeAllLocalBuffers(index->rd_smgr->smgr_rnode.node);
 		if (isNew)
 		{
-			Relation heap = RelationIdGetRelation(index->rd_index->indrelid);
-			index->rd_indam->ambuild(heap, index,
-									 BuildIndexInfo(index));
+			Relation heap;
+			DropRelFileNodeAllLocalBuffers(index->rd_smgr->smgr_rnode.node);
+			heap = RelationIdGetRelation(index->rd_index->indrelid);
+			index->rd_indam->ambuild(heap, index, BuildIndexInfo(index));
 			RelationClose(heap);
 		}
 	}
@@ -229,7 +229,7 @@ get_relation_info(PlannerInfo *root, Oid relationObjectId, bool inhparent,
 			 * still needs to insert into "invalid" indexes, if they're marked
 			 * indisready.
 			 */
-			if (!index_is_valid(indexRelation))
+			if (!is_index_valid(indexRelation))
 			{
 				index_close(indexRelation, NoLock);
 				continue;
@@ -728,7 +728,7 @@ infer_arbiter_indexes(PlannerInfo *root)
 		idxRel = index_open(indexoid, rte->rellockmode);
 		idxForm = idxRel->rd_index;
 
-		if (!index_is_valid(idxRel))
+		if (!is_index_valid(idxRel))
 			goto next;
 
 		/*
