@@ -158,6 +158,19 @@ static relopt_bool boolRelOpts[] =
 		},
 		true
 	},
+	/*
+	 * For global temp table only
+	 * use AccessExclusiveLock for ensure safety
+	 */
+	{
+		{
+			"on_commit_delete_rows",
+			"global temp table on commit options",
+			RELOPT_KIND_HEAP | RELOPT_KIND_PARTITIONED,
+			ShareUpdateExclusiveLock
+		},
+		false
+	},
 	/* list terminator */
 	{{NULL}}
 };
@@ -1486,6 +1499,8 @@ bytea *
 default_reloptions(Datum reloptions, bool validate, relopt_kind kind)
 {
 	static const relopt_parse_elt tab[] = {
+		{"on_commit_delete_rows", RELOPT_TYPE_BOOL,
+		offsetof(StdRdOptions, on_commit_delete_rows)},
 		{"fillfactor", RELOPT_TYPE_INT, offsetof(StdRdOptions, fillfactor)},
 		{"autovacuum_enabled", RELOPT_TYPE_BOOL,
 		offsetof(StdRdOptions, autovacuum) + offsetof(AutoVacOpts, enabled)},
@@ -1586,13 +1601,17 @@ build_reloptions(Datum reloptions, bool validate,
 bytea *
 partitioned_table_reloptions(Datum reloptions, bool validate)
 {
+	static const relopt_parse_elt tab[] = {
+		{"on_commit_delete_rows", RELOPT_TYPE_BOOL,
+		offsetof(StdRdOptions, on_commit_delete_rows)}
+	};
 	/*
 	 * There are no options for partitioned tables yet, but this is able to do
 	 * some validation.
 	 */
 	return (bytea *) build_reloptions(reloptions, validate,
 									  RELOPT_KIND_PARTITIONED,
-									  0, NULL, 0);
+									  sizeof(StdRdOptions), tab, lengthof(tab));
 }
 
 /*

@@ -229,6 +229,13 @@ typedef PageHeaderData *PageHeader;
 #define PageIsNew(page) (((PageHeader) (page))->pd_upper == 0)
 
 /*
+ * Page of temporary relation is not initialized
+ */
+#define GlobalTempRelationPageIsNotInitialized(rel, page) \
+	((rel)->rd_rel->relpersistence == RELPERSISTENCE_SESSION && PageIsNew(page))
+
+
+/*
  * PageGetItemId
  *		Returns an item identifier of a page.
  */

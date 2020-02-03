@@ -22,6 +22,13 @@ typedef int BackendId;			/* unique currently active backend identifier */
 
 #define InvalidBackendId		(-1)
 
+/*
+ * We need to distinguish local and global temporary relations by RelFileNodeBackend.
+ * The least invasive change is to add some special bias value to backend id (since 
+ * maximal number of backed is limited by MaxBackends).
+ */
+#define SessionRelFirstBackendId (0x40000000)
+
 extern PGDLLIMPORT BackendId MyBackendId;	/* backend id of this backend */
 
 /* backend id of our parallel session leader, or InvalidBackendId if none */
@@ -33,5 +40,13 @@ extern PGDLLIMPORT BackendId ParallelMasterBackendId;
  */
 #define BackendIdForTempRelations() \
 	(ParallelMasterBackendId == InvalidBackendId ? MyBackendId : ParallelMasterBackendId)
+
+
+#define BackendIdForSessionRelations() \
+	(BackendIdForTempRelations() + SessionRelFirstBackendId)
+
+#define IsSessionRelationBackendId(id) ((id) >= SessionRelFirstBackendId)
+
+#define GetRelationBackendId(id) ((id) & ~SessionRelFirstBackendId)
 
 #endif							/* BACKENDID_H */

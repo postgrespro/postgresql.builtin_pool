@@ -216,4 +216,8 @@ extern bool RelationSupportsSysCache(Oid relid);
 
 #define ReleaseSysCacheList(x)	ReleaseCatCacheList(x)
 
+
+extern void InsertSysCache(int cacheId, 
+						   Datum v1, Datum v2, Datum v3, Datum v4,
+						   HeapTuple tuple);
 #endif							/* SYSCACHE_H */

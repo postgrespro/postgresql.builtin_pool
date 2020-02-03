@@ -396,6 +396,9 @@ GetNewRelFileNode(Oid reltablespace, Relation pg_class, char relpersistence)
 		case RELPERSISTENCE_TEMP:
 			backend = BackendIdForTempRelations();
 			break;
+		case RELPERSISTENCE_SESSION:
+			backend = BackendIdForSessionRelations();
+			break;
 		case RELPERSISTENCE_UNLOGGED:
 		case RELPERSISTENCE_PERMANENT:
 			backend = InvalidBackendId;

@@ -40,6 +40,7 @@
 #include "commands/vacuum.h"
 #include "executor/executor.h"
 #include "foreign/fdwapi.h"
+#include "funcapi.h"
 #include "miscadmin.h"
 #include "nodes/nodeFuncs.h"
 #include "parser/parse_oper.h"
@@ -103,7 +104,7 @@ static int	acquire_inherited_sample_rows(Relation onerel, int elevel,
 										  HeapTuple *rows, int targrows,
 										  double *totalrows, double *totaldeadrows);
 static void update_attstats(Oid relid, bool inh,
-							int natts, VacAttrStats **vacattrstats);
+							int natts, VacAttrStats **vacattrstats, bool is_global_temp);
 static Datum std_fetch_func(VacAttrStatsP stats, int rownum, bool *isNull);
 static Datum ind_fetch_func(VacAttrStatsP stats, int rownum, bool *isNull);
 
@@ -323,6 +324,7 @@ do_analyze_rel(Relation onerel, VacuumParams *params,
 	Oid			save_userid;
 	int			save_sec_context;
 	int			save_nestlevel;
+	bool        is_global_temp = onerel->rd_rel->relpersistence == RELPERSISTENCE_SESSION;
 
 	if (inh)
 		ereport(elevel,
@@ -586,14 +588,14 @@ do_analyze_rel(Relation onerel, VacuumParams *params,
 		 * pg_statistic for columns we didn't process, we leave them alone.)
 		 */
 		update_attstats(RelationGetRelid(onerel), inh,
-						attr_cnt, vacattrstats);
+						attr_cnt, vacattrstats, is_global_temp);
 
 		for (ind = 0; ind < nindexes; ind++)
 		{
 			AnlIndexData *thisdata = &indexdata[ind];
 
 			update_attstats(RelationGetRelid(Irel[ind]), false,
-							thisdata->attr_cnt, thisdata->vacattrstats);
+							thisdata->attr_cnt, thisdata->vacattrstats, is_global_temp);
 		}
 
 		/*
@@ -1456,7 +1458,7 @@ acquire_inherited_sample_rows(Relation onerel, int elevel,
  *		by taking a self-exclusive lock on the relation in analyze_rel().
  */
 static void
-update_attstats(Oid relid, bool inh, int natts, VacAttrStats **vacattrstats)
+update_attstats(Oid relid, bool inh, int natts, VacAttrStats **vacattrstats, bool is_global_temp)
 {
 	Relation	sd;
 	int			attno;
@@ -1558,30 +1560,42 @@ update_attstats(Oid relid, bool inh, int natts, VacAttrStats **vacattrstats)
 			}
 		}
 
-		/* Is there already a pg_statistic tuple for this attribute? */
-		oldtup = SearchSysCache3(STATRELATTINH,
-								 ObjectIdGetDatum(relid),
-								 Int16GetDatum(stats->attr->attnum),
-								 BoolGetDatum(inh));
-
-		if (HeapTupleIsValid(oldtup))
+		if (is_global_temp)
 		{
-			/* Yes, replace it */
-			stup = heap_modify_tuple(oldtup,
-									 RelationGetDescr(sd),
-									 values,
-									 nulls,
-									 replaces);
-			ReleaseSysCache(oldtup);
-			CatalogTupleUpdate(sd, &stup->t_self, stup);
+			stup = heap_form_tuple(RelationGetDescr(sd), values, nulls);
+			InsertSysCache(STATRELATTINH,
+						   ObjectIdGetDatum(relid),
+						   Int16GetDatum(stats->attr->attnum),
+						   BoolGetDatum(inh),
+						   0,
+						   stup);
 		}
 		else
 		{
-			/* No, insert new tuple */
-			stup = heap_form_tuple(RelationGetDescr(sd), values, nulls);
-			CatalogTupleInsert(sd, stup);
-		}
+			/* Is there already a pg_statistic tuple for this attribute? */
+			oldtup = SearchSysCache3(STATRELATTINH,
+									 ObjectIdGetDatum(relid),
+									 Int16GetDatum(stats->attr->attnum),
+									 BoolGetDatum(inh));
 
+			if (HeapTupleIsValid(oldtup))
+			{
+				/* Yes, replace it */
+				stup = heap_modify_tuple(oldtup,
+										 RelationGetDescr(sd),
+										 values,
+										 nulls,
+										 replaces);
+				ReleaseSysCache(oldtup);
+				CatalogTupleUpdate(sd, &stup->t_self, stup);
+			}
+			else
+			{
+				/* No, insert new tuple */
+				stup = heap_form_tuple(RelationGetDescr(sd), values, nulls);
+				CatalogTupleInsert(sd, stup);
+			}
+		}
 		heap_freetuple(stup);
 	}
 
@@ -2889,4 +2903,73 @@ analyze_mcv_list(int *mcv_counts,
 		}
 	}
 	return num_mcv;
+}
+
+PG_FUNCTION_INFO_V1(pg_gtt_statistic_for_relation);
+
+typedef struct
+{
+	int staattnum;
+	bool stainherit;
+} PgTempStatIteratorCtx;
+
+Datum
+pg_gtt_statistic_for_relation(PG_FUNCTION_ARGS)
+{
+	Oid starelid = PG_GETARG_OID(0);
+	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
+	Tuplestorestate *tupstore;
+	MemoryContext per_query_ctx;
+	MemoryContext oldcontext;
+	TupleDesc	  tupdesc;
+	bool stainherit = false;
+
+	/* check to see if caller supports us returning a tuplestore */
+	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
+		elog(ERROR, "return type must be a row type");
+
+	/* check to see if caller supports us returning a tuplestore */
+	if (rsinfo == NULL || !IsA(rsinfo, ReturnSetInfo))
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("set-valued function called in context that cannot accept a set")));
+	if (!(rsinfo->allowedModes & SFRM_Materialize))
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("materialize mode required, but it is not " \
+						"allowed in this context")));
+
+	/* Build tuplestore to hold the result rows */
+	per_query_ctx = rsinfo->econtext->ecxt_per_query_memory;
+	oldcontext = MemoryContextSwitchTo(per_query_ctx);
+
+	/* Build a tuple descriptor for our result type */
+
+	tupstore = tuplestore_begin_heap(true, false, work_mem);
+	rsinfo->returnMode = SFRM_Materialize;
+	rsinfo->setResult = tupstore;
+	rsinfo->setDesc = tupdesc;
+
+	do
+	{
+		int staattnum = 0;
+		while (true)
+		{
+			HeapTuple statup = SearchSysCacheCopy3(STATRELATTINH,
+												   ObjectIdGetDatum(starelid),
+												   Int16GetDatum(++staattnum),
+												   BoolGetDatum(stainherit));
+			if (statup != NULL)
+				tuplestore_puttuple(tupstore, statup);
+			else
+				break;
+		}
+		stainherit = !stainherit;
+	} while (stainherit);
+
+	MemoryContextSwitchTo(oldcontext);
+ 
+	tuplestore_donestoring(tupstore);
+
+	return (Datum) 0;
 }

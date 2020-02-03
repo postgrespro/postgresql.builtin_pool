@@ -15635,8 +15635,8 @@ dumpTableSchema(Archive *fout, TableInfo *tbinfo)
 											 tbinfo->dobj.catId.oid, false);
 
 		appendPQExpBuffer(q, "CREATE %s%s %s",
-						  tbinfo->relpersistence == RELPERSISTENCE_UNLOGGED ?
-						  "UNLOGGED " : "",
+						  tbinfo->relpersistence == RELPERSISTENCE_UNLOGGED ? "UNLOGGED "
+						  : tbinfo->relpersistence == RELPERSISTENCE_SESSION ? "SESSION " : "",
 						  reltypename,
 						  qualrelname);
 

@@ -27,12 +27,14 @@
 
 #include "access/xlog.h"
 #include "access/xlogutils.h"
+#include "commands/tablecmds.h"
 #include "commands/tablespace.h"
 #include "miscadmin.h"
 #include "pg_trace.h"
 #include "pgstat.h"
 #include "postmaster/bgwriter.h"
 #include "storage/bufmgr.h"
+#include "storage/ipc.h"
 #include "storage/fd.h"
 #include "storage/md.h"
 #include "storage/relfilenode.h"
@@ -40,6 +42,7 @@
 #include "storage/sync.h"
 #include "utils/hsearch.h"
 #include "utils/memutils.h"
+#include "utils/rel.h"
 
 /*
  *	The magnetic disk storage manager keeps track of open file
@@ -87,6 +90,19 @@ typedef struct _MdfdVec
 
 static MemoryContext MdCxt;		/* context for all MdfdVec objects */
 
+/*
+ * Structure used to collect information created by this backend.
+ * Data of this related should be deleted on backend exit.
+ */
+typedef struct SessionRelation
+{
+	RelFileNodeBackend rnode;
+	ForkNumber forknum;
+	struct SessionRelation* next;
+} SessionRelation;
+
+
+static SessionRelation* SessionRelations;
 
 /* Populate a file tag describing an md.c segment file. */
 #define INIT_MD_FILETAG(a,xx_rnode,xx_forknum,xx_segno) \
@@ -150,6 +166,60 @@ mdinit(void)
 	MdCxt = AllocSetContextCreate(TopMemoryContext,
 								  "MdSmgr",
 								  ALLOCSET_DEFAULT_SIZES);
+}
+
+
+/*
+ * Delete all data of session relations and remove their pages from shared buffers.
+ * This function is called on backend exit.
+ */
+static void
+TruncateSessionRelations(int code, Datum arg)
+{
+	SessionRelation* rel;
+	for (rel = SessionRelations; rel != NULL; rel = rel->next)
+	{
+		/* Delete relation files */
+		mdunlink(rel->rnode, rel->forknum, false);
+	}
+}
+
+/*
+ * Maintain information about session relations accessed by this backend.
+ * This list is needed to perform cleanup on backend exit.
+ * Session relation is linked in this list when this relation is created or opened and file doesn't exist.
+ * Such procedure guarantee that each relation is linked into list only once.
+ */
+static void
+RegisterSessionRelation(SMgrRelation reln, ForkNumber forknum)
+{
+	SessionRelation* rel = (SessionRelation*)MemoryContextAlloc(TopMemoryContext, sizeof(SessionRelation));
+
+	/*
+	 * Perform session relation cleanup on backend exit. We are using shared memory hook, because
+	 * cleanup should be performed before backend is disconnected from shared memory.
+	 */
+	if (SessionRelations == NULL)
+		on_shmem_exit(TruncateSessionRelations, 0);
+
+	rel->rnode = reln->smgr_rnode;
+	rel->forknum = forknum;
+	rel->next = SessionRelations;
+	SessionRelations = rel;
+}
+
+static void
+RegisterOnCommitAction(SMgrRelation reln, ForkNumber forknum)
+{
+	if (reln->smgr_owner && forknum == MAIN_FORKNUM)
+	{
+		Relation rel = (Relation)((char*)reln->smgr_owner - offsetof(RelationData, rd_smgr));
+		if (rel->rd_options
+			&& ((StdRdOptions *)rel->rd_options)->on_commit_delete_rows)
+		{
+			register_on_commit_action(rel->rd_id, ONCOMMIT_DELETE_ROWS);
+		}
+	}
 }
 
 /*
@@ -218,6 +288,8 @@ mdcreate(SMgrRelation reln, ForkNumber forkNum, bool isRedo)
 					 errmsg("could not create file \"%s\": %m", path)));
 		}
 	}
+	if (RelFileNodeBackendIsGlobalTemp(reln->smgr_rnode))
+		RegisterSessionRelation(reln, forkNum);
 
 	pfree(path);
 
@@ -465,6 +537,21 @@ mdopenfork(SMgrRelation reln, ForkNumber forknum, int behavior)
 
 	if (fd < 0)
 	{
+		/*
+		 * In case of session relation access, there may be no yet files of this relation for this backend.
+		 * If so, then create file and register session relation for truncation on backend exit.
+		 */
+		if (RelFileNodeBackendIsGlobalTemp(reln->smgr_rnode))
+		{
+			fd = PathNameOpenFile(path, O_RDWR | PG_BINARY | O_CREAT);
+			if (fd >= 0)
+			{
+				RegisterSessionRelation(reln, forknum);
+				if (!(behavior & EXTENSION_RETURN_NULL))
+					RegisterOnCommitAction(reln, forknum);
+				goto NewSegment;
+			}
+		}
 		if ((behavior & EXTENSION_RETURN_NULL) &&
 			FILE_POSSIBLY_DELETED(errno))
 		{
@@ -476,6 +563,7 @@ mdopenfork(SMgrRelation reln, ForkNumber forknum, int behavior)
 				 errmsg("could not open file \"%s\": %m", path)));
 	}
 
+  NewSegment:
 	pfree(path);
 
 	_fdvec_resize(reln, forknum, 1);
@@ -599,7 +687,7 @@ mdwriteback(SMgrRelation reln, ForkNumber forknum,
  */
 void
 mdread(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
-	   char *buffer)
+	   char *buffer, bool skipInit)
 {
 	off_t		seekpos;
 	int			nbytes;
@@ -644,8 +732,13 @@ mdread(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
 		 * complaining.  This allows, for example, the case of trying to
 		 * update a block that was later truncated away.
 		 */
-		if (zero_damaged_pages || InRecovery)
+		if (zero_damaged_pages || InRecovery || RelFileNodeBackendIsGlobalTemp(reln->smgr_rnode))
+		{
 			MemSet(buffer, 0, BLCKSZ);
+			/* In case of session relation we need to write zero page to provide correct result of subsequent mdnblocks */
+			if (RelFileNodeBackendIsGlobalTemp(reln->smgr_rnode) && !skipInit)
+				mdwrite(reln, forknum, blocknum, buffer, true);
+		}
 		else
 			ereport(ERROR,
 					(errcode(ERRCODE_DATA_CORRUPTED),
@@ -735,7 +828,8 @@ mdnblocks(SMgrRelation reln, ForkNumber forknum)
 	BlockNumber segno = 0;
 
 	/* mdopen has opened the first segment */
-	Assert(reln->md_num_open_segs[forknum] > 0);
+	if (reln->md_num_open_segs[forknum] == 0)
+		return 0;
 
 	/*
 	 * Start from the last open segments, to avoid redundant seeks.  We have

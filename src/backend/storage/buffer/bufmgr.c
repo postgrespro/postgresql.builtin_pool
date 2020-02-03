@@ -429,7 +429,7 @@ ForgetPrivateRefCountEntry(PrivateRefCountEntry *ref)
 )
 
 
-static Buffer ReadBuffer_common(SMgrRelation reln, char relpersistence,
+static Buffer ReadBuffer_common(SMgrRelation reln, char relpersistence, char relkind,
 								ForkNumber forkNum, BlockNumber blockNum,
 								ReadBufferMode mode, BufferAccessStrategy strategy,
 								bool *hit);
@@ -663,7 +663,7 @@ ReadBufferExtended(Relation reln, ForkNumber forkNum, BlockNumber blockNum,
 	 * miss.
 	 */
 	pgstat_count_buffer_read(reln);
-	buf = ReadBuffer_common(reln->rd_smgr, reln->rd_rel->relpersistence,
+	buf = ReadBuffer_common(reln->rd_smgr, reln->rd_rel->relpersistence, reln->rd_rel->relkind,
 							forkNum, blockNum, mode, strategy, &hit);
 	if (hit)
 		pgstat_count_buffer_hit(reln);
@@ -691,7 +691,7 @@ ReadBufferWithoutRelcache(RelFileNode rnode, ForkNumber forkNum,
 
 	Assert(InRecovery);
 
-	return ReadBuffer_common(smgr, RELPERSISTENCE_PERMANENT, forkNum, blockNum,
+	return ReadBuffer_common(smgr, RELPERSISTENCE_PERMANENT, RELKIND_RELATION, forkNum, blockNum,
 							 mode, strategy, &hit);
 }
 
@@ -702,7 +702,7 @@ ReadBufferWithoutRelcache(RelFileNode rnode, ForkNumber forkNum,
  * *hit is set to true if the request was satisfied from shared buffer cache.
  */
 static Buffer
-ReadBuffer_common(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
+ReadBuffer_common(SMgrRelation smgr, char relpersistence, char relkind, ForkNumber forkNum,
 				  BlockNumber blockNum, ReadBufferMode mode,
 				  BufferAccessStrategy strategy, bool *hit)
 {
@@ -895,7 +895,8 @@ ReadBuffer_common(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 			if (track_io_timing)
 				INSTR_TIME_SET_CURRENT(io_start);
 
-			smgrread(smgr, forkNum, blockNum, (char *) bufBlock);
+			smgrread(smgr, forkNum, blockNum, (char *) bufBlock,
+					 relkind == RELKIND_INDEX);
 
 			if (track_io_timing)
 			{
@@ -2943,7 +2944,7 @@ DropRelFileNodeBuffers(RelFileNodeBackend rnode, ForkNumber *forkNum,
 	/* If it's a local relation, it's localbuf.c's problem. */
 	if (RelFileNodeBackendIsTemp(rnode))
 	{
-		if (rnode.backend == MyBackendId)
+		if (GetRelationBackendId(rnode.backend) == MyBackendId)
 		{
 			for (j = 0; j < nforks; j++)
 				DropRelFileNodeLocalBuffers(rnode.node, forkNum[j],

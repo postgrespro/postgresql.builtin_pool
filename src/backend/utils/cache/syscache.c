@@ -1156,6 +1156,16 @@ SearchSysCache4(int cacheId,
 	return SearchCatCache4(SysCache[cacheId], key1, key2, key3, key4);
 }
 
+void
+InsertSysCache(int cacheId,
+			   Datum key1, Datum key2, Datum key3, Datum key4,
+			   HeapTuple value)
+{
+	Assert(cacheId >= 0 && cacheId < SysCacheSize &&
+		   PointerIsValid(SysCache[cacheId]));
+	InsertCatCache(SysCache[cacheId], key1, key2, key3, key4, value);
+}
+
 /*
  * ReleaseSysCache
  *		Release previously grabbed reference count on a tuple

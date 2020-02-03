@@ -28,6 +28,7 @@
 #include "catalog/catalog.h"
 #include "catalog/dependency.h"
 #include "catalog/heap.h"
+#include "catalog/index.h"
 #include "catalog/pg_am.h"
 #include "catalog/pg_proc.h"
 #include "catalog/pg_statistic_ext.h"
@@ -46,6 +47,7 @@
 #include "rewrite/rewriteManip.h"
 #include "statistics/statistics.h"
 #include "storage/bufmgr.h"
+#include "storage/buf_internals.h"
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
 #include "utils/partcache.h"
@@ -80,6 +82,28 @@ static void set_baserel_partition_key_exprs(Relation relation,
 static void set_baserel_partition_constraint(Relation relation,
 											 RelOptInfo *rel);
 
+static bool
+index_is_valid(Relation index)
+{
+	if (!index->rd_index->indisvalid)
+		return false;
+
+	if (index->rd_rel->relpersistence == RELPERSISTENCE_SESSION)
+	{
+		Buffer metapage = ReadBuffer(index, 0);
+		bool isNew = PageIsNew(BufferGetPage(metapage));
+		ReleaseBuffer(metapage);
+		DropRelFileNodeAllLocalBuffers(index->rd_smgr->smgr_rnode.node);
+		if (isNew)
+		{
+			Relation heap = RelationIdGetRelation(index->rd_index->indrelid);
+			index->rd_indam->ambuild(heap, index,
+									 BuildIndexInfo(index));
+			RelationClose(heap);
+		}
+	}
+	return true;
+}
 
 /*
  * get_relation_info -
@@ -205,7 +229,7 @@ get_relation_info(PlannerInfo *root, Oid relationObjectId, bool inhparent,
 			 * still needs to insert into "invalid" indexes, if they're marked
 			 * indisready.
 			 */
-			if (!index->indisvalid)
+			if (!index_is_valid(indexRelation))
 			{
 				index_close(indexRelation, NoLock);
 				continue;
@@ -704,7 +728,7 @@ infer_arbiter_indexes(PlannerInfo *root)
 		idxRel = index_open(indexoid, rte->rellockmode);
 		idxForm = idxRel->rd_index;
 
-		if (!idxForm->indisvalid)
+		if (!index_is_valid(idxRel))
 			goto next;
 
 		/*

@@ -178,7 +178,7 @@ pg_prewarm(PG_FUNCTION_ARGS)
 		for (block = first_block; block <= last_block; ++block)
 		{
 			CHECK_FOR_INTERRUPTS();
-			smgrread(rel->rd_smgr, forkNumber, block, blockbuffer.data);
+			smgrread(rel->rd_smgr, forkNumber, block, blockbuffer.data, false);
 			++blocks_done;
 		}
 	}

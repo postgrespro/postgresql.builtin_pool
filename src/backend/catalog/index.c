@@ -3707,7 +3707,7 @@ reindex_relation(Oid relid, int flags, int options)
 		if (flags & REINDEX_REL_FORCE_INDEXES_UNLOGGED)
 			persistence = RELPERSISTENCE_UNLOGGED;
 		else if (flags & REINDEX_REL_FORCE_INDEXES_PERMANENT)
-			persistence = RELPERSISTENCE_PERMANENT;
+			persistence = rel->rd_rel->relpersistence == RELPERSISTENCE_SESSION ? RELPERSISTENCE_SESSION : RELPERSISTENCE_PERMANENT;
 		else
 			persistence = rel->rd_rel->relpersistence;
 

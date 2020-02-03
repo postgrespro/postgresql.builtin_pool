@@ -12,6 +12,9 @@
  *
  *-------------------------------------------------------------------------
  */
+#include <sys/stat.h>
+#include <unistd.h>
+
 #include "postgres.h"
 
 #include "access/attmap.h"
@@ -555,6 +558,23 @@ static List *GetParentedForeignKeyRefs(Relation partition);
 static void ATDetachCheckNoForeignKeyRefs(Relation partition);
 
 
+static bool
+has_oncommit_option(List *options)
+{
+	ListCell   *listptr;
+
+	foreach(listptr, options)
+	{
+		DefElem    *def = (DefElem *) lfirst(listptr);
+
+		if (pg_strcasecmp(def->defname, "on_commit_delete_rows") == 0)
+			return true;
+	}
+
+	return false;
+}
+
+
 /* ----------------------------------------------------------------
  *		DefineRelation
  *				Creates a new relation.
@@ -598,6 +618,7 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 	LOCKMODE	parentLockmode;
 	const char *accessMethod = NULL;
 	Oid			accessMethodId = InvalidOid;
+	bool		has_oncommit_clause = false;
 
 	/*
 	 * Truncate relname to appropriate length (probably a waste of time, as
@@ -609,7 +630,7 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 	 * Check consistency of arguments
 	 */
 	if (stmt->oncommit != ONCOMMIT_NOOP
-		&& stmt->relation->relpersistence != RELPERSISTENCE_TEMP)
+		&& !IsLocalRelpersistence(stmt->relation->relpersistence))
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_TABLE_DEFINITION),
 				 errmsg("ON COMMIT can only be used on temporary tables")));
@@ -633,17 +654,6 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 	 */
 	namespaceId =
 		RangeVarGetAndCheckCreationNamespace(stmt->relation, NoLock, NULL);
-
-	/*
-	 * Security check: disallow creating temp tables from security-restricted
-	 * code.  This is needed because calling code might not expect untrusted
-	 * tables to appear in pg_temp at the front of its search path.
-	 */
-	if (stmt->relation->relpersistence == RELPERSISTENCE_TEMP
-		&& InSecurityRestrictedOperation())
-		ereport(ERROR,
-				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-				 errmsg("cannot create temporary table within security-restricted operation")));
 
 	/*
 	 * Determine the lockmode to use when scanning parents.  A self-exclusive
@@ -740,6 +750,38 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 	/*
 	 * Parse and validate reloptions, if any.
 	 */
+	/* global temp table */
+	has_oncommit_clause = has_oncommit_option(stmt->options);
+	if (stmt->relation->relpersistence == RELPERSISTENCE_SESSION)
+	{
+		if (has_oncommit_clause)
+		{
+			if (stmt->oncommit != ONCOMMIT_NOOP)
+				elog(ERROR, "can not defeine global temp table with on commit and with clause at same time");
+		}
+		else if (stmt->oncommit != ONCOMMIT_NOOP)
+		{
+			DefElem *opt = makeNode(DefElem);
+
+			opt->type = T_DefElem;
+			opt->defnamespace = NULL;
+			opt->defname = "on_commit_delete_rows";
+			opt->defaction = DEFELEM_UNSPEC;
+
+			/* use reloptions to remember on commit clause */
+			if (stmt->oncommit == ONCOMMIT_DELETE_ROWS)
+				opt->arg  = (Node *)makeString("true");
+			else if (stmt->oncommit == ONCOMMIT_PRESERVE_ROWS)
+				opt->arg  = (Node *)makeString("false");
+			else
+				elog(ERROR, "global temp table not support on commit drop clause");
+
+			stmt->options = lappend(stmt->options, opt);
+		}
+	}
+	else if (has_oncommit_clause)
+		elog(ERROR, "regular table cannot specifie on_commit_delete_rows");
+
 	reloptions = transformRelOptions((Datum) 0, stmt->options, NULL, validnsps,
 									 true, false);
 
@@ -1824,7 +1866,8 @@ ExecuteTruncateGuts(List *explicit_rels, List *relids, List *relids_logged,
 		 * table or the current physical file to be thrown away anyway.
 		 */
 		if (rel->rd_createSubid == mySubid ||
-			rel->rd_newRelfilenodeSubid == mySubid)
+			rel->rd_newRelfilenodeSubid == mySubid ||
+			rel->rd_rel->relpersistence == RELPERSISTENCE_SESSION)
 		{
 			/* Immediate, non-rollbackable truncation is OK */
 			heap_truncate_one_rel(rel);
@@ -3511,6 +3554,26 @@ AlterTableLookupRelation(AlterTableStmt *stmt, LOCKMODE lockmode)
 									(void *) stmt);
 }
 
+
+static bool
+CheckGlobalTempTableNotInUse(Relation rel)
+{
+	int id;
+	for (id = 1; id <= MaxBackends; id++)
+	{
+		if (id != MyBackendId)
+		{
+			struct stat fst;
+			char* path = relpathbackend(rel->rd_node, id, MAIN_FORKNUM);
+			int rc = stat(path, &fst);
+			pfree(path);
+			if (rc == 0 && fst.st_size != 0)
+				return false;
+		}
+	}
+	return true;
+}
+
 /*
  * AlterTable
  *		Execute ALTER TABLE, which can be a list of subcommands
@@ -3568,6 +3631,9 @@ AlterTable(AlterTableStmt *stmt, LOCKMODE lockmode,
 	rel = relation_open(context->relid, NoLock);
 
 	CheckTableNotInUse(rel, "ALTER TABLE");
+	if (rel->rd_rel->relpersistence == RELPERSISTENCE_SESSION
+		&& !CheckGlobalTempTableNotInUse(rel))
+		elog(ERROR, "Global temp table used by active backends can not be altered");
 
 	ATController(stmt, rel, stmt->cmds, stmt->relation->inh, lockmode, context);
 }
@@ -8168,6 +8234,12 @@ ATAddForeignKeyConstraint(List **wqueue, AlteredTableInfo *tab, Relation rel,
 				ereport(ERROR,
 						(errcode(ERRCODE_INVALID_TABLE_DEFINITION),
 						 errmsg("constraints on unlogged tables may reference only permanent or unlogged tables")));
+			break;
+		case RELPERSISTENCE_SESSION:
+			if (pkrel->rd_rel->relpersistence != RELPERSISTENCE_SESSION)
+				ereport(ERROR,
+						(errcode(ERRCODE_INVALID_TABLE_DEFINITION),
+						 errmsg("constraints on session tables may reference only session tables")));
 			break;
 		case RELPERSISTENCE_TEMP:
 			if (pkrel->rd_rel->relpersistence != RELPERSISTENCE_TEMP)
@@ -14629,6 +14701,13 @@ ATPrepChangePersistence(Relation rel, bool toLogged)
 							RelationGetRelationName(rel)),
 					 errtable(rel)));
 			break;
+		case RELPERSISTENCE_SESSION:
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_TABLE_DEFINITION),
+					 errmsg("cannot change logged status of session table \"%s\"",
+							RelationGetRelationName(rel)),
+					 errtable(rel)));
+			break;
 		case RELPERSISTENCE_PERMANENT:
 			if (toLogged)
 				/* nothing to do */
@@ -15116,14 +15195,7 @@ PreCommit_on_commit_actions(void)
 				/* Do nothing (there shouldn't be such entries, actually) */
 				break;
 			case ONCOMMIT_DELETE_ROWS:
-
-				/*
-				 * If this transaction hasn't accessed any temporary
-				 * relations, we can skip truncating ON COMMIT DELETE ROWS
-				 * tables, as they must still be empty.
-				 */
-				if ((MyXactFlags & XACT_FLAGS_ACCESSEDTEMPNAMESPACE))
-					oids_to_truncate = lappend_oid(oids_to_truncate, oc->relid);
+				oids_to_truncate = lappend_oid(oids_to_truncate, oc->relid);
 				break;
 			case ONCOMMIT_DROP:
 				oids_to_drop = lappend_oid(oids_to_drop, oc->relid);

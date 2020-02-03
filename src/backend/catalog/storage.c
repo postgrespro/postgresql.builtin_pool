@@ -92,6 +92,10 @@ RelationCreateStorage(RelFileNode rnode, char relpersistence)
 			backend = InvalidBackendId;
 			needs_wal = false;
 			break;
+		case RELPERSISTENCE_SESSION:
+			backend = BackendIdForSessionRelations();
+			needs_wal = false;
+			break;
 		case RELPERSISTENCE_PERMANENT:
 			backend = InvalidBackendId;
 			needs_wal = true;
@@ -367,7 +371,7 @@ RelationCopyStorage(SMgrRelation src, SMgrRelation dst,
 		/* If we got a cancel signal during the copy of the data, quit */
 		CHECK_FOR_INTERRUPTS();
 
-		smgrread(src, forkNum, blkno, buf.data);
+		smgrread(src, forkNum, blkno, buf.data, false);
 
 		if (!PageIsVerified(page, blkno))
 			ereport(ERROR,

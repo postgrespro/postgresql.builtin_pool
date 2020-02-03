@@ -94,7 +94,7 @@ static HTAB *seqhashtab = NULL; /* hash table for SeqTable items */
  */
 static SeqTableData *last_used_seq = NULL;
 
-static void fill_seq_with_data(Relation rel, HeapTuple tuple);
+static void fill_seq_with_data(Relation rel, HeapTuple tuple, Buffer buf);
 static Relation lock_and_open_sequence(SeqTable seq);
 static void create_seq_hashtable(void);
 static void init_sequence(Oid relid, SeqTable *p_elm, Relation *p_rel);
@@ -222,7 +222,7 @@ DefineSequence(ParseState *pstate, CreateSeqStmt *seq)
 
 	/* now initialize the sequence's data */
 	tuple = heap_form_tuple(tupDesc, value, null);
-	fill_seq_with_data(rel, tuple);
+	fill_seq_with_data(rel, tuple, InvalidBuffer);
 
 	/* process OWNED BY if given */
 	if (owned_by)
@@ -327,7 +327,7 @@ ResetSequence(Oid seq_relid)
 	/*
 	 * Insert the modified tuple into the new storage file.
 	 */
-	fill_seq_with_data(seq_rel, tuple);
+	fill_seq_with_data(seq_rel, tuple, InvalidBuffer);
 
 	/* Clear local cache so that we don't think we have cached numbers */
 	/* Note that we do not change the currval() state */
@@ -340,18 +340,21 @@ ResetSequence(Oid seq_relid)
  * Initialize a sequence's relation with the specified tuple as content
  */
 static void
-fill_seq_with_data(Relation rel, HeapTuple tuple)
+fill_seq_with_data(Relation rel, HeapTuple tuple, Buffer buf)
 {
-	Buffer		buf;
 	Page		page;
 	sequence_magic *sm;
 	OffsetNumber offnum;
+	bool lockBuffer = false;
 
 	/* Initialize first page of relation with special magic number */
 
-	buf = ReadBuffer(rel, P_NEW);
-	Assert(BufferGetBlockNumber(buf) == 0);
-
+	if (buf == InvalidBuffer)
+	{
+		buf = ReadBuffer(rel, P_NEW);
+		Assert(BufferGetBlockNumber(buf) == 0);
+		lockBuffer = true;
+	}
 	page = BufferGetPage(buf);
 
 	PageInit(page, BufferGetPageSize(buf), sizeof(sequence_magic));
@@ -360,7 +363,8 @@ fill_seq_with_data(Relation rel, HeapTuple tuple)
 
 	/* Now insert sequence tuple */
 
-	LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
+	if (lockBuffer)
+		LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
 
 	/*
 	 * Since VACUUM does not process sequences, we have to force the tuple to
@@ -410,7 +414,8 @@ fill_seq_with_data(Relation rel, HeapTuple tuple)
 
 	END_CRIT_SECTION();
 
-	UnlockReleaseBuffer(buf);
+	if (lockBuffer)
+		UnlockReleaseBuffer(buf);
 }
 
 /*
@@ -502,7 +507,7 @@ AlterSequence(ParseState *pstate, AlterSeqStmt *stmt)
 		/*
 		 * Insert the modified tuple into the new storage file.
 		 */
-		fill_seq_with_data(seqrel, newdatatuple);
+		fill_seq_with_data(seqrel, newdatatuple, InvalidBuffer);
 	}
 
 	/* process OWNED BY if given */
@@ -1178,6 +1183,17 @@ read_seq_tuple(Relation rel, Buffer *buf, HeapTuple seqdatatuple)
 	LockBuffer(*buf, BUFFER_LOCK_EXCLUSIVE);
 
 	page = BufferGetPage(*buf);
+	if (GlobalTempRelationPageIsNotInitialized(rel, page))
+	{
+		/* Initialize sequence for global temporary tables */
+		Datum		value[SEQ_COL_LASTCOL] = {0};
+		bool		null[SEQ_COL_LASTCOL] = {false};
+		HeapTuple tuple;
+		value[SEQ_COL_LASTVAL-1] = Int64GetDatumFast(1); /* start sequence with 1 */
+		tuple = heap_form_tuple(RelationGetDescr(rel), value, null);
+		fill_seq_with_data(rel, tuple, *buf);
+	}
+
 	sm = (sequence_magic *) PageGetSpecialPointer(page);
 
 	if (sm->magic != SEQ_MAGIC)

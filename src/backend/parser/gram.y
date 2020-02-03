@@ -3288,20 +3288,11 @@ OptTemp:	TEMPORARY					{ $$ = RELPERSISTENCE_TEMP; }
 			| TEMP						{ $$ = RELPERSISTENCE_TEMP; }
 			| LOCAL TEMPORARY			{ $$ = RELPERSISTENCE_TEMP; }
 			| LOCAL TEMP				{ $$ = RELPERSISTENCE_TEMP; }
-			| GLOBAL TEMPORARY
-				{
-					ereport(WARNING,
-							(errmsg("GLOBAL is deprecated in temporary table creation"),
-							 parser_errposition(@1)));
-					$$ = RELPERSISTENCE_TEMP;
-				}
-			| GLOBAL TEMP
-				{
-					ereport(WARNING,
-							(errmsg("GLOBAL is deprecated in temporary table creation"),
-							 parser_errposition(@1)));
-					$$ = RELPERSISTENCE_TEMP;
-				}
+			| GLOBAL TEMPORARY          { $$ = RELPERSISTENCE_SESSION; }
+			| GLOBAL TEMP               { $$ = RELPERSISTENCE_SESSION; }
+			| SESSION                   { $$ = RELPERSISTENCE_SESSION; }
+			| SESSION TEMPORARY         { $$ = RELPERSISTENCE_SESSION; }
+			| SESSION TEMP              { $$ = RELPERSISTENCE_SESSION; }
 			| UNLOGGED					{ $$ = RELPERSISTENCE_UNLOGGED; }
 			| /*EMPTY*/					{ $$ = RELPERSISTENCE_PERMANENT; }
 		;

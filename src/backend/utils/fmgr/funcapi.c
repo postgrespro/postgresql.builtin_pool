@@ -18,6 +18,7 @@
 #include "catalog/namespace.h"
 #include "catalog/pg_proc.h"
 #include "catalog/pg_type.h"
+#include "catalog/pg_statistic_d.h"
 #include "funcapi.h"
 #include "nodes/nodeFuncs.h"
 #include "parser/parse_coerce.h"
@@ -30,6 +31,13 @@
 #include "utils/syscache.h"
 #include "utils/typcache.h"
 
+/*
+ * TODO: find less ugly way to declare core function returning pg_statistics.
+ * OID of pg_gtt_statistic_for_relation. This function should be handled in special way because it returns set of pg_statistics
+ * which contains attributes of anyarray type. Type of attributes can not be deduced from input parameters and
+ * it prevents using tuple descriptor in this case.
+ */
+#define GttStatisticFunctionId 3434
 
 static void shutdown_MultiFuncCall(Datum arg);
 static TypeFuncClass internal_get_result_type(Oid funcid,
@@ -341,7 +349,8 @@ internal_get_result_type(Oid funcid,
 
 		if (resolve_polymorphic_tupdesc(tupdesc,
 										&procform->proargtypes,
-										call_expr))
+										call_expr) ||
+			funcid == GttStatisticFunctionId)
 		{
 			if (tupdesc->tdtypeid == RECORDOID &&
 				tupdesc->tdtypmod < 0)

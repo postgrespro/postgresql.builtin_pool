@@ -172,6 +172,8 @@ test: limit
 test: plpgsql
 test: copy2
 test: temp
+test: global_temp
+test: session_table
 test: domain
 test: rangefuncs
 test: prepare
