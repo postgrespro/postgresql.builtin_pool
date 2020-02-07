@@ -33,9 +33,11 @@
 #include <sys/file.h>
 #include <unistd.h>
 
+#include "access/amapi.h"
 #include "access/tableam.h"
 #include "access/xlog.h"
 #include "catalog/catalog.h"
+#include "catalog/index.h"
 #include "catalog/storage.h"
 #include "executor/instrument.h"
 #include "lib/binaryheap.h"
@@ -4423,4 +4425,20 @@ TestForOldSnapshot_impl(Snapshot snapshot, Relation relation)
 		ereport(ERROR,
 				(errcode(ERRCODE_SNAPSHOT_TOO_OLD),
 				 errmsg("snapshot too old")));
+}
+
+void InitGTTIndexes(Relation index)
+{
+	Buffer metapage = ReadBuffer(index, 0);
+	bool isNew = PageIsNew(BufferGetPage(metapage));
+	Assert(index->rd_rel->relpersistence == RELPERSISTENCE_SESSION);
+	ReleaseBuffer(metapage);
+	if (isNew)
+	{
+		Relation heap;
+		DropRelFileNodeAllLocalBuffers(index->rd_smgr->smgr_rnode.node);
+		heap = RelationIdGetRelation(index->rd_index->indrelid);
+		index->rd_indam->ambuild(heap, index, BuildIndexInfo(index));
+		RelationClose(heap);
+	}
 }

@@ -28,7 +28,6 @@
 #include "catalog/catalog.h"
 #include "catalog/dependency.h"
 #include "catalog/heap.h"
-#include "catalog/index.h"
 #include "catalog/pg_am.h"
 #include "catalog/pg_proc.h"
 #include "catalog/pg_statistic_ext.h"
@@ -47,7 +46,6 @@
 #include "rewrite/rewriteManip.h"
 #include "statistics/statistics.h"
 #include "storage/bufmgr.h"
-#include "storage/buf_internals.h"
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
 #include "utils/partcache.h"
@@ -87,21 +85,8 @@ is_index_valid(Relation index)
 {
 	if (!index->rd_index->indisvalid)
 		return false;
-
 	if (index->rd_rel->relpersistence == RELPERSISTENCE_SESSION)
-	{
-		Buffer metapage = ReadBuffer(index, 0);
-		bool isNew = PageIsNew(BufferGetPage(metapage));
-		ReleaseBuffer(metapage);
-		if (isNew)
-		{
-			Relation heap;
-			DropRelFileNodeAllLocalBuffers(index->rd_smgr->smgr_rnode.node);
-			heap = RelationIdGetRelation(index->rd_index->indrelid);
-			index->rd_indam->ambuild(heap, index, BuildIndexInfo(index));
-			RelationClose(heap);
-		}
-	}
+		InitGTTIndexes(index);
 	return true;
 }
 

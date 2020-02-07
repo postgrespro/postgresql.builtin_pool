@@ -231,6 +231,7 @@ extern void TestForOldSnapshot_impl(Snapshot snapshot, Relation relation);
 extern BufferAccessStrategy GetAccessStrategy(BufferAccessStrategyType btype);
 extern void FreeAccessStrategy(BufferAccessStrategy strategy);
 
+extern void InitGTTIndexes(Relation rel);
 
 /* inline functions */
 
