@@ -354,7 +354,6 @@ ExecInsert(ModifyTableState *mtstate,
 	ModifyTable *node = (ModifyTable *) mtstate->ps.plan;
 	OnConflictAction onconflict = node->onConflictAction;
 
-	if (resultRelInfo->ri_NumIndices > 0)
 	ExecMaterializeSlot(slot);
 
 	/*
