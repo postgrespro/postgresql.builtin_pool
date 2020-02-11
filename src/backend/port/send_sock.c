@@ -130,7 +130,7 @@ pg_recv_sock(pgsocket chan)
 	return s;
 #else
 	pgsocket	sock;
-	char		c_buffer[CMSG_LEN(sizeof(sock))];
+	char		c_buffer[CMSG_SPACE(sizeof(sock))];
 	char		m_buffer[1];
 	struct msghdr msg = {0};
 	struct iovec io;
