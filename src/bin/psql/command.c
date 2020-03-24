@@ -1,12 +1,11 @@
 /*
  * psql - the PostgreSQL interactive terminal
  *
- * Copyright (c) 2000-2019, PostgreSQL Global Development Group
+ * Copyright (c) 2000-2020, PostgreSQL Global Development Group
  *
  * src/bin/psql/command.c
  */
 #include "postgres_fe.h"
-#include "command.h"
 
 #include <ctype.h>
 #include <time.h>
@@ -24,22 +23,22 @@
 #endif
 
 #include "catalog/pg_class_d.h"
-#include "portability/instr_time.h"
-
-#include "libpq-fe.h"
-#include "pqexpbuffer.h"
-#include "common/logging.h"
-#include "fe_utils/print.h"
-#include "fe_utils/string_utils.h"
-
+#include "command.h"
 #include "common.h"
+#include "common/logging.h"
 #include "copy.h"
 #include "crosstabview.h"
 #include "describe.h"
+#include "fe_utils/cancel.h"
+#include "fe_utils/print.h"
+#include "fe_utils/string_utils.h"
 #include "help.h"
 #include "input.h"
 #include "large_obj.h"
+#include "libpq-fe.h"
 #include "mainloop.h"
+#include "portability/instr_time.h"
+#include "pqexpbuffer.h"
 #include "psqlscanslash.h"
 #include "settings.h"
 #include "variables.h"
@@ -722,7 +721,38 @@ exec_command_d(PsqlScanState scan_state, bool active_branch, const char *cmd)
 					success = listTables("tvmsE", NULL, show_verbose, show_system);
 				break;
 			case 'A':
-				success = describeAccessMethods(pattern, show_verbose);
+				{
+					char	   *pattern2 = NULL;
+
+					if (pattern && cmd[2] != '\0' && cmd[2] != '+')
+						pattern2 = psql_scan_slash_option(scan_state, OT_NORMAL, NULL, true);
+
+					switch (cmd[2])
+					{
+						case '\0':
+						case '+':
+							success = describeAccessMethods(pattern, show_verbose);
+							break;
+						case 'c':
+							success = listOperatorClasses(pattern, pattern2, show_verbose);
+							break;
+						case 'f':
+							success = listOperatorFamilies(pattern, pattern2, show_verbose);
+							break;
+						case 'o':
+							success = listOpFamilyOperators(pattern, pattern2, show_verbose);
+							break;
+						case 'p':
+							success = listOpFamilyProcedures(pattern, pattern2);
+							break;
+						default:
+							status = PSQL_CMD_UNKNOWN;
+							break;
+					}
+
+					if (pattern2)
+						free(pattern2);
+				}
 				break;
 			case 'a':
 				success = describeAggregates(pattern, show_verbose, show_system);
@@ -3508,7 +3538,8 @@ do_edit(const char *filename_arg, PQExpBuffer query_buf,
 		{
 			unsigned int ql = query_buf->len;
 
-			if (ql == 0 || query_buf->data[ql - 1] != '\n')
+			/* force newline-termination of what we send to editor */
+			if (ql > 0 && query_buf->data[ql - 1] != '\n')
 			{
 				appendPQExpBufferChar(query_buf, '\n');
 				ql++;

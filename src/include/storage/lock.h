@@ -4,7 +4,7 @@
  *	  POSTGRES low-level lock mechanism
  *
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/storage/lock.h
@@ -18,11 +18,10 @@
 #error "lock.h may not be included from frontend code"
 #endif
 
-#include "storage/lockdefs.h"
 #include "storage/backendid.h"
+#include "storage/lockdefs.h"
 #include "storage/lwlock.h"
 #include "storage/shmem.h"
-
 
 /* struct PGPROC is declared in proc.h, but must forward-reference it */
 typedef struct PGPROC PGPROC;
@@ -302,6 +301,7 @@ typedef struct LOCK
 } LOCK;
 
 #define LOCK_LOCKMETHOD(lock) ((LOCKMETHODID) (lock).tag.locktag_lockmethodid)
+#define LOCK_LOCKTAG(lock) ((LockTagType) (lock).tag.locktag_type)
 
 
 /*
@@ -420,6 +420,7 @@ typedef struct LOCALLOCK
 } LOCALLOCK;
 
 #define LOCALLOCK_LOCKMETHOD(llock) ((llock).tag.lock.locktag_lockmethodid)
+#define LOCALLOCK_LOCKTAG(llock) ((LockTagType) (llock).tag.lock.locktag_type)
 
 
 /*
@@ -551,7 +552,7 @@ extern VirtualTransactionId *GetLockConflicts(const LOCKTAG *locktag,
 											  LOCKMODE lockmode, int *countp);
 extern void AtPrepare_Locks(void);
 extern void PostPrepare_Locks(TransactionId xid);
-extern int	LockCheckConflicts(LockMethod lockMethodTable,
+extern bool LockCheckConflicts(LockMethod lockMethodTable,
 							   LOCKMODE lockmode,
 							   LOCK *lock, PROCLOCK *proclock);
 extern void GrantLock(LOCK *lock, PROCLOCK *proclock, LOCKMODE lockmode);

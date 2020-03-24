@@ -3,7 +3,7 @@
  * reloptions.c
  *	  Core support for relation options (pg_class.reloptions)
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -23,7 +23,7 @@
 #include "access/htup_details.h"
 #include "access/nbtree.h"
 #include "access/reloptions.h"
-#include "access/spgist.h"
+#include "access/spgist_private.h"
 #include "catalog/pg_type.h"
 #include "commands/defrem.h"
 #include "commands/tablespace.h"
@@ -155,6 +155,16 @@ static relopt_bool boolRelOpts[] =
 			"Enables vacuum to truncate empty pages at the end of this table",
 			RELOPT_KIND_HEAP | RELOPT_KIND_TOAST,
 			ShareUpdateExclusiveLock
+		},
+		true
+	},
+	{
+		{
+			"deduplicate_items",
+			"Enables \"deduplicate items\" feature for this btree index",
+			RELOPT_KIND_BTREE,
+			ShareUpdateExclusiveLock	/* since it applies only to later
+										 * inserts */
 		},
 		true
 	},
@@ -332,6 +342,19 @@ static relopt_int intRelOpts[] =
 		{
 			"effective_io_concurrency",
 			"Number of simultaneous requests that can be handled efficiently by the disk subsystem.",
+			RELOPT_KIND_TABLESPACE,
+			ShareUpdateExclusiveLock
+		},
+#ifdef USE_PREFETCH
+		-1, 0, MAX_IO_CONCURRENCY
+#else
+		0, 0, 0
+#endif
+	},
+	{
+		{
+			"maintenance_io_concurrency",
+			"Number of simultaneous requests that can be handled efficiently by the disk subsystem for maintenance work.",
 			RELOPT_KIND_TABLESPACE,
 			ShareUpdateExclusiveLock
 		},
@@ -882,7 +905,7 @@ transformRelOptions(Datum oldOptions, List *defList, const char *namspace,
 		int			noldoptions;
 		int			i;
 
-		deconstruct_array(array, TEXTOID, -1, false, 'i',
+		deconstruct_array(array, TEXTOID, -1, false, TYPALIGN_INT,
 						  &oldoptions, NULL, &noldoptions);
 
 		for (i = 0; i < noldoptions; i++)
@@ -1050,7 +1073,7 @@ untransformRelOptions(Datum options)
 
 	array = DatumGetArrayTypeP(options);
 
-	deconstruct_array(array, TEXTOID, -1, false, 'i',
+	deconstruct_array(array, TEXTOID, -1, false, TYPALIGN_INT,
 					  &optiondatums, NULL, &noptions);
 
 	for (i = 0; i < noptions; i++)
@@ -1191,7 +1214,7 @@ parseRelOptions(Datum options, bool validate, relopt_kind kind,
 		Datum	   *optiondatums;
 		int			noptions;
 
-		deconstruct_array(array, TEXTOID, -1, false, 'i',
+		deconstruct_array(array, TEXTOID, -1, false, TYPALIGN_INT,
 						  &optiondatums, NULL, &noptions);
 
 		for (i = 0; i < noptions; i++)
@@ -1521,8 +1544,6 @@ default_reloptions(Datum reloptions, bool validate, relopt_kind kind)
 		offsetof(StdRdOptions, user_catalog_table)},
 		{"parallel_workers", RELOPT_TYPE_INT,
 		offsetof(StdRdOptions, parallel_workers)},
-		{"vacuum_cleanup_index_scale_factor", RELOPT_TYPE_REAL,
-		offsetof(StdRdOptions, vacuum_cleanup_index_scale_factor)},
 		{"vacuum_index_cleanup", RELOPT_TYPE_BOOL,
 		offsetof(StdRdOptions, vacuum_index_cleanup)},
 		{"vacuum_truncate", RELOPT_TYPE_BOOL,
@@ -1692,7 +1713,8 @@ tablespace_reloptions(Datum reloptions, bool validate)
 	static const relopt_parse_elt tab[] = {
 		{"random_page_cost", RELOPT_TYPE_REAL, offsetof(TableSpaceOpts, random_page_cost)},
 		{"seq_page_cost", RELOPT_TYPE_REAL, offsetof(TableSpaceOpts, seq_page_cost)},
-		{"effective_io_concurrency", RELOPT_TYPE_INT, offsetof(TableSpaceOpts, effective_io_concurrency)}
+		{"effective_io_concurrency", RELOPT_TYPE_INT, offsetof(TableSpaceOpts, effective_io_concurrency)},
+		{"maintenance_io_concurrency", RELOPT_TYPE_INT, offsetof(TableSpaceOpts, maintenance_io_concurrency)}
 	};
 
 	return (bytea *) build_reloptions(reloptions, validate,

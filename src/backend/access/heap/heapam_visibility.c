@@ -52,7 +52,7 @@
  *	 HeapTupleSatisfiesAny()
  *		  all tuples are visible
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -1389,7 +1389,7 @@ HeapTupleSatisfiesVacuum(HeapTuple htup, TransactionId OldestXmin,
  *	True if tuple might be visible to some transaction; false if it's
  *	surely dead to everyone, ie, vacuumable.
  *
- *	See SNAPSHOT_TOAST's definition for the intended behaviour.
+ *	See SNAPSHOT_NON_VACUUMABLE's definition for the intended behaviour.
  *
  *	This is an interface to HeapTupleSatisfiesVacuum that's callable via
  *	HeapTupleSatisfiesSnapshot, so it can be used through a Snapshot.

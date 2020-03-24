@@ -3,7 +3,7 @@
  * plpgsql.h		- Definitions for the PL/pgSQL
  *			  procedural language
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -234,6 +234,7 @@ typedef struct PLpgSQL_expr
 	int			expr_simple_generation; /* plancache generation we checked */
 	Oid			expr_simple_type;	/* result type Oid, if simple */
 	int32		expr_simple_typmod; /* result typmod, if simple */
+	bool		expr_simple_mutable;	/* true if simple expr is mutable */
 
 	/*
 	 * if expr is simple AND prepared in current transaction,
@@ -938,7 +939,8 @@ typedef struct PLpgSQL_func_hashkey
 {
 	Oid			funcOid;
 
-	bool		isTrigger;		/* true if called as a trigger */
+	bool		isTrigger;		/* true if called as a DML trigger */
+	bool		isEventTrigger; /* true if called as an event trigger */
 
 	/* be careful that pad bytes in this struct get zeroed! */
 
@@ -946,7 +948,7 @@ typedef struct PLpgSQL_func_hashkey
 	 * For a trigger function, the OID of the trigger is part of the hash key
 	 * --- we want to compile the trigger function separately for each trigger
 	 * it is used with, in case the rowtype or transition table names are
-	 * different.  Zero if not called as a trigger.
+	 * different.  Zero if not called as a DML trigger.
 	 */
 	Oid			trigOid;
 

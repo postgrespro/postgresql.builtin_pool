@@ -120,13 +120,6 @@ pg_recv_sock(pgsocket chan)
 				(errmsg("could not create inherited socket: error code %d\n",
 						WSAGetLastError())));
 	}
-
-	/*
-	 * To make sure we don't get two references to the same socket, close
-	 * the original one. (This would happen when inheritance actually
-	 * works..
-	 */
-	closesocket(src.origsocket);
 	return s;
 #else
 	pgsocket	sock;

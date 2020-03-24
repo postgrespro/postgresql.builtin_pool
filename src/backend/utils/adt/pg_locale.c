@@ -2,7 +2,7 @@
  *
  * PostgreSQL locale utilities
  *
- * Portions Copyright (c) 2002-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 2002-2020, PostgreSQL Global Development Group
  *
  * src/backend/utils/adt/pg_locale.c
  *
@@ -96,11 +96,17 @@ char	   *locale_monetary;
 char	   *locale_numeric;
 char	   *locale_time;
 
-/* lc_time localization cache */
-char	   *localized_abbrev_days[7];
-char	   *localized_full_days[7];
-char	   *localized_abbrev_months[12];
-char	   *localized_full_months[12];
+/*
+ * lc_time localization cache.
+ *
+ * We use only the first 7 or 12 entries of these arrays.  The last array
+ * element is left as NULL for the convenience of outside code that wants
+ * to sequentially scan these arrays.
+ */
+char	   *localized_abbrev_days[7 + 1];
+char	   *localized_full_days[7 + 1];
+char	   *localized_abbrev_months[12 + 1];
+char	   *localized_full_months[12 + 1];
 
 /* indicates whether locale information cache is valid */
 static bool CurrentLocaleConvValid = false;
@@ -922,6 +928,8 @@ cache_locale_time(void)
 		cache_single_string(&localized_full_days[i], bufptr, encoding);
 		bufptr += MAX_L10N_DATA;
 	}
+	localized_abbrev_days[7] = NULL;
+	localized_full_days[7] = NULL;
 
 	/* localized months */
 	for (i = 0; i < 12; i++)
@@ -931,6 +939,8 @@ cache_locale_time(void)
 		cache_single_string(&localized_full_months[i], bufptr, encoding);
 		bufptr += MAX_L10N_DATA;
 	}
+	localized_abbrev_months[12] = NULL;
+	localized_full_months[12] = NULL;
 
 	CurrentLCTimeValid = true;
 }
@@ -1555,9 +1565,14 @@ init_icu_converter(void)
 	UConverter *conv;
 
 	if (icu_converter)
-		return;
+		return;					/* already done */
 
 	icu_encoding_name = get_encoding_name_for_icu(GetDatabaseEncoding());
+	if (!icu_encoding_name)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("encoding \"%s\" not supported by ICU",
+						pg_encoding_to_char(GetDatabaseEncoding()))));
 
 	status = U_ZERO_ERROR;
 	conv = ucnv_open(icu_encoding_name, &status);

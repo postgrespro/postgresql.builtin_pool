@@ -1336,7 +1336,7 @@ ConnectionProxyMain(int argc, char *argv[])
 	sigjmp_buf	local_sigjmp_buf;
 
 	/* Identify myself via ps */
-	init_ps_display("connection proxy", "", "", "");
+	init_ps_display("connection proxy");
 
 	SetProcessingMode(InitProcessing);
 
