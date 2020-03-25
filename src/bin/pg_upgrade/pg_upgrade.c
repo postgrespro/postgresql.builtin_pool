@@ -3,7 +3,7 @@
  *
  *	main source file
  *
- *	Copyright (c) 2010-2019, PostgreSQL Global Development Group
+ *	Copyright (c) 2010-2020, PostgreSQL Global Development Group
  *	src/bin/pg_upgrade/pg_upgrade.c
  */
 
@@ -37,16 +37,16 @@
 
 #include "postgres_fe.h"
 
-#include "pg_upgrade.h"
+#ifdef HAVE_LANGINFO_H
+#include <langinfo.h>
+#endif
+
 #include "catalog/pg_class_d.h"
 #include "common/file_perm.h"
 #include "common/logging.h"
 #include "common/restricted_token.h"
 #include "fe_utils/string_utils.h"
-
-#ifdef HAVE_LANGINFO_H
-#include <langinfo.h>
-#endif
+#include "pg_upgrade.h"
 
 static void prepare_new_cluster(void);
 static void prepare_new_globals(void);
@@ -105,11 +105,8 @@ main(int argc, char **argv)
 
 	/* Set mask based on PGDATA permissions */
 	if (!GetDataDirectoryCreatePerm(new_cluster.pgdata))
-	{
-		pg_log(PG_FATAL, "could not read permissions of directory \"%s\": %s\n",
-			   new_cluster.pgdata, strerror(errno));
-		exit(1);
-	}
+		pg_fatal("could not read permissions of directory \"%s\": %s\n",
+				 new_cluster.pgdata, strerror(errno));
 
 	umask(pg_mode_mask);
 
@@ -344,10 +341,9 @@ create_new_objects(void)
 		snprintf(log_file_name, sizeof(log_file_name), DB_DUMP_LOG_FILE_MASK, old_db->db_oid);
 
 		/*
-		 * template1 and postgres databases will already exist in the target
-		 * installation, so tell pg_restore to drop and recreate them;
-		 * otherwise we would fail to propagate their database-level
-		 * properties.
+		 * template1 database will already exist in the target installation,
+		 * so tell pg_restore to drop and recreate it; otherwise we would fail
+		 * to propagate its database-level properties.
 		 */
 		create_opts = "--clean --create";
 
@@ -381,10 +377,9 @@ create_new_objects(void)
 		snprintf(log_file_name, sizeof(log_file_name), DB_DUMP_LOG_FILE_MASK, old_db->db_oid);
 
 		/*
-		 * template1 and postgres databases will already exist in the target
-		 * installation, so tell pg_restore to drop and recreate them;
-		 * otherwise we would fail to propagate their database-level
-		 * properties.
+		 * postgres database will already exist in the target installation, so
+		 * tell pg_restore to drop and recreate it; otherwise we would fail to
+		 * propagate its database-level properties.
 		 */
 		if (strcmp(old_db->db_name, "postgres") == 0)
 			create_opts = "--clean --create";

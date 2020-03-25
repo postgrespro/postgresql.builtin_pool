@@ -4,7 +4,7 @@
  *	  POSTGRES relation descriptor (a/k/a relcache entry) definitions.
  *
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/utils/rel.h
@@ -20,6 +20,7 @@
 #include "catalog/pg_index.h"
 #include "catalog/pg_publication.h"
 #include "nodes/bitmapset.h"
+#include "partitioning/partdefs.h"
 #include "rewrite/prs2lock.h"
 #include "storage/block.h"
 #include "storage/relfilenode.h"
@@ -63,7 +64,7 @@ typedef struct RelationData
 								 * rd_replidindex) */
 	bool		rd_statvalid;	/* is rd_statlist valid? */
 
-	/*
+	/*----------
 	 * rd_createSubid is the ID of the highest subtransaction the rel has
 	 * survived into; or zero if the rel was not created in the current top
 	 * transaction.  This can be now be relied on, whereas previously it could
@@ -73,8 +74,13 @@ typedef struct RelationData
 	 * have forgotten changing it). rd_newRelfilenodeSubid can be forgotten
 	 * when a relation has multiple new relfilenodes within a single
 	 * transaction, with one of them occurring in a subsequently aborted
-	 * subtransaction, e.g. BEGIN; TRUNCATE t; SAVEPOINT save; TRUNCATE t;
-	 * ROLLBACK TO save; -- rd_newRelfilenodeSubid is now forgotten
+	 * subtransaction, e.g.
+	 *		BEGIN;
+	 *		TRUNCATE t;
+	 *		SAVEPOINT save;
+	 *		TRUNCATE t;
+	 *		ROLLBACK TO save;
+	 *		-- rd_newRelfilenodeSubid is now forgotten
 	 */
 	SubTransactionId rd_createSubid;	/* rel was created in current xact */
 	SubTransactionId rd_newRelfilenodeSubid;	/* new relfilenode assigned in
@@ -94,10 +100,15 @@ typedef struct RelationData
 	List	   *rd_fkeylist;	/* list of ForeignKeyCacheInfo (see below) */
 	bool		rd_fkeyvalid;	/* true if list has been computed */
 
-	struct PartitionKeyData *rd_partkey;	/* partition key, or NULL */
+	/* data managed by RelationGetPartitionKey: */
+	PartitionKey rd_partkey;	/* partition key, or NULL */
 	MemoryContext rd_partkeycxt;	/* private context for rd_partkey, if any */
-	struct PartitionDescData *rd_partdesc;	/* partitions, or NULL */
+
+	/* data managed by RelationGetPartitionDesc: */
+	PartitionDesc rd_partdesc;	/* partition descriptor, or NULL */
 	MemoryContext rd_pdcxt;		/* private context for rd_partdesc, if any */
+
+	/* data managed by RelationGetPartitionQual: */
 	List	   *rd_partcheck;	/* partition CHECK quals */
 	bool		rd_partcheckvalid;	/* true if list has been computed */
 	MemoryContext rd_partcheckcxt;	/* private cxt for rd_partcheck, if any */
@@ -158,7 +169,7 @@ typedef struct RelationData
 	Oid		   *rd_opfamily;	/* OIDs of op families for each index col */
 	Oid		   *rd_opcintype;	/* OIDs of opclass declared input data types */
 	RegProcedure *rd_support;	/* OIDs of support procedures */
-	struct FmgrInfo *rd_supportinfo; /* lookup info for support procedures */
+	struct FmgrInfo *rd_supportinfo;	/* lookup info for support procedures */
 	int16	   *rd_indoption;	/* per-column AM-specific flags */
 	List	   *rd_indexprs;	/* index expression trees, if any */
 	List	   *rd_indpred;		/* index predicate tree, if any */
@@ -235,7 +246,7 @@ typedef struct ForeignKeyCacheInfo
 
 /*
  * StdRdOptions
- *		Standard contents of rd_options for heaps and generic indexes.
+ *		Standard contents of rd_options for heaps.
  *
  * RelationGetFillFactor() and RelationGetTargetPageFreeSpace() can only
  * be applied to relations that use this format or a superset for
@@ -265,7 +276,6 @@ typedef struct StdRdOptions
 	int32		vl_len_;		/* varlena header (do not touch directly!) */
 	int			fillfactor;		/* page fill factor in percent (0..100) */
 	/* fraction of newly inserted tuples prior to trigger index cleanup */
-	float8		vacuum_cleanup_index_scale_factor;
 	int			toast_tuple_target; /* target for tuple toasting */
 	AutoVacOpts autovacuum;		/* autovacuum-related options */
 	bool		user_catalog_table; /* use as an additional catalog relation */
@@ -351,9 +361,10 @@ typedef struct ViewOptions
  *		Returns whether the relation is security view, or not.  Note multiple
  *		eval of argument!
  */
-#define RelationIsSecurityView(relation)	\
-	((relation)->rd_options ?				\
-	 ((ViewOptions *) (relation)->rd_options)->security_barrier : false)
+#define RelationIsSecurityView(relation)									\
+	(AssertMacro(relation->rd_rel->relkind == RELKIND_VIEW),				\
+	 (relation)->rd_options ?												\
+	  ((ViewOptions *) (relation)->rd_options)->security_barrier : false)
 
 /*
  * RelationHasCheckOption
@@ -361,7 +372,8 @@ typedef struct ViewOptions
  *		or the cascaded check option.  Note multiple eval of argument!
  */
 #define RelationHasCheckOption(relation)									\
-	((relation)->rd_options &&												\
+	(AssertMacro(relation->rd_rel->relkind == RELKIND_VIEW),				\
+	 (relation)->rd_options &&												\
 	 ((ViewOptions *) (relation)->rd_options)->check_option !=				\
 	 VIEW_OPTION_CHECK_OPTION_NOT_SET)
 
@@ -371,7 +383,8 @@ typedef struct ViewOptions
  *		option.  Note multiple eval of argument!
  */
 #define RelationHasLocalCheckOption(relation)								\
-	((relation)->rd_options &&												\
+	(AssertMacro(relation->rd_rel->relkind == RELKIND_VIEW),				\
+	 (relation)->rd_options &&												\
 	 ((ViewOptions *) (relation)->rd_options)->check_option ==				\
 	 VIEW_OPTION_CHECK_OPTION_LOCAL)
 
@@ -381,7 +394,8 @@ typedef struct ViewOptions
  *		option.  Note multiple eval of argument!
  */
 #define RelationHasCascadedCheckOption(relation)							\
-	((relation)->rd_options &&												\
+	(AssertMacro(relation->rd_rel->relkind == RELKIND_VIEW),				\
+	 (relation)->rd_options &&												\
 	 ((ViewOptions *) (relation)->rd_options)->check_option ==				\
 	  VIEW_OPTION_CHECK_OPTION_CASCADED)
 
@@ -592,18 +606,6 @@ typedef struct ViewOptions
 	(XLogLogicalInfoActive() && \
 	 RelationNeedsWAL(relation) && \
 	 !IsCatalogRelation(relation))
-
-/*
- * RelationGetPartitionKey
- *		Returns the PartitionKey of a relation
- */
-#define RelationGetPartitionKey(relation) ((relation)->rd_partkey)
-
-/*
- * RelationGetPartitionDesc
- *		Returns partition descriptor for a relation.
- */
-#define RelationGetPartitionDesc(relation) ((relation)->rd_partdesc)
 
 /* routines in utils/cache/relcache.c */
 extern void RelationIncrementReferenceCount(Relation rel);

@@ -4,7 +4,7 @@
  *	  POSTGRES process array definitions.
  *
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/storage/procarray.h
@@ -113,6 +113,7 @@ extern void CancelDBBackends(Oid databaseid, ProcSignalReason sigmode, bool conf
 extern int	CountUserBackends(Oid roleid);
 extern bool CountOtherDBBackends(Oid databaseId,
 								 int *nbackends, int *nprepared);
+extern void TerminateOtherDBBackends(Oid databaseId);
 
 extern void XidCacheRemoveRunningXids(TransactionId xid,
 									  int nxids, const TransactionId *xids,

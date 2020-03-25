@@ -6,9 +6,8 @@
 #include "access/gist.h"
 #include "access/stratnum.h"
 #include "catalog/pg_type.h"
-#include "utils/pg_crc.h"
-
 #include "hstore.h"
+#include "utils/pg_crc.h"
 
 /* bigint defines */
 #define BITBYTE 8
@@ -556,7 +555,7 @@ ghstore_consistent(PG_FUNCTION_ARGS)
 		int			i;
 
 		deconstruct_array(query,
-						  TEXTOID, -1, false, 'i',
+						  TEXTOID, -1, false, TYPALIGN_INT,
 						  &key_datums, &key_nulls, &key_count);
 
 		for (i = 0; res && i < key_count; ++i)
@@ -579,7 +578,7 @@ ghstore_consistent(PG_FUNCTION_ARGS)
 		int			i;
 
 		deconstruct_array(query,
-						  TEXTOID, -1, false, 'i',
+						  TEXTOID, -1, false, TYPALIGN_INT,
 						  &key_datums, &key_nulls, &key_count);
 
 		res = false;

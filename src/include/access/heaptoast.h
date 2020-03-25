@@ -4,7 +4,7 @@
  *	  Heap-specific definitions for external and compressed storage
  *	  of variable size attributes.
  *
- * Copyright (c) 2000-2019, PostgreSQL Global Development Group
+ * Copyright (c) 2000-2020, PostgreSQL Global Development Group
  *
  * src/include/access/heaptoast.h
  *
@@ -89,22 +89,22 @@
 	 VARHDRSZ)
 
 /* ----------
- * toast_insert_or_update -
+ * heap_toast_insert_or_update -
  *
  *	Called by heap_insert() and heap_update().
  * ----------
  */
-extern HeapTuple toast_insert_or_update(Relation rel,
-										HeapTuple newtup, HeapTuple oldtup,
-										int options);
+extern HeapTuple heap_toast_insert_or_update(Relation rel, HeapTuple newtup,
+											 HeapTuple oldtup, int options);
 
 /* ----------
- * toast_delete -
+ * heap_toast_delete -
  *
  *	Called by heap_delete().
  * ----------
  */
-extern void toast_delete(Relation rel, HeapTuple oldtup, bool is_speculative);
+extern void heap_toast_delete(Relation rel, HeapTuple oldtup,
+							  bool is_speculative);
 
 /* ----------
  * toast_flatten_tuple -
@@ -135,5 +135,15 @@ extern Datum toast_flatten_tuple_to_datum(HeapTupleHeader tup,
 extern HeapTuple toast_build_flattened_tuple(TupleDesc tupleDesc,
 											 Datum *values,
 											 bool *isnull);
+
+/* ----------
+ * heap_fetch_toast_slice
+ *
+ *	Fetch a slice from a toast value stored in a heap table.
+ * ----------
+ */
+extern void heap_fetch_toast_slice(Relation toastrel, Oid valueid,
+								   int32 attrsize, int32 sliceoffset,
+								   int32 slicelength, struct varlena *result);
 
 #endif							/* HEAPTOAST_H */

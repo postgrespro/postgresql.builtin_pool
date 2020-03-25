@@ -3,7 +3,7 @@
  * timestamp.c
  *	  Functions for the built-in SQL types "timestamp" and "interval".
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -3233,7 +3233,7 @@ interval_mul(PG_FUNCTION_ARGS)
 	/* cascade units down */
 	result->day += (int32) month_remainder_days;
 	result_double = rint(span->time * factor + sec_remainder * USECS_PER_SEC);
-	if (result_double > PG_INT64_MAX || result_double < PG_INT64_MIN)
+	if (isnan(result_double) || !FLOAT8_FITS_IN_INT64(result_double))
 		ereport(ERROR,
 				(errcode(ERRCODE_DATETIME_VALUE_OUT_OF_RANGE),
 				 errmsg("interval out of range")));
@@ -3421,7 +3421,7 @@ interval_accum(PG_FUNCTION_ARGS)
 	ArrayType  *result;
 
 	deconstruct_array(transarray,
-					  INTERVALOID, sizeof(Interval), false, 'd',
+					  INTERVALOID, sizeof(Interval), false, TYPALIGN_DOUBLE,
 					  &transdatums, NULL, &ndatums);
 	if (ndatums != 2)
 		elog(ERROR, "expected 2-element interval array");
@@ -3438,7 +3438,7 @@ interval_accum(PG_FUNCTION_ARGS)
 	transdatums[1] = IntervalPGetDatum(&N);
 
 	result = construct_array(transdatums, 2,
-							 INTERVALOID, sizeof(Interval), false, 'd');
+							 INTERVALOID, sizeof(Interval), false, TYPALIGN_DOUBLE);
 
 	PG_RETURN_ARRAYTYPE_P(result);
 }
@@ -3461,7 +3461,7 @@ interval_combine(PG_FUNCTION_ARGS)
 	ArrayType  *result;
 
 	deconstruct_array(transarray1,
-					  INTERVALOID, sizeof(Interval), false, 'd',
+					  INTERVALOID, sizeof(Interval), false, TYPALIGN_DOUBLE,
 					  &transdatums1, NULL, &ndatums1);
 	if (ndatums1 != 2)
 		elog(ERROR, "expected 2-element interval array");
@@ -3470,7 +3470,7 @@ interval_combine(PG_FUNCTION_ARGS)
 	N1 = *(DatumGetIntervalP(transdatums1[1]));
 
 	deconstruct_array(transarray2,
-					  INTERVALOID, sizeof(Interval), false, 'd',
+					  INTERVALOID, sizeof(Interval), false, TYPALIGN_DOUBLE,
 					  &transdatums2, NULL, &ndatums2);
 	if (ndatums2 != 2)
 		elog(ERROR, "expected 2-element interval array");
@@ -3487,7 +3487,7 @@ interval_combine(PG_FUNCTION_ARGS)
 	transdatums1[1] = IntervalPGetDatum(&N1);
 
 	result = construct_array(transdatums1, 2,
-							 INTERVALOID, sizeof(Interval), false, 'd');
+							 INTERVALOID, sizeof(Interval), false, TYPALIGN_DOUBLE);
 
 	PG_RETURN_ARRAYTYPE_P(result);
 }
@@ -3505,7 +3505,7 @@ interval_accum_inv(PG_FUNCTION_ARGS)
 	ArrayType  *result;
 
 	deconstruct_array(transarray,
-					  INTERVALOID, sizeof(Interval), false, 'd',
+					  INTERVALOID, sizeof(Interval), false, TYPALIGN_DOUBLE,
 					  &transdatums, NULL, &ndatums);
 	if (ndatums != 2)
 		elog(ERROR, "expected 2-element interval array");
@@ -3522,7 +3522,7 @@ interval_accum_inv(PG_FUNCTION_ARGS)
 	transdatums[1] = IntervalPGetDatum(&N);
 
 	result = construct_array(transdatums, 2,
-							 INTERVALOID, sizeof(Interval), false, 'd');
+							 INTERVALOID, sizeof(Interval), false, TYPALIGN_DOUBLE);
 
 	PG_RETURN_ARRAYTYPE_P(result);
 }
@@ -3537,7 +3537,7 @@ interval_avg(PG_FUNCTION_ARGS)
 				N;
 
 	deconstruct_array(transarray,
-					  INTERVALOID, sizeof(Interval), false, 'd',
+					  INTERVALOID, sizeof(Interval), false, TYPALIGN_DOUBLE,
 					  &transdatums, NULL, &ndatums);
 	if (ndatums != 2)
 		elog(ERROR, "expected 2-element interval array");
@@ -4373,6 +4373,7 @@ date2isoweek(int year, int mon, int mday)
 /* date2isoyear()
  *
  *	Returns ISO 8601 year number.
+ *	Note: zero or negative results follow the year-zero-exists convention.
  */
 int
 date2isoyear(int year, int mon, int mday)
@@ -4647,24 +4648,19 @@ timestamp_part(PG_FUNCTION_ARGS)
 
 			case DTK_ISOYEAR:
 				result = date2isoyear(tm->tm_year, tm->tm_mon, tm->tm_mday);
+				/* Adjust BC years */
+				if (result <= 0)
+					result -= 1;
 				break;
 
 			case DTK_DOW:
 			case DTK_ISODOW:
-				if (timestamp2tm(timestamp, NULL, tm, &fsec, NULL, NULL) != 0)
-					ereport(ERROR,
-							(errcode(ERRCODE_DATETIME_VALUE_OUT_OF_RANGE),
-							 errmsg("timestamp out of range")));
 				result = j2day(date2j(tm->tm_year, tm->tm_mon, tm->tm_mday));
 				if (val == DTK_ISODOW && result == 0)
 					result = 7;
 				break;
 
 			case DTK_DOY:
-				if (timestamp2tm(timestamp, NULL, tm, &fsec, NULL, NULL) != 0)
-					ereport(ERROR,
-							(errcode(ERRCODE_DATETIME_VALUE_OUT_OF_RANGE),
-							 errmsg("timestamp out of range")));
 				result = (date2j(tm->tm_year, tm->tm_mon, tm->tm_mday)
 						  - date2j(tm->tm_year, 1, 1) + 1);
 				break;
@@ -4851,24 +4847,19 @@ timestamptz_part(PG_FUNCTION_ARGS)
 
 			case DTK_ISOYEAR:
 				result = date2isoyear(tm->tm_year, tm->tm_mon, tm->tm_mday);
+				/* Adjust BC years */
+				if (result <= 0)
+					result -= 1;
 				break;
 
 			case DTK_DOW:
 			case DTK_ISODOW:
-				if (timestamp2tm(timestamp, &tz, tm, &fsec, NULL, NULL) != 0)
-					ereport(ERROR,
-							(errcode(ERRCODE_DATETIME_VALUE_OUT_OF_RANGE),
-							 errmsg("timestamp out of range")));
 				result = j2day(date2j(tm->tm_year, tm->tm_mon, tm->tm_mday));
 				if (val == DTK_ISODOW && result == 0)
 					result = 7;
 				break;
 
 			case DTK_DOY:
-				if (timestamp2tm(timestamp, &tz, tm, &fsec, NULL, NULL) != 0)
-					ereport(ERROR,
-							(errcode(ERRCODE_DATETIME_VALUE_OUT_OF_RANGE),
-							 errmsg("timestamp out of range")));
 				result = (date2j(tm->tm_year, tm->tm_mon, tm->tm_mday)
 						  - date2j(tm->tm_year, 1, 1) + 1);
 				break;
@@ -5190,12 +5181,12 @@ timestamp_timestamptz(PG_FUNCTION_ARGS)
 /*
  * Convert timestamp to timestamp with time zone.
  *
- * If 'have_error' is NULL, then errors are thrown, else '*have_error' is set
- * and zero is returned.
+ * On overflow error is thrown if 'overflow' is NULL.  Otherwise, '*overflow'
+ * is set to -1 (+1) when result value exceed lower (upper) boundary and zero
+ * returned.
  */
-
 TimestampTz
-timestamp2timestamptz_opt_error(Timestamp timestamp, bool *have_error)
+timestamp2timestamptz_opt_overflow(Timestamp timestamp, int *overflow)
 {
 	TimestampTz result;
 	struct pg_tm tt,
@@ -5210,27 +5201,39 @@ timestamp2timestamptz_opt_error(Timestamp timestamp, bool *have_error)
 	{
 		tz = DetermineTimeZoneOffset(tm, session_timezone);
 
-		if (!tm2timestamp(tm, fsec, &tz, &result))
+		result = dt2local(timestamp, -tz);
+
+		if (IS_VALID_TIMESTAMP(result))
+		{
 			return result;
+		}
+		else if (overflow)
+		{
+			if (result < MIN_TIMESTAMP)
+				*overflow = -1;
+			else
+			{
+				Assert(result >= END_TIMESTAMP);
+				*overflow = 1;
+			}
+			return (TimestampTz) 0;
+		}
 	}
 
-	if (have_error)
-		*have_error = true;
-	else
-		ereport(ERROR,
-				(errcode(ERRCODE_DATETIME_VALUE_OUT_OF_RANGE),
-				 errmsg("timestamp out of range")));
+	ereport(ERROR,
+			(errcode(ERRCODE_DATETIME_VALUE_OUT_OF_RANGE),
+			 errmsg("timestamp out of range")));
 
 	return 0;
 }
 
 /*
- * Single-argument version of timestamp2timestamptz_opt_error().
+ * Single-argument version of timestamp2timestamptz_opt_overflow().
  */
 static TimestampTz
 timestamp2timestamptz(Timestamp timestamp)
 {
-	return timestamp2timestamptz_opt_error(timestamp, NULL);
+	return timestamp2timestamptz_opt_overflow(timestamp, NULL);
 }
 
 /* timestamptz_timestamp()
@@ -5456,8 +5459,7 @@ generate_series_timestamp(PG_FUNCTION_ARGS)
 		timestamp_cmp_internal(result, fctx->finish) >= 0)
 	{
 		/* increment current in preparation for next iteration */
-		fctx->current = DatumGetTimestamp(
-										  DirectFunctionCall2(timestamp_pl_interval,
+		fctx->current = DatumGetTimestamp(DirectFunctionCall2(timestamp_pl_interval,
 															  TimestampGetDatum(fctx->current),
 															  PointerGetDatum(&fctx->step)));
 
@@ -5537,8 +5539,7 @@ generate_series_timestamptz(PG_FUNCTION_ARGS)
 		timestamp_cmp_internal(result, fctx->finish) >= 0)
 	{
 		/* increment current in preparation for next iteration */
-		fctx->current = DatumGetTimestampTz(
-											DirectFunctionCall2(timestamptz_pl_interval,
+		fctx->current = DatumGetTimestampTz(DirectFunctionCall2(timestamptz_pl_interval,
 																TimestampTzGetDatum(fctx->current),
 																PointerGetDatum(&fctx->step)));
 

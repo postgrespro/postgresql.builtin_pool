@@ -3,7 +3,7 @@
  * foreigncmds.c
  *	  foreign-data wrapper/server creation/manipulation commands
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  *
  *
  * IDENTIFICATION
@@ -475,13 +475,12 @@ static Oid
 lookup_fdw_handler_func(DefElem *handler)
 {
 	Oid			handlerOid;
-	Oid			funcargtypes[1];	/* dummy */
 
 	if (handler == NULL || handler->arg == NULL)
 		return InvalidOid;
 
 	/* handlers have no arguments */
-	handlerOid = LookupFuncName((List *) handler->arg, 0, funcargtypes, false);
+	handlerOid = LookupFuncName((List *) handler->arg, 0, NULL, false);
 
 	/* check that handler has correct return type */
 	if (get_func_rettype(handlerOid) != FDW_HANDLEROID)

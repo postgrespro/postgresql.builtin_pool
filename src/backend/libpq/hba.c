@@ -5,7 +5,7 @@
  *	  wherein you authenticate a user by seeing what IP address the system
  *	  says he comes from and choosing authentication method based on it).
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -39,10 +39,10 @@
 #include "storage/fd.h"
 #include "utils/acl.h"
 #include "utils/builtins.h"
-#include "utils/varlena.h"
 #include "utils/guc.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
+#include "utils/varlena.h"
 
 #ifdef USE_LDAP
 #ifdef WIN32
@@ -1927,7 +1927,7 @@ parse_hba_auth_opt(char *name, char *val, HbaLine *hbaline,
 
 		REQUIRE_AUTH_OPTION(uaRADIUS, "radiusservers", "radius");
 
-		if (!SplitIdentifierString(dupval, ',', &parsed_servers))
+		if (!SplitGUCList(dupval, ',', &parsed_servers))
 		{
 			/* syntax error in list */
 			ereport(elevel,
@@ -1976,7 +1976,7 @@ parse_hba_auth_opt(char *name, char *val, HbaLine *hbaline,
 
 		REQUIRE_AUTH_OPTION(uaRADIUS, "radiusports", "radius");
 
-		if (!SplitIdentifierString(dupval, ',', &parsed_ports))
+		if (!SplitGUCList(dupval, ',', &parsed_ports))
 		{
 			ereport(elevel,
 					(errcode(ERRCODE_CONFIG_FILE_ERROR),
@@ -2011,7 +2011,7 @@ parse_hba_auth_opt(char *name, char *val, HbaLine *hbaline,
 
 		REQUIRE_AUTH_OPTION(uaRADIUS, "radiussecrets", "radius");
 
-		if (!SplitIdentifierString(dupval, ',', &parsed_secrets))
+		if (!SplitGUCList(dupval, ',', &parsed_secrets))
 		{
 			/* syntax error in list */
 			ereport(elevel,
@@ -2033,7 +2033,7 @@ parse_hba_auth_opt(char *name, char *val, HbaLine *hbaline,
 
 		REQUIRE_AUTH_OPTION(uaRADIUS, "radiusidentifiers", "radius");
 
-		if (!SplitIdentifierString(dupval, ',', &parsed_identifiers))
+		if (!SplitGUCList(dupval, ',', &parsed_identifiers))
 		{
 			/* syntax error in list */
 			ereport(elevel,
@@ -2390,7 +2390,7 @@ gethba_options(HbaLine *hba)
 	Assert(noptions <= MAX_HBA_OPTIONS);
 
 	if (noptions > 0)
-		return construct_array(options, noptions, TEXTOID, -1, false, 'i');
+		return construct_array(options, noptions, TEXTOID, -1, false, TYPALIGN_INT);
 	else
 		return NULL;
 }
@@ -2667,8 +2667,7 @@ pg_hba_file_rules(PG_FUNCTION_ARGS)
 	if (!(rsi->allowedModes & SFRM_Materialize))
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("materialize mode required, but it is not " \
-						"allowed in this context")));
+				 errmsg("materialize mode required, but it is not allowed in this context")));
 
 	rsi->returnMode = SFRM_Materialize;
 
@@ -2903,7 +2902,6 @@ check_ident_usermap(IdentLine *identLine, const char *usermap_name,
 				*found_p = true;
 		}
 	}
-	return;
 }
 
 

@@ -4,7 +4,7 @@
  *	  tuple table support stuff
  *
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/executor/tuptable.h
@@ -15,9 +15,9 @@
 #define TUPTABLE_H
 
 #include "access/htup.h"
+#include "access/htup_details.h"
 #include "access/sysattr.h"
 #include "access/tupdesc.h"
-#include "access/htup_details.h"
 #include "storage/buf.h"
 
 /*----------
@@ -261,9 +261,8 @@ typedef struct BufferHeapTupleTableSlot
 	/*
 	 * If buffer is not InvalidBuffer, then the slot is holding a pin on the
 	 * indicated buffer page; drop the pin when we release the slot's
-	 * reference to that buffer.  (TTS_FLAG_SHOULDFREE should not be set be
-	 * false in such a case, since presumably tts_tuple is pointing at the
-	 * buffer page.)
+	 * reference to that buffer.  (TTS_FLAG_SHOULDFREE should not be set in
+	 * such a case, since presumably tts_tuple is pointing into the buffer.)
 	 */
 	Buffer		buffer;			/* tuple's buffer, or InvalidBuffer */
 } BufferHeapTupleTableSlot;
@@ -476,6 +475,7 @@ static inline TupleTableSlot *
 ExecCopySlot(TupleTableSlot *dstslot, TupleTableSlot *srcslot)
 {
 	Assert(!TTS_EMPTY(srcslot));
+	AssertArg(srcslot != dstslot);
 
 	dstslot->tts_ops->copyslot(dstslot, srcslot);
 

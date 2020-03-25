@@ -3,7 +3,7 @@
  * partbounds.c
  *		Support routines for manipulating partition bounds
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -21,6 +21,7 @@
 #include "catalog/pg_inherits.h"
 #include "catalog/pg_type.h"
 #include "commands/tablecmds.h"
+#include "common/hashfn.h"
 #include "executor/executor.h"
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
@@ -32,12 +33,10 @@
 #include "utils/builtins.h"
 #include "utils/datum.h"
 #include "utils/fmgroids.h"
-#include "utils/hashutils.h"
 #include "utils/lsyscache.h"
 #include "utils/partcache.h"
-#include "utils/rel.h"
-#include "utils/snapmgr.h"
 #include "utils/ruleutils.h"
+#include "utils/snapmgr.h"
 #include "utils/syscache.h"
 
 /*
@@ -360,9 +359,8 @@ create_list_bounds(PartitionBoundSpec **boundspecs, int nparts,
 			else
 			{
 				/*
-				 * Never put a null into the values array, flag instead for
-				 * the code further down below where we construct the actual
-				 * relcache struct.
+				 * Never put a null into the values array; save the index of
+				 * the partition that stores nulls, instead.
 				 */
 				if (null_index != -1)
 					elog(ERROR, "found null more than once");
@@ -776,6 +774,11 @@ partition_bounds_equal(int partnatts, int16 *parttyplen, bool *parttypbyval,
 /*
  * Return a copy of given PartitionBoundInfo structure. The data types of bounds
  * are described by given partition key specification.
+ *
+ * Note: it's important that this function and its callees not do any catalog
+ * access, nor anything else that would result in allocating memory other than
+ * the returned data structure.  Since this is called in a long-lived context,
+ * that would result in unwanted memory leaks.
  */
 PartitionBoundInfo
 partition_bounds_copy(PartitionBoundInfo src,
@@ -786,6 +789,8 @@ partition_bounds_copy(PartitionBoundInfo src,
 	int			ndatums;
 	int			partnatts;
 	int			num_indexes;
+	bool		hash_part;
+	int			natts;
 
 	dest = (PartitionBoundInfo) palloc(sizeof(PartitionBoundInfoData));
 
@@ -816,16 +821,16 @@ partition_bounds_copy(PartitionBoundInfo src,
 	else
 		dest->kind = NULL;
 
+	/*
+	 * For hash partitioning, datums array will have two elements - modulus and
+	 * remainder.
+	 */
+	hash_part = (key->strategy == PARTITION_STRATEGY_HASH);
+	natts = hash_part ? 2 : partnatts;
+
 	for (i = 0; i < ndatums; i++)
 	{
 		int			j;
-
-		/*
-		 * For a corresponding to hash partition, datums array will have two
-		 * elements - modulus and remainder.
-		 */
-		bool		hash_part = (key->strategy == PARTITION_STRATEGY_HASH);
-		int			natts = hash_part ? 2 : partnatts;
 
 		dest->datums[i] = (Datum *) palloc(sizeof(Datum) * natts);
 
@@ -1244,7 +1249,7 @@ check_default_partition_contents(Relation parent, Relation default_rel,
 	 */
 	def_part_constraints =
 		map_partition_varattnos(def_part_constraints, 1, default_rel,
-								parent, NULL);
+								parent);
 
 	/*
 	 * If the existing constraints on the default partition imply that it will
@@ -1294,7 +1299,7 @@ check_default_partition_contents(Relation parent, Relation default_rel,
 			partition_constraint = make_ands_explicit(def_part_constraints);
 			partition_constraint = (Expr *)
 				map_partition_varattnos((List *) partition_constraint, 1,
-										part_rel, default_rel, NULL);
+										part_rel, default_rel);
 
 			/*
 			 * If the partition constraints on default partition child imply
@@ -1361,7 +1366,8 @@ check_default_partition_contents(Relation parent, Relation default_rel,
 				ereport(ERROR,
 						(errcode(ERRCODE_CHECK_VIOLATION),
 						 errmsg("updated partition constraint for default partition \"%s\" would be violated by some row",
-								RelationGetRelationName(default_rel))));
+								RelationGetRelationName(default_rel)),
+						 errtable(default_rel)));
 
 			ResetExprContext(econtext);
 			CHECK_FOR_INTERRUPTS();
@@ -2262,7 +2268,7 @@ get_qual_for_list(Relation parent, PartitionBoundSpec *spec)
  *		AND
  *	(b > bl OR (b = bl AND c >= cl))
  *		AND
- *	(b < bu) OR (b = bu AND c < cu))
+ *	(b < bu OR (b = bu AND c < cu))
  *
  * If a bound datum is either MINVALUE or MAXVALUE, these expressions are
  * simplified using the fact that any value is greater than MINVALUE and less

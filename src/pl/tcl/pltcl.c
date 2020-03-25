@@ -30,6 +30,7 @@
 #include "parser/parse_type.h"
 #include "pgstat.h"
 #include "tcop/tcopprot.h"
+#include "utils/acl.h"
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
@@ -592,7 +593,6 @@ call_pltcl_start_proc(Oid prolang, bool pltrusted)
 	const char *gucname;
 	ErrorContextCallback errcallback;
 	List	   *namelist;
-	Oid			fargtypes[1];	/* dummy */
 	Oid			procOid;
 	HeapTuple	procTup;
 	Form_pg_proc procStruct;
@@ -616,7 +616,7 @@ call_pltcl_start_proc(Oid prolang, bool pltrusted)
 
 	/* Parse possibly-qualified identifier and look up the function */
 	namelist = stringToQualifiedNameList(start_proc);
-	procOid = LookupFuncName(namelist, 0, fargtypes, false);
+	procOid = LookupFuncName(namelist, 0, NULL, false);
 
 	/* Current user must have permission to call function */
 	aclresult = pg_proc_aclcheck(procOid, GetUserId(), ACL_EXECUTE);
@@ -718,7 +718,7 @@ pltclu_call_handler(PG_FUNCTION_ARGS)
 static Datum
 pltcl_handler(PG_FUNCTION_ARGS, bool pltrusted)
 {
-	Datum		retval;
+	Datum		retval = (Datum) 0;
 	pltcl_call_state current_call_state;
 	pltcl_call_state *save_call_state;
 
@@ -765,9 +765,10 @@ pltcl_handler(PG_FUNCTION_ARGS, bool pltrusted)
 			retval = pltcl_func_handler(fcinfo, &current_call_state, pltrusted);
 		}
 	}
-	PG_CATCH();
+	PG_FINALLY();
 	{
 		/* Restore static pointer, then clean up the prodesc refcount if any */
+		/* (We're being paranoid in case an error is thrown in context deletion) */
 		pltcl_current_call_state = save_call_state;
 		if (current_call_state.prodesc != NULL)
 		{
@@ -775,19 +776,8 @@ pltcl_handler(PG_FUNCTION_ARGS, bool pltrusted)
 			if (--current_call_state.prodesc->fn_refcount == 0)
 				MemoryContextDelete(current_call_state.prodesc->fn_cxt);
 		}
-		PG_RE_THROW();
 	}
 	PG_END_TRY();
-
-	/* Restore static pointer, then clean up the prodesc refcount if any */
-	/* (We're being paranoid in case an error is thrown in context deletion) */
-	pltcl_current_call_state = save_call_state;
-	if (current_call_state.prodesc != NULL)
-	{
-		Assert(current_call_state.prodesc->fn_refcount > 0);
-		if (--current_call_state.prodesc->fn_refcount == 0)
-			MemoryContextDelete(current_call_state.prodesc->fn_cxt);
-	}
 
 	return retval;
 }
@@ -1340,7 +1330,8 @@ pltcl_event_trigger_handler(PG_FUNCTION_ARGS, pltcl_call_state *call_state,
 	Tcl_ListObjAppendElement(NULL, tcl_cmd,
 							 Tcl_NewStringObj(utf_e2u(tdata->event), -1));
 	Tcl_ListObjAppendElement(NULL, tcl_cmd,
-							 Tcl_NewStringObj(utf_e2u(tdata->tag), -1));
+							 Tcl_NewStringObj(utf_e2u(GetCommandTagName(tdata->tag)),
+											  -1));
 
 	tcl_rc = Tcl_EvalObjEx(interp, tcl_cmd, (TCL_EVAL_DIRECT | TCL_EVAL_GLOBAL));
 
@@ -2757,8 +2748,7 @@ pltcl_SPI_execute_plan(ClientData cdata, Tcl_Interp *interp,
 		if (strlen(nulls) != qdesc->nargs)
 		{
 			Tcl_SetObjResult(interp,
-							 Tcl_NewStringObj(
-											  "length of nulls string doesn't match number of arguments",
+							 Tcl_NewStringObj("length of nulls string doesn't match number of arguments",
 											  -1));
 			return TCL_ERROR;
 		}
@@ -2773,9 +2763,8 @@ pltcl_SPI_execute_plan(ClientData cdata, Tcl_Interp *interp,
 		if (i >= objc)
 		{
 			Tcl_SetObjResult(interp,
-							 Tcl_NewStringObj(
-											  "argument list length doesn't match number of arguments for query"
-											  ,-1));
+							 Tcl_NewStringObj("argument list length doesn't match number of arguments for query",
+											  -1));
 			return TCL_ERROR;
 		}
 

@@ -3,7 +3,7 @@
  * index.c
  *	  code to create and destroy POSTGRES index relations
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -43,11 +43,11 @@
 #include "catalog/pg_am.h"
 #include "catalog/pg_collation.h"
 #include "catalog/pg_constraint.h"
-#include "catalog/pg_description.h"
 #include "catalog/pg_depend.h"
+#include "catalog/pg_description.h"
 #include "catalog/pg_inherits.h"
-#include "catalog/pg_operator.h"
 #include "catalog/pg_opclass.h"
+#include "catalog/pg_operator.h"
 #include "catalog/pg_tablespace.h"
 #include "catalog/pg_trigger.h"
 #include "catalog/pg_type.h"
@@ -76,10 +76,9 @@
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/pg_rusage.h"
+#include "utils/snapmgr.h"
 #include "utils/syscache.h"
 #include "utils/tuplesort.h"
-#include "utils/snapmgr.h"
-
 
 /* Potentially set by pg_upgrade_support functions */
 Oid			binary_upgrade_next_index_pg_class_oid = InvalidOid;
@@ -314,6 +313,14 @@ ConstructTupleDescriptor(Relation heapRelation,
 			collationObjectId[i] : InvalidOid;
 
 		/*
+		 * Set the attribute name as specified by caller.
+		 */
+		if (colnames_item == NULL)	/* shouldn't happen */
+			elog(ERROR, "too few entries in colnames list");
+		namestrcpy(&to->attname, (const char *) lfirst(colnames_item));
+		colnames_item = lnext(indexColNames, colnames_item);
+
+		/*
 		 * For simple index columns, we copy some pg_attribute fields from the
 		 * parent relation.  For expressions we have to look at the expression
 		 * result.
@@ -330,7 +337,6 @@ ConstructTupleDescriptor(Relation heapRelation,
 			from = TupleDescAttr(heapTupDesc,
 								 AttrNumberGetAttrOffset(atnum));
 
-			namecpy(&to->attname, &from->attname);
 			to->atttypid = from->atttypid;
 			to->attlen = from->attlen;
 			to->attndims = from->attndims;
@@ -392,24 +398,12 @@ ConstructTupleDescriptor(Relation heapRelation,
 		to->attrelid = InvalidOid;
 
 		/*
-		 * Set the attribute name as specified by caller.
-		 */
-		if (colnames_item == NULL)	/* shouldn't happen */
-			elog(ERROR, "too few entries in colnames list");
-		namestrcpy(&to->attname, (const char *) lfirst(colnames_item));
-		colnames_item = lnext(indexColNames, colnames_item);
-
-		/*
 		 * Check the opclass and index AM to see if either provides a keytype
 		 * (overriding the attribute type).  Opclass (if exists) takes
 		 * precedence.
 		 */
 		keyType = amroutine->amkeytype;
 
-		/*
-		 * Code below is concerned to the opclasses which are not used with
-		 * the included columns.
-		 */
 		if (i < indexInfo->ii_NumIndexKeyAttrs)
 		{
 			tuple = SearchSysCache1(CLAOID, ObjectIdGetDatum(classObjectId[i]));
@@ -424,6 +418,10 @@ ConstructTupleDescriptor(Relation heapRelation,
 			 * If keytype is specified as ANYELEMENT, and opcintype is
 			 * ANYARRAY, then the attribute type must be an array (else it'd
 			 * not have matched this opclass); use its element type.
+			 *
+			 * We could also allow ANYCOMPATIBLE/ANYCOMPATIBLEARRAY here, but
+			 * there seems no need to do so; there's no reason to declare an
+			 * opclass as taking ANYCOMPATIBLEARRAY rather than ANYARRAY.
 			 */
 			if (keyType == ANYELEMENTOID && opclassTup->opcintype == ANYARRAYOID)
 			{
@@ -1462,6 +1460,7 @@ index_concurrently_swap(Oid newIndexId, Oid oldIndexId, const char *oldName)
 				newIndexTuple;
 	Form_pg_index oldIndexForm,
 				newIndexForm;
+	bool		isPartition;
 	Oid			indexConstraintOid;
 	List	   *constraintOids = NIL;
 	ListCell   *lc;
@@ -1491,8 +1490,10 @@ index_concurrently_swap(Oid newIndexId, Oid oldIndexId, const char *oldName)
 	namestrcpy(&newClassForm->relname, NameStr(oldClassForm->relname));
 	namestrcpy(&oldClassForm->relname, oldName);
 
-	/* Copy partition flag to track inheritance properly */
+	/* Swap the partition flags to track inheritance properly */
+	isPartition = newClassForm->relispartition;
 	newClassForm->relispartition = oldClassForm->relispartition;
+	oldClassForm->relispartition = isPartition;
 
 	CatalogTupleUpdate(pg_class, &oldClassTuple->t_self, oldClassTuple);
 	CatalogTupleUpdate(pg_class, &newClassTuple->t_self, newClassTuple);
@@ -1526,7 +1527,13 @@ index_concurrently_swap(Oid newIndexId, Oid oldIndexId, const char *oldName)
 	newIndexForm->indimmediate = oldIndexForm->indimmediate;
 	oldIndexForm->indimmediate = true;
 
-	/* Mark old index as valid and new as invalid as index_set_state_flags */
+	/* Preserve indisclustered in the new index */
+	newIndexForm->indisclustered = oldIndexForm->indisclustered;
+
+	/*
+	 * Mark the new index as valid, and the old index as invalid similarly
+	 * to what index_set_state_flags() does.
+	 */
 	newIndexForm->indisvalid = true;
 	oldIndexForm->indisvalid = false;
 	oldIndexForm->indisclustered = false;
@@ -1668,8 +1675,13 @@ index_concurrently_swap(Oid newIndexId, Oid oldIndexId, const char *oldName)
 	}
 
 	/*
-	 * Move all dependencies of and on the old index to the new one
+	 * Swap all dependencies of and on the old index to the new one, and
+	 * vice-versa.  Note that a call to CommandCounterIncrement() would cause
+	 * duplicate entries in pg_depend, so this should not be done.
 	 */
+	changeDependenciesOf(RelationRelationId, newIndexId, oldIndexId);
+	changeDependenciesOn(RelationRelationId, newIndexId, oldIndexId);
+
 	changeDependenciesOf(RelationRelationId, oldIndexId, newIndexId);
 	changeDependenciesOn(RelationRelationId, oldIndexId, newIndexId);
 
@@ -2012,6 +2024,15 @@ index_drop(Oid indexId, bool concurrent, bool concurrent_lock_mode)
 	LOCKMODE	lockmode;
 
 	/*
+	 * A temporary relation uses a non-concurrent DROP.  Other backends can't
+	 * access a temporary relation, so there's no harm in grabbing a stronger
+	 * lock (see comments in RemoveRelations), and a non-concurrent DROP is
+	 * more efficient.
+	 */
+	Assert(get_rel_persistence(indexId) != RELPERSISTENCE_TEMP ||
+		   (!concurrent && !concurrent_lock_mode));
+
+	/*
 	 * To drop an index safely, we must grab exclusive lock on its parent
 	 * table.  Exclusive lock on the index alone is insufficient because
 	 * another backend might be about to execute a query on the parent table.
@@ -2142,6 +2163,10 @@ index_drop(Oid indexId, bool concurrent, bool concurrent_lock_mode)
 		 * possible if one of the transactions in question is blocked trying
 		 * to acquire an exclusive lock on our table.  The lock code will
 		 * detect deadlock and error out properly.
+		 *
+		 * Note: we report progress through WaitForLockers() unconditionally
+		 * here, even though it will only be used when we're called by REINDEX
+		 * CONCURRENTLY and not when called by DROP INDEX CONCURRENTLY.
 		 */
 		WaitForLockers(heaplocktag, AccessExclusiveLock, true);
 
@@ -2157,7 +2182,7 @@ index_drop(Oid indexId, bool concurrent, bool concurrent_lock_mode)
 
 		/*
 		 * Wait till every transaction that saw the old index state has
-		 * finished.
+		 * finished.  See above about progress reporting.
 		 */
 		WaitForLockers(heaplocktag, AccessExclusiveLock, true);
 
@@ -2314,6 +2339,56 @@ BuildIndexInfo(Relation index)
 	return ii;
 }
 
+/* ----------------
+ *		BuildDummyIndexInfo
+ *			Construct a dummy IndexInfo record for an open index
+ *
+ * This differs from the real BuildIndexInfo in that it will never run any
+ * user-defined code that might exist in index expressions or predicates.
+ * Instead of the real index expressions, we return null constants that have
+ * the right types/typmods/collations.  Predicates and exclusion clauses are
+ * just ignored.  This is sufficient for the purpose of truncating an index,
+ * since we will not need to actually evaluate the expressions or predicates;
+ * the only thing that's likely to be done with the data is construction of
+ * a tupdesc describing the index's rowtype.
+ * ----------------
+ */
+IndexInfo *
+BuildDummyIndexInfo(Relation index)
+{
+	IndexInfo  *ii;
+	Form_pg_index indexStruct = index->rd_index;
+	int			i;
+	int			numAtts;
+
+	/* check the number of keys, and copy attr numbers into the IndexInfo */
+	numAtts = indexStruct->indnatts;
+	if (numAtts < 1 || numAtts > INDEX_MAX_KEYS)
+		elog(ERROR, "invalid indnatts %d for index %u",
+			 numAtts, RelationGetRelid(index));
+
+	/*
+	 * Create the node, using dummy index expressions, and pretending there is
+	 * no predicate.
+	 */
+	ii = makeIndexInfo(indexStruct->indnatts,
+					   indexStruct->indnkeyatts,
+					   index->rd_rel->relam,
+					   RelationGetDummyIndexExpressions(index),
+					   NIL,
+					   indexStruct->indisunique,
+					   indexStruct->indisready,
+					   false);
+
+	/* fill in attribute numbers */
+	for (i = 0; i < numAtts; i++)
+		ii->ii_IndexAttrNumbers[i] = indexStruct->indkey.values[i];
+
+	/* We ignore the exclusion constraint if any */
+
+	return ii;
+}
+
 /*
  * CompareIndexInfo
  *		Return whether the properties of two indexes (in different tables)
@@ -2322,13 +2397,13 @@ BuildIndexInfo(Relation index)
  * Note: passing collations and opfamilies separately is a kludge.  Adding
  * them to IndexInfo may result in better coding here and elsewhere.
  *
- * Use convert_tuples_by_name_map(index2, index1) to build the attmap.
+ * Use build_attrmap_by_name(index2, index1) to build the attmap.
  */
 bool
 CompareIndexInfo(IndexInfo *info1, IndexInfo *info2,
 				 Oid *collations1, Oid *collations2,
 				 Oid *opfamilies1, Oid *opfamilies2,
-				 AttrNumber *attmap, int maplen)
+				 AttrMap *attmap)
 {
 	int			i;
 
@@ -2355,12 +2430,12 @@ CompareIndexInfo(IndexInfo *info1, IndexInfo *info2,
 	 */
 	for (i = 0; i < info1->ii_NumIndexAttrs; i++)
 	{
-		if (maplen < info2->ii_IndexAttrNumbers[i])
+		if (attmap->maplen < info2->ii_IndexAttrNumbers[i])
 			elog(ERROR, "incorrect attribute map");
 
 		/* ignore expressions at this stage */
 		if ((info1->ii_IndexAttrNumbers[i] != InvalidAttrNumber) &&
-			(attmap[info2->ii_IndexAttrNumbers[i] - 1] !=
+			(attmap->attnums[info2->ii_IndexAttrNumbers[i] - 1] !=
 			 info1->ii_IndexAttrNumbers[i]))
 			return false;
 
@@ -2386,7 +2461,7 @@ CompareIndexInfo(IndexInfo *info1, IndexInfo *info2,
 		Node	   *mapped;
 
 		mapped = map_variable_attnos((Node *) info2->ii_Expressions,
-									 1, 0, attmap, maplen,
+									 1, 0, attmap,
 									 InvalidOid, &found_whole_row);
 		if (found_whole_row)
 		{
@@ -2410,7 +2485,7 @@ CompareIndexInfo(IndexInfo *info1, IndexInfo *info2,
 		Node	   *mapped;
 
 		mapped = map_variable_attnos((Node *) info2->ii_Predicate,
-									 1, 0, attmap, maplen,
+									 1, 0, attmap,
 									 InvalidOid, &found_whole_row);
 		if (found_whole_row)
 		{
@@ -3400,6 +3475,17 @@ reindex_index(Oid indexId, bool skip_constraint_checks, char persistence,
 				 errmsg("cannot reindex temporary tables of other sessions")));
 
 	/*
+	 * Don't allow reindex of an invalid index on TOAST table.  This is a
+	 * leftover from a failed REINDEX CONCURRENTLY, and if rebuilt it would
+	 * not be possible to drop it anymore.
+	 */
+	if (IsToastNamespace(RelationGetNamespace(iRel)) &&
+		!get_index_isvalid(indexId))
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("cannot reindex invalid index on TOAST table")));
+
+	/*
 	 * Also check for active uses of the index in the current transaction; we
 	 * don't want to reindex underneath an open indexscan.
 	 */
@@ -3438,14 +3524,12 @@ reindex_index(Oid indexId, bool skip_constraint_checks, char persistence,
 		/* Note: we do not need to re-establish pkey setting */
 		index_build(heapRelation, iRel, indexInfo, true, true);
 	}
-	PG_CATCH();
+	PG_FINALLY();
 	{
 		/* Make sure flag gets cleared on error exit */
 		ResetReindexProcessing();
-		PG_RE_THROW();
 	}
 	PG_END_TRY();
-	ResetReindexProcessing();
 
 	/*
 	 * If the index is marked invalid/not-ready/dead (ie, it's from a failed
@@ -3650,6 +3734,23 @@ reindex_relation(Oid relid, int flags, int options)
 		foreach(indexId, indexIds)
 		{
 			Oid			indexOid = lfirst_oid(indexId);
+			Oid			indexNamespaceId = get_rel_namespace(indexOid);
+
+			/*
+			 * Skip any invalid indexes on a TOAST table.  These can only be
+			 * duplicate leftovers from a failed REINDEX CONCURRENTLY, and if
+			 * rebuilt it would not be possible to drop them anymore.
+			 */
+			if (IsToastNamespace(indexNamespaceId) &&
+				!get_index_isvalid(indexOid))
+			{
+				ereport(WARNING,
+						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+						 errmsg("cannot reindex invalid index \"%s.%s\" on TOAST table, skipping",
+								get_namespace_name(indexNamespaceId),
+								get_rel_name(indexOid))));
+				continue;
+			}
 
 			reindex_index(indexOid, !(flags & REINDEX_REL_CHECK_CONSTRAINTS),
 						  persistence, options);
@@ -3665,14 +3766,12 @@ reindex_relation(Oid relid, int flags, int options)
 			i++;
 		}
 	}
-	PG_CATCH();
+	PG_FINALLY();
 	{
 		/* Make sure list gets cleared on error exit */
 		ResetReindexPending();
-		PG_RE_THROW();
 	}
 	PG_END_TRY();
-	ResetReindexPending();
 
 	/*
 	 * Close rel, but continue to hold the lock.

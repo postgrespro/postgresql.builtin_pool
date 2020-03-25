@@ -3,7 +3,7 @@
  * statscmds.c
  *	  Commands for creating and altering extended statistics objects
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -323,7 +323,7 @@ CreateStatistics(CreateStatsStmt *stmt)
 	if (build_mcv)
 		types[ntypes++] = CharGetDatum(STATS_EXT_MCV);
 	Assert(ntypes > 0 && ntypes <= lengthof(types));
-	stxkind = construct_array(types, ntypes, CHAROID, 1, true, 'c');
+	stxkind = construct_array(types, ntypes, CHAROID, 1, true, TYPALIGN_CHAR);
 
 	statrel = table_open(StatisticExtRelationId, RowExclusiveLock);
 
@@ -637,7 +637,7 @@ UpdateStatisticsForTypeChange(Oid statsOid, Oid relationOid, int attnum,
 	replaces[Anum_pg_statistic_ext_data_stxdmcv - 1] = true;
 	nulls[Anum_pg_statistic_ext_data_stxdmcv - 1] = true;
 
-	rel = heap_open(StatisticExtDataRelationId, RowExclusiveLock);
+	rel = table_open(StatisticExtDataRelationId, RowExclusiveLock);
 
 	/* replace the old tuple */
 	stup = heap_modify_tuple(oldtup,
@@ -651,7 +651,7 @@ UpdateStatisticsForTypeChange(Oid statsOid, Oid relationOid, int attnum,
 
 	heap_freetuple(stup);
 
-	heap_close(rel, RowExclusiveLock);
+	table_close(rel, RowExclusiveLock);
 }
 
 /*

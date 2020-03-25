@@ -3,7 +3,7 @@
  * varlena.c
  *	  Functions for the variable-length built-in types.
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -20,6 +20,7 @@
 #include "access/detoast.h"
 #include "catalog/pg_collation.h"
 #include "catalog/pg_type.h"
+#include "common/hashfn.h"
 #include "common/int.h"
 #include "lib/hyperloglog.h"
 #include "libpq/pqformat.h"
@@ -29,7 +30,6 @@
 #include "regex/regex.h"
 #include "utils/builtins.h"
 #include "utils/bytea.h"
-#include "utils/hashutils.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/pg_locale.h"
@@ -1118,7 +1118,12 @@ text_position(text *t1, text *t2, Oid collid)
 	TextPositionState state;
 	int			result;
 
-	if (VARSIZE_ANY_EXHDR(t1) < 1 || VARSIZE_ANY_EXHDR(t2) < 1)
+	/* Empty needle always matches at position 1 */
+	if (VARSIZE_ANY_EXHDR(t2) < 1)
+		return 1;
+
+	/* Otherwise, can't match if haystack is shorter than needle */
+	if (VARSIZE_ANY_EXHDR(t1) < VARSIZE_ANY_EXHDR(t2))
 		return 0;
 
 	text_position_setup(t1, t2, collid, &state);
@@ -1272,6 +1277,9 @@ text_position_setup(text *t1, text *t2, Oid collid, TextPositionState *state)
  * Advance to the next match, starting from the end of the previous match
  * (or the beginning of the string, on first call).  Returns true if a match
  * is found.
+ *
+ * Note that this refuses to match an empty-string needle.  Most callers
+ * will have handled that case specially and we'll never see it here.
  */
 static bool
 text_position_next(TextPositionState *state)
@@ -2773,6 +2781,26 @@ varstr_abbrev_abort(int memtupcount, SortSupport ssup)
 #endif
 
 	return true;
+}
+
+/*
+ * Generic equalimage support function for character type's operator classes.
+ * Disables the use of deduplication with nondeterministic collations.
+ */
+Datum
+btvarstrequalimage(PG_FUNCTION_ARGS)
+{
+	/* Oid		opcintype = PG_GETARG_OID(0); */
+	Oid			collid = PG_GET_COLLATION();
+
+	check_collation_set(collid);
+
+	if (lc_collate_is_c(collid) ||
+		collid == DEFAULT_COLLATION_OID ||
+		get_collation_isdeterministic(collid))
+		PG_RETURN_BOOL(true);
+	else
+		PG_RETURN_BOOL(false);
 }
 
 Datum
@@ -4726,7 +4754,7 @@ text_to_array_internal(PG_FUNCTION_ARGS)
 			/* XXX: this hardcodes assumptions about the text type */
 			PG_RETURN_ARRAYTYPE_P(construct_md_array(elems, nulls,
 													 1, dims, lbs,
-													 TEXTOID, -1, false, 'i'));
+													 TEXTOID, -1, false, TYPALIGN_INT));
 		}
 
 		text_position_setup(inputstring, fldsep, PG_GET_COLLATION(), &state);

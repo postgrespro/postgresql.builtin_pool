@@ -4,7 +4,7 @@
  *	  prototypes for various files in optimizer/path
  *
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/optimizer/paths.h
@@ -153,6 +153,11 @@ extern void add_child_rel_equivalences(PlannerInfo *root,
 									   AppendRelInfo *appinfo,
 									   RelOptInfo *parent_rel,
 									   RelOptInfo *child_rel);
+extern void add_child_join_rel_equivalences(PlannerInfo *root,
+											int nappinfos,
+											AppendRelInfo **appinfos,
+											RelOptInfo *parent_rel,
+											RelOptInfo *child_rel);
 extern List *generate_implied_equalities_for_column(PlannerInfo *root,
 													RelOptInfo *rel,
 													ec_matches_callback_type callback,

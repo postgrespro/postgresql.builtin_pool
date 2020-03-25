@@ -1,7 +1,7 @@
 /*
  * psql - the PostgreSQL interactive terminal
  *
- * Copyright (c) 2000-2019, PostgreSQL Global Development Group
+ * Copyright (c) 2000-2020, PostgreSQL Global Development Group
  *
  * src/bin/psql/prompt.c
  */
@@ -12,17 +12,11 @@
 #include <win32.h>
 #endif
 
-#ifdef HAVE_UNIX_SOCKETS
-#include <unistd.h>
-#include <netdb.h>
-#endif
-
 #include "common.h"
+#include "common/string.h"
 #include "input.h"
 #include "prompt.h"
 #include "settings.h"
-
-#include "common/string.h"
 
 /*--------------------------
  * get_prompt
@@ -40,6 +34,7 @@
  * %n - database user name
  * %/ - current database
  * %~ - like %/ but "~" when database name equals user name
+ * %w - whitespace of the same width as the most recent output of PROMPT1
  * %# - "#" if superuser, ">" otherwise
  * %R - in prompt1 normally =, or ^ if single line mode,
  *			or a ! if session is not connected to a database;
@@ -75,6 +70,7 @@ get_prompt(promptStatus_t status, ConditionalStack cstack)
 	bool		esc = false;
 	const char *p;
 	const char *prompt_string = "? ";
+	static size_t last_prompt1_width = 0;
 
 	switch (status)
 	{
@@ -125,6 +121,13 @@ get_prompt(promptStatus_t status, ConditionalStack cstack)
 					}
 					break;
 
+					/* Whitespace of the same width as the last PROMPT1 */
+				case 'w':
+					if (pset.db)
+						memset(buf, ' ',
+							   Min(last_prompt1_width, sizeof(buf) - 1));
+					break;
+
 					/* DB server hostname (long/short) */
 				case 'M':
 				case 'm':
@@ -139,7 +142,6 @@ get_prompt(promptStatus_t status, ConditionalStack cstack)
 							if (*p == 'm')
 								buf[strcspn(buf, ".")] = '\0';
 						}
-#ifdef HAVE_UNIX_SOCKETS
 						/* UNIX socket */
 						else
 						{
@@ -150,7 +152,6 @@ get_prompt(promptStatus_t status, ConditionalStack cstack)
 							else
 								snprintf(buf, sizeof(buf), "[local:%s]", host);
 						}
-#endif
 					}
 					break;
 					/* DB server port number */
@@ -262,13 +263,10 @@ get_prompt(promptStatus_t status, ConditionalStack cstack)
 					/* execute command */
 				case '`':
 					{
-						FILE	   *fd;
-						char	   *file = pg_strdup(p + 1);
-						int			cmdend;
+						int			cmdend = strcspn(p + 1, "`");
+						char	   *file = pnstrdup(p + 1, cmdend);
+						FILE	   *fd = popen(file, "r");
 
-						cmdend = strcspn(file, "`");
-						file[cmdend] = '\0';
-						fd = popen(file, "r");
 						if (fd)
 						{
 							if (fgets(buf, sizeof(buf), fd) == NULL)
@@ -287,13 +285,10 @@ get_prompt(promptStatus_t status, ConditionalStack cstack)
 					/* interpolate variable */
 				case ':':
 					{
-						char	   *name;
+						int			nameend = strcspn(p + 1, ":");
+						char	   *name = pnstrdup(p + 1, nameend);
 						const char *val;
-						int			nameend;
 
-						name = pg_strdup(p + 1);
-						nameend = strcspn(name, ":");
-						name[nameend] = '\0';
 						val = GetVariable(pset.vars, name);
 						if (val)
 							strlcpy(buf, val, sizeof(buf));
@@ -335,6 +330,52 @@ get_prompt(promptStatus_t status, ConditionalStack cstack)
 
 		if (!esc)
 			strlcat(destination, buf, sizeof(destination));
+	}
+
+	/* Compute the visible width of PROMPT1, for PROMPT2's %w */
+	if (prompt_string == pset.prompt1)
+	{
+		char	   *p = destination;
+		char	   *end = p + strlen(p);
+		bool		visible = true;
+
+		last_prompt1_width = 0;
+		while (*p)
+		{
+#if defined(USE_READLINE) && defined(RL_PROMPT_START_IGNORE)
+			if (*p == RL_PROMPT_START_IGNORE)
+			{
+				visible = false;
+				++p;
+			}
+			else if (*p == RL_PROMPT_END_IGNORE)
+			{
+				visible = true;
+				++p;
+			}
+			else
+#endif
+			{
+				int			chlen,
+							chwidth;
+
+				chlen = PQmblen(p, pset.encoding);
+				if (p + chlen > end)
+					break;		/* Invalid string */
+
+				if (visible)
+				{
+					chwidth = PQdsplen(p, pset.encoding);
+
+					if (*p == '\n')
+						last_prompt1_width = 0;
+					else if (chwidth > 0)
+						last_prompt1_width += chwidth;
+				}
+
+				p += chlen;
+			}
+		}
 	}
 
 	return destination;

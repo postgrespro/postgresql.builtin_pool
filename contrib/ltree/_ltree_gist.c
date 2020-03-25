@@ -9,11 +9,9 @@
 
 #include "access/gist.h"
 #include "access/stratnum.h"
-#include "port/pg_bitutils.h"
-
 #include "crc32.h"
 #include "ltree.h"
-
+#include "port/pg_bitutils.h"
 
 PG_FUNCTION_INFO_V1(_ltree_compress);
 PG_FUNCTION_INFO_V1(_ltree_same);
@@ -448,11 +446,9 @@ gist_qtxt(ltree_gist *key, ltxtquery *query)
 	if (LTG_ISALLTRUE(key))
 		return true;
 
-	return ltree_execute(
-						 GETQUERY(query),
+	return ltree_execute(GETQUERY(query),
 						 (void *) LTG_SIGN(key), false,
-						 checkcondition_bit
-		);
+						 checkcondition_bit);
 }
 
 static bool

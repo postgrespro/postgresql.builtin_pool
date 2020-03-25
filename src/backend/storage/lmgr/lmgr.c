@@ -3,7 +3,7 @@
  * lmgr.c
  *	  POSTGRES lock manager code
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -900,16 +900,14 @@ WaitForLockersMultiple(List *locktags, LOCKMODE lockmode, bool progress)
 
 		while (VirtualTransactionIdIsValid(*lockholders))
 		{
-			/*
-			 * If requested, publish who we're going to wait for.  This is not
-			 * 100% accurate if they're already gone, but we don't care.
-			 */
+			/* If requested, publish who we're going to wait for. */
 			if (progress)
 			{
 				PGPROC	   *holder = BackendIdGetProc(lockholders->backendId);
 
-				pgstat_progress_update_param(PROGRESS_WAITFOR_CURRENT_PID,
-											 holder->pid);
+				if (holder)
+					pgstat_progress_update_param(PROGRESS_WAITFOR_CURRENT_PID,
+												 holder->pid);
 			}
 			VirtualXactLock(*lockholders, true);
 			lockholders++;

@@ -3,7 +3,7 @@
  * tsquery.c
  *	  I/O functions for tsquery
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  *
  *
  * IDENTIFICATION
@@ -16,8 +16,8 @@
 
 #include "libpq/pqformat.h"
 #include "miscadmin.h"
-#include "tsearch/ts_type.h"
 #include "tsearch/ts_locale.h"
+#include "tsearch/ts_type.h"
 #include "tsearch/ts_utils.h"
 #include "utils/builtins.h"
 #include "utils/memutils.h"

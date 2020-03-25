@@ -883,9 +883,10 @@ include_dir 'conf.d'
       </term>
       <listitem>
        <para>
-        Specifies the number of seconds of inactivity after which TCP
-        should send a keepalive message to the client.  A value of 0 uses
-        the system default.
+        Specifies the amount of time with no network activity after which
+        the operating system should send a TCP keepalive message to the client.
+        If this value is specified without units, it is taken as seconds.
+        A value of 0 (the default) selects the operating system's default.
         This parameter is supported only on systems that support
         <symbol>TCP_KEEPIDLE</symbol> or an equivalent socket option, and on
         Windows; on other systems, it must be zero.
@@ -894,7 +895,7 @@ include_dir 'conf.d'
        </para>
        <note>
         <para>
-         On Windows, a value of 0 will set this parameter to 2 hours,
+         On Windows, setting a value of 0 will set this parameter to 2 hours,
          since Windows does not provide a way to read the system default value.
         </para>
        </note>
@@ -909,9 +910,10 @@ include_dir 'conf.d'
       </term>
       <listitem>
        <para>
-        Specifies the number of seconds after which a TCP keepalive message
-        that is not acknowledged by the client should be retransmitted.
-        A value of 0 uses the system default.
+        Specifies the amount of time after which a TCP keepalive message
+        that has not been acknowledged by the client should be retransmitted.
+        If this value is specified without units, it is taken as seconds.
+        A value of 0 (the default) selects the operating system's default.
         This parameter is supported only on systems that support
         <symbol>TCP_KEEPINTVL</symbol> or an equivalent socket option, and on
         Windows; on other systems, it must be zero.
@@ -920,7 +922,7 @@ include_dir 'conf.d'
        </para>
        <note>
         <para>
-         On Windows, a value of 0 will set this parameter to 1 second,
+         On Windows, setting a value of 0 will set this parameter to 1 second,
          since Windows does not provide a way to read the system default value.
         </para>
        </note>
@@ -935,9 +937,9 @@ include_dir 'conf.d'
       </term>
       <listitem>
        <para>
-        Specifies the number of TCP keepalives that can be lost before
+        Specifies the number of TCP keepalive messages that can be lost before
         the server's connection to the client is considered dead.
-        A value of 0 uses the system default.
+        A value of 0 (the default) selects the operating system's default.
         This parameter is supported only on systems that support
         <symbol>TCP_KEEPCNT</symbol> or an equivalent socket option;
         on other systems, it must be zero.
@@ -960,9 +962,10 @@ include_dir 'conf.d'
       </term>
       <listitem>
        <para>
-        Specifies the number of milliseconds that transmitted data may
-        remain unacknowledged before a connection is forcibly closed.
-        A value of 0 uses the system default.
+        Specifies the amount of time that transmitted data may
+        remain unacknowledged before the TCP connection is forcibly closed.
+        If this value is specified without units, it is taken as milliseconds.
+        A value of 0 (the default) selects the operating system's default.
         This parameter is supported only on systems that support
         <symbol>TCP_USER_TIMEOUT</symbol>; on other systems, it must be zero.
         In sessions connected via a Unix-domain socket, this parameter is
@@ -970,8 +973,7 @@ include_dir 'conf.d'
        </para>
        <note>
         <para>
-         This parameter is not supported on Windows and on Linux version
-         2.6.36 or older.
+         This parameter is not supported on Windows, and must be zero.
         </para>
        </note>
       </listitem>
@@ -995,10 +997,11 @@ include_dir 'conf.d'
 
       <listitem>
        <para>
-        Maximum time to complete client authentication, in seconds. If a
+        Maximum amount of time allowed to complete client authentication. If a
         would-be client has not completed the authentication protocol in
         this much time, the server closes the connection. This prevents
         hung clients from occupying a connection indefinitely.
+        If this value is specified without units, it is taken as seconds.
         The default is one minute (<literal>1m</literal>).
         This parameter can only be set in the <filename>postgresql.conf</filename>
         file or on the server command line.
@@ -1362,10 +1365,8 @@ include_dir 'conf.d'
        </para>
 
        <para>
-        The default is <literal>TLSv1</literal>, mainly to support older
-        versions of the <productname>OpenSSL</productname> library.  You might
-        want to set this to a higher value if all software components can
-        support the newer protocol versions.
+        The default is <literal>TLSv1.2</literal>, which satisfies industry
+        best practices as of this writing.
        </para>
       </listitem>
      </varlistentry>
@@ -1494,10 +1495,14 @@ include_dir 'conf.d'
         memory buffers.  The default is typically 128 megabytes
         (<literal>128MB</literal>), but might be less if your kernel settings will
         not support it (as determined during <application>initdb</application>).
-        This setting must be at least 128 kilobytes.  (Non-default
-        values of <symbol>BLCKSZ</symbol> change the minimum.)  However,
+        This setting must be at least 128 kilobytes.  However,
         settings significantly higher than the minimum are usually needed
-        for good performance.  This parameter can only be set at server start.
+        for good performance.
+        If this value is specified without units, it is taken as blocks,
+        that is <symbol>BLCKSZ</symbol> bytes, typically 8kB.
+        (Non-default values of <symbol>BLCKSZ</symbol> change the minimum
+        value.)
+        This parameter can only be set at server start.
        </para>
 
        <para>
@@ -1590,10 +1595,15 @@ include_dir 'conf.d'
       </term>
       <listitem>
        <para>
-        Sets the maximum number of temporary buffers used by each database
-        session.  These are session-local buffers used only for access to
-        temporary tables.  The default is eight megabytes
-        (<literal>8MB</literal>).  The setting can be changed within individual
+        Sets the maximum amount of memory used for temporary buffers within
+        each database session.  These are session-local buffers used only
+        for access to temporary tables.
+        If this value is specified without units, it is taken as blocks,
+        that is <symbol>BLCKSZ</symbol> bytes, typically 8kB.
+        The default is eight megabytes (<literal>8MB</literal>).
+        (If <symbol>BLCKSZ</symbol> is not 8kB, the default value scales
+        proportionally to it.)
+        This setting can be changed within individual
         sessions, but only before the first use of temporary tables
         within the session; subsequent attempts to change the value will
         have no effect on that session.
@@ -1652,9 +1662,10 @@ include_dir 'conf.d'
       </term>
       <listitem>
        <para>
-        Specifies the amount of memory to be used by internal sort operations
-        and hash tables before writing to temporary disk files. The value
-        defaults to four megabytes (<literal>4MB</literal>).
+        Sets the maximum amount of memory to be used by a query operation
+        (such as a sort or hash table) before writing to temporary disk files.
+        If this value is specified without units, it is taken as kilobytes.
+        The default value is four megabytes (<literal>4MB</literal>).
         Note that for a complex query, several sort or hash operations might be
         running in parallel; each operation will be allowed to use as much memory
         as this value specifies before it starts to write data into temporary
@@ -1680,7 +1691,9 @@ include_dir 'conf.d'
        <para>
         Specifies the maximum amount of memory to be used by maintenance
         operations, such as <command>VACUUM</command>, <command>CREATE
-        INDEX</command>, and <command>ALTER TABLE ADD FOREIGN KEY</command>.  It defaults
+        INDEX</command>, and <command>ALTER TABLE ADD FOREIGN KEY</command>.
+        If this value is specified without units, it is taken as kilobytes.
+        It defaults
         to 64 megabytes (<literal>64MB</literal>).  Since only one of these
         operations can be executed at a time by a database session, and
         an installation normally doesn't have many of them running
@@ -1707,10 +1720,33 @@ include_dir 'conf.d'
       <listitem>
        <para>
         Specifies the maximum amount of memory to be used by each
-        autovacuum worker process.  It defaults to -1, indicating that
+        autovacuum worker process.
+        If this value is specified without units, it is taken as kilobytes.
+        It defaults to -1, indicating that
         the value of <xref linkend="guc-maintenance-work-mem"/> should
         be used instead.  The setting has no effect on the behavior of
         <command>VACUUM</command> when run in other contexts.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-logical-decoding-work-mem" xreflabel="logical_decoding_work_mem">
+      <term><varname>logical_decoding_work_mem</varname> (<type>integer</type>)
+      <indexterm>
+       <primary><varname>logical_decoding_work_mem</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        Specifies the maximum amount of memory to be used by logical decoding,
+        before some of the decoded changes are written to local disk. This
+        limits the amount of memory used by logical streaming replication
+        connections. It defaults to 64 megabytes (<literal>64MB</literal>).
+        Since each replication connection only uses a single buffer of this size,
+        and an installation normally doesn't have many such connections
+        concurrently (as limited by <varname>max_wal_senders</varname>), it's
+        safe to set this value significantly higher than <varname>work_mem</varname>,
+        reducing the amount of decoded changes written to disk.
        </para>
       </listitem>
      </varlistentry>
@@ -1729,6 +1765,7 @@ include_dir 'conf.d'
         equivalent), less a safety margin of a megabyte or so.  The safety
         margin is needed because the stack depth is not checked in every
         routine in the server, but only in key potentially-recursive routines.
+        If this value is specified without units, it is taken as kilobytes.
         The default setting is two megabytes (<literal>2MB</literal>), which
         is conservatively small and unlikely to risk crashes.  However,
         it might be too small to allow execution of complex functions.
@@ -1818,8 +1855,8 @@ include_dir 'conf.d'
         for temporary files, such as sort and hash temporary files, or the
         storage file for a held cursor.  A transaction attempting to exceed
         this limit will be canceled.
-        The value is specified in kilobytes, and <literal>-1</literal> (the
-        default) means no limit.
+        If this value is specified without units, it is taken as kilobytes.
+        <literal>-1</literal> (the default) means no limit.
         Only superusers can change this setting.
        </para>
        <para>
@@ -1906,8 +1943,9 @@ include_dir 'conf.d'
        </term>
        <listitem>
         <para>
-         The length of time, in milliseconds, that the process will sleep
+         The amount of time that the process will sleep
          when the cost limit has been exceeded.
+         If this value is specified without units, it is taken as milliseconds.
          The default value is zero, which disables the cost-based vacuum
          delay feature.  Positive values enable cost-based vacuuming.
         </para>
@@ -2034,10 +2072,13 @@ include_dir 'conf.d'
          Specifies the delay between activity rounds for the
          background writer.  In each round the writer issues writes
          for some number of dirty buffers (controllable by the
-         following parameters).  It then sleeps for <varname>bgwriter_delay</varname>
-         milliseconds, and repeats.  When there are no dirty buffers in the
+         following parameters).  It then sleeps for
+         the length of <varname>bgwriter_delay</varname>, and repeats.
+         When there are no dirty buffers in the
          buffer pool, though, it goes into a longer sleep regardless of
-         <varname>bgwriter_delay</varname>.  The default value is 200
+         <varname>bgwriter_delay</varname>.
+         If this value is specified without units, it is taken as milliseconds.
+         The default value is 200
          milliseconds (<literal>200ms</literal>). Note that on many systems, the
          effective resolution of sleep delays is 10 milliseconds; setting
          <varname>bgwriter_delay</varname> to a value that is not a multiple of 10
@@ -2103,7 +2144,7 @@ include_dir 'conf.d'
        </term>
        <listitem>
         <para>
-         Whenever more than <varname>bgwriter_flush_after</varname> bytes have
+         Whenever more than this amount of data has
          been written by the background writer, attempt to force the OS to issue these
          writes to the underlying storage.  Doing so will limit the amount of
          dirty data in the kernel's page cache, reducing the likelihood of
@@ -2113,7 +2154,10 @@ include_dir 'conf.d'
          also are some cases, especially with workloads that are bigger than
          <xref linkend="guc-shared-buffers"/>, but smaller than the OS's page
          cache, where performance might degrade.  This setting may have no
-         effect on some platforms.  The valid range is between
+         effect on some platforms.
+         If this value is specified without units, it is taken as blocks,
+         that is <symbol>BLCKSZ</symbol> bytes, typically 8kB.
+         The valid range is between
          <literal>0</literal>, which disables forced writeback, and
          <literal>2MB</literal>.  The default is <literal>512kB</literal> on Linux,
          <literal>0</literal> elsewhere.  (If <symbol>BLCKSZ</symbol> is not 8kB,
@@ -2185,6 +2229,26 @@ include_dir 'conf.d'
        </listitem>
       </varlistentry>
 
+      <varlistentry id="guc-maintenance-io-concurrency" xreflabel="maintenance_io_concurrency">
+       <term><varname>maintenance_io_concurrency</varname> (<type>integer</type>)
+       <indexterm>
+        <primary><varname>maintenance_io_concurrency</varname> configuration parameter</primary>
+       </indexterm>
+       </term>
+       <listitem>
+        <para>
+         Similar to <varname>effective_io_concurrency</varname>, but used
+         for maintenance work that is done on behalf of many client sessions.
+        </para>
+        <para>
+         The default is 10 on supported systems, otherwise 0.  This value can
+         be overridden for tables in a particular tablespace by setting the
+         tablespace parameter of the same name (see
+         <xref linkend="sql-altertablespace"/>).
+        </para>
+       </listitem>
+      </varlistentry>
+ 
       <varlistentry id="guc-max-worker-processes" xreflabel="max_worker_processes">
        <term><varname>max_worker_processes</varname> (<type>integer</type>)
        <indexterm>
@@ -2264,13 +2328,13 @@ include_dir 'conf.d'
        <listitem>
         <para>
          Sets the maximum number of parallel workers that can be
-         started by a single utility command.  Currently, the only
-         parallel utility command that supports the use of parallel
-         workers is <command>CREATE INDEX</command>, and only when
-         building a B-tree index.  Parallel workers are taken from the
-         pool of processes established by <xref
-         linkend="guc-max-worker-processes"/>, limited by <xref
-         linkend="guc-max-parallel-workers"/>.  Note that the requested
+         started by a single utility command.  Currently, the parallel
+         utility commands that support the use of parallel workers are
+         <command>CREATE INDEX</command> only when building a B-tree index,
+         and <command>VACUUM</command> without <literal>FULL</literal>
+         option.  Parallel workers are taken from the pool of processes
+         established by <xref linkend="guc-max-worker-processes"/>, limited
+         by <xref linkend="guc-max-parallel-workers"/>.  Note that the requested
          number of workers may not actually be available at run time.
          If this occurs, the utility operation will run with fewer
          workers than expected.  The default value is 2.  Setting this
@@ -2322,7 +2386,7 @@ include_dir 'conf.d'
        </term>
        <listitem>
         <para>
-         Whenever more than <varname>backend_flush_after</varname> bytes have
+         Whenever more than this amount of data has
          been written by a single backend, attempt to force the OS to issue
          these writes to the underlying storage.  Doing so will limit the
          amount of dirty data in the kernel's page cache, reducing the
@@ -2332,7 +2396,10 @@ include_dir 'conf.d'
          latency, but there also are some cases, especially with workloads
          that are bigger than <xref linkend="guc-shared-buffers"/>, but smaller
          than the OS's page cache, where performance might degrade.  This
-         setting may have no effect on some platforms.  The valid range is
+         setting may have no effect on some platforms.
+         If this value is specified without units, it is taken as blocks,
+         that is <symbol>BLCKSZ</symbol> bytes, typically 8kB.
+         The valid range is
          between <literal>0</literal>, which disables forced writeback,
          and <literal>2MB</literal>.  The default is <literal>0</literal>, i.e., no
          forced writeback.  (If <symbol>BLCKSZ</symbol> is not 8kB,
@@ -2349,13 +2416,10 @@ include_dir 'conf.d'
        </term>
        <listitem>
         <para>
-         Sets the minimum time that a snapshot can be used without risk of a
-         <literal>snapshot too old</literal> error occurring when using the snapshot.
-         This parameter can only be set at server start.
-        </para>
-
-        <para>
-         Beyond the threshold, old data may be vacuumed away.  This can help
+         Sets the minimum amount of time that a query snapshot can be used
+         without risk of a <quote>snapshot too old</quote> error occurring
+         when using the snapshot.  Data that has been dead for longer than
+         this threshold is allowed to be vacuumed away.  This can help
          prevent bloat in the face of snapshots which remain in use for a
          long time.  To prevent incorrect results due to cleanup of data which
          would otherwise be visible to the snapshot, an error is generated
@@ -2365,10 +2429,15 @@ include_dir 'conf.d'
         </para>
 
         <para>
-         A value of <literal>-1</literal> disables this feature, and is the default.
+         If this value is specified without units, it is taken as minutes.
+         A value of <literal>-1</literal> (the default) disables this feature,
+         effectively setting the snapshot age limit to infinity.
+         This parameter can only be set at server start.
+        </para>
+
+        <para>
          Useful values for production work probably range from a small number
-         of hours to a few days.  The setting will be coerced to a granularity
-         of minutes, and small numbers (such as <literal>0</literal> or
+         of hours to a few days.  Small values (such as <literal>0</literal> or
          <literal>1min</literal>) are only allowed because they may sometimes be
          useful for testing.  While a setting as high as <literal>60d</literal> is
          allowed, please note that in many workloads extreme bloat or
@@ -2378,7 +2447,7 @@ include_dir 'conf.d'
         <para>
          When this feature is enabled, freed space at the end of a relation
          cannot be released to the operating system, since that could remove
-         information needed to detect the <literal>snapshot too old</literal>
+         information needed to detect the <quote>snapshot too old</quote>
          condition.  All space allocated to a relation remains associated with
          that relation for reuse only within that relation unless explicitly
          freed (for example, with <command>VACUUM FULL</command>).
@@ -2393,7 +2462,7 @@ include_dir 'conf.d'
          Some tables cannot safely be vacuumed early, and so will not be
          affected by this setting, such as system catalogs.  For such tables
          this setting will neither reduce bloat nor create a possibility
-         of a <literal>snapshot too old</literal> error on scanning.
+         of a <quote>snapshot too old</quote> error on scanning.
         </para>
        </listitem>
       </varlistentry>
@@ -2769,6 +2838,8 @@ include_dir 'conf.d'
         manually if the automatic choice is too large or too small,
         but any positive value less than <literal>32kB</literal> will be
         treated as <literal>32kB</literal>.
+        If this value is specified without units, it is taken as WAL blocks,
+        that is <symbol>XLOG_BLCKSZ</symbol> bytes, typically 8kB.
         This parameter can only be set at server start.
        </para>
 
@@ -2793,13 +2864,15 @@ include_dir 'conf.d'
       </term>
       <listitem>
       <para>
-        Specifies how often the WAL writer flushes WAL. After flushing WAL it
-        sleeps for <varname>wal_writer_delay</varname> milliseconds, unless woken up
+        Specifies how often the WAL writer flushes WAL, in time terms.
+        After flushing WAL the writer sleeps for the length of time given
+        by <varname>wal_writer_delay</varname>, unless woken up sooner
         by an asynchronously committing transaction. If the last flush
-        happened less than <varname>wal_writer_delay</varname> milliseconds ago and
-        less than <varname>wal_writer_flush_after</varname> bytes of WAL have been
+        happened less than <varname>wal_writer_delay</varname> ago and less
+        than <varname>wal_writer_flush_after</varname> worth of WAL has been
         produced since, then WAL is only written to the operating system, not
         flushed to disk.
+        If this value is specified without units, it is taken as milliseconds.
         The default value is 200 milliseconds (<literal>200ms</literal>).  Note that
         on many systems, the effective resolution of sleep delays is 10
         milliseconds; setting <varname>wal_writer_delay</varname> to a value that is
@@ -2818,13 +2891,17 @@ include_dir 'conf.d'
       </term>
       <listitem>
       <para>
-        Specifies how often the WAL writer flushes WAL. If the last flush
-        happened less than <varname>wal_writer_delay</varname> milliseconds ago and
-        less than <varname>wal_writer_flush_after</varname> bytes of WAL have been
+        Specifies how often the WAL writer flushes WAL, in volume terms.
+        If the last flush happened less
+        than <varname>wal_writer_delay</varname> ago and less
+        than <varname>wal_writer_flush_after</varname> worth of WAL has been
         produced since, then WAL is only written to the operating system, not
         flushed to disk.  If <varname>wal_writer_flush_after</varname> is set
-        to <literal>0</literal> then WAL data is flushed immediately.  The default is
-        <literal>1MB</literal>. This parameter can only be set in the
+        to <literal>0</literal> then WAL data is always flushed immediately.
+        If this value is specified without units, it is taken as WAL blocks,
+        that is <symbol>XLOG_BLCKSZ</symbol> bytes, typically 8kB.
+        The default is <literal>1MB</literal>.
+        This parameter can only be set in the
         <filename>postgresql.conf</filename> file or on the server command line.
        </para>
       </listitem>
@@ -2838,18 +2915,19 @@ include_dir 'conf.d'
       </term>
       <listitem>
        <para>
-        <varname>commit_delay</varname> adds a time delay, measured in
-        microseconds, before a WAL flush is initiated.  This can improve
+        Setting <varname>commit_delay</varname> adds a time delay
+        before a WAL flush is initiated.  This can improve
         group commit throughput by allowing a larger number of transactions
         to commit via a single WAL flush, if system load is high enough
         that additional transactions become ready to commit within the
-        given interval.  However, it also increases latency by up to
-        <varname>commit_delay</varname> microseconds for each WAL
+        given interval.  However, it also increases latency by up to the
+        <varname>commit_delay</varname> for each WAL
         flush.  Because the delay is just wasted if no other transactions
         become ready to commit, a delay is only performed if at least
         <varname>commit_siblings</varname> other transactions are active
         when a flush is about to be initiated.  Also, no delays are
         performed if <varname>fsync</varname> is disabled.
+        If this value is specified without units, it is taken as microseconds.
         The default <varname>commit_delay</varname> is zero (no delay).
         Only superusers can change this setting.
        </para>
@@ -2897,7 +2975,8 @@ include_dir 'conf.d'
       </term>
       <listitem>
        <para>
-        Maximum time between automatic WAL checkpoints, in seconds.
+        Maximum time between automatic WAL checkpoints.
+        If this value is specified without units, it is taken as seconds.
         The valid range is between 30 seconds and one day.
         The default is five minutes (<literal>5min</literal>).
         Increasing this parameter can increase the amount of time needed
@@ -2932,8 +3011,8 @@ include_dir 'conf.d'
       </term>
       <listitem>
        <para>
-        Whenever more than <varname>checkpoint_flush_after</varname> bytes
-        have been written while performing a checkpoint, attempt to force the
+        Whenever more than this amount of data has been
+        written while performing a checkpoint, attempt to force the
         OS to issue these writes to the underlying storage.  Doing so will
         limit the amount of dirty data in the kernel's page cache, reducing
         the likelihood of stalls when an <function>fsync</function> is issued at the end of the
@@ -2942,7 +3021,10 @@ include_dir 'conf.d'
         latency, but there also are some cases, especially with workloads
         that are bigger than <xref linkend="guc-shared-buffers"/>, but smaller
         than the OS's page cache, where performance might degrade.  This
-        setting may have no effect on some platforms.  The valid range is
+        setting may have no effect on some platforms.
+        If this value is specified without units, it is taken as blocks,
+        that is <symbol>BLCKSZ</symbol> bytes, typically 8kB.
+        The valid range is
         between <literal>0</literal>, which disables forced writeback,
         and <literal>2MB</literal>.  The default is <literal>256kB</literal> on
         Linux, <literal>0</literal> elsewhere.  (If <symbol>BLCKSZ</symbol> is not
@@ -2963,9 +3045,11 @@ include_dir 'conf.d'
        <para>
         Write a message to the server log if checkpoints caused by
         the filling of WAL segment files happen closer together
-        than this many seconds (which suggests that
-        <varname>max_wal_size</varname> ought to be raised).  The default is
-        30 seconds (<literal>30s</literal>).  Zero disables the warning.
+        than this amount of time (which suggests that
+        <varname>max_wal_size</varname> ought to be raised).
+        If this value is specified without units, it is taken as seconds.
+        The default is 30 seconds (<literal>30s</literal>).
+        Zero disables the warning.
         No warnings will be generated if <varname>checkpoint_timeout</varname>
         is less than <varname>checkpoint_warning</varname>.
         This parameter can only be set in the <filename>postgresql.conf</filename>
@@ -2984,9 +3068,11 @@ include_dir 'conf.d'
        <para>
         Maximum size to let the WAL grow to between automatic WAL
         checkpoints. This is a soft limit; WAL size can exceed
-        <varname>max_wal_size</varname> under special circumstances, like
-        under heavy load, a failing <varname>archive_command</varname>, or a high
-        <varname>wal_keep_segments</varname> setting. The default is 1 GB.
+        <varname>max_wal_size</varname> under special circumstances, such as
+        heavy load, a failing <varname>archive_command</varname>, or a high
+        <varname>wal_keep_segments</varname> setting.
+        If this value is specified without units, it is taken as megabytes.
+        The default is 1 GB.
         Increasing this parameter can increase the amount of time needed for
         crash recovery.
         This parameter can only be set in the <filename>postgresql.conf</filename>
@@ -3007,7 +3093,9 @@ include_dir 'conf.d'
         always recycled for future use at a checkpoint, rather than removed.
         This can be used to ensure that enough WAL space is reserved to
         handle spikes in WAL usage, for example when running large batch
-        jobs. The default is 80 MB.
+        jobs.
+        If this value is specified without units, it is taken as megabytes.
+        The default is 80 MB.
         This parameter can only be set in the <filename>postgresql.conf</filename>
         file or on the server command line.
        </para>
@@ -3102,7 +3190,7 @@ include_dir 'conf.d'
         data can be, you can set <varname>archive_timeout</varname> to force the
         server to switch to a new WAL segment file periodically.  When this
         parameter is greater than zero, the server will switch to a new
-        segment file whenever this many seconds have elapsed since the last
+        segment file whenever this amount of time has elapsed since the last
         segment file switch, and there has been any database activity,
         including a single checkpoint (checkpoints are skipped if there is
         no database activity).  Note that archived files that are closed
@@ -3113,6 +3201,7 @@ include_dir 'conf.d'
         usually reasonable.  You should consider using streaming replication,
         instead of archiving, if you want data to be copied off the master
         server more quickly than that.
+        If this value is specified without units, it is taken as seconds.
         This parameter can only be set in the
         <filename>postgresql.conf</filename> file or on the server command line.
        </para>
@@ -3167,9 +3256,7 @@ include_dir 'conf.d'
      takes precedence.  Targeted recovery mode ends when the archived WAL is
      fully replayed, or when <varname>recovery_target</varname> is reached.
      In this mode, the parameters from both this section and <xref
-     linkend="runtime-config-wal-recovery-target"/> will be used.  Parameters
-     from <xref linkend="runtime-config-replication-standby"/> will not be
-     used.
+     linkend="runtime-config-wal-recovery-target"/> will be used.
     </para>
 
     <variablelist>
@@ -3503,6 +3590,14 @@ restore_command = 'copy "C:\\server\\archivedir\\%f" "%p"'  # Windows
         This setting has no effect if no recovery target is set.
         If <xref linkend="guc-hot-standby"/> is not enabled, a setting of
         <literal>pause</literal> will act the same as <literal>shutdown</literal>.
+        If the recovery target is reached while a promotion is ongoing,
+        a setting of <literal>pause</literal> will act the same as
+        <literal>promote</literal>.
+       </para>
+       <para>
+        In any case, if a recovery target is configured but the archive
+        recovery ends before the target is reached, the server will shut down
+        with a fatal error.
        </para>
       </listitem>
      </varlistentry>
@@ -3671,11 +3766,15 @@ restore_command = 'copy "C:\\server\\archivedir\\%f" "%p"'  # Windows
       </term>
       <listitem>
        <para>
-        Terminate replication connections that are inactive longer
-        than the specified number of milliseconds. This is useful for
+        Terminate replication connections that are inactive for longer
+        than this amount of time. This is useful for
         the sending server to detect a standby crash or network outage.
-        A value of zero disables the timeout mechanism. The default value
-        is 60 seconds. With a cluster distributed across multiple geographic
+        If this value is specified without units, it is taken as milliseconds.
+        The default value is 60 seconds.
+        A value of zero disables the timeout mechanism.
+       </para>
+       <para>
+        With a cluster distributed across multiple geographic
         locations, using different values per location brings more flexibility
         in the cluster management. A smaller value is useful for faster
         failure detection with a standby having a low-latency network
@@ -4002,7 +4101,8 @@ ANY <replaceable class="parameter">num_sync</replaceable> ( <replaceable class="
         <xref linkend="hot-standby-conflict"/>.
         <varname>max_standby_archive_delay</varname> applies when WAL data is
         being read from WAL archive (and is therefore not current).
-        The default is 30 seconds. Units are milliseconds if not specified.
+        If this value is specified without units, it is taken as milliseconds.
+        The default is 30 seconds.
         A value of -1 allows the standby to wait forever for conflicting
         queries to complete.
         This parameter can only be set in the <filename>postgresql.conf</filename>
@@ -4033,7 +4133,8 @@ ANY <replaceable class="parameter">num_sync</replaceable> ( <replaceable class="
         <xref linkend="hot-standby-conflict"/>.
         <varname>max_standby_streaming_delay</varname> applies when WAL data is
         being received via streaming replication.
-        The default is 30 seconds. Units are milliseconds if not specified.
+        If this value is specified without units, it is taken as milliseconds.
+        The default is 30 seconds.
         A value of -1 allows the standby to wait forever for conflicting
         queries to complete.
         This parameter can only be set in the <filename>postgresql.conf</filename>
@@ -4047,6 +4148,26 @@ ANY <replaceable class="parameter">num_sync</replaceable> ( <replaceable class="
         resulted in significant delay, subsequent conflicting queries will
         have much less grace time until the standby server has caught up
         again.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-wal-receiver-create-temp-slot" xreflabel="wal_receiver_create_temp_slot">
+      <term><varname>wal_receiver_create_temp_slot</varname> (<type>boolean</type>)
+      <indexterm>
+       <primary><varname>wal_receiver_create_temp_slot</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        Specifies whether a WAL receiver should create a temporary replication
+        slot on the remote instance when no permanent replication slot to use
+        has been configured (using <xref linkend="guc-primary-slot-name"/>).
+        The default is on.  The only reason to turn this off would be if the
+        remote instance is currently out of available replication slots.  This
+        parameter can only be set in the <filename>postgresql.conf</filename>
+        file or on the server command line.  Changes only take effect when the
+        WAL receiver process starts a new connection.
        </para>
       </listitem>
      </varlistentry>
@@ -4068,13 +4189,16 @@ ANY <replaceable class="parameter">num_sync</replaceable> ( <replaceable class="
        the last write-ahead log location it has written, the last position it
        has flushed to disk, and the last position it has applied.
        This parameter's
-       value is the maximum interval, in seconds, between reports.  Updates are
+       value is the maximum amount of time between reports.  Updates are
        sent each time the write or flush positions change, or at least as
        often as specified by this parameter.  Thus, the apply position may
-       lag slightly behind the true position.  Setting this parameter to zero
-       disables status updates completely.  This parameter can only be set in
-       the <filename>postgresql.conf</filename> file or on the server command line.
+       lag slightly behind the true position.
+       If this value is specified without units, it is taken as seconds.
        The default value is 10 seconds.
+       Setting this parameter to zero disables status updates completely.
+       This parameter can only be set in
+       the <filename>postgresql.conf</filename> file or on the server
+       command line.
       </para>
       </listitem>
      </varlistentry>
@@ -4123,14 +4247,16 @@ ANY <replaceable class="parameter">num_sync</replaceable> ( <replaceable class="
       </term>
       <listitem>
        <para>
-        Terminate replication connections that are inactive longer
-        than the specified number of milliseconds. This is useful for
+        Terminate replication connections that are inactive for longer
+        than this amount of time. This is useful for
         the receiving standby server to detect a primary node crash or network
         outage.
-        A value of zero disables the timeout mechanism.  This parameter
-        can only be set in
-        the <filename>postgresql.conf</filename> file or on the server command line.
+        If this value is specified without units, it is taken as milliseconds.
         The default value is 60 seconds.
+        A value of zero disables the timeout mechanism.
+        This parameter can only be set in
+        the <filename>postgresql.conf</filename> file or on the server
+        command line.
        </para>
       </listitem>
      </varlistentry>
@@ -4143,12 +4269,15 @@ ANY <replaceable class="parameter">num_sync</replaceable> ( <replaceable class="
       </term>
       <listitem>
        <para>
-        Specify how long the standby server should wait when WAL data is not
+        Specifies how long the standby server should wait when WAL data is not
         available from any sources (streaming replication,
-        local <filename>pg_wal</filename> or WAL archive) before retrying to
-        retrieve WAL data.  This parameter can only be set in the
-        <filename>postgresql.conf</filename> file or on the server command line.
-        The default value is 5 seconds. Units are milliseconds if not specified.
+        local <filename>pg_wal</filename> or WAL archive) before trying
+        again to retrieve WAL data.
+        If this value is specified without units, it is taken as milliseconds.
+        The default value is 5 seconds.
+        This parameter can only be set in
+        the <filename>postgresql.conf</filename> file or on the server
+        command line.
        </para>
        <para>
         This parameter is useful in configurations where a node in recovery
@@ -4175,11 +4304,13 @@ ANY <replaceable class="parameter">num_sync</replaceable> ( <replaceable class="
         By default, a standby server restores WAL records from the
         sending server as soon as possible. It may be useful to have a time-delayed
         copy of the data, offering opportunities to correct data loss errors.
-        This parameter allows you to delay recovery by a fixed period of time,
-        measured in milliseconds if no unit is specified.  For example, if
+        This parameter allows you to delay recovery by a specified amount
+        of time.  For example, if
         you set this parameter to <literal>5min</literal>, the standby will
         replay each transaction commit only when the system time on the standby
         is at least five minutes past the commit time reported by the master.
+        If this value is specified without units, it is taken as milliseconds.
+        The default is zero, adding no delay.
        </para>
        <para>
         It is possible that the replication delay between servers exceeds the
@@ -4206,7 +4337,8 @@ ANY <replaceable class="parameter">num_sync</replaceable> ( <replaceable class="
        </para>
        <para>
         This parameter is intended for use with streaming replication deployments;
-        however, if the parameter is specified it will be honored in all cases.
+        however, if the parameter is specified it will be honored in all cases
+        except crash recovery.
 
         <varname>hot_standby_feedback</varname> will be delayed by use of this feature
         which could lead to bloat on the master; use both together with care.
@@ -4353,6 +4485,23 @@ ANY <replaceable class="parameter">num_sync</replaceable> ( <replaceable class="
       </listitem>
      </varlistentry>
 
+     <varlistentry id="guc-enable-groupingsets-hash-disk" xreflabel="enable_groupingsets_hash_disk">
+      <term><varname>enable_groupingsets_hash_disk</varname> (<type>boolean</type>)
+      <indexterm>
+       <primary><varname>enable_groupingsets_hash_disk</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        Enables or disables the query planner's use of hashed aggregation plan
+        types for grouping sets when the total size of the hash tables is
+        expected to exceed <varname>work_mem</varname>.  See <xref
+        linkend="queries-grouping-sets"/>.  The default is
+        <literal>off</literal>.
+       </para>
+      </listitem>
+     </varlistentry>
+
      <varlistentry id="guc-enable-hashagg" xreflabel="enable_hashagg">
       <term><varname>enable_hashagg</varname> (<type>boolean</type>)
       <indexterm>
@@ -4363,6 +4512,21 @@ ANY <replaceable class="parameter">num_sync</replaceable> ( <replaceable class="
        <para>
         Enables or disables the query planner's use of hashed
         aggregation plan types. The default is <literal>on</literal>.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-enable-hashagg-disk" xreflabel="enable_hashagg_disk">
+      <term><varname>enable_hashagg_disk</varname> (<type>boolean</type>)
+      <indexterm>
+       <primary><varname>enable_hashagg_disk</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        Enables or disables the query planner's use of hashed aggregation plan
+        types when the memory usage is expected to exceed
+        <varname>work_mem</varname>.  The default is <literal>on</literal>.
        </para>
       </listitem>
      </varlistentry>
@@ -4791,8 +4955,10 @@ ANY <replaceable class="parameter">num_sync</replaceable> ( <replaceable class="
         for a parallel scan to be considered.  For a parallel sequential scan,
         the amount of table data scanned is always equal to the size of the
         table, but when indexes are used the amount of table data
-        scanned will normally be less.  The default is 8
-        megabytes (<literal>8MB</literal>).
+        scanned will normally be less.
+        If this value is specified without units, it is taken as blocks,
+        that is <symbol>BLCKSZ</symbol> bytes, typically 8kB.
+        The default is 8 megabytes (<literal>8MB</literal>).
        </para>
       </listitem>
      </varlistentry>
@@ -4809,7 +4975,12 @@ ANY <replaceable class="parameter">num_sync</replaceable> ( <replaceable class="
         for a parallel scan to be considered.  Note that a parallel index scan
         typically won't touch the entire index; it is the number of pages
         which the planner believes will actually be touched by the scan which
-        is relevant.  The default is 512 kilobytes (<literal>512kB</literal>).
+        is relevant.  This parameter is also used to decide whether a
+        particular index can participate in a parallel vacuum.  See
+        <xref linkend="sql-vacuum"/>.
+        If this value is specified without units, it is taken as blocks,
+        that is <symbol>BLCKSZ</symbol> bytes, typically 8kB.
+        The default is 512 kilobytes (<literal>512kB</literal>).
        </para>
       </listitem>
      </varlistentry>
@@ -4838,8 +5009,12 @@ ANY <replaceable class="parameter">num_sync</replaceable> ( <replaceable class="
         memory allocated by <productname>PostgreSQL</productname>, nor
         does it reserve kernel disk cache; it is used only for estimation
         purposes.  The system also does not assume data remains in
-        the disk cache between queries.  The default is 4 gigabytes
-        (<literal>4GB</literal>).
+        the disk cache between queries.
+        If this value is specified without units, it is taken as blocks,
+        that is <symbol>BLCKSZ</symbol> bytes, typically 8kB.
+        The default is 4 gigabytes (<literal>4GB</literal>).
+        (If <symbol>BLCKSZ</symbol> is not 8kB, the default value scales
+        proportionally to it.)
        </para>
       </listitem>
      </varlistentry>
@@ -5597,10 +5772,11 @@ local0.*    /var/log/postgresql
       <listitem>
        <para>
         When <varname>logging_collector</varname> is enabled,
-        this parameter determines the maximum lifetime of an individual log file.
-        After this many minutes have elapsed, a new log file will
-        be created.  Set to zero to disable time-based creation of
-        new log files.
+        this parameter determines the maximum amount of time to use an
+        individual log file, after which a new log file will be created.
+        If this value is specified without units, it is taken as minutes.
+        The default is 24 hours.
+        Set to zero to disable time-based creation of new log files.
         This parameter can only be set in the <filename>postgresql.conf</filename>
         file or on the server command line.
        </para>
@@ -5617,9 +5793,11 @@ local0.*    /var/log/postgresql
        <para>
         When <varname>logging_collector</varname> is enabled,
         this parameter determines the maximum size of an individual log file.
-        After this many kilobytes have been emitted into a log file,
-        a new log file will be created.  Set to zero to disable size-based
-        creation of new log files.
+        After this amount of data has been emitted into a log file,
+        a new log file will be created.
+        If this value is specified without units, it is taken as kilobytes.
+        The default is 10 megabytes.
+        Set to zero to disable size-based creation of new log files.
         This parameter can only be set in the <filename>postgresql.conf</filename>
         file or on the server command line.
        </para>
@@ -5860,14 +6038,21 @@ local0.*    /var/log/postgresql
        <listitem>
         <para>
          Causes the duration of each completed statement to be logged
-         if the statement ran for at least the specified number of
-         milliseconds.  Setting this to zero prints all statement durations.
-         Minus-one (the default) disables logging statement durations.
+         if the statement ran for at least the specified amount of time.
          For example, if you set it to <literal>250ms</literal>
          then all SQL statements that run 250ms or longer will be
          logged.  Enabling this parameter can be helpful in tracking down
          unoptimized queries in your applications.
+         If this value is specified without units, it is taken as milliseconds.
+         Setting this to zero prints all statement durations.
+         Minus-one (the default) disables logging statement durations.
          Only superusers can change this setting.
+        </para>
+
+        <para>
+         This overrides <xref linkend="guc-log-min-duration-sample"/>,
+         meaning that queries with duration exceeding this setting are not
+         subject to sampling and are always logged.
         </para>
 
         <para>
@@ -5892,22 +6077,89 @@ local0.*    /var/log/postgresql
        </listitem>
       </varlistentry>
 
+     <varlistentry id="guc-log-min-duration-sample" xreflabel="log_min_duration_sample">
+      <term><varname>log_min_duration_sample</varname> (<type>integer</type>)
+      <indexterm>
+       <primary><varname>log_min_duration_sample</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+       <listitem>
+        <para>
+         Allows sampling the duration of completed statements that ran for
+         at least the specified amount of time.  This produces the same
+         kind of log entries as
+         <xref linkend="guc-log-min-duration-statement"/>, but only for a
+         subset of the executed statements, with sample rate controlled by
+         <xref linkend="guc-log-statement-sample-rate"/>.
+         For example, if you set it to <literal>100ms</literal> then all
+         SQL statements that run 100ms or longer will be considered for
+         sampling.  Enabling this parameter can be helpful when the
+         traffic is too high to log all queries.
+         If this value is specified without units, it is taken as milliseconds.
+         Setting this to zero samples all statement durations.
+         Minus-one (the default) disables sampling statement durations.
+         Only superusers can change this setting.
+        </para>
+
+        <para>
+         This setting has lower priority
+         than <varname>log_min_duration_statement</varname>, meaning that
+         statements with durations
+         exceeding <varname>log_min_duration_statement</varname> are not
+         subject to sampling and are always logged.
+        </para>
+
+        <para>
+         Other notes for <varname>log_min_duration_statement</varname>
+         apply also to this setting.
+        </para>
+       </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-log-statement-sample-rate" xreflabel="log_statement_sample_rate">
+      <term><varname>log_statement_sample_rate</varname> (<type>floating point</type>)
+      <indexterm>
+       <primary><varname>log_statement_sample_rate</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+       <listitem>
+        <para>
+         Determines the fraction of statements with duration exceeding
+         <xref linkend="guc-log-min-duration-sample"/> that will be logged.
+         Sampling is stochastic, for example <literal>0.5</literal> means
+         there is statistically one chance in two that any given statement
+         will be logged.
+         The default is <literal>1.0</literal>, meaning to log all sampled
+         statements.
+         Setting this to zero disables sampled statement-duration logging,
+         the same as setting
+         <varname>log_min_duration_sample</varname> to
+         <literal>-1</literal>.
+         Only superusers can change this setting.
+        </para>
+       </listitem>
+     </varlistentry>
+
      <varlistentry id="guc-log-transaction-sample-rate" xreflabel="log_transaction_sample_rate">
-      <term><varname>log_transaction_sample_rate</varname> (<type>real</type>)
+      <term><varname>log_transaction_sample_rate</varname> (<type>floating point</type>)
       <indexterm>
        <primary><varname>log_transaction_sample_rate</varname> configuration parameter</primary>
       </indexterm>
       </term>
        <listitem>
         <para>
-         Set the fraction of transactions whose statements are all logged,
+         Sets the fraction of transactions whose statements are all logged,
          in addition to statements logged for other reasons.  It applies to
          each new transaction regardless of its statements' durations.
-         The default is <literal>0</literal>, meaning not to log statements
-         from any additional transaction.  Setting this to <literal>1</literal>
-         logs all statements for all transactions.
-         <varname>log_transaction_sample_rate</varname> is helpful to track a
-         sample of transaction.
+         Sampling is stochastic, for example <literal>0.1</literal> means
+         there is statistically one chance in ten that any given transaction
+         will be logged.
+         <varname>log_transaction_sample_rate</varname> can be helpful to
+         construct a sample of transactions.
+         The default is <literal>0</literal>, meaning not to log
+         statements from any additional transactions.  Setting this
+         to <literal>1</literal> logs all statements of all transactions.
+         Only superusers can change this setting.
         </para>
        <note>
         <para>
@@ -6241,9 +6493,13 @@ local0.*    /var/log/postgresql
          right with spaces to give it a minimum width, whereas a positive
          value will pad on the left. Padding can be useful to aid human
          readability in log files.
+       </para>
+
+       <para>
          This parameter can only be set in the <filename>postgresql.conf</filename>
          file or on the server command line. The default is
          <literal>'%m [%p] '</literal> which logs a time stamp and the process ID.
+       </para>
 
          <informaltable>
           <tgroup cols="3">
@@ -6279,6 +6535,11 @@ local0.*    /var/log/postgresql
              <entry><literal>%h</literal></entry>
              <entry>Remote host name or IP address</entry>
              <entry>yes</entry>
+            </row>
+            <row>
+             <entry><literal>%b</literal></entry>
+             <entry>Backend type</entry>
+             <entry>no</entry>
             </row>
             <row>
              <entry><literal>%p</literal></entry>
@@ -6351,6 +6612,14 @@ local0.*    /var/log/postgresql
           </tgroup>
          </informaltable>
 
+         <para>
+          The backend type corresponds to the column
+          <structfield>backend_type</structfield> in the view <xref
+          linkend="pg-stat-activity-view"/>, but additional types can appear
+          in the log that don't show in that view.
+         </para>
+
+         <para>
          The <literal>%c</literal> escape prints a quasi-unique session identifier,
          consisting of two 4-byte hexadecimal numbers (without leading zeros)
          separated by a dot.  The numbers are the process start time and the
@@ -6407,6 +6676,29 @@ log_line_prefix = '%m [%p] %q%u@%d/%a '
         longer than <xref linkend="guc-deadlock-timeout"/> to acquire a
         lock.  This is useful in determining if lock waits are causing
         poor performance.  The default is <literal>off</literal>.
+        Only superusers can change this setting.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-log-parameters-on-error" xreflabel="log_parameters_on_error">
+      <term><varname>log_parameters_on_error</varname> (<type>boolean</type>)
+      <indexterm>
+       <primary><varname>log_parameters_on_error</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        Controls whether bind parameters are logged when a statement is logged
+        as a result of <xref linkend="guc-log-min-error-statement"/>.
+        It adds some overhead, as <productname>PostgreSQL</productname> will
+        compute and store textual representations of parameter values in
+        memory for all statements, even if they eventually do not get logged.
+        This setting has no effect on statements logged due to
+        <xref linkend="guc-log-min-duration-statement"/> or
+        <xref linkend="guc-log-statement"/> settings, as they are always logged
+        with parameters.
+        The default is <literal>off</literal>.
         Only superusers can change this setting.
        </para>
       </listitem>
@@ -6484,11 +6776,13 @@ log_line_prefix = '%m [%p] %q%u@%d/%a '
         Controls logging of temporary file names and sizes.
         Temporary files can be
         created for sorts, hashes, and temporary query results.
-        A log entry is made for each temporary file when it is deleted.
+        If enabled by this setting, a log entry is emitted for each
+        temporary file when it is deleted.
         A value of zero logs all temporary file information, while positive
         values log only files whose size is greater than or equal to
-        the specified number of kilobytes.  The
-        default setting is -1, which disables such logging.
+        the specified amount of data.
+        If this value is specified without units, it is taken as kilobytes.
+        The default setting is -1, which disables such logging.
         Only superusers can change this setting.
        </para>
       </listitem>
@@ -6550,7 +6844,7 @@ log_line_prefix = '%m [%p] %q%u@%d/%a '
         character count of the error position therein,
         location of the error in the PostgreSQL source code
         (if <varname>log_error_verbosity</varname> is set to <literal>verbose</literal>),
-        and application name.
+        application name, and backend type.
         Here is a sample table definition for storing CSV-format log output:
 
 <programlisting>
@@ -6579,6 +6873,7 @@ CREATE TABLE postgres_log
   query_pos integer,
   location text,
   application_name text,
+  backend_type text,
   PRIMARY KEY (session_id, session_line_num)
 );
 </programlisting>
@@ -6744,11 +7039,12 @@ COPY postgres_log FROM '/full/path/to/logfile.csv' WITH csv;
       </term>
       <listitem>
        <para>
-       Specifies the number of bytes reserved to track the currently
-       executing command for each active session, for the
+       Specifies the amount of memory reserved to store the text of the
+       currently executing command for each active session, for the
        <structname>pg_stat_activity</structname>.<structfield>query</structfield> field.
-       The default value is 1024. This parameter can only be set at server
-       start.
+       If this value is specified without units, it is taken as bytes.
+       The default value is 1024 bytes.
+       This parameter can only be set at server start.
        </para>
       </listitem>
      </varlistentry>
@@ -6935,9 +7231,11 @@ COPY postgres_log FROM '/full/path/to/logfile.csv' WITH csv;
       <listitem>
        <para>
         Causes each action executed by autovacuum to be logged if it ran for at
-        least the specified number of milliseconds.  Setting this to zero logs
+        least the specified amount of time.  Setting this to zero logs
         all autovacuum actions. <literal>-1</literal> (the default) disables
-        logging autovacuum actions.  For example, if you set this to
+        logging autovacuum actions.
+        If this value is specified without units, it is taken as milliseconds.
+        For example, if you set this to
         <literal>250ms</literal> then all automatic vacuums and analyzes that run
         250ms or longer will be logged.  In addition, when this parameter is
         set to any value other than <literal>-1</literal>, a message will be
@@ -6977,8 +7275,9 @@ COPY postgres_log FROM '/full/path/to/logfile.csv' WITH csv;
         Specifies the minimum delay between autovacuum runs on any given
         database.  In each round the daemon examines the
         database and issues <command>VACUUM</command> and <command>ANALYZE</command> commands
-        as needed for tables in that database.  The delay is measured
-        in seconds, and the default is one minute (<literal>1min</literal>).
+        as needed for tables in that database.
+        If this value is specified without units, it is taken as seconds.
+        The default is one minute (<literal>1min</literal>).
         This parameter can only be set in the <filename>postgresql.conf</filename>
         file or on the server command line.
        </para>
@@ -7137,6 +7436,7 @@ COPY postgres_log FROM '/full/path/to/logfile.csv' WITH csv;
         Specifies the cost delay value that will be used in automatic
         <command>VACUUM</command> operations.  If -1 is specified, the regular
         <xref linkend="guc-vacuum-cost-delay"/> value will be used.
+        If this value is specified without units, it is taken as milliseconds.
         The default value is 2 milliseconds.
         This parameter can only be set in the <filename>postgresql.conf</filename>
         file or on the server command line;
@@ -7588,11 +7888,24 @@ COPY postgres_log FROM '/full/path/to/logfile.csv' WITH csv;
       </term>
       <listitem>
        <para>
-        Abort any statement that takes more than the specified number of
-        milliseconds, starting from the time the command arrives at the server
-        from the client.  If <varname>log_min_error_statement</varname> is set to
-        <literal>ERROR</literal> or lower, the statement that timed out will also be
-        logged.  A value of zero (the default) turns this off.
+        Abort any statement that takes more than the specified amount of time.
+        If <varname>log_min_error_statement</varname> is set
+        to <literal>ERROR</literal> or lower, the statement that timed out
+        will also be logged.
+        If this value is specified without units, it is taken as milliseconds.
+        A value of zero (the default) disables the timeout.
+       </para>
+
+       <para>
+        The timeout is measured from the time a command arrives at the
+        server until it is completed by the server.  If multiple SQL
+        statements appear in a single simple-Query message, the timeout
+        is applied to each statement separately.
+        (<productname>PostgreSQL</productname> versions before 13 usually
+        treated the timeout as applying to the whole query string.)
+        In extended query protocol, the timeout starts running when any
+        query-related message (Parse, Bind, Execute, Describe) arrives, and
+        it is cancelled by completion of an Execute or Sync message.
        </para>
 
        <para>
@@ -7611,15 +7924,15 @@ COPY postgres_log FROM '/full/path/to/logfile.csv' WITH csv;
       </term>
       <listitem>
        <para>
-        Abort any statement that waits longer than the specified number of
-        milliseconds while attempting to acquire a lock on a table, index,
+        Abort any statement that waits longer than the specified amount of
+        time while attempting to acquire a lock on a table, index,
         row, or other database object.  The time limit applies separately to
         each lock acquisition attempt.  The limit applies both to explicit
         locking requests (such as <command>LOCK TABLE</command>, or <command>SELECT
         FOR UPDATE</command> without <literal>NOWAIT</literal>) and to implicitly-acquired
-        locks.  If <varname>log_min_error_statement</varname> is set to
-        <literal>ERROR</literal> or lower, the statement that timed out will be
-        logged.  A value of zero (the default) turns this off.
+        locks.
+        If this value is specified without units, it is taken as milliseconds.
+        A value of zero (the default) disables the timeout.
        </para>
 
        <para>
@@ -7627,7 +7940,9 @@ COPY postgres_log FROM '/full/path/to/logfile.csv' WITH csv;
         while waiting for locks.  Note that if <varname>statement_timeout</varname>
         is nonzero, it is rather pointless to set <varname>lock_timeout</varname> to
         the same or larger value, since the statement timeout would always
-        trigger first.
+        trigger first.  If <varname>log_min_error_statement</varname> is set to
+        <literal>ERROR</literal> or lower, the statement that timed out will be
+        logged.
        </para>
 
        <para>
@@ -7647,13 +7962,14 @@ COPY postgres_log FROM '/full/path/to/logfile.csv' WITH csv;
       <listitem>
        <para>
        Terminate any session with an open transaction that has been idle for
-       longer than the specified duration in milliseconds. This allows any
+       longer than the specified amount of time. This allows any
        locks held by that session to be released and the connection slot to be reused;
        it also allows tuples visible only to this transaction to be vacuumed.  See
        <xref linkend="routine-vacuuming"/> for more details about this.
        </para>
        <para>
-       The default value of 0 disables this feature.
+       If this value is specified without units, it is taken as milliseconds.
+       A value of zero (the default) disables the timeout.
        </para>
       </listitem>
      </varlistentry>
@@ -7880,10 +8196,11 @@ SET XML OPTION { DOCUMENT | CONTENT };
       </term>
       <listitem>
        <para>
-        Sets the maximum size of the GIN pending list which is used
+        Sets the maximum size of a GIN index's pending list, which is used
         when <literal>fastupdate</literal> is enabled. If the list grows
         larger than this maximum size, it is cleaned up by moving
-        the entries in it to the main GIN data structure in bulk.
+        the entries in it to the index's main GIN data structure in bulk.
+        If this value is specified without units, it is taken as kilobytes.
         The default is four megabytes (<literal>4MB</literal>). This setting
         can be overridden for individual GIN indexes by changing
         index storage parameters.
@@ -8484,7 +8801,7 @@ dynamic_library_path = 'C:\tools\postgresql;H:\my_project\lib;$libdir'
       </term>
       <listitem>
        <para>
-        This is the amount of time, in milliseconds, to wait on a lock
+        This is the amount of time to wait on a lock
         before checking to see if there is a deadlock condition. The
         check for deadlock is relatively expensive, so the server doesn't run
         it every time it waits for a lock. We optimistically assume
@@ -8492,7 +8809,9 @@ dynamic_library_path = 'C:\tools\postgresql;H:\my_project\lib;$libdir'
         just wait on the lock for a while before checking for a
         deadlock. Increasing this value reduces the amount of time
         wasted in needless deadlock checks, but slows down reporting of
-        real deadlock errors. The default is one second (<literal>1s</literal>),
+        real deadlock errors.
+        If this value is specified without units, it is taken as milliseconds.
+        The default is one second (<literal>1s</literal>),
         which is probably about the smallest value you would want in
         practice. On a heavily loaded server you might want to raise it.
         Ideally the setting should exceed your typical transaction time,
@@ -8503,7 +8822,7 @@ dynamic_library_path = 'C:\tools\postgresql;H:\my_project\lib;$libdir'
 
        <para>
         When <xref linkend="guc-log-lock-waits"/> is set,
-        this parameter also determines the length of time to wait before
+        this parameter also determines the amount of time to wait before
         a log message is issued about the lock wait.  If you are trying
         to investigate locking delays you might want to set a shorter than
         normal <varname>deadlock_timeout</varname>.
@@ -9290,9 +9609,37 @@ dynamic_library_path = 'C:\tools\postgresql;H:\my_project\lib;$libdir'
       </term>
       <listitem>
        <para>
-        Allows modification of the structure of system tables.
-        This is used by <command>initdb</command>.
-        This parameter can only be set at server start.
+        Allows modification of the structure of system tables as well as
+        certain other risky actions on system tables.  This is otherwise not
+        allowed even for superusers.  Ill-advised use of this setting can
+        cause irretrievable data loss or seriously corrupt the database
+        system.  Only superusers can change this setting.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-backtrace-functions" xreflabel="backtrace_functions">
+      <term><varname>backtrace_functions</varname> (<type>string</type>)
+      <indexterm>
+        <primary><varname>backtrace_functions</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        This parameter contains a comma-separated list of C function names.
+        If an error is raised and the name of the internal C function where
+        the error happens matches a value in the list, then a backtrace is
+        written to the server log together with the error message.  This can
+        be used to debug specific areas of the source code.
+       </para>
+
+       <para>
+        Backtrace support is not available on all platforms, and the quality
+        of the backtraces depends on compilation options.
+       </para>
+
+       <para>
+        This parameter can only be set by superusers.
        </para>
       </listitem>
      </varlistentry>
@@ -9321,10 +9668,12 @@ dynamic_library_path = 'C:\tools\postgresql;H:\my_project\lib;$libdir'
       </term>
       <listitem>
        <para>
-        If nonzero, a delay of this many seconds occurs when a new
+        The amount of time to delay when a new
         server process is started, after it conducts the
         authentication procedure.  This is intended to give developers an
         opportunity to attach to the server process with a debugger.
+        If this value is specified without units, it is taken as seconds.
+        A value of zero (the default) disables the delay.
         This parameter cannot be changed after session start.
        </para>
       </listitem>
@@ -9338,11 +9687,13 @@ dynamic_library_path = 'C:\tools\postgresql;H:\my_project\lib;$libdir'
       </term>
       <listitem>
        <para>
-        If nonzero, a delay of this many seconds occurs just after a
+        The amount of time to delay just after a
         new server process is forked, before it conducts the
         authentication procedure.  This is intended to give developers an
         opportunity to attach to the server process with a debugger to
         trace down misbehavior in authentication.
+        If this value is specified without units, it is taken as seconds.
+        A value of zero (the default) disables the delay.
         This parameter can only be set in the <filename>postgresql.conf</filename>
         file or on the server command line.
        </para>
@@ -9660,6 +10011,31 @@ LOG:  CleanUpLock: deleting: lock(0xb7acd844) id(24688,24696,0,0,0,1)
         the index before turning this parameter off again.  The
         default setting is <literal>off</literal>, and it can only be changed
         by a superuser.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-ignore-invalid-pages" xreflabel="ignore_invalid_pages">
+      <term><varname>ignore_invalid_pages</varname> (<type>boolean</type>)
+      <indexterm>
+       <primary><varname>ignore_invalid_pages</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        If set to <literal>off</literal> (the default), detection of
+        WAL records having references to invalid pages during
+        recovery causes <productname>PostgreSQL</productname> to
+        raise a PANIC-level error, aborting the recovery. Setting
+        <varname>ignore_invalid_pages</varname> to <literal>on</literal>
+        causes the system to ignore invalid page references in WAL records
+        (but still report a warning), and continue the recovery.
+        This behavior may <emphasis>cause crashes, data loss,
+        propagate or hide corruption, or other serious problems</emphasis>.
+        However, it may allow you to get past the PANIC-level error,
+        to finish the recovery, and to cause the server to start up.
+        The parameter can only be set at server start. It only has effect
+        during recovery or in standby mode.
        </para>
       </listitem>
      </varlistentry>

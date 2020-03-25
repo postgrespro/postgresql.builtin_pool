@@ -130,7 +130,7 @@ pgbench(
 
 # Test interaction of --init-steps with legacy step-selection options
 pgbench(
-	'--initialize --init-steps=dtpvgvv --no-vacuum --foreign-keys --unlogged-tables --partitions=3',
+	'--initialize --init-steps=dtpvGvv --no-vacuum --foreign-keys --unlogged-tables --partitions=3',
 	0,
 	[qr{^$}],
 	[
@@ -138,7 +138,7 @@ pgbench(
 		qr{creating tables},
 		qr{creating 3 partitions},
 		qr{creating primary keys},
-		qr{.* of .* tuples \(.*\) done},
+		qr{generating data \(server-side\)},
 		qr{creating foreign keys},
 		qr{(?!vacuuming)}, # no vacuum
 		qr{done in \d+\.\d\d s }
@@ -269,6 +269,49 @@ SELECT abalance::INTEGER AS balance
 COMMIT;
 }
 	});
+
+# Verify server logging of parameters.
+$node->append_conf('postgresql.conf', "log_parameters_on_error = true");
+$node->reload;
+pgbench(
+		'-n -t1 -c1 -M prepared',
+		2,
+		[],
+		[
+		qr{ERROR:  division by zero},
+		qr{CONTEXT:  extended query with parameters: \$1 = '1', \$2 = NULL}
+		],
+		'server parameter logging',
+		{
+			'001_param_1' => q{select '1' as one \gset
+SELECT 1 / (random() / 2)::int, :one::int, :two::int;
+}
+	});
+
+$node->append_conf('postgresql.conf', "log_min_duration_statement = 0");
+$node->reload;
+pgbench(
+		'-n -t1 -c1 -M prepared',
+		2,
+		[],
+		[
+		qr{ERROR:  invalid input syntax for type json},
+		qr[CONTEXT:  JSON data, line 1: \{ invalid\.\.\.[\r\n]+extended query with parameters: \$1 = '\{ invalid ', \$2 = '''Valame Dios!'' dijo Sancho; ''no le dije yo a vuestra merced que \.\.\.']m
+		],
+		'server parameter logging',
+		{
+			'001_param_2' => q[select '{ invalid ' as value \gset
+select $$'Valame Dios!' dijo Sancho; 'no le dije yo a vuestra merced que mirase bien lo que hacia?'$$ as long \gset
+select column1::jsonb from (values (:value), (:long)) as q;
+]
+	});
+my $log = TestLib::slurp_file($node->logfile);
+like($log, qr[DETAIL:  parameters: \$1 = '\{ invalid ', \$2 = '''Valame Dios!'' dijo Sancho; ''no le dije yo a vuestra merced que mirase bien lo que hacia\?'''],
+	 "parameter report does not truncate");
+$log = undef;
+
+$node->append_conf('postgresql.conf', "log_min_duration_statement = -1");
+$node->reload;
 
 # test expressions
 # command 1..3 and 23 depend on random seed which is used to call srandom.

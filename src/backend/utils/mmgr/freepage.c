@@ -42,7 +42,7 @@
  * where memory fragmentation is very severe, only a tiny fraction of
  * the pages under management are consumed by this btree.
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -164,7 +164,7 @@ static void FreePagePushSpanLeader(FreePageManager *fpm, Size first_page,
 static Size FreePageManagerLargestContiguous(FreePageManager *fpm);
 static void FreePageManagerUpdateLargest(FreePageManager *fpm);
 
-#if FPM_EXTRA_ASSERTS
+#ifdef FPM_EXTRA_ASSERTS
 static Size sum_free_pages(FreePageManager *fpm);
 #endif
 
@@ -1692,7 +1692,7 @@ FreePageManagerPutInternal(FreePageManager *fpm, Size first_page, Size npages,
 
 			/*
 			 * The act of allocating pages to recycle may have invalidated the
-			 * results of our previous btree reserch, so repeat it. (We could
+			 * results of our previous btree research, so repeat it. (We could
 			 * recheck whether any of our split-avoidance strategies that were
 			 * not viable before now are, but it hardly seems worthwhile, so
 			 * we don't bother. Consolidation can't be possible now if it

@@ -2,7 +2,7 @@
 #
 # Makefile for src/interfaces/ecpg/preproc
 #
-# Copyright (c) 1998-2019, PostgreSQL Global Development Group
+# Copyright (c) 1998-2020, PostgreSQL Global Development Group
 #
 # src/interfaces/ecpg/preproc/Makefile
 #
@@ -23,9 +23,20 @@ override CPPFLAGS := -I../include -I$(top_srcdir)/src/interfaces/ecpg/include \
 
 override CFLAGS += $(PTHREAD_CFLAGS)
 
-OBJS=	preproc.o pgc.o type.o ecpg.o output.o parser.o \
-	keywords.o c_keywords.o ecpg_keywords.o typename.o descriptor.o variable.o \
-	$(WIN32RES)
+OBJS = \
+	$(WIN32RES) \
+	c_keywords.o \
+	descriptor.o \
+	ecpg.o \
+	ecpg_keywords.o \
+	keywords.o \
+	output.o \
+	parser.o \
+	pgc.o \
+	preproc.o \
+	type.o \
+	typename.o \
+	variable.o
 
 # where to find gen_keywordlist.pl and subsidiary files
 TOOLSDIR = $(top_srcdir)/src/tools

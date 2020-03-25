@@ -19,7 +19,7 @@
  * memory context given to inv_open (for LargeObjectDesc structs).
  *
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -46,6 +46,7 @@
 #include "libpq/libpq-fs.h"
 #include "miscadmin.h"
 #include "storage/large_object.h"
+#include "utils/acl.h"
 #include "utils/fmgroids.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
@@ -180,7 +181,7 @@ getdatafield(Form_pg_largeobject tuple,
 	if (VARATT_IS_EXTENDED(datafield))
 	{
 		datafield = (bytea *)
-			heap_tuple_untoast_attr((struct varlena *) datafield);
+			detoast_attr((struct varlena *) datafield);
 		freeit = true;
 	}
 	len = VARSIZE(datafield) - VARHDRSZ;

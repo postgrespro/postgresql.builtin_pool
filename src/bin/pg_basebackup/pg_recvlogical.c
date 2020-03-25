@@ -3,7 +3,7 @@
  * pg_recvlogical.c - receive data from a logical decoding slot in a streaming
  *					  fashion and write it to a local file.
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *		  src/bin/pg_basebackup/pg_recvlogical.c
@@ -19,18 +19,15 @@
 #include <sys/select.h>
 #endif
 
-/* local includes */
-#include "streamutil.h"
-
 #include "access/xlog_internal.h"
-#include "common/file_perm.h"
 #include "common/fe_memutils.h"
+#include "common/file_perm.h"
 #include "common/logging.h"
 #include "getopt_long.h"
 #include "libpq-fe.h"
 #include "libpq/pqsignal.h"
 #include "pqexpbuffer.h"
-
+#include "streamutil.h"
 
 /* Time to sleep between reconnection attempts */
 #define RECONNECT_SLEEP_TIME 5
@@ -106,7 +103,8 @@ usage(void)
 	printf(_("  -U, --username=NAME    connect as specified database user\n"));
 	printf(_("  -w, --no-password      never prompt for password\n"));
 	printf(_("  -W, --password         force password prompt (should happen automatically)\n"));
-	printf(_("\nReport bugs to <pgsql-bugs@lists.postgresql.org>.\n"));
+	printf(_("\nReport bugs to <%s>.\n"), PACKAGE_BUGREPORT);
+	printf(_("%s home page: <%s>\n"), PACKAGE_NAME, PACKAGE_URL);
 }
 
 /*

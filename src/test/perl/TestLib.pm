@@ -112,6 +112,11 @@ BEGIN
 
 	# Must be set early
 	$windows_os = $Config{osname} eq 'MSWin32' || $Config{osname} eq 'msys';
+	if ($windows_os)
+	{
+		require Win32API::File;
+		Win32API::File->import(qw(createFile OsFHandleOpen CloseHandle));
+	}
 }
 
 =pod
@@ -178,8 +183,13 @@ INIT
 END
 {
 
-	# Preserve temporary directory for this test on failure
-	$File::Temp::KEEP_ALL = 1 unless all_tests_passing();
+	# Test files have several ways of causing prove_check to fail:
+	# 1. Exit with a non-zero status.
+	# 2. Call ok(0) or similar, indicating that a constituent test failed.
+	# 3. Deviate from the planned number of tests.
+	#
+	# Preserve temporary directories after (1) and after (2).
+	$File::Temp::KEEP_ALL = 1 unless $? == 0 && all_tests_passing();
 }
 
 =pod
@@ -394,10 +404,24 @@ sub slurp_file
 {
 	my ($filename) = @_;
 	local $/;
-	open(my $in, '<', $filename)
-	  or die "could not read \"$filename\": $!";
-	my $contents = <$in>;
-	close $in;
+	my $contents;
+	if ($Config{osname} ne 'MSWin32')
+	{
+		open(my $in, '<', $filename)
+		  or die "could not read \"$filename\": $!";
+		$contents = <$in>;
+		close $in;
+	}
+	else
+	{
+		my $fHandle = createFile($filename, "r", "rwd")
+		  or die "could not open \"$filename\": $^E";
+		OsFHandleOpen(my $fh = IO::Handle->new(), $fHandle, 'r')
+		  or die "could not read \"$filename\": $^E\n";
+		$contents = <$fh>;
+		CloseHandle($fHandle)
+		  or die "could not close \"$filename\": $^E\n";
+	}
 	$contents =~ s/\r//g if $Config{osname} eq 'msys';
 	return $contents;
 }

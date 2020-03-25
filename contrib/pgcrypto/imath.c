@@ -29,7 +29,7 @@
  *
  * 4. Update this header comment.
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *	  contrib/pgcrypto/imath.c
@@ -2361,12 +2361,12 @@ s_ucmp(mp_int a, mp_int b)
 static int
 s_vcmp(mp_int a, mp_small v)
 {
-#if _MSC_VER
+#ifdef _MSC_VER
 #pragma warning(push)
 #pragma warning(disable: 4146)
 #endif
 	mp_usmall	uv = (v < 0) ? -(mp_usmall) v : (mp_usmall) v;
-#if _MSC_VER
+#ifdef _MSC_VER
 #pragma warning(pop)
 #endif
 

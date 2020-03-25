@@ -2,7 +2,7 @@
  *
  * pg_ctl --- start/stops/restarts the PostgreSQL server
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  *
  * src/bin/pg_ctl/pg_ctl.c
  *
@@ -136,12 +136,7 @@ static void print_msg(const char *msg);
 static void adjust_data_dir(void);
 
 #ifdef WIN32
-#if (_MSC_VER >= 1800)
 #include <versionhelpers.h>
-#else
-static bool IsWindowsXPOrGreater(void);
-static bool IsWindows7OrGreater(void);
-#endif
 static bool pgwin32_IsInstalled(SC_HANDLE);
 static char *pgwin32_CommandLine(bool);
 static void pgwin32_doRegister(void);
@@ -427,8 +422,6 @@ free_readfile(char **optlines)
 		free(curr_line);
 
 	free(optlines);
-
-	return;
 }
 
 /*
@@ -518,13 +511,54 @@ start_postmaster(void)
 	 * "exec", so we don't get to find out the postmaster's PID immediately.
 	 */
 	PROCESS_INFORMATION pi;
+	const char *comspec;
+
+	/* Find CMD.EXE location using COMSPEC, if it's set */
+	comspec = getenv("COMSPEC");
+	if (comspec == NULL)
+		comspec = "CMD";
 
 	if (log_file != NULL)
-		snprintf(cmd, MAXPGPATH, "CMD /C \"\"%s\" %s%s < \"%s\" >> \"%s\" 2>&1\"",
-				 exec_path, pgdata_opt, post_opts, DEVNULL, log_file);
+	{
+		/*
+		 * First, open the log file if it exists.  The idea is that if the
+		 * file is still locked by a previous postmaster run, we'll wait until
+		 * it comes free, instead of failing with ERROR_SHARING_VIOLATION.
+		 * (It'd be better to open the file in a sharing-friendly mode, but we
+		 * can't use CMD.EXE to do that, so work around it.  Note that the
+		 * previous postmaster will still have the file open for a short time
+		 * after removing postmaster.pid.)
+		 *
+		 * If the log file doesn't exist, we *must not* create it here.  If we
+		 * were launched with higher privileges than the restricted process
+		 * will have, the log file might end up with permissions settings that
+		 * prevent the postmaster from writing on it.
+		 */
+		int			fd = open(log_file, O_RDWR, 0);
+
+		if (fd == -1)
+		{
+			/*
+			 * ENOENT is expectable since we didn't use O_CREAT.  Otherwise
+			 * complain.  We could just fall through and let CMD.EXE report
+			 * the problem, but its error reporting is pretty miserable.
+			 */
+			if (errno != ENOENT)
+			{
+				write_stderr(_("%s: could not open log file \"%s\": %s\n"),
+							 progname, log_file, strerror(errno));
+				exit(1);
+			}
+		}
+		else
+			close(fd);
+
+		snprintf(cmd, MAXPGPATH, "\"%s\" /C \"\"%s\" %s%s < \"%s\" >> \"%s\" 2>&1\"",
+				 comspec, exec_path, pgdata_opt, post_opts, DEVNULL, log_file);
+	}
 	else
-		snprintf(cmd, MAXPGPATH, "CMD /C \"\"%s\" %s%s < \"%s\" 2>&1\"",
-				 exec_path, pgdata_opt, post_opts, DEVNULL);
+		snprintf(cmd, MAXPGPATH, "\"%s\" /C \"\"%s\" %s%s < \"%s\" 2>&1\"",
+				 comspec, exec_path, pgdata_opt, post_opts, DEVNULL);
 
 	if (!CreateRestrictedProcess(cmd, &pi, false))
 	{
@@ -1381,32 +1415,6 @@ do_kill(pgpid_t pid)
 
 #ifdef WIN32
 
-#if (_MSC_VER < 1800)
-static bool
-IsWindowsXPOrGreater(void)
-{
-	OSVERSIONINFO osv;
-
-	osv.dwOSVersionInfoSize = sizeof(osv);
-
-	/* Windows XP = Version 5.1 */
-	return (!GetVersionEx(&osv) ||	/* could not get version */
-			osv.dwMajorVersion > 5 || (osv.dwMajorVersion == 5 && osv.dwMinorVersion >= 1));
-}
-
-static bool
-IsWindows7OrGreater(void)
-{
-	OSVERSIONINFO osv;
-
-	osv.dwOSVersionInfoSize = sizeof(osv);
-
-	/* Windows 7 = Version 6.0 */
-	return (!GetVersionEx(&osv) ||	/* could not get version */
-			osv.dwMajorVersion > 6 || (osv.dwMajorVersion == 6 && osv.dwMinorVersion >= 0));
-}
-#endif
-
 static bool
 pgwin32_IsInstalled(SC_HANDLE hSCM)
 {
@@ -2087,7 +2095,8 @@ do_help(void)
 	printf(_("  demand     start service on demand\n"));
 #endif
 
-	printf(_("\nReport bugs to <pgsql-bugs@lists.postgresql.org>.\n"));
+	printf(_("\nReport bugs to <%s>.\n"), PACKAGE_BUGREPORT);
+	printf(_("%s home page: <%s>\n"), PACKAGE_NAME, PACKAGE_URL);
 }
 
 

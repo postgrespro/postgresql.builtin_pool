@@ -4,7 +4,7 @@
  *	   Replication slot management.
  *
  *
- * Copyright (c) 2012-2019, PostgreSQL Global Development Group
+ * Copyright (c) 2012-2020, PostgreSQL Global Development Group
  *
  *
  * IDENTIFICATION
@@ -979,7 +979,7 @@ CheckSlotRequirements(void)
 	if (max_replication_slots == 0)
 		ereport(ERROR,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-				 (errmsg("replication slots can only be used if max_replication_slots > 0"))));
+				 errmsg("replication slots can only be used if max_replication_slots > 0")));
 
 	if (wal_level < WAL_LEVEL_REPLICA)
 		ereport(ERROR,
@@ -1386,7 +1386,8 @@ RestoreSlotFromDisk(const char *name)
 
 	elog(DEBUG1, "restoring replication slot from \"%s\"", path);
 
-	fd = OpenTransientFile(path, O_RDONLY | PG_BINARY);
+	/* on some operating systems fsyncing a file requires O_RDWR */
+	fd = OpenTransientFile(path, O_RDWR | PG_BINARY);
 
 	/*
 	 * We do not need to handle this as we are rename()ing the directory into

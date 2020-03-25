@@ -3,7 +3,7 @@
  * execParallel.c
  *	  Support routines for parallel execution.
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * This file contains routines that are intended to support setting up,
@@ -31,14 +31,15 @@
 #include "executor/nodeForeignscan.h"
 #include "executor/nodeHash.h"
 #include "executor/nodeHashjoin.h"
-#include "executor/nodeIndexscan.h"
 #include "executor/nodeIndexonlyscan.h"
+#include "executor/nodeIndexscan.h"
 #include "executor/nodeSeqscan.h"
 #include "executor/nodeSort.h"
 #include "executor/nodeSubplan.h"
 #include "executor/tqueue.h"
 #include "jit/jit.h"
 #include "nodes/nodeFuncs.h"
+#include "pgstat.h"
 #include "storage/spin.h"
 #include "tcop/tcopprot.h"
 #include "utils/datum.h"
@@ -46,7 +47,6 @@
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/snapmgr.h"
-#include "pgstat.h"
 
 /*
  * Magic numbers for parallel executor communication.  We use constants
@@ -181,6 +181,8 @@ ExecSerializePlan(Plan *plan, EState *estate)
 	pstmt->planTree = plan;
 	pstmt->rtable = estate->es_range_table;
 	pstmt->resultRelations = NIL;
+	pstmt->rootResultRelations = NIL;
+	pstmt->appendRelations = NIL;
 
 	/*
 	 * Transfer only parallel-safe subplans, leaving a NULL "hole" in the list

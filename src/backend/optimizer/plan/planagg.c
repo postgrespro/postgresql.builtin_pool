@@ -17,7 +17,7 @@
  * scan all the rows anyway.
  *
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -41,12 +41,11 @@
 #include "optimizer/planmain.h"
 #include "optimizer/subselect.h"
 #include "optimizer/tlist.h"
-#include "parser/parsetree.h"
 #include "parser/parse_clause.h"
+#include "parser/parsetree.h"
 #include "rewrite/rewriteManip.h"
 #include "utils/lsyscache.h"
 #include "utils/syscache.h"
-
 
 static bool find_minmax_aggs_walker(Node *node, List **context);
 static bool build_minmax_path(PlannerInfo *root, MinMaxAggInfo *mminfo,

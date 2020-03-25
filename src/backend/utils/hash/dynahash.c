@@ -41,7 +41,7 @@
  * function must be supplied; comparison defaults to memcmp() and key copying
  * to memcpy() when a user-defined hashing function is selected.
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -86,6 +86,7 @@
 #include <limits.h>
 
 #include "access/xact.h"
+#include "common/hashfn.h"
 #include "storage/shmem.h"
 #include "storage/spin.h"
 #include "utils/dynahash.h"
@@ -243,7 +244,7 @@ struct HTAB
  */
 #define MOD(x,y)			   ((x) & ((y)-1))
 
-#if HASH_STATISTICS
+#ifdef HASH_STATISTICS
 static long hash_accesses,
 			hash_collisions,
 			hash_expansions;
@@ -706,7 +707,7 @@ init_htab(HTAB *hashp, long nelem)
 	/* Choose number of entries to allocate at a time */
 	hctl->nelem_alloc = choose_nelem_alloc(hctl->entrysize);
 
-#if HASH_DEBUG
+#ifdef HASH_DEBUG
 	fprintf(stderr, "init_htab:\n%s%p\n%s%ld\n%s%ld\n%s%d\n%s%ld\n%s%u\n%s%x\n%s%x\n%s%ld\n",
 			"TABLE POINTER   ", hashp,
 			"DIRECTORY SIZE  ", hctl->dsize,
@@ -832,7 +833,7 @@ hash_destroy(HTAB *hashp)
 void
 hash_stats(const char *where, HTAB *hashp)
 {
-#if HASH_STATISTICS
+#ifdef HASH_STATISTICS
 	fprintf(stderr, "%s: this HTAB -- accesses %ld collisions %ld\n",
 			where, hashp->hctl->accesses, hashp->hctl->collisions);
 
@@ -933,7 +934,7 @@ hash_search_with_hash_value(HTAB *hashp,
 	HASHBUCKET *prevBucketPtr;
 	HashCompareFunc match;
 
-#if HASH_STATISTICS
+#ifdef HASH_STATISTICS
 	hash_accesses++;
 	hctl->accesses++;
 #endif
@@ -988,7 +989,7 @@ hash_search_with_hash_value(HTAB *hashp,
 			break;
 		prevBucketPtr = &(currBucket->link);
 		currBucket = *prevBucketPtr;
-#if HASH_STATISTICS
+#ifdef HASH_STATISTICS
 		hash_collisions++;
 		hctl->collisions++;
 #endif
@@ -1130,7 +1131,7 @@ hash_update_hash_key(HTAB *hashp,
 	HASHBUCKET *oldPrevPtr;
 	HashCompareFunc match;
 
-#if HASH_STATISTICS
+#ifdef HASH_STATISTICS
 	hash_accesses++;
 	hctl->accesses++;
 #endif
@@ -1204,7 +1205,7 @@ hash_update_hash_key(HTAB *hashp,
 			break;
 		prevBucketPtr = &(currBucket->link);
 		currBucket = *prevBucketPtr;
-#if HASH_STATISTICS
+#ifdef HASH_STATISTICS
 		hash_collisions++;
 		hctl->collisions++;
 #endif

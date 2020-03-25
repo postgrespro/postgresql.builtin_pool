@@ -352,7 +352,7 @@ select jsonb_path_query('1', '$.datetime()');
 select jsonb_path_query('[]', '$.datetime()');
 select jsonb_path_query('[]', 'strict $.datetime()');
 select jsonb_path_query('{}', '$.datetime()');
-select jsonb_path_query('""', '$.datetime()');
+select jsonb_path_query('"bogus"', '$.datetime()');
 select jsonb_path_query('"12:34"', '$.datetime("aaa")');
 select jsonb_path_query('"aaaa"', '$.datetime("HH24")');
 
@@ -515,6 +515,9 @@ select jsonb_path_query_tz(
 select jsonb_path_query_tz(
 	'["2017-03-10 12:34:00 +01", "2017-03-10 12:35:00 +01", "2017-03-10 12:36:00 +01", "2017-03-10 12:35:00 +02", "2017-03-10 12:35:00 -02", "2017-03-10 10:35:00", "2017-03-10 11:35:00", "2017-03-10 12:35:00", "2017-03-10", "2017-03-11", "12:34:56", "12:34:56 +01"]',
 	'$[*].datetime() ? (@ < "10.03.2017 12:35 +1".datetime("dd.mm.yyyy HH24:MI TZH"))');
+
+-- overflow during comparison
+select jsonb_path_query('"1000000-01-01"', '$.datetime() > "2020-01-01 12:00:00".datetime()'::jsonpath);
 
 set time zone default;
 

@@ -3,7 +3,7 @@
  * fe-exec.c
  *	  functions related to sending a query down to the backend
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -18,16 +18,15 @@
 #include <fcntl.h>
 #include <limits.h>
 
-#include "libpq-fe.h"
-#include "libpq-int.h"
-
-#include "mb/pg_wchar.h"
-
 #ifdef WIN32
 #include "win32.h"
 #else
 #include <unistd.h>
 #endif
+
+#include "libpq-fe.h"
+#include "libpq-int.h"
+#include "mb/pg_wchar.h"
 
 /* keep this in same order as ExecStatusType in libpq-fe.h */
 char	   *const pgresStatus[] = {

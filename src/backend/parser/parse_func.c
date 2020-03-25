@@ -3,7 +3,7 @@
  * parse_func.c
  *		handle function calls in parser
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -1397,9 +1397,6 @@ func_get_detail(List *funcname,
 	FuncCandidateList raw_candidates;
 	FuncCandidateList best_candidate;
 
-	/* Passing NULL for argtypes is no longer allowed */
-	Assert(argtypes);
-
 	/* initialize output arguments to silence compiler warnings */
 	*funcid = InvalidOid;
 	*rettype = InvalidOid;
@@ -1423,7 +1420,9 @@ func_get_detail(List *funcname,
 		 best_candidate != NULL;
 		 best_candidate = best_candidate->next)
 	{
-		if (memcmp(argtypes, best_candidate->args, nargs * sizeof(Oid)) == 0)
+		/* if nargs==0, argtypes can be null; don't pass that to memcmp */
+		if (nargs == 0 ||
+			memcmp(argtypes, best_candidate->args, nargs * sizeof(Oid)) == 0)
 			break;
 	}
 
@@ -1914,13 +1913,15 @@ ParseComplexProjection(ParseState *pstate, const char *funcname, Node *first_arg
 	if (IsA(first_arg, Var) &&
 		((Var *) first_arg)->varattno == InvalidAttrNumber)
 	{
-		RangeTblEntry *rte;
+		ParseNamespaceItem *nsitem;
 
-		rte = GetRTEByRangeTablePosn(pstate,
-									 ((Var *) first_arg)->varno,
-									 ((Var *) first_arg)->varlevelsup);
+		nsitem = GetNSItemByRangeTablePosn(pstate,
+										   ((Var *) first_arg)->varno,
+										   ((Var *) first_arg)->varlevelsup);
 		/* Return a Var if funcname matches a column, else NULL */
-		return scanRTEForColumn(pstate, rte, funcname, location, 0, NULL);
+		return scanNSItemForColumn(pstate, nsitem,
+								   ((Var *) first_arg)->varlevelsup,
+								   funcname, location);
 	}
 
 	/*
@@ -2035,8 +2036,8 @@ LookupFuncNameInternal(List *funcname, int nargs, const Oid *argtypes,
 {
 	FuncCandidateList clist;
 
-	/* Passing NULL for argtypes is no longer allowed */
-	Assert(argtypes);
+	/* NULL argtypes allowed for nullary functions only */
+	Assert(argtypes != NULL || nargs == 0);
 
 	/* Always set *lookupError, to forestall uninitialized-variable warnings */
 	*lookupError = FUNCLOOKUP_NOSUCHFUNC;
@@ -2070,7 +2071,9 @@ LookupFuncNameInternal(List *funcname, int nargs, const Oid *argtypes,
 	 */
 	while (clist)
 	{
-		if (memcmp(argtypes, clist->args, nargs * sizeof(Oid)) == 0)
+		/* if nargs==0, argtypes can be null; don't pass that to memcmp */
+		if (nargs == 0 ||
+			memcmp(argtypes, clist->args, nargs * sizeof(Oid)) == 0)
 			return clist->oid;
 		clist = clist->next;
 	}

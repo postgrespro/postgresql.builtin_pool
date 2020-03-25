@@ -2,7 +2,7 @@
  * logical.c
  *	   PostgreSQL logical decoding coordination
  *
- * Copyright (c) 2012-2019, PostgreSQL Global Development Group
+ * Copyright (c) 2012-2020, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *	  src/backend/replication/logical/logical.c
@@ -28,21 +28,17 @@
 
 #include "postgres.h"
 
-#include "fmgr.h"
-#include "miscadmin.h"
-
 #include "access/xact.h"
 #include "access/xlog_internal.h"
-
+#include "fmgr.h"
+#include "miscadmin.h"
 #include "replication/decode.h"
 #include "replication/logical.h"
-#include "replication/reorderbuffer.h"
 #include "replication/origin.h"
+#include "replication/reorderbuffer.h"
 #include "replication/snapbuild.h"
-
 #include "storage/proc.h"
 #include "storage/procarray.h"
-
 #include "utils/memutils.h"
 
 /* data for errcontext callback */
@@ -212,6 +208,8 @@ StartupDecodingContext(List *output_plugin_options,
  *
  * plugin -- contains the name of the output plugin
  * output_plugin_options -- contains options passed to the output plugin
+ * need_full_snapshot -- if true, must obtain a snapshot able to read all
+ *		tables; if false, one that can read only catalogs is acceptable.
  * restart_lsn -- if given as invalid, it's this routine's responsibility to
  *		mark WAL as reserved by setting a convenient restart_lsn for the slot.
  *		Otherwise, we set for decoding to start from the given LSN without
@@ -394,13 +392,13 @@ CreateDecodingContext(XLogRecPtr start_lsn,
 	if (SlotIsPhysical(slot))
 		ereport(ERROR,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-				 (errmsg("cannot use physical replication slot for logical decoding"))));
+				 errmsg("cannot use physical replication slot for logical decoding")));
 
 	if (slot->data.database != MyDatabaseId)
 		ereport(ERROR,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-				 (errmsg("replication slot \"%s\" was not created in this database",
-						 NameStr(slot->data.name)))));
+				 errmsg("replication slot \"%s\" was not created in this database",
+						NameStr(slot->data.name))));
 
 	if (start_lsn == InvalidXLogRecPtr)
 	{
@@ -465,11 +463,10 @@ DecodingContextReady(LogicalDecodingContext *ctx)
 void
 DecodingContextFindStartpoint(LogicalDecodingContext *ctx)
 {
-	XLogRecPtr	startptr;
 	ReplicationSlot *slot = ctx->slot;
 
 	/* Initialize from where to start reading WAL. */
-	startptr = slot->data.restart_lsn;
+	XLogBeginRead(ctx->reader, slot->data.restart_lsn);
 
 	elog(DEBUG1, "searching for logical decoding starting point, starting at %X/%X",
 		 (uint32) (slot->data.restart_lsn >> 32),
@@ -482,13 +479,11 @@ DecodingContextFindStartpoint(LogicalDecodingContext *ctx)
 		char	   *err = NULL;
 
 		/* the read_page callback waits for new WAL */
-		record = XLogReadRecord(ctx->reader, startptr, &err);
+		record = XLogReadRecord(ctx->reader, &err);
 		if (err)
 			elog(ERROR, "%s", err);
 		if (!record)
 			elog(ERROR, "no record found"); /* shouldn't happen */
-
-		startptr = InvalidXLogRecPtr;
 
 		LogicalDecodingProcessRecord(ctx, ctx->reader);
 

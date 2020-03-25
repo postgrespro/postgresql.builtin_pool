@@ -3,7 +3,7 @@
  * fe-protocol3.c
  *	  functions that are specific to frontend/backend protocol version 3
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -17,12 +17,6 @@
 #include <ctype.h>
 #include <fcntl.h>
 
-#include "libpq-fe.h"
-#include "libpq-int.h"
-
-#include "mb/pg_wchar.h"
-#include "port/pg_bswap.h"
-
 #ifdef WIN32
 #include "win32.h"
 #else
@@ -32,6 +26,10 @@
 #endif
 #endif
 
+#include "libpq-fe.h"
+#include "libpq-int.h"
+#include "mb/pg_wchar.h"
+#include "port/pg_bswap.h"
 
 /*
  * This macro lists the backend message types that could be "long" (more
@@ -407,8 +405,7 @@ pqParseInput3(PGconn *conn)
 					break;
 				default:
 					printfPQExpBuffer(&conn->errorMessage,
-									  libpq_gettext(
-													"unexpected response from server; first received character was \"%c\"\n"),
+									  libpq_gettext("unexpected response from server; first received character was \"%c\"\n"),
 									  id);
 					/* build an error result holding the error message */
 					pqSaveErrorResult(conn);
@@ -449,8 +446,7 @@ static void
 handleSyncLoss(PGconn *conn, char id, int msgLength)
 {
 	printfPQExpBuffer(&conn->errorMessage,
-					  libpq_gettext(
-									"lost synchronization with server: got message type \"%c\", length %d\n"),
+					  libpq_gettext("lost synchronization with server: got message type \"%c\", length %d\n"),
 					  id, msgLength);
 	/* build an error result holding the error message */
 	pqSaveErrorResult(conn);

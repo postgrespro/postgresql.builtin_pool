@@ -169,12 +169,14 @@ PostgreSQL documentation
       <term><option>--no-ensure-shutdown</option></term>
       <listitem>
        <para>
-        <application>pg_rewind</application> verifies that the target server
-        is cleanly shutdown before rewinding; by default, if it isn't, it
-        starts the server in single-user mode to complete crash recovery.
+        <application>pg_rewind</application> requires that the target server
+        is cleanly shut down before rewinding. By default, if the target server
+        is not shut down cleanly, <application>pg_rewind</application> starts
+        the target server in single-user mode to complete crash recovery first,
+        and stops it.
         By passing this option, <application>pg_rewind</application> skips
         this and errors out immediately if the server is not cleanly shut
-        down.  Users are expected to handle the situation themselves in that
+        down. Users are expected to handle the situation themselves in that
         case.
        </para>
       </listitem>
@@ -267,8 +269,8 @@ PostgreSQL documentation
 
   <para>
    The environment variable <envar>PG_COLOR</envar> specifies whether to use
-   color in diagnostics messages.  Possible values are
-   <literal>always</literal>, <literal>auto</literal>,
+   color in diagnostic messages. Possible values are
+   <literal>always</literal>, <literal>auto</literal> and
    <literal>never</literal>.
   </para>
  </refsect1>

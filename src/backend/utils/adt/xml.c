@@ -4,7 +4,7 @@
  *	  XML data type support.
  *
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/backend/utils/adt/xml.c
@@ -1193,13 +1193,11 @@ xml_pstrdup_and_free(xmlChar *str)
 		{
 			result = pstrdup((char *) str);
 		}
-		PG_CATCH();
+		PG_FINALLY();
 		{
 			xmlFree(str);
-			PG_RE_THROW();
 		}
 		PG_END_TRY();
-		xmlFree(str);
 	}
 	else
 		result = NULL;
@@ -2088,26 +2086,6 @@ map_sql_identifier_to_xml_name(const char *ident, bool fully_escaped,
 
 
 /*
- * Map a Unicode codepoint into the current server encoding.
- */
-static char *
-unicode_to_sqlchar(pg_wchar c)
-{
-	char		utf8string[8];	/* need room for trailing zero */
-	char	   *result;
-
-	memset(utf8string, 0, sizeof(utf8string));
-	unicode_to_utf8(c, (unsigned char *) utf8string);
-
-	result = pg_any_to_server(utf8string, strlen(utf8string), PG_UTF8);
-	/* if pg_any_to_server didn't strdup, we must */
-	if (result == utf8string)
-		result = pstrdup(result);
-	return result;
-}
-
-
-/*
  * Map XML name to SQL identifier; see SQL/XML:2008 section 9.3.
  */
 char *
@@ -2127,10 +2105,12 @@ map_xml_name_to_sql_identifier(const char *name)
 			&& isxdigit((unsigned char) *(p + 5))
 			&& *(p + 6) == '_')
 		{
+			char		cbuf[MAX_UNICODE_EQUIVALENT_STRING + 1];
 			unsigned int u;
 
 			sscanf(p + 2, "%X", &u);
-			appendStringInfoString(&buf, unicode_to_sqlchar(u));
+			pg_unicode_to_server(u, (unsigned char *) cbuf);
+			appendStringInfoString(&buf, cbuf);
 			p += 6;
 		}
 		else
@@ -2463,8 +2443,12 @@ query_to_oid_list(const char *query)
 {
 	uint64		i;
 	List	   *list = NIL;
+	int			spi_result;
 
-	SPI_execute(query, true, 0);
+	spi_result = SPI_execute(query, true, 0);
+	if (spi_result != SPI_OK_SELECT)
+		elog(ERROR, "SPI_execute returned %s for %s",
+			 SPI_result_code_string(spi_result), query);
 
 	for (i = 0; i < SPI_processed; i++)
 	{
@@ -3823,7 +3807,7 @@ SPI_sql_row_to_xmlelement(uint64 rownum, StringInfo result, char *tablename,
 static text *
 xml_xmlnodetoxmltype(xmlNodePtr cur, PgXmlErrorContext *xmlerrcxt)
 {
-	xmltype    *result;
+	xmltype    *result = NULL;
 
 	if (cur->type != XML_ATTRIBUTE_NODE && cur->type != XML_TEXT_NODE)
 	{
@@ -3866,19 +3850,14 @@ xml_xmlnodetoxmltype(xmlNodePtr cur, PgXmlErrorContext *xmlerrcxt)
 
 			result = xmlBuffer_to_xmltype(buf);
 		}
-		PG_CATCH();
+		PG_FINALLY();
 		{
 			if (nodefree)
 				nodefree(cur_copy);
 			if (buf)
 				xmlBufferFree(buf);
-			PG_RE_THROW();
 		}
 		PG_END_TRY();
-
-		if (nodefree)
-			nodefree(cur_copy);
-		xmlBufferFree(buf);
 	}
 	else
 	{
@@ -3893,13 +3872,11 @@ xml_xmlnodetoxmltype(xmlNodePtr cur, PgXmlErrorContext *xmlerrcxt)
 			result = (xmltype *) cstring_to_text(escaped);
 			pfree(escaped);
 		}
-		PG_CATCH();
+		PG_FINALLY();
 		{
 			xmlFree(str);
-			PG_RE_THROW();
 		}
 		PG_END_TRY();
-		xmlFree(str);
 	}
 
 	return result;
@@ -4041,7 +4018,7 @@ xpath_internal(text *xpath_expr_text, xmltype *data, ArrayType *namespaces,
 
 		Assert(ARR_ELEMTYPE(namespaces) == TEXTOID);
 
-		deconstruct_array(namespaces, TEXTOID, -1, false, 'i',
+		deconstruct_array(namespaces, TEXTOID, -1, false, TYPALIGN_INT,
 						  &ns_names_uris, &ns_names_uris_nulls,
 						  &ns_count);
 
@@ -4734,15 +4711,12 @@ XmlTableGetValue(TableFuncScanState *state, int colnum,
 									   state->typioparams[colnum],
 									   typmod);
 	}
-	PG_CATCH();
+	PG_FINALLY();
 	{
 		if (xpathobj != NULL)
 			xmlXPathFreeObject(xpathobj);
-		PG_RE_THROW();
 	}
 	PG_END_TRY();
-
-	xmlXPathFreeObject(xpathobj);
 
 	return result;
 #else

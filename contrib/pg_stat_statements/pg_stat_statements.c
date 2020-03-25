@@ -48,7 +48,7 @@
  * in the file to be read or written while holding only shared lock.
  *
  *
- * Copyright (c) 2008-2019, PostgreSQL Global Development Group
+ * Copyright (c) 2008-2020, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *	  contrib/pg_stat_statements/pg_stat_statements.c
@@ -62,6 +62,7 @@
 #include <unistd.h>
 
 #include "catalog/pg_authid.h"
+#include "common/hashfn.h"
 #include "executor/instrument.h"
 #include "funcapi.h"
 #include "mb/pg_wchar.h"
@@ -77,7 +78,6 @@
 #include "tcop/utility.h"
 #include "utils/acl.h"
 #include "utils/builtins.h"
-#include "utils/hashutils.h"
 #include "utils/memutils.h"
 
 PG_MODULE_MAGIC;
@@ -307,7 +307,7 @@ static void pgss_ExecutorEnd(QueryDesc *queryDesc);
 static void pgss_ProcessUtility(PlannedStmt *pstmt, const char *queryString,
 								ProcessUtilityContext context, ParamListInfo params,
 								QueryEnvironment *queryEnv,
-								DestReceiver *dest, char *completionTag);
+								DestReceiver *dest, QueryCompletion *qc);
 static uint64 pgss_hash_string(const char *str, int len);
 static void pgss_store(const char *query, uint64 queryId,
 					   int query_location, int query_len,
@@ -892,12 +892,10 @@ pgss_ExecutorRun(QueryDesc *queryDesc, ScanDirection direction, uint64 count,
 			prev_ExecutorRun(queryDesc, direction, count, execute_once);
 		else
 			standard_ExecutorRun(queryDesc, direction, count, execute_once);
-		nested_level--;
 	}
-	PG_CATCH();
+	PG_FINALLY();
 	{
 		nested_level--;
-		PG_RE_THROW();
 	}
 	PG_END_TRY();
 }
@@ -915,12 +913,10 @@ pgss_ExecutorFinish(QueryDesc *queryDesc)
 			prev_ExecutorFinish(queryDesc);
 		else
 			standard_ExecutorFinish(queryDesc);
-		nested_level--;
 	}
-	PG_CATCH();
+	PG_FINALLY();
 	{
 		nested_level--;
-		PG_RE_THROW();
 	}
 	PG_END_TRY();
 }
@@ -964,7 +960,7 @@ static void
 pgss_ProcessUtility(PlannedStmt *pstmt, const char *queryString,
 					ProcessUtilityContext context,
 					ParamListInfo params, QueryEnvironment *queryEnv,
-					DestReceiver *dest, char *completionTag)
+					DestReceiver *dest, QueryCompletion *qc)
 {
 	Node	   *parsetree = pstmt->utilityStmt;
 
@@ -1002,29 +998,22 @@ pgss_ProcessUtility(PlannedStmt *pstmt, const char *queryString,
 			if (prev_ProcessUtility)
 				prev_ProcessUtility(pstmt, queryString,
 									context, params, queryEnv,
-									dest, completionTag);
+									dest, qc);
 			else
 				standard_ProcessUtility(pstmt, queryString,
 										context, params, queryEnv,
-										dest, completionTag);
-			nested_level--;
+										dest, qc);
 		}
-		PG_CATCH();
+		PG_FINALLY();
 		{
 			nested_level--;
-			PG_RE_THROW();
 		}
 		PG_END_TRY();
 
 		INSTR_TIME_SET_CURRENT(duration);
 		INSTR_TIME_SUBTRACT(duration, start);
 
-		/* parse command tag to retrieve the number of affected rows. */
-		if (completionTag &&
-			strncmp(completionTag, "COPY ", 5) == 0)
-			rows = pg_strtouint64(completionTag + 5, NULL, 10);
-		else
-			rows = 0;
+		rows = (qc && qc->commandTag == CMDTAG_COPY) ? qc->nprocessed : 0;
 
 		/* calc differences of buffer counters. */
 		bufusage.shared_blks_hit =
@@ -1066,11 +1055,11 @@ pgss_ProcessUtility(PlannedStmt *pstmt, const char *queryString,
 		if (prev_ProcessUtility)
 			prev_ProcessUtility(pstmt, queryString,
 								context, params, queryEnv,
-								dest, completionTag);
+								dest, qc);
 		else
 			standard_ProcessUtility(pstmt, queryString,
 									context, params, queryEnv,
-									dest, completionTag);
+									dest, qc);
 	}
 }
 
@@ -1421,8 +1410,7 @@ pg_stat_statements_internal(FunctionCallInfo fcinfo,
 	if (!(rsinfo->allowedModes & SFRM_Materialize))
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("materialize mode required, but it is not " \
-						"allowed in this context")));
+				 errmsg("materialize mode required, but it is not allowed in this context")));
 
 	/* Switch into long-lived context to construct returned data structures */
 	per_query_ctx = rsinfo->econtext->ecxt_per_query_memory;
@@ -1875,12 +1863,9 @@ qtext_store(const char *query, int query_len,
 	if (fd < 0)
 		goto error;
 
-	if (lseek(fd, off, SEEK_SET) != off)
+	if (pg_pwrite(fd, query, query_len, off) != query_len)
 		goto error;
-
-	if (write(fd, query, query_len) != query_len)
-		goto error;
-	if (write(fd, "\0", 1) != 1)
+	if (pg_pwrite(fd, "\0", 1, off + query_len) != 1)
 		goto error;
 
 	CloseTransientFile(fd);

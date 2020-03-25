@@ -3,7 +3,7 @@
  * pg_rewind.c
  *	  Synchronizes a PostgreSQL data directory to a new timeline
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  *
  *-------------------------------------------------------------------------
  */
@@ -14,11 +14,6 @@
 #include <time.h>
 #include <unistd.h>
 
-#include "pg_rewind.h"
-#include "fetch.h"
-#include "file_ops.h"
-#include "filemap.h"
-
 #include "access/timeline.h"
 #include "access/xlog_internal.h"
 #include "catalog/catversion.h"
@@ -28,7 +23,11 @@
 #include "common/file_utils.h"
 #include "common/restricted_token.h"
 #include "fe_utils/recovery_gen.h"
+#include "fetch.h"
+#include "file_ops.h"
+#include "filemap.h"
 #include "getopt_long.h"
+#include "pg_rewind.h"
 #include "storage/bufpage.h"
 
 static void usage(const char *progname);
@@ -88,7 +87,8 @@ usage(const char *progname)
 	printf(_("      --debug                    write a lot of debug messages\n"));
 	printf(_("  -V, --version                  output version information, then exit\n"));
 	printf(_("  -?, --help                     show this help, then exit\n"));
-	printf(_("\nReport bugs to <pgsql-bugs@lists.postgresql.org>.\n"));
+	printf(_("\nReport bugs to <%s>.\n"), PACKAGE_BUGREPORT);
+	printf(_("%s home page: <%s>\n"), PACKAGE_NAME, PACKAGE_URL);
 }
 
 
@@ -101,7 +101,7 @@ main(int argc, char **argv)
 		{"write-recovery-conf", no_argument, NULL, 'R'},
 		{"source-pgdata", required_argument, NULL, 1},
 		{"source-server", required_argument, NULL, 2},
-		{"no-ensure-shutdown", no_argument, NULL, 44},
+		{"no-ensure-shutdown", no_argument, NULL, 4},
 		{"version", no_argument, NULL, 'V'},
 		{"dry-run", no_argument, NULL, 'n'},
 		{"no-sync", no_argument, NULL, 'N'},
@@ -180,9 +180,11 @@ main(int argc, char **argv)
 			case 1:				/* --source-pgdata */
 				datadir_source = pg_strdup(optarg);
 				break;
+
 			case 2:				/* --source-server */
 				connstr_source = pg_strdup(optarg);
 				break;
+
 			case 4:
 				no_ensure_shutdown = true;
 				break;
@@ -268,11 +270,12 @@ main(int argc, char **argv)
 	pg_free(buffer);
 
 	/*
-	 * If the target instance was not cleanly shut down, run a single-user
-	 * postgres session really quickly and reload the control file to get the
-	 * new state. Note if no_ensure_shutdown is specified, pg_rewind won't do
-	 * that automatically. That means users need to do themselves in advance,
-	 * else pg_rewind will soon quit, see sanityChecks().
+	 * If the target instance was not cleanly shut down, start and stop the
+	 * target cluster once in single-user mode to enforce recovery to finish,
+	 * ensuring that the cluster can be used by pg_rewind.  Note that if
+	 * no_ensure_shutdown is specified, pg_rewind ignores this step, and users
+	 * need to make sure by themselves that the target cluster is in a clean
+	 * state.
 	 */
 	if (!no_ensure_shutdown &&
 		ControlFile_target.state != DB_SHUTDOWNED &&
@@ -341,7 +344,7 @@ main(int argc, char **argv)
 	if (!rewind_needed)
 	{
 		pg_log_info("no rewind required");
-		if (writerecoveryconf)
+		if (writerecoveryconf && !dry_run)
 			WriteRecoveryConfig(conn, datadir_target,
 								GenerateRecoveryConfig(conn, NULL));
 		exit(0);
@@ -435,13 +438,14 @@ main(int argc, char **argv)
 	ControlFile_new.minRecoveryPoint = endrec;
 	ControlFile_new.minRecoveryPointTLI = endtli;
 	ControlFile_new.state = DB_IN_ARCHIVE_RECOVERY;
-	update_controlfile(datadir_target, &ControlFile_new, do_sync);
+	if (!dry_run)
+		update_controlfile(datadir_target, &ControlFile_new, do_sync);
 
 	if (showprogress)
 		pg_log_info("syncing target data directory");
 	syncTargetDirectory();
 
-	if (writerecoveryconf)
+	if (writerecoveryconf && !dry_run)
 		WriteRecoveryConfig(conn, datadir_target,
 							GenerateRecoveryConfig(conn, NULL));
 
@@ -844,8 +848,12 @@ ensureCleanShutdown(const char *argv0)
 	if (dry_run)
 		return;
 
-	/* finally run postgres in single-user mode */
-	snprintf(cmd, MAXCMDLEN, "\"%s\" --single -D \"%s\" template1 < \"%s\"",
+	/*
+	 * Finally run postgres in single-user mode.  There is no need to use
+	 * fsync here.  This makes the recovery faster, and the target data folder
+	 * is synced at the end anyway.
+	 */
+	snprintf(cmd, MAXCMDLEN, "\"%s\" --single -F -D \"%s\" template1 < \"%s\"",
 			 exec_path, datadir_target, DEVNULL);
 
 	if (system(cmd) != 0)

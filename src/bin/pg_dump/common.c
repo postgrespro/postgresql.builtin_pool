@@ -4,7 +4,7 @@
  *	Catalog routines used by pg_dump; long ago these were shared
  *	by another dump tool, but not anymore.
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -15,15 +15,13 @@
  */
 #include "postgres_fe.h"
 
-#include "pg_backup_archiver.h"
-#include "pg_backup_utils.h"
-#include "pg_dump.h"
-
 #include <ctype.h>
 
 #include "catalog/pg_class_d.h"
 #include "fe_utils/string_utils.h"
-
+#include "pg_backup_archiver.h"
+#include "pg_backup_utils.h"
+#include "pg_dump.h"
 
 /*
  * Variables for mapping DumpId to DumpableObject
@@ -412,6 +410,9 @@ flagInhIndexes(Archive *fout, TableInfo tblinfo[], int numTables)
 			addObjectDependency(&attachinfo[k].dobj,
 								parentidx->indextable->dobj.dumpId);
 
+			/* keep track of the list of partitions in the parent index */
+			simple_ptr_list_append(&parentidx->partattaches, &attachinfo[k].dobj);
+
 			k++;
 		}
 	}
@@ -548,6 +549,7 @@ AssignDumpId(DumpableObject *dobj)
 	dobj->namespace = NULL;		/* may be set later */
 	dobj->dump = DUMP_COMPONENT_ALL;	/* default assumption */
 	dobj->ext_member = false;	/* default assumption */
+	dobj->depends_on_ext = false;	/* default assumption */
 	dobj->dependencies = NULL;
 	dobj->nDeps = 0;
 	dobj->allocDeps = 0;

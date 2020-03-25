@@ -3,17 +3,15 @@
  *
  *	information support functions
  *
- *	Copyright (c) 2010-2019, PostgreSQL Global Development Group
+ *	Copyright (c) 2010-2020, PostgreSQL Global Development Group
  *	src/bin/pg_upgrade/info.c
  */
 
 #include "postgres_fe.h"
 
-#include "pg_upgrade.h"
-
 #include "access/transam.h"
 #include "catalog/pg_class_d.h"
-
+#include "pg_upgrade.h"
 
 static void create_rel_filename_map(const char *old_data, const char *new_data,
 									const DbInfo *old_db, const DbInfo *new_db,

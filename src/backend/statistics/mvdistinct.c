@@ -13,7 +13,7 @@
  * estimates are already available in pg_statistic.
  *
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -28,14 +28,13 @@
 #include "access/htup_details.h"
 #include "catalog/pg_statistic_ext.h"
 #include "catalog/pg_statistic_ext_data.h"
-#include "utils/fmgrprotos.h"
-#include "utils/lsyscache.h"
 #include "lib/stringinfo.h"
-#include "utils/syscache.h"
-#include "utils/typcache.h"
 #include "statistics/extended_stats_internal.h"
 #include "statistics/statistics.h"
-
+#include "utils/fmgrprotos.h"
+#include "utils/lsyscache.h"
+#include "utils/syscache.h"
+#include "utils/typcache.h"
 
 static double ndistinct_for_combination(double totalrows, int numrows,
 										HeapTuple *rows, VacAttrStats **stats,

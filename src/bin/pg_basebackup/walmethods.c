@@ -5,7 +5,7 @@
  * NOTE! The caller must ensure that only one method is instantiated in
  *		 any given program, and that it's only instantiated once!
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *		  src/bin/pg_basebackup/walmethods.c
@@ -21,10 +21,9 @@
 #include <zlib.h>
 #endif
 
-#include "pgtar.h"
 #include "common/file_perm.h"
 #include "common/file_utils.h"
-
+#include "pgtar.h"
 #include "receivelog.h"
 #include "streamutil.h"
 

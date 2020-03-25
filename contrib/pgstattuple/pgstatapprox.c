@@ -3,7 +3,7 @@
  * pgstatapprox.c
  *		  Bloat estimation functions
  *
- * Copyright (c) 2014-2019, PostgreSQL Global Development Group
+ * Copyright (c) 2014-2020, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *		  contrib/pgstattuple/pgstatapprox.c
@@ -13,12 +13,12 @@
 #include "postgres.h"
 
 #include "access/heapam.h"
+#include "access/htup_details.h"
+#include "access/multixact.h"
 #include "access/relation.h"
 #include "access/transam.h"
 #include "access/visibilitymap.h"
 #include "access/xact.h"
-#include "access/multixact.h"
-#include "access/htup_details.h"
 #include "catalog/namespace.h"
 #include "catalog/pg_am_d.h"
 #include "commands/vacuum.h"
@@ -26,8 +26,8 @@
 #include "miscadmin.h"
 #include "storage/bufmgr.h"
 #include "storage/freespace.h"
-#include "storage/procarray.h"
 #include "storage/lmgr.h"
+#include "storage/procarray.h"
 #include "utils/builtins.h"
 
 PG_FUNCTION_INFO_V1(pgstattuple_approx);
@@ -228,7 +228,7 @@ pgstattuple_approx(PG_FUNCTION_ARGS)
 	if (!superuser())
 		ereport(ERROR,
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-				 (errmsg("must be superuser to use pgstattuple functions"))));
+				 errmsg("must be superuser to use pgstattuple functions")));
 
 	PG_RETURN_DATUM(pgstattuple_approx_internal(relid, fcinfo));
 }

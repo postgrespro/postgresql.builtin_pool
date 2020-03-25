@@ -1,7 +1,7 @@
 /*
  * psql - the PostgreSQL interactive terminal
  *
- * Copyright (c) 2000-2019, PostgreSQL Global Development Group
+ * Copyright (c) 2000-2020, PostgreSQL Global Development Group
  *
  * src/bin/psql/input.c
  */
@@ -13,12 +13,11 @@
 #include <fcntl.h>
 #include <limits.h>
 
+#include "common.h"
+#include "common/logging.h"
 #include "input.h"
 #include "settings.h"
 #include "tab-complete.h"
-#include "common.h"
-
-#include "common/logging.h"
 
 #ifndef WIN32
 #define PSQLHISTORY ".psql_history"

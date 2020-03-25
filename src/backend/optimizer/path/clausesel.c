@@ -3,7 +3,7 @@
  * clausesel.c
  *	  Routines to compute clause selectivities
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -21,12 +21,12 @@
 #include "optimizer/optimizer.h"
 #include "optimizer/pathnode.h"
 #include "optimizer/plancat.h"
+#include "statistics/statistics.h"
 #include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
 #include "utils/selfuncs.h"
 #include "statistics/statistics.h"
 #include "catalog/pg_statistic_ext.h"
-
 
 /*
  * Data structure for accumulating info about possible range-query
@@ -120,8 +120,8 @@ find_var_dependency(PlannerInfo *root, Index relid, Var *var, Bitmapset *attnums
 	RelOptInfo* rel = find_base_rel(root, relid);
 	if (rel->rtekind == RTE_RELATION && rel->statlist != NIL)
 	{
-		StatisticExtInfo *stat = choose_best_statistics(rel->statlist, attnums,
-														STATS_EXT_DEPENDENCIES);
+		StatisticExtInfo *stat = choose_best_statistics(rel->statlist, STATS_EXT_DEPENDENCIES,
+														&attnums, 1);
 		if (stat != NULL)
 		{
 			MVDependencies *dependencies = statext_dependencies_load(stat->statOid);
@@ -278,11 +278,11 @@ clauselist_selectivity_simple(PlannerInfo *root,
 			if (oprrest == F_EQSEL && rinfo != NULL && innerRelid != 0)
 			{
 				Var* var = (Var*)linitial(expr->args);
-				if (!IsA(var, Var) || var->varnoold != innerRelid)
+				if (!IsA(var, Var) || var->varno != innerRelid)
 				{
 					var = (Var*)lsecond(expr->args);
 				}
-				if (IsA(var, Var) && var->varattno >= 0 && var->varnoold == innerRelid)
+				if (IsA(var, Var) && var->varattno >= 0 && var->varno == innerRelid)
 				{
 					clauses_attnums = bms_add_member(clauses_attnums, var->varattno);
 					if (n_clauses_attnums++ != 0)

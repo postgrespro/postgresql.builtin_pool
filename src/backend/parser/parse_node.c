@@ -3,7 +3,7 @@
  * parse_node.c
  *	  various routines that make nodes for querytrees
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -20,16 +20,15 @@
 #include "mb/pg_wchar.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
-#include "parser/parsetree.h"
 #include "parser/parse_coerce.h"
 #include "parser/parse_expr.h"
 #include "parser/parse_relation.h"
+#include "parser/parsetree.h"
 #include "utils/builtins.h"
 #include "utils/int8.h"
 #include "utils/lsyscache.h"
 #include "utils/syscache.h"
 #include "utils/varbit.h"
-
 
 static void pcb_error_callback(void *arg);
 
@@ -180,27 +179,6 @@ pcb_error_callback(void *arg)
 		(void) parser_errposition(pcbstate->pstate, pcbstate->location);
 }
 
-
-/*
- * make_var
- *		Build a Var node for an attribute identified by RTE and attrno
- */
-Var *
-make_var(ParseState *pstate, RangeTblEntry *rte, int attrno, int location)
-{
-	Var		   *result;
-	int			vnum,
-				sublevels_up;
-	Oid			vartypeid;
-	int32		type_mod;
-	Oid			varcollid;
-
-	vnum = RTERangeTablePosn(pstate, rte, &sublevels_up);
-	get_rte_attribute_type(rte, attrno, &vartypeid, &type_mod, &varcollid);
-	result = makeVar(vnum, attrno, vartypeid, type_mod, varcollid, sublevels_up);
-	result->location = location;
-	return result;
-}
 
 /*
  * transformContainerType()

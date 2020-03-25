@@ -1,7 +1,7 @@
 /*
  * psql - the PostgreSQL interactive terminal
  *
- * Copyright (c) 2000-2019, PostgreSQL Global Development Group
+ * Copyright (c) 2000-2020, PostgreSQL Global Development Group
  *
  * src/bin/psql/startup.c
  */
@@ -14,20 +14,16 @@
 #include <win32.h>
 #endif							/* WIN32 */
 
-#include "getopt_long.h"
-
-#include "common/logging.h"
-#include "fe_utils/print.h"
-
 #include "command.h"
 #include "common.h"
+#include "common/logging.h"
 #include "describe.h"
+#include "fe_utils/print.h"
+#include "getopt_long.h"
 #include "help.h"
 #include "input.h"
 #include "mainloop.h"
 #include "settings.h"
-
-
 
 /*
  * Global psql options
@@ -305,7 +301,7 @@ main(int argc, char *argv[])
 		exit(EXIT_BADCONN);
 	}
 
-	setup_cancel_handler();
+	psql_setup_cancel_handler();
 
 	PQsetNoticeProcessor(pset.db, NoticeProcessor, NULL);
 

@@ -13,7 +13,7 @@
  * functions or functions using nonportable collations.  Those considerations
  * need not be accounted for here.
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *	  contrib/postgres_fdw/shippable.c
@@ -23,14 +23,12 @@
 
 #include "postgres.h"
 
-#include "postgres_fdw.h"
-
 #include "access/transam.h"
 #include "catalog/dependency.h"
+#include "postgres_fdw.h"
 #include "utils/hsearch.h"
 #include "utils/inval.h"
 #include "utils/syscache.h"
-
 
 /* Hash table for caching the results of shippability lookups */
 static HTAB *ShippableCacheHash = NULL;

@@ -4,7 +4,7 @@
  *
  * Routines corresponding to procedure objects
  *
- * Copyright (c) 2010-2019, PostgreSQL Global Development Group
+ * Copyright (c) 2010-2020, PostgreSQL Global Development Group
  *
  * -------------------------------------------------------------------------
  */
@@ -21,13 +21,12 @@
 #include "catalog/pg_type.h"
 #include "commands/seclabel.h"
 #include "lib/stringinfo.h"
+#include "sepgsql.h"
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
-
-#include "sepgsql.h"
 
 /*
  * sepgsql_proc_post_create

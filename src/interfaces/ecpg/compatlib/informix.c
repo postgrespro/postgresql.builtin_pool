@@ -7,14 +7,14 @@
 #include <ctype.h>
 #include <limits.h>
 
-#include <ecpgtype.h>
-#include <ecpg_informix.h>
-#include <pgtypes_error.h>
-#include <pgtypes_date.h>
-#include <pgtypes_numeric.h>
-#include <sqltypes.h>
-#include <sqlca.h>
-#include <ecpgerrno.h>
+#include "ecpg_informix.h"
+#include "ecpgerrno.h"
+#include "ecpgtype.h"
+#include "pgtypes_date.h"
+#include "pgtypes_error.h"
+#include "pgtypes_numeric.h"
+#include "sqlca.h"
+#include "sqltypes.h"
 
 /* this is also defined in ecpglib/misc.c, by defining it twice we don't have to export the symbol */
 
@@ -175,25 +175,6 @@ deccopy(decimal *src, decimal *target)
 	memcpy(target, src, sizeof(decimal));
 }
 
-static char *
-ecpg_strndup(const char *str, size_t len)
-{
-	size_t		real_len = strlen(str);
-	int			use_len = (int) ((real_len > len) ? len : real_len);
-
-	char	   *new = malloc(use_len + 1);
-
-	if (new)
-	{
-		memcpy(new, str, use_len);
-		new[use_len] = '\0';
-	}
-	else
-		errno = ENOMEM;
-
-	return new;
-}
-
 int
 deccvasc(const char *cp, int len, decimal *np)
 {
@@ -205,7 +186,7 @@ deccvasc(const char *cp, int len, decimal *np)
 	if (risnull(CSTRINGTYPE, cp))
 		return 0;
 
-	str = ecpg_strndup(cp, len);	/* decimal_in always converts the complete
+	str = pnstrdup(cp, len);		/* decimal_in always converts the complete
 									 * string */
 	if (!str)
 		ret = ECPG_INFORMIX_NUM_UNDERFLOW;
@@ -529,7 +510,6 @@ void
 rtoday(date * d)
 {
 	PGTYPESdate_today(d);
-	return;
 }
 
 int
@@ -819,7 +799,7 @@ rfmtlong(long lng_val, const char *fmt, char *outbuf)
 				sign = 1;
 			if (leftalign)
 			{
-				/* can't use strncat(,,0) here, Solaris would freek out */
+				/* can't use strncat(,,0) here, Solaris would freak out */
 				if (sign)
 					if (signdone)
 					{
@@ -959,7 +939,6 @@ rupshift(char *str)
 	for (; *str != '\0'; str++)
 		if (islower((unsigned char) *str))
 			*str = toupper((unsigned char) *str);
-	return;
 }
 
 int

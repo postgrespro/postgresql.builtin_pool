@@ -9,7 +9,7 @@
  * context's MemoryContextMethods struct.
  *
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -466,10 +466,10 @@ MemoryContextIsEmpty(MemoryContext context)
  * Find the memory allocated to blocks for this memory context. If recurse is
  * true, also include children.
  */
-int64
+Size
 MemoryContextMemAllocated(MemoryContext context, bool recurse)
 {
-	int64 total = context->mem_allocated;
+	Size	total = context->mem_allocated;
 
 	AssertArg(MemoryContextIsValid(context));
 

@@ -3,7 +3,7 @@
  * passwordcheck.c
  *
  *
- * Copyright (c) 2009-2019, PostgreSQL Global Development Group
+ * Copyright (c) 2009-2020, PostgreSQL Global Development Group
  *
  * Author: Laurenz Albe <laurenz.albe@wien.gv.at>
  *
@@ -21,8 +21,8 @@
 #endif
 
 #include "commands/user.h"
-#include "libpq/crypt.h"
 #include "fmgr.h"
+#include "libpq/crypt.h"
 
 PG_MODULE_MAGIC;
 

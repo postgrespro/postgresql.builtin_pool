@@ -43,7 +43,7 @@
  * overflow.)
  *
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -62,6 +62,9 @@
 #ifdef HAVE_SYSLOG
 #include <syslog.h>
 #endif
+#ifdef HAVE_EXECINFO_H
+#include <execinfo.h>
+#endif
 
 #include "access/transam.h"
 #include "access/xact.h"
@@ -69,6 +72,7 @@
 #include "libpq/pqformat.h"
 #include "mb/pg_wchar.h"
 #include "miscadmin.h"
+#include "postmaster/bgworker.h"
 #include "postmaster/postmaster.h"
 #include "postmaster/syslogger.h"
 #include "storage/ipc.h"
@@ -167,6 +171,7 @@ static char formatted_log_time[FORMATTED_TS_LEN];
 
 
 static const char *err_gettext(const char *str) pg_attribute_format_arg(1);
+static pg_noinline void set_backtrace(ErrorData *edata, int num_skip);
 static void set_errdata_field(MemoryContextData *cxt, char **ptr, const char *str);
 static void write_console(const char *line, int len);
 static void setup_formatted_log_time(void);
@@ -399,6 +404,32 @@ errstart(int elevel, const char *filename, int lineno,
 }
 
 /*
+ * Checks whether the given funcname matches backtrace_functions; see
+ * check_backtrace_functions.
+ */
+static bool
+matches_backtrace_functions(const char *funcname)
+{
+	char	   *p;
+
+	if (!backtrace_symbol_list || funcname == NULL || funcname[0] == '\0')
+		return false;
+
+	p = backtrace_symbol_list;
+	for (;;)
+	{
+		if (*p == '\0')		/* end of backtrace_symbol_list */
+			break;
+
+		if (strcmp(funcname, p) == 0)
+			return true;
+		p += strlen(p) + 1;
+	}
+
+	return false;
+}
+
+/*
  * errfinish --- end an error-reporting cycle
  *
  * Produce the appropriate error report(s) and pop the error stack.
@@ -423,6 +454,12 @@ errfinish(int dummy,...)
 	 * to report an error.
 	 */
 	oldcontext = MemoryContextSwitchTo(ErrorContext);
+
+	if (!edata->backtrace &&
+		edata->funcname &&
+		backtrace_functions &&
+		matches_backtrace_functions(edata->funcname))
+		set_backtrace(edata, 2);
 
 	/*
 	 * Call any context callback functions.  Errors occurring in callback
@@ -488,6 +525,8 @@ errfinish(int dummy,...)
 		pfree(edata->hint);
 	if (edata->context)
 		pfree(edata->context);
+	if (edata->backtrace)
+		pfree(edata->backtrace);
 	if (edata->schema_name)
 		pfree(edata->schema_name);
 	if (edata->table_name)
@@ -798,6 +837,63 @@ errmsg(const char *fmt,...)
 	return 0;					/* return value does not matter */
 }
 
+/*
+ * Add a backtrace to the containing ereport() call.  This is intended to be
+ * added temporarily during debugging.
+ */
+int
+errbacktrace(void)
+{
+	ErrorData   *edata = &errordata[errordata_stack_depth];
+	MemoryContext oldcontext;
+
+	recursion_depth++;
+	CHECK_STACK_DEPTH();
+	oldcontext = MemoryContextSwitchTo(edata->assoc_context);
+
+	set_backtrace(edata, 1);
+
+	MemoryContextSwitchTo(oldcontext);
+	recursion_depth--;
+
+	return 0;
+}
+
+/*
+ * Compute backtrace data and add it to the supplied ErrorData.  num_skip
+ * specifies how many inner frames to skip.  Use this to avoid showing the
+ * internal backtrace support functions in the backtrace.  This requires that
+ * this and related functions are not inlined.
+ */
+static void
+set_backtrace(ErrorData *edata, int num_skip)
+{
+	StringInfoData errtrace;
+
+	initStringInfo(&errtrace);
+
+#ifdef HAVE_BACKTRACE_SYMBOLS
+	{
+		void	   *buf[100];
+		int			nframes;
+		char	  **strfrms;
+
+		nframes = backtrace(buf, lengthof(buf));
+		strfrms = backtrace_symbols(buf, nframes);
+		if (strfrms == NULL)
+			return;
+
+		for (int i = num_skip; i < nframes; i++)
+			appendStringInfo(&errtrace, "\n%s", strfrms[i]);
+		free(strfrms);
+	}
+#else
+	appendStringInfoString(&errtrace,
+						   "backtrace generation is not supported by this installation");
+#endif
+
+	edata->backtrace = errtrace.data;
+}
 
 /*
  * errmsg_internal --- add a primary error message text to the current error
@@ -1353,6 +1449,11 @@ elog_finish(int elevel, const char *fmt,...)
 	recursion_depth++;
 	oldcontext = MemoryContextSwitchTo(edata->assoc_context);
 
+	if (!edata->backtrace &&
+		edata->funcname &&
+		matches_backtrace_functions(edata->funcname))
+		set_backtrace(edata, 2);
+
 	edata->message_id = fmt;
 	EVALUATE_MESSAGE(edata->domain, message, false, false);
 
@@ -1509,6 +1610,8 @@ CopyErrorData(void)
 		newedata->hint = pstrdup(newedata->hint);
 	if (newedata->context)
 		newedata->context = pstrdup(newedata->context);
+	if (newedata->backtrace)
+		newedata->backtrace = pstrdup(newedata->backtrace);
 	if (newedata->schema_name)
 		newedata->schema_name = pstrdup(newedata->schema_name);
 	if (newedata->table_name)
@@ -1547,6 +1650,8 @@ FreeErrorData(ErrorData *edata)
 		pfree(edata->hint);
 	if (edata->context)
 		pfree(edata->context);
+	if (edata->backtrace)
+		pfree(edata->backtrace);
 	if (edata->schema_name)
 		pfree(edata->schema_name);
 	if (edata->table_name)
@@ -1622,6 +1727,8 @@ ThrowErrorData(ErrorData *edata)
 		newedata->hint = pstrdup(edata->hint);
 	if (edata->context)
 		newedata->context = pstrdup(edata->context);
+	if (edata->backtrace)
+		newedata->backtrace = pstrdup(edata->backtrace);
 	/* assume message_id is not available */
 	if (edata->schema_name)
 		newedata->schema_name = pstrdup(edata->schema_name);
@@ -1689,6 +1796,8 @@ ReThrowError(ErrorData *edata)
 		newedata->hint = pstrdup(newedata->hint);
 	if (newedata->context)
 		newedata->context = pstrdup(newedata->context);
+	if (newedata->backtrace)
+		newedata->backtrace = pstrdup(newedata->backtrace);
 	if (newedata->schema_name)
 		newedata->schema_name = pstrdup(newedata->schema_name);
 	if (newedata->table_name)
@@ -2384,6 +2493,23 @@ log_line_prefix(StringInfo buf, ErrorData *edata)
 										   padding > 0 ? padding : -padding);
 
 				break;
+			case 'b':
+				{
+					const char *backend_type_str;
+
+					if (MyProcPid == PostmasterPid)
+						backend_type_str = "postmaster";
+					else if (MyBackendType == B_BG_WORKER)
+						backend_type_str = MyBgworkerEntry->bgw_type;
+					else
+						backend_type_str = GetBackendTypeDesc(MyBackendType);
+
+					if (padding != 0)
+						appendStringInfo(buf, "%*s", padding, backend_type_str);
+					else
+						appendStringInfoString(buf, backend_type_str);
+					break;
+				}
 			case 'u':
 				if (MyProcPort)
 				{
@@ -2812,10 +2938,20 @@ write_csvlog(ErrorData *edata)
 	if (application_name)
 		appendCSVLiteral(&buf, application_name);
 
+	appendStringInfoChar(&buf, ',');
+
+	/* backend type */
+	if (MyProcPid == PostmasterPid)
+		appendCSVLiteral(&buf, "postmaster");
+	else if (MyBackendType == B_BG_WORKER)
+		appendCSVLiteral(&buf, MyBgworkerEntry->bgw_type);
+	else
+		appendCSVLiteral(&buf, GetBackendTypeDesc(MyBackendType));
+
 	appendStringInfoChar(&buf, '\n');
 
 	/* If in the syslogger process, try to write messages direct to file */
-	if (am_syslogger)
+	if (MyBackendType == B_LOGGER)
 		write_syslogger_file(buf.data, buf.len, LOG_DESTINATION_CSVLOG);
 	else
 		write_pipe_chunks(buf.data, buf.len, LOG_DESTINATION_CSVLOG);
@@ -2914,6 +3050,13 @@ send_message_to_server_log(ErrorData *edata)
 			append_with_tabs(&buf, edata->context);
 			appendStringInfoChar(&buf, '\n');
 		}
+		if (edata->backtrace)
+		{
+			log_line_prefix(&buf, edata);
+			appendStringInfoString(&buf, _("BACKTRACE:  "));
+			append_with_tabs(&buf, edata->backtrace);
+			appendStringInfoChar(&buf, '\n');
+		}
 		if (Log_error_verbosity >= PGERROR_VERBOSE)
 		{
 			/* assume no newlines in funcname or filename... */
@@ -3002,7 +3145,7 @@ send_message_to_server_log(ErrorData *edata)
 		 * catching stderr output, and we are not ourselves the syslogger.
 		 * Otherwise, just do a vanilla write to stderr.
 		 */
-		if (redirection_done && !am_syslogger)
+		if (redirection_done && MyBackendType != B_LOGGER)
 			write_pipe_chunks(buf.data, buf.len, LOG_DESTINATION_STDERR);
 #ifdef WIN32
 
@@ -3021,13 +3164,13 @@ send_message_to_server_log(ErrorData *edata)
 	}
 
 	/* If in the syslogger process, try to write messages direct to file */
-	if (am_syslogger)
+	if (MyBackendType == B_LOGGER)
 		write_syslogger_file(buf.data, buf.len, LOG_DESTINATION_STDERR);
 
 	/* Write to CSV log if enabled */
 	if (Log_destination & LOG_DESTINATION_CSVLOG)
 	{
-		if (redirection_done || am_syslogger)
+		if (redirection_done || MyBackendType == B_LOGGER)
 		{
 			/*
 			 * send CSV data if it's safe to do so (syslogger doesn't need the

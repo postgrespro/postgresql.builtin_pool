@@ -252,7 +252,7 @@ F381	Extended schema manipulation	03	ALTER TABLE statement: DROP CONSTRAINT clau
 F382	Alter column data type			YES	
 F383	Set column not null clause			YES	
 F384	Drop identity property clause			YES	
-F385	Drop column generation expression clause			NO	
+F385	Drop column generation expression clause			YES	
 F386	Set identity column generation clause			YES	
 F391	Long identifiers			YES	
 F392	Unicode escapes in identifiers			YES	
@@ -285,11 +285,7 @@ F492	Optional table constraint enforcement			NO
 F501	Features and conformance views			YES	
 F501	Features and conformance views	01	SQL_FEATURES view	YES	
 F501	Features and conformance views	02	SQL_SIZING view	YES	
-F501	Features and conformance views	03	SQL_LANGUAGES view	YES	
 F502	Enhanced documentation tables			YES	
-F502	Enhanced documentation tables	01	SQL_SIZING_PROFILES view	YES	
-F502	Enhanced documentation tables	02	SQL_IMPLEMENTATION_INFO view	YES	
-F502	Enhanced documentation tables	03	SQL_PACKAGES view	YES	
 F521	Assertions			NO	
 F531	Temporary tables			YES	
 F555	Enhanced seconds precision			YES	

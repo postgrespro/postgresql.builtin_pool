@@ -1,7 +1,7 @@
 /*
  *	pg_upgrade.h
  *
- *	Copyright (c) 2010-2019, PostgreSQL Global Development Group
+ *	Copyright (c) 2010-2020, PostgreSQL Global Development Group
  *	src/bin/pg_upgrade/pg_upgrade.h
  */
 
@@ -65,7 +65,6 @@ extern char *output_files[];
 
 #ifndef WIN32
 #define pg_mv_file			rename
-#define pg_link_file		link
 #define PATH_SEPARATOR		'/'
 #define PATH_QUOTE	'\''
 #define RM_CMD				"rm -f"
@@ -76,7 +75,6 @@ extern char *output_files[];
 #define ECHO_BLANK	""
 #else
 #define pg_mv_file			pgrename
-#define pg_link_file		win32_pghardlink
 #define PATH_SEPARATOR		'\\'
 #define PATH_QUOTE	'"'
 #define RM_CMD				"DEL /q"
@@ -450,6 +448,8 @@ void		old_9_3_check_for_line_data_type_usage(ClusterInfo *cluster);
 void		old_9_6_check_for_unknown_data_type_usage(ClusterInfo *cluster);
 void		old_9_6_invalidate_hash_indexes(ClusterInfo *cluster,
 											bool check_mode);
+
+void		old_11_check_for_sql_identifier_data_type_usage(ClusterInfo *cluster);
 
 /* parallel.c */
 void		parallel_exec_prog(const char *log_file, const char *opt_log_file,

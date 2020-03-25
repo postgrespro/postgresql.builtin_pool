@@ -3,7 +3,7 @@
  * pathnode.c
  *	  Routines to manipulate pathlists and create path nodes
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -16,8 +16,8 @@
 
 #include <math.h>
 
-#include "miscadmin.h"
 #include "foreign/fdwapi.h"
+#include "miscadmin.h"
 #include "nodes/extensible.h"
 #include "nodes/nodeFuncs.h"
 #include "optimizer/appendinfo.h"
@@ -34,7 +34,6 @@
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/selfuncs.h"
-
 
 typedef enum
 {
@@ -1705,7 +1704,8 @@ create_unique_path(PlannerInfo *root, RelOptInfo *rel, Path *subpath,
 					 NIL,
 					 subpath->startup_cost,
 					 subpath->total_cost,
-					 rel->rows);
+					 rel->rows,
+					 subpath->pathtarget->width);
 	}
 
 	if (sjinfo->semi_can_btree && sjinfo->semi_can_hash)
@@ -2950,6 +2950,7 @@ create_agg_path(PlannerInfo *root,
 	pathnode->aggstrategy = aggstrategy;
 	pathnode->aggsplit = aggsplit;
 	pathnode->numGroups = numGroups;
+	pathnode->transitionSpace = aggcosts ? aggcosts->transitionSpace : 0;
 	pathnode->groupClause = groupClause;
 	pathnode->qual = qual;
 
@@ -2958,7 +2959,7 @@ create_agg_path(PlannerInfo *root,
 			 list_length(groupClause), numGroups,
 			 qual,
 			 subpath->startup_cost, subpath->total_cost,
-			 subpath->rows);
+			 subpath->rows, subpath->pathtarget->width);
 
 	/* add tlist eval cost for each output row */
 	pathnode->path.startup_cost += target->cost.startup;
@@ -3037,6 +3038,7 @@ create_groupingsets_path(PlannerInfo *root,
 	pathnode->aggstrategy = aggstrategy;
 	pathnode->rollups = rollups;
 	pathnode->qual = having_qual;
+	pathnode->transitionSpace = agg_costs ? agg_costs->transitionSpace : 0;
 
 	Assert(rollups != NIL);
 	Assert(aggstrategy != AGG_PLAIN || list_length(rollups) == 1);
@@ -3068,7 +3070,8 @@ create_groupingsets_path(PlannerInfo *root,
 					 having_qual,
 					 subpath->startup_cost,
 					 subpath->total_cost,
-					 subpath->rows);
+					 subpath->rows,
+					 subpath->pathtarget->width);
 			is_first = false;
 			if (!rollup->is_hashed)
 				is_first_sort = false;
@@ -3091,7 +3094,8 @@ create_groupingsets_path(PlannerInfo *root,
 						 rollup->numGroups,
 						 having_qual,
 						 0.0, 0.0,
-						 subpath->rows);
+						 subpath->rows,
+						 subpath->pathtarget->width);
 				if (!rollup->is_hashed)
 					is_first_sort = false;
 			}
@@ -3116,7 +3120,8 @@ create_groupingsets_path(PlannerInfo *root,
 						 having_qual,
 						 sort_path.startup_cost,
 						 sort_path.total_cost,
-						 sort_path.rows);
+						 sort_path.rows,
+						 subpath->pathtarget->width);
 			}
 
 			pathnode->path.total_cost += agg_path.total_cost;

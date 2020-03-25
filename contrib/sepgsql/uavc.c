@@ -6,7 +6,7 @@
  * access control decisions recently used, and reduce number of kernel
  * invocations to avoid unnecessary performance hit.
  *
- * Copyright (c) 2011-2019, PostgreSQL Global Development Group
+ * Copyright (c) 2011-2020, PostgreSQL Global Development Group
  *
  * -------------------------------------------------------------------------
  */
@@ -14,12 +14,11 @@
 
 #include "catalog/pg_proc.h"
 #include "commands/seclabel.h"
+#include "common/hashfn.h"
+#include "sepgsql.h"
 #include "storage/ipc.h"
 #include "utils/guc.h"
-#include "utils/hashutils.h"
 #include "utils/memutils.h"
-
-#include "sepgsql.h"
 
 /*
  * avc_cache
@@ -182,14 +181,11 @@ sepgsql_avc_unlabeled(void)
 		{
 			avc_unlabeled = MemoryContextStrdup(avc_mem_cxt, unlabeled);
 		}
-		PG_CATCH();
+		PG_FINALLY();
 		{
 			freecon(unlabeled);
-			PG_RE_THROW();
 		}
 		PG_END_TRY();
-
-		freecon(unlabeled);
 	}
 	return avc_unlabeled;
 }

@@ -3,7 +3,7 @@
  * libpq_fetch.c
  *	  Functions for fetching files from a remote server.
  *
- * Copyright (c) 2013-2019, PostgreSQL Global Development Group
+ * Copyright (c) 2013-2020, PostgreSQL Global Development Group
  *
  *-------------------------------------------------------------------------
  */
@@ -14,14 +14,13 @@
 #include <fcntl.h>
 #include <unistd.h>
 
-#include "pg_rewind.h"
+#include "catalog/pg_type_d.h"
 #include "datapagemap.h"
+#include "fe_utils/connect.h"
 #include "fetch.h"
 #include "file_ops.h"
 #include "filemap.h"
-
-#include "catalog/pg_type_d.h"
-#include "fe_utils/connect.h"
+#include "pg_rewind.h"
 #include "port/pg_bswap.h"
 
 PGconn *conn = NULL;

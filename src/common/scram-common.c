@@ -6,7 +6,7 @@
  * backend, for implement the Salted Challenge Response Authentication
  * Mechanism (SCRAM), per IETF's RFC 5802.
  *
- * Portions Copyright (c) 2017-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 2017-2020, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *	  src/common/scram-common.c
@@ -181,7 +181,7 @@ scram_ServerKey(const uint8 *salted_password, uint8 *result)
 
 
 /*
- * Construct a verifier string for SCRAM, stored in pg_authid.rolpassword.
+ * Construct a SCRAM secret, for storing in pg_authid.rolpassword.
  *
  * The password should already have been processed with SASLprep, if necessary!
  *
@@ -189,7 +189,7 @@ scram_ServerKey(const uint8 *salted_password, uint8 *result)
  * palloc'd or malloc'd, so caller is responsible for freeing it.
  */
 char *
-scram_build_verifier(const char *salt, int saltlen, int iterations,
+scram_build_secret(const char *salt, int saltlen, int iterations,
 					 const char *password)
 {
 	uint8		salted_password[SCRAM_KEY_LEN];

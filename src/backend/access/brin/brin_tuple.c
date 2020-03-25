@@ -23,7 +23,7 @@
  * Note the size of the null bitmask may not be the same as that of the
  * datum array.
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -31,13 +31,12 @@
  */
 #include "postgres.h"
 
-#include "access/htup_details.h"
 #include "access/brin_tuple.h"
+#include "access/htup_details.h"
 #include "access/tupdesc.h"
 #include "access/tupmacs.h"
 #include "utils/datum.h"
 #include "utils/memutils.h"
-
 
 static inline void brin_deconstruct_tuple(BrinDesc *brdesc,
 										  char *tp, bits8 *nullbits, bool nulls,

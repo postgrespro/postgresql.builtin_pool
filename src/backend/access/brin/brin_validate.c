@@ -3,7 +3,7 @@
  * brin_validate.c
  *	  Opclass validator for BRIN.
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -22,9 +22,8 @@
 #include "catalog/pg_opfamily.h"
 #include "catalog/pg_type.h"
 #include "utils/builtins.h"
-#include "utils/syscache.h"
 #include "utils/regproc.h"
-
+#include "utils/syscache.h"
 
 /*
  * Validator for a BRIN opclass.

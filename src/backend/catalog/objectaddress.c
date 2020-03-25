@@ -3,7 +3,7 @@
  * objectaddress.c
  *	  functions for working with ObjectAddresses
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -29,13 +29,13 @@
 #include "catalog/pg_attrdef.h"
 #include "catalog/pg_authid.h"
 #include "catalog/pg_cast.h"
-#include "catalog/pg_default_acl.h"
-#include "catalog/pg_enum.h"
-#include "catalog/pg_event_trigger.h"
 #include "catalog/pg_collation.h"
 #include "catalog/pg_constraint.h"
 #include "catalog/pg_conversion.h"
 #include "catalog/pg_database.h"
+#include "catalog/pg_default_acl.h"
+#include "catalog/pg_enum.h"
+#include "catalog/pg_event_trigger.h"
 #include "catalog/pg_extension.h"
 #include "catalog/pg_foreign_data_wrapper.h"
 #include "catalog/pg_foreign_server.h"
@@ -44,10 +44,10 @@
 #include "catalog/pg_largeobject_metadata.h"
 #include "catalog/pg_namespace.h"
 #include "catalog/pg_opclass.h"
-#include "catalog/pg_opfamily.h"
 #include "catalog/pg_operator.h"
-#include "catalog/pg_proc.h"
+#include "catalog/pg_opfamily.h"
 #include "catalog/pg_policy.h"
+#include "catalog/pg_proc.h"
 #include "catalog/pg_publication.h"
 #include "catalog/pg_publication_rel.h"
 #include "catalog/pg_rewrite.h"
@@ -81,6 +81,7 @@
 #include "storage/large_object.h"
 #include "storage/lmgr.h"
 #include "storage/sinval.h"
+#include "utils/acl.h"
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
@@ -747,7 +748,7 @@ static const struct object_type_map
 	{
 		"transform", OBJECT_TRANSFORM
 	},
-	/* OBJECT_STATISTIC_EXT */
+	/* OCLASS_STATISTIC_EXT */
 	{
 		"statistics object", OBJECT_STATISTIC_EXT
 	}
@@ -1967,7 +1968,7 @@ textarray_to_strvaluelist(ArrayType *arr)
 	List	   *list = NIL;
 	int			i;
 
-	deconstruct_array(arr, TEXTOID, -1, false, 'i',
+	deconstruct_array(arr, TEXTOID, -1, false, TYPALIGN_INT,
 					  &elems, &nulls, &nelems);
 
 	for (i = 0; i < nelems; i++)
@@ -2024,7 +2025,7 @@ pg_get_object_address(PG_FUNCTION_ARGS)
 		bool	   *nulls;
 		int			nelems;
 
-		deconstruct_array(namearr, TEXTOID, -1, false, 'i',
+		deconstruct_array(namearr, TEXTOID, -1, false, TYPALIGN_INT,
 						  &elems, &nulls, &nelems);
 		if (nelems != 1)
 			ereport(ERROR,
@@ -2042,7 +2043,7 @@ pg_get_object_address(PG_FUNCTION_ARGS)
 		bool	   *nulls;
 		int			nelems;
 
-		deconstruct_array(namearr, TEXTOID, -1, false, 'i',
+		deconstruct_array(namearr, TEXTOID, -1, false, TYPALIGN_INT,
 						  &elems, &nulls, &nelems);
 		if (nelems != 1)
 			ereport(ERROR,
@@ -2081,7 +2082,7 @@ pg_get_object_address(PG_FUNCTION_ARGS)
 		int			nelems;
 		int			i;
 
-		deconstruct_array(argsarr, TEXTOID, -1, false, 'i',
+		deconstruct_array(argsarr, TEXTOID, -1, false, TYPALIGN_INT,
 						  &elems, &nulls, &nelems);
 
 		args = NIL;
@@ -2612,6 +2613,13 @@ get_object_attnum_acl(Oid class_id)
 	return prop->attnum_acl;
 }
 
+/*
+ * get_object_type
+ *
+ * Return the object type associated with a given object.  This routine
+ * is primarily used to determine the object type to mention in ACL check
+ * error messages, so it's desirable for it to avoid failing.
+ */
 ObjectType
 get_object_type(Oid class_id, Oid object_id)
 {
@@ -5326,13 +5334,23 @@ strlist_to_textarray(List *list)
 
 	lb[0] = 1;
 	arr = construct_md_array(datums, nulls, 1, &j,
-							 lb, TEXTOID, -1, false, 'i');
+							 lb, TEXTOID, -1, false, TYPALIGN_INT);
 
 	MemoryContextDelete(memcxt);
 
 	return arr;
 }
 
+/*
+ * get_relkind_objtype
+ *
+ * Return the object type for the relkind given by the caller.
+ *
+ * If an unexpected relkind is passed, we say OBJECT_TABLE rather than
+ * failing.  That's because this is mostly used for generating error messages
+ * for failed ACL checks on relations, and we'd rather produce a generic
+ * message saying "table" than fail entirely.
+ */
 ObjectType
 get_relkind_objtype(char relkind)
 {
@@ -5352,13 +5370,10 @@ get_relkind_objtype(char relkind)
 			return OBJECT_MATVIEW;
 		case RELKIND_FOREIGN_TABLE:
 			return OBJECT_FOREIGN_TABLE;
-
-			/*
-			 * other relkinds are not supported here because they don't map to
-			 * OBJECT_* values
-			 */
+		case RELKIND_TOASTVALUE:
+			return OBJECT_TABLE;
 		default:
-			elog(ERROR, "unexpected relkind: %d", relkind);
-			return 0;
+			/* Per above, don't raise an error */
+			return OBJECT_TABLE;
 	}
 }

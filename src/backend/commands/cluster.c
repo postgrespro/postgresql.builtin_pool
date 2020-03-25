@@ -6,7 +6,7 @@
  * There is hardly anything left of Paul Brown's original implementation...
  *
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994-5, Regents of the University of California
  *
  *
@@ -22,17 +22,17 @@
 #include "access/multixact.h"
 #include "access/relscan.h"
 #include "access/tableam.h"
-#include "access/transam.h"
 #include "access/toast_internals.h"
+#include "access/transam.h"
 #include "access/xact.h"
 #include "access/xlog.h"
-#include "catalog/pg_am.h"
 #include "catalog/catalog.h"
 #include "catalog/dependency.h"
 #include "catalog/heap.h"
 #include "catalog/index.h"
 #include "catalog/namespace.h"
 #include "catalog/objectaccess.h"
+#include "catalog/pg_am.h"
 #include "catalog/toasting.h"
 #include "commands/cluster.h"
 #include "commands/progress.h"
@@ -54,7 +54,6 @@
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
 #include "utils/tuplesort.h"
-
 
 /*
  * This struct is used to pass around the information on tables to be
@@ -1490,7 +1489,7 @@ finish_heap_swap(Oid OIDOldHeap, Oid OIDNewHeap,
 
 			/* Get the associated valid index to be renamed */
 			toastidx = toast_get_valid_index(newrel->rd_rel->reltoastrelid,
-											 AccessShareLock);
+											 NoLock);
 
 			/* rename the toast table ... */
 			snprintf(NewToastName, NAMEDATALEN, "pg_toast_%u",
@@ -1523,8 +1522,8 @@ finish_heap_swap(Oid OIDOldHeap, Oid OIDNewHeap,
 /*
  * Get a list of tables that the current user owns and
  * have indisclustered set.  Return the list in a List * of RelToCluster
- * with the tableOid and the indexOid on which the table is already
- * clustered.
+ * (stored in the specified memory context), each one giving the tableOid
+ * and the indexOid on which the table is already clustered.
  */
 static List *
 get_tables_to_cluster(MemoryContext cluster_context)
@@ -1540,9 +1539,7 @@ get_tables_to_cluster(MemoryContext cluster_context)
 
 	/*
 	 * Get all indexes that have indisclustered set and are owned by
-	 * appropriate user. System relations or nailed-in relations cannot ever
-	 * have indisclustered set, because CLUSTER will refuse to set it when
-	 * called with one of them as argument.
+	 * appropriate user.
 	 */
 	indRelation = table_open(IndexRelationId, AccessShareLock);
 	ScanKeyInit(&entry,

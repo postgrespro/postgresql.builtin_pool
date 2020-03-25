@@ -4,7 +4,7 @@
  *	  implementation of quad tree over points for SP-GiST
  *
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -16,13 +16,12 @@
 #include "postgres.h"
 
 #include "access/spgist.h"
-#include "access/stratnum.h"
 #include "access/spgist_private.h"
+#include "access/stratnum.h"
 #include "catalog/pg_type.h"
 #include "utils/builtins.h"
 #include "utils/float.h"
 #include "utils/geo_decls.h"
-
 
 Datum
 spg_quad_config(PG_FUNCTION_ARGS)

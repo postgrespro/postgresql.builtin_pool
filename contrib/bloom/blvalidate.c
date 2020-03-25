@@ -3,7 +3,7 @@
  * blvalidate.c
  *	  Opclass validator for bloom.
  *
- * Copyright (c) 2016-2019, PostgreSQL Global Development Group
+ * Copyright (c) 2016-2020, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *	  contrib/bloom/blvalidate.c
@@ -14,6 +14,7 @@
 
 #include "access/amvalidate.h"
 #include "access/htup_details.h"
+#include "bloom.h"
 #include "catalog/pg_amop.h"
 #include "catalog/pg_amproc.h"
 #include "catalog/pg_opclass.h"
@@ -23,8 +24,6 @@
 #include "utils/lsyscache.h"
 #include "utils/regproc.h"
 #include "utils/syscache.h"
-
-#include "bloom.h"
 
 /*
  * Validator for a bloom opclass.

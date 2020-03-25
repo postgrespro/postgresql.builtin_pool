@@ -1,17 +1,15 @@
 /*
  * psql - the PostgreSQL interactive terminal
  *
- * Copyright (c) 2000-2019, PostgreSQL Global Development Group
+ * Copyright (c) 2000-2020, PostgreSQL Global Development Group
  *
  * src/bin/psql/variables.c
  */
 #include "postgres_fe.h"
 
 #include "common.h"
-#include "variables.h"
-
 #include "common/logging.h"
-
+#include "variables.h"
 
 /*
  * Check whether a variable's name is allowed.

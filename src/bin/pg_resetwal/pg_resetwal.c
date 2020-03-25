@@ -20,7 +20,7 @@
  * step 2 ...
  *
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/bin/pg_resetwal/pg_resetwal.c
@@ -44,9 +44,9 @@
 #include <time.h>
 #include <unistd.h>
 
-#include "access/transam.h"
 #include "access/heaptoast.h"
 #include "access/multixact.h"
+#include "access/transam.h"
 #include "access/xlog.h"
 #include "access/xlog_internal.h"
 #include "common/controldata_utils.h"
@@ -55,10 +55,9 @@
 #include "common/logging.h"
 #include "common/restricted_token.h"
 #include "common/string.h"
-#include "storage/large_object.h"
-#include "pg_getopt.h"
 #include "getopt_long.h"
-
+#include "pg_getopt.h"
+#include "storage/large_object.h"
 
 static ControlFileData ControlFile; /* pg_control values */
 static XLogSegNo newXlogSegNo;	/* new XLOG segment # */
@@ -77,7 +76,7 @@ static int	WalSegSz;
 static int	set_wal_segsize;
 
 static void CheckDataVersion(void);
-static bool ReadControlFile(void);
+static bool read_controlfile(void);
 static void GuessControlValues(void);
 static void PrintControlValues(bool guessed);
 static void PrintNewControlValues(void);
@@ -394,7 +393,7 @@ main(int argc, char *argv[])
 	/*
 	 * Attempt to read the existing pg_control file
 	 */
-	if (!ReadControlFile())
+	if (!read_controlfile())
 		GuessControlValues();
 
 	/*
@@ -579,7 +578,7 @@ CheckDataVersion(void)
  * to the current format.  (Currently we don't do anything of the sort.)
  */
 static bool
-ReadControlFile(void)
+read_controlfile(void)
 {
 	int			fd;
 	int			len;
@@ -700,7 +699,7 @@ GuessControlValues(void)
 	ControlFile.state = DB_SHUTDOWNED;
 	ControlFile.time = (pg_time_t) time(NULL);
 	ControlFile.checkPoint = ControlFile.checkPointCopy.redo;
-	ControlFile.unloggedLSN = 1;
+	ControlFile.unloggedLSN = FirstNormalUnloggedLSN;
 
 	/* minRecoveryPoint, backupStartPoint and backupEndPoint can be left zero */
 
@@ -723,7 +722,6 @@ GuessControlValues(void)
 	ControlFile.indexMaxKeys = INDEX_MAX_KEYS;
 	ControlFile.toast_max_chunk_size = TOAST_MAX_CHUNK_SIZE;
 	ControlFile.loblksize = LOBLKSIZE;
-	ControlFile.float4ByVal = FLOAT4PASSBYVAL;
 	ControlFile.float8ByVal = FLOAT8PASSBYVAL;
 
 	/*
@@ -802,8 +800,6 @@ PrintControlValues(bool guessed)
 	/* This is no longer configurable, but users may still expect to see it: */
 	printf(_("Date/time type storage:               %s\n"),
 		   _("64-bit integers"));
-	printf(_("Float4 argument passing:              %s\n"),
-		   (ControlFile.float4ByVal ? _("by value") : _("by reference")));
 	printf(_("Float8 argument passing:              %s\n"),
 		   (ControlFile.float8ByVal ? _("by value") : _("by reference")));
 	printf(_("Data page checksum version:           %u\n"),
@@ -1227,5 +1223,6 @@ usage(void)
 	printf(_("  -x, --next-transaction-id=XID  set next transaction ID\n"));
 	printf(_("      --wal-segsize=SIZE         size of WAL segments, in megabytes\n"));
 	printf(_("  -?, --help                     show this help, then exit\n"));
-	printf(_("\nReport bugs to <pgsql-bugs@lists.postgresql.org>.\n"));
+	printf(_("\nReport bugs to <%s>.\n"), PACKAGE_BUGREPORT);
+	printf(_("%s home page: <%s>\n"), PACKAGE_NAME, PACKAGE_URL);
 }

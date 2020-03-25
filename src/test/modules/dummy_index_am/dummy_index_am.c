@@ -3,7 +3,7 @@
  * dummy_index_am.c
  *		Index AM template main file.
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -16,6 +16,7 @@
 #include "access/amapi.h"
 #include "access/reloptions.h"
 #include "catalog/index.h"
+#include "commands/vacuum.h"
 #include "nodes/pathnodes.h"
 #include "utils/guc.h"
 #include "utils/rel.h"
@@ -222,17 +223,10 @@ dicostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
 static bytea *
 dioptions(Datum reloptions, bool validate)
 {
-	relopt_value *options;
-	int			numoptions;
-	DummyIndexOptions *rdopts;
-
-	/* Parse the user-given reloptions */
-	options = parseRelOptions(reloptions, validate, di_relopt_kind, &numoptions);
-	rdopts = allocateReloptStruct(sizeof(DummyIndexOptions), options, numoptions);
-	fillRelOptions((void *) rdopts, sizeof(DummyIndexOptions), options, numoptions,
-				   validate, di_relopt_tab, lengthof(di_relopt_tab));
-
-	return (bytea *) rdopts;
+	return (bytea *) build_reloptions(reloptions, validate,
+									  di_relopt_kind,
+									  sizeof(DummyIndexOptions),
+									  di_relopt_tab, lengthof(di_relopt_tab));
 }
 
 /*
@@ -301,6 +295,8 @@ dihandler(PG_FUNCTION_ARGS)
 	amroutine->ampredlocks = false;
 	amroutine->amcanparallel = false;
 	amroutine->amcaninclude = false;
+	amroutine->amusemaintenanceworkmem = false;
+	amroutine->amparallelvacuumoptions = VACUUM_OPTION_NO_PARALLEL;
 	amroutine->amkeytype = InvalidOid;
 
 	amroutine->ambuild = dibuild;

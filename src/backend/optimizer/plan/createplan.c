@@ -5,7 +5,7 @@
  *	  Planning is complete, we just need to convert the selected
  *	  Path into a Plan.
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -1118,6 +1118,7 @@ create_append_plan(PlannerInfo *root, AppendPath *best_path, int flags)
 	plan->plan.qual = NIL;
 	plan->plan.lefttree = NULL;
 	plan->plan.righttree = NULL;
+	plan->apprelids = rel->relids;
 
 	if (pathkeys != NIL)
 	{
@@ -1295,6 +1296,7 @@ create_merge_append_plan(PlannerInfo *root, MergeAppendPath *best_path,
 	plan->qual = NIL;
 	plan->lefttree = NULL;
 	plan->righttree = NULL;
+	node->apprelids = rel->relids;
 
 	/*
 	 * Compute sort column info, and adjust MergeAppend's tlist as needed.
@@ -1642,6 +1644,7 @@ create_unique_plan(PlannerInfo *root, UniquePath *best_path, int flags)
 								 NIL,
 								 NIL,
 								 best_path->path.rows,
+								 0,
 								 subplan);
 	}
 	else
@@ -2094,6 +2097,7 @@ create_agg_plan(PlannerInfo *root, AggPath *best_path)
 					NIL,
 					NIL,
 					best_path->numGroups,
+					best_path->transitionSpace,
 					subplan);
 
 	copy_generic_path_info(&plan->plan, (Path *) best_path);
@@ -2255,6 +2259,7 @@ create_groupingsets_plan(PlannerInfo *root, GroupingSetsPath *best_path)
 										 rollup->gsets,
 										 NIL,
 										 rollup->numGroups,
+										 best_path->transitionSpace,
 										 sort_plan);
 
 			/*
@@ -2293,6 +2298,7 @@ create_groupingsets_plan(PlannerInfo *root, GroupingSetsPath *best_path)
 						rollup->gsets,
 						chain,
 						rollup->numGroups,
+						best_path->transitionSpace,
 						subplan);
 
 		/* Copy cost data from Path to Plan */
@@ -2397,10 +2403,13 @@ create_windowagg_plan(PlannerInfo *root, WindowAggPath *best_path)
 	ListCell   *lc;
 
 	/*
-	 * WindowAgg can project, so no need to be terribly picky about child
-	 * tlist, but we do need grouping columns to be available
+	 * Choice of tlist here is motivated by the fact that WindowAgg will be
+	 * storing the input rows of window frames in a tuplestore; it therefore
+	 * behooves us to request a small tlist to avoid wasting space. We do of
+	 * course need grouping columns to be available.
 	 */
-	subplan = create_plan_recurse(root, best_path->subpath, CP_LABEL_TLIST);
+	subplan = create_plan_recurse(root, best_path->subpath,
+								  CP_LABEL_TLIST | CP_SMALL_TLIST);
 
 	tlist = build_path_tlist(root, &best_path->path);
 
@@ -5105,13 +5114,11 @@ static void
 bitmap_subplan_mark_shared(Plan *plan)
 {
 	if (IsA(plan, BitmapAnd))
-		bitmap_subplan_mark_shared(
-								   linitial(((BitmapAnd *) plan)->bitmapplans));
+		bitmap_subplan_mark_shared(linitial(((BitmapAnd *) plan)->bitmapplans));
 	else if (IsA(plan, BitmapOr))
 	{
 		((BitmapOr *) plan)->isshared = true;
-		bitmap_subplan_mark_shared(
-								   linitial(((BitmapOr *) plan)->bitmapplans));
+		bitmap_subplan_mark_shared(linitial(((BitmapOr *) plan)->bitmapplans));
 	}
 	else if (IsA(plan, BitmapIndexScan))
 		((BitmapIndexScan *) plan)->isshared = true;
@@ -6189,8 +6196,8 @@ Agg *
 make_agg(List *tlist, List *qual,
 		 AggStrategy aggstrategy, AggSplit aggsplit,
 		 int numGroupCols, AttrNumber *grpColIdx, Oid *grpOperators, Oid *grpCollations,
-		 List *groupingSets, List *chain,
-		 double dNumGroups, Plan *lefttree)
+		 List *groupingSets, List *chain, double dNumGroups,
+		 Size transitionSpace, Plan *lefttree)
 {
 	Agg		   *node = makeNode(Agg);
 	Plan	   *plan = &node->plan;
@@ -6206,6 +6213,7 @@ make_agg(List *tlist, List *qual,
 	node->grpOperators = grpOperators;
 	node->grpCollations = grpCollations;
 	node->numGroups = numGroups;
+	node->transitionSpace = transitionSpace;
 	node->aggParams = NULL;		/* SS_finalize_plan() will fill this */
 	node->groupingSets = groupingSets;
 	node->chain = chain;
