@@ -106,6 +106,7 @@ static void explain_ExecutorRun(QueryDesc *queryDesc,
 static void explain_ExecutorFinish(QueryDesc *queryDesc);
 static void explain_ExecutorEnd(QueryDesc *queryDesc);
 
+static void AddMultiColumnStatisticsForNode(PlanState *planstate, ExplainState *es);
 
 /*
  * Module load callback
@@ -395,9 +396,9 @@ explain_ExecutorFinish(QueryDesc *queryDesc)
 	PG_END_TRY();
 }
 
-static void
-AddMultiColumnStatisticsForNode(PlanState *planstate, ExplainState *es);
-
+/**
+ * Try to add multicolumn statistics for specified subplans.
+ */
 static void
 AddMultiColumnStatisticsForSubPlans(List *plans, ExplainState *es)
 {
@@ -411,9 +412,12 @@ AddMultiColumnStatisticsForSubPlans(List *plans, ExplainState *es)
 	}
 }
 
+/**
+ * Try to add multicolumn statistics for plan subnodes.
+ */
 static void
 AddMultiColumnStatisticsForMemberNodes(PlanState **planstates, int nsubnodes,
-									ExplainState *es)
+									   ExplainState *es)
 {
 	int			j;
 
@@ -421,6 +425,9 @@ AddMultiColumnStatisticsForMemberNodes(PlanState **planstates, int nsubnodes,
 		AddMultiColumnStatisticsForNode(planstates[j], es);
 }
 
+/**
+ * Comparator used to sort Vars by name
+ */
 static int
 vars_list_comparator(const ListCell *a, const ListCell *b)
 {
@@ -429,12 +436,16 @@ vars_list_comparator(const ListCell *a, const ListCell *b)
 	return strcmp(va, vb);
 }
 
+/**
+ * Try to add multicolumn statistics for qual
+ */
 static void
 AddMultiColumnStatisticsForQual(void* qual, ExplainState *es)
 {
 	List *vars = NULL;
 	ListCell* lc;
 
+	/* Extract vars from all quals */
 	foreach (lc, qual)
 	{
 		Node* node = (Node*)lfirst(lc);
@@ -442,6 +453,8 @@ AddMultiColumnStatisticsForQual(void* qual, ExplainState *es)
 			node = (Node*)((RestrictInfo*)node)->clause;
 		vars = list_concat(vars, pull_vars_of_level(node, 0));
 	}
+
+	/* Loop until we considered all vars */
 	while (vars != NULL)
 	{
 		ListCell *cell;
@@ -449,6 +462,7 @@ AddMultiColumnStatisticsForQual(void* qual, ExplainState *es)
 		Index varno = 0;
 		Bitmapset* colmap = NULL;
 
+		/* Contruct list of unique vars */
 		foreach (cell, vars)
 		{
 			Node* node = (Node *) lfirst(cell);
@@ -460,7 +474,7 @@ AddMultiColumnStatisticsForQual(void* qual, ExplainState *es)
 					varno = var->varno;
 					if (var->varattno > 0 &&
 						!bms_is_member(var->varattno, colmap) &&
-						varno >= 1 &&
+						varno >= 1 && /* not synthetic var */
 						varno <= list_length(es->rtable) &&
 						list_length(cols) < STATS_MAX_DIMENSIONS)
 					{
@@ -482,6 +496,7 @@ AddMultiColumnStatisticsForQual(void* qual, ExplainState *es)
 			}
 			vars = foreach_delete_current(vars, cell);
 		}
+		/* To create multicolumn statitics we need to have at least 2 columns */
 		if (list_length(cols) >= 2)
 		{
 			RangeTblEntry *rte = rt_fetch(varno, es->rtable);
@@ -498,7 +513,9 @@ AddMultiColumnStatisticsForQual(void* qual, ExplainState *es)
 			size_t name_len;
 			TupleTableSlot *slot;
 
+			/* Sort variables by name */
 			list_sort(cols, vars_list_comparator);
+
 			/* Construct name for statistic by concatenating relation name with all columns */
 			foreach (cell, cols)
 			{
@@ -509,6 +526,7 @@ AddMultiColumnStatisticsForQual(void* qual, ExplainState *es)
 			}
 
 			name_len = strlen(stat_name);
+			/* Truncate name if it doesn't fit in NameData */
 			if (name_len >= NAMEDATALEN)
 				stat_name = psprintf("%.*s_%08x", NAMEDATALEN - 10, stat_name, (unsigned)hash_any((uint8*)stat_name, name_len));
 
@@ -556,6 +574,9 @@ AddMultiColumnStatisticsForQual(void* qual, ExplainState *es)
 	}
 }
 
+/**
+ * Try to add multicolumn statistics for node
+ */
 static void
 AddMultiColumnStatisticsForNode(PlanState *planstate, ExplainState *es)
 {
