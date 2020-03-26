@@ -136,7 +136,6 @@ InternalIpcMemoryCreate(IpcMemoryKey memKey, Size size)
 	 * interest for anything except debugging, we'd probably create a cleaner
 	 * and better-documented way to set it, such as a GUC.)
 	 */
-#ifdef EXEC_BACKEND
 	{
 		char	   *pg_shmem_addr = getenv("PG_SHMEM_ADDR");
 
@@ -147,7 +146,6 @@ InternalIpcMemoryCreate(IpcMemoryKey memKey, Size size)
 	{
 		mode &= ~IPC_EXCL;
 	}
-#endif
 
 	shmid = shmget(memKey, size, mode);
 	if (shmid < 0)
@@ -251,7 +249,7 @@ InternalIpcMemoryCreate(IpcMemoryKey memKey, Size size)
 	if (memAddress == (void *) -1)
 		elog(FATAL, "shmat(id=%d, addr=%p, flags=0x%x) failed: %m",
 			 shmid, requestedAddress, PG_SHMAT_FLAGS);
-
+	elog(LOG, "Map shared memory to %p", memAddress);
 	/* Register on-exit routine to detach new segment before deleting */
 	on_shmem_exit(IpcMemoryDetach, PointerGetDatum(memAddress));
 
@@ -792,8 +790,6 @@ PGSharedMemoryCreate(Size size,
 	return (PGShmemHeader *) AnonymousShmem;
 }
 
-#ifdef EXEC_BACKEND
-
 /*
  * PGSharedMemoryReAttach
  *
@@ -872,7 +868,6 @@ PGSharedMemoryNoReAttach(void)
 	UsedShmemSegID = 0;
 }
 
-#endif							/* EXEC_BACKEND */
 
 /*
  * PGSharedMemoryDetach

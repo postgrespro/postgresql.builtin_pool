@@ -1147,7 +1147,7 @@ LWLockAcquire(LWLock *lock, LWLockMode mode)
 	 * during bootstrap or shared memory initialization.  Put an Assert here
 	 * to catch unsafe coding practices.
 	 */
-	Assert(!(proc == NULL && IsUnderPostmaster));
+	Assert(!(proc == NULL && IsUnderPostmaster && !IsOnlineUpgrade));
 
 	/* Ensure we will have room to remember the lock */
 	if (num_held_lwlocks >= MAX_SIMUL_LWLOCKS)

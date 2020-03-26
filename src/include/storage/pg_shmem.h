@@ -77,10 +77,8 @@ extern void *UsedShmemSegAddr;
 #define DEFAULT_SHARED_MEMORY_TYPE SHMEM_TYPE_WINDOWS
 #endif
 
-#ifdef EXEC_BACKEND
 extern void PGSharedMemoryReAttach(void);
 extern void PGSharedMemoryNoReAttach(void);
-#endif
 
 extern PGShmemHeader *PGSharedMemoryCreate(Size size,
 										   PGShmemHeader **shim);

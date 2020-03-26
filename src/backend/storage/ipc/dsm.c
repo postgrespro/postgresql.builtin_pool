@@ -383,7 +383,7 @@ dsm_postmaster_shutdown(int code, Datum arg)
 static void
 dsm_backend_startup(void)
 {
-#ifdef EXEC_BACKEND
+	if (dsm_control == NULL)
 	{
 		void	   *control_address = NULL;
 
@@ -404,12 +404,10 @@ dsm_backend_startup(void)
 					 errmsg("dynamic shared memory control segment is not valid")));
 		}
 	}
-#endif
 
 	dsm_init_done = true;
 }
 
-#ifdef EXEC_BACKEND
 /*
  * When running under EXEC_BACKEND, we get a callback here when the main
  * shared memory segment is re-attached, so that we can record the control
@@ -421,7 +419,6 @@ dsm_set_control_handle(dsm_handle h)
 	Assert(dsm_control_handle == 0 && h != 0);
 	dsm_control_handle = h;
 }
-#endif
 
 /*
  * Create a new dynamic shared memory segment.

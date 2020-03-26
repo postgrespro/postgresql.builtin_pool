@@ -131,10 +131,7 @@
 #include "utils/timeout.h"
 #include "utils/timestamp.h"
 #include "utils/varlena.h"
-
-#ifdef EXEC_BACKEND
 #include "storage/spin.h"
-#endif
 
 
 /*
@@ -191,7 +188,10 @@ static Backend *ShmemBackendArray;
 
 BackgroundWorker *MyBgworkerEntry = NULL;
 
-
+extern slock_t *ShmemLock;
+extern slock_t *ProcStructLock;
+extern PGPROC *AuxiliaryProcs;
+extern PMSignalData *PMSignalState;
 
 /* The socket number we are listening for connections on */
 int			PostPortNumber;
@@ -563,13 +563,216 @@ int			postmaster_alive_fds[2] = {-1, -1};
 HANDLE		PostmasterHandle;
 #endif
 
+typedef struct
+{
+	pgsocket	ListenSocket[MAXLISTEN];
+	char		DataDir[MAXPGPATH];
+#ifndef WIN32
+	unsigned long UsedShmemSegID;
+#else
+	void	   *ShmemProtectiveRegion;
+	HANDLE		UsedShmemSegID;
+#endif
+	void	   *UsedShmemSegAddr;
+	slock_t    *ShmemLock;
+	VariableCache ShmemVariableCache;
+#ifndef HAVE_SPINLOCKS
+	PGSemaphore *SpinlockSemaArray;
+#endif
+	int			NamedLWLockTrancheRequests;
+	NamedLWLockTranche *NamedLWLockTrancheArray;
+	LWLockPadded *MainLWLockArray;
+	slock_t    *ProcStructLock;
+	PROC_HDR   *ProcGlobal;
+	PGPROC	   *AuxiliaryProcs;
+	PGPROC	   *PreparedXactProcs;
+	PMSignalData *PMSignalState;
+	int			MaxBackends;
+	void*       BackgroundWorkers;
+	bool		redirection_done;
+#ifdef WIN32
+	HANDLE		PostmasterHandle;
+	HANDLE		initial_signal_pipe;
+	HANDLE		syslogPipe[2];
+#else
+	int			postmaster_alive_fds[2];
+	int			syslogPipe[2];
+#endif
+} PostmasterParameters;
+
+static bool SavePostmasterParameters(void)
+{
+	PostmasterParameters param;
+	FILE	   *fp = AllocateFile("postmaster.params", PG_BINARY_W);
+	dlist_iter	iter;
+	Backend    *bp;
+
+	if (!fp)
+	{
+		ereport(LOG,
+				(errcode_for_file_access(),
+				 errmsg("could not create file \"postmaster.params\": %m")));
+		return false;
+	}
+	strlcpy(param.DataDir, DataDir, MAXPGPATH);
+
+	memcpy(&param.ListenSocket, &ListenSocket, sizeof(ListenSocket));
+#ifdef WIN32
+	param.ShmemProtectiveRegion = ShmemProtectiveRegion;
+#endif
+	param.UsedShmemSegID = UsedShmemSegID;
+	param.UsedShmemSegAddr = UsedShmemSegAddr;
+
+	param.ShmemLock = ShmemLock;
+	param.ShmemVariableCache = ShmemVariableCache;
+
+#ifndef HAVE_SPINLOCKS
+	param.SpinlockSemaArray = SpinlockSemaArray;
+#endif
+	param.NamedLWLockTrancheRequests = NamedLWLockTrancheRequests;
+	param.NamedLWLockTrancheArray = NamedLWLockTrancheArray;
+	param.MainLWLockArray = MainLWLockArray;
+	param.ProcStructLock = ProcStructLock;
+	param.ProcGlobal = ProcGlobal;
+	param.AuxiliaryProcs = AuxiliaryProcs;
+	param.PreparedXactProcs = PreparedXactProcs;
+	param.PMSignalState = PMSignalState;
+	param.BackgroundWorkers = GetBackgroundWorkerEntries();
+
+	param.redirection_done = redirection_done;
+
+	param.MaxBackends = MaxBackends;
+
+#ifdef WIN32
+	param.PostmasterHandle = PostmasterHandle;
+	if (!write_duplicated_handle(&param.initial_signal_pipe,
+								 pgwin32_create_signal_listener(childPid),
+								 childProcess))
+		return false;
+#else
+	memcpy(&param.postmaster_alive_fds, &postmaster_alive_fds,
+		   sizeof(postmaster_alive_fds));
+#endif
+
+	memcpy(&param.syslogPipe, &syslogPipe, sizeof(syslogPipe));
+
+	if (fwrite(&param, sizeof(param), 1, fp) != 1)
+	{
+		ereport(LOG,
+				(errcode_for_file_access(),
+				 errmsg("could not write to file \"postmaster.params\": %m")));
+		FreeFile(fp);
+		return false;
+	}
+
+	dlist_foreach(iter, &BackendList)
+	{
+		bp = dlist_container(Backend, elem, iter.cur);
+		if (bp->bkend_type == BACKEND_TYPE_NORMAL)
+		{
+			if (fwrite(bp, sizeof(*bp), 1, fp) != 1)
+			{
+				ereport(LOG,
+						(errcode_for_file_access(),
+						 errmsg("could not write to file \"postmaster.params\": %m")));
+				FreeFile(fp);
+				return false;
+			}
+		}
+	}
+
+	/* Release file */
+	if (FreeFile(fp))
+	{
+		ereport(LOG,
+				(errcode_for_file_access(),
+				 errmsg("could not write to file \"postmaster.params\": %m")));
+		return false;
+	}
+	return true;
+}
+
+static bool
+RestorePostmasterParameters(void)
+{
+	PostmasterParameters param;
+	FILE	   *fp = AllocateFile("postmaster.params", PG_BINARY_R);
+	Backend    *bp = (Backend *) malloc(sizeof(Backend));
+
+	if (!fp)
+	{
+		write_stderr("%s: could not open file \"%s/postmaster.params\": %s\n",
+					 progname, get_current_dir_name(), strerror(errno));
+		return false;
+	}
+	if (fread(&param, sizeof(param), 1, fp) != 1)
+	{
+		write_stderr("%s: could not read file \"postmaster.params\": %s\n",
+					 progname, strerror(errno));
+		FreeFile(fp);
+		return false;
+	}
+
+	SetDataDir(param.DataDir);
+
+	memcpy(&ListenSocket, &param.ListenSocket, sizeof(ListenSocket));
+
+#ifdef WIN32
+	ShmemProtectiveRegion = param.ShmemProtectiveRegion;
+#endif
+	UsedShmemSegID = param.UsedShmemSegID;
+	UsedShmemSegAddr = param.UsedShmemSegAddr;
+
+	ShmemLock = param.ShmemLock;
+	ShmemVariableCache = param.ShmemVariableCache;
+
+#ifndef HAVE_SPINLOCKS
+	SpinlockSemaArray = param.SpinlockSemaArray;
+#endif
+	NamedLWLockTrancheRequests = param.NamedLWLockTrancheRequests;
+	NamedLWLockTrancheArray = param.NamedLWLockTrancheArray;
+	MainLWLockArray = param.MainLWLockArray;
+	ProcStructLock = param.ProcStructLock;
+	ProcGlobal = param.ProcGlobal;
+	AuxiliaryProcs = param.AuxiliaryProcs;
+	PreparedXactProcs = param.PreparedXactProcs;
+	PMSignalState = param.PMSignalState;
+	redirection_done = param.redirection_done;
+
+	SetBackgroundWorkerEntries(param.BackgroundWorkers);
+	MaxBackends = param.MaxBackends;
+
+#ifdef WIN32
+	PostmasterHandle = param.PostmasterHandle;
+	pgwin32_initial_signal_pipe = param.initial_signal_pipe;
+#else
+	memcpy(&postmaster_alive_fds, &param.postmaster_alive_fds,
+		   sizeof(postmaster_alive_fds));
+#endif
+
+	memcpy(&syslogPipe, &param.syslogPipe, sizeof(syslogPipe));
+
+	while (fread(bp, sizeof(*bp), 1, fp) == 1)
+	{
+		dlist_push_head(&BackendList, &bp->elem);
+		bp = (Backend *) malloc(sizeof(Backend));
+	}
+	free(bp);
+
+    /* Release file */
+	if (FreeFile(fp))
+	{
+		write_stderr("%s: could not close file \"postmaster.params\": %s\n",
+					 progname, strerror(errno));
+		return false;
+	}
+	return true;
+}
+
 static void
 UpgradePostgres(void)
 {
-#ifdef EXEC_BACKEND
-	char* PostmasterArgs[] = {"postgres", "-U", "-D", "." ,NULL};
-	BackendParameters param;
-	FILE	   *fp;
+	char* PostmasterArgs[] = {"postgres", "-U", "-D", ".", NULL};
 
 	if (*OnlineUpgradePath == '\0')
 		elog(ERROR, "Online upgrade path was not specified: alter system set online_ugrade_path='...' ; select pg_reload_conf()");
@@ -579,59 +782,16 @@ UpgradePostgres(void)
 	if (CheckpointerPID != 0)
 		signal_child(CheckpointerPID, SIGUSR2);
 
-	if (!save_backend_variables(&param, NULL))
-		return;				/* log made by save_backend_variables */
-
-	/* Open file */
-	fp = AllocateFile("postmaster.params", PG_BINARY_W);
-	if (!fp)
+	if (!SavePostmasterParameters())
 	{
-		ereport(LOG,
-				(errcode_for_file_access(),
-				 errmsg("could not create file \"postmaster.params\": %m")));
+		elog(LOG, "Failed to perform online upgrade");
 		return;
 	}
-
-	if (fwrite(&param, sizeof(param), 1, fp) != 1)
-	{
-		ereport(LOG,
-				(errcode_for_file_access(),
-				 errmsg("could not write to file \"postmaster.params\": %m")));
-		FreeFile(fp);
-		return;
-	}
-
-	/* Release file */
-	if (FreeFile(fp))
-	{
-		ereport(LOG,
-				(errcode_for_file_access(),
-				 errmsg("could not write to file \"postmaster.params\": %m")));
-		return;
-	}
-
 	elog(LOG, "Upgrade postgres to %s", OnlineUpgradePath);
 	PostmasterArgs[0] = psprintf("%s/postgres", OnlineUpgradePath);
 	execv(PostmasterArgs[0], PostmasterArgs);
-#else
-	elog(LOG, "Online upgrade is possible only for postgres configured with EXEC_BACKEND");
-#endif
 }
 
-
-static void
-RestoreBackendList(void)
-{
-#ifdef EXEC_BACKEND
-	int i;
-	for (i = MaxLivePostmasterChildren() - 1; i >= 0; i--)
-	{
-		Backend* bp = (Backend *) &ShmemBackendArray[i];
-		if (bp->bkend_type == BACKEND_TYPE_NORMAL)
-			dlist_push_head(&BackendList, &bp->elem);
-	}
-#endif
-}
 
 
 /*
@@ -931,13 +1091,16 @@ PostmasterMain(int argc, char *argv[])
 		ExitPostmaster(1);
 	}
 
-#ifdef EXEC_BACKEND
 	if (IsOnlineUpgrade)
 	{
-		read_backend_variables("postmaster.params", NULL);
+		if (!RestorePostmasterParameters())
+		{
+			write_stderr("%s: Failed to restore postmaster parameteres\n",
+						 progname);
+			ExitPostmaster(1);
+		}
 		RegisterUnlinkLockFileCallback();
 	}
-#endif
 
 	/*
 	 * Locate the proper configuration files and data directory, and read
@@ -1077,14 +1240,16 @@ PostmasterMain(int argc, char *argv[])
 	/*
 	 * Set up shared memory and semaphores.
 	 */
-#ifdef EXEC_BACKEND
 	if (IsOnlineUpgrade)
 	{
 		PGSharedMemoryReAttach();
-		RestoreBackendList();
+		InitShmemAccess(UsedShmemSegAddr);
+		IsUnderPostmaster = true;
+		/* Attach process to shared data structures */
+		CreateSharedMemoryAndSemaphores();
+		IsUnderPostmaster = false;
 	}
 	else
-#endif
 	{
 		/*
 		 * Now that loadable modules have had their chance to register background
@@ -6164,10 +6329,6 @@ PostmasterMarkPIDForWorkerNotify(int pid)
  * The following need to be available to the save/restore_backend_variables
  * functions.  They are marked NON_EXEC_STATIC in their home modules.
  */
-extern slock_t *ShmemLock;
-extern slock_t *ProcStructLock;
-extern PGPROC *AuxiliaryProcs;
-extern PMSignalData *PMSignalState;
 extern pgsocket pgStatSock;
 extern pg_time_t first_syslogger_file_time;
 

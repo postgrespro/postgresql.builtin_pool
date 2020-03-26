@@ -1088,7 +1088,7 @@ InitPredicateLocks(void)
 	bool		found;
 
 #ifndef EXEC_BACKEND
-	Assert(!IsUnderPostmaster);
+	Assert(!IsUnderPostmaster || IsOnlineUpgrade);
 #endif
 
 	/*

@@ -187,7 +187,8 @@ CreateSharedMemoryAndSemaphores(void)
 		 * should only be reached in the EXEC_BACKEND case.
 		 */
 #ifndef EXEC_BACKEND
-		elog(PANIC, "should be attached to shared memory already");
+		if (!IsOnlineUpgrade)
+			elog(PANIC, "should be attached to shared memory already");
 #endif
 	}
 

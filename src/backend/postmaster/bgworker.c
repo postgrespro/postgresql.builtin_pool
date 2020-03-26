@@ -572,7 +572,6 @@ ResetBackgroundWorkerCrashTimes(void)
 	}
 }
 
-#ifdef EXEC_BACKEND
 /*
  * In EXEC_BACKEND mode, workers use this to retrieve their details from
  * shared memory.
@@ -603,7 +602,6 @@ SetBackgroundWorkerEntries(void* entries)
 {
 	BackgroundWorkerData = entries;
 }
-#endif
 
 /*
  * Complain about the BackgroundWorker definition using error level elevel.
