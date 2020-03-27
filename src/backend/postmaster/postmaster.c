@@ -777,6 +777,7 @@ UpgradePostgres(void)
 	if (*OnlineUpgradePath == '\0')
 		elog(ERROR, "Online upgrade path was not specified: alter system set online_ugrade_path='...' ; select pg_reload_conf()");
 
+	PG_SETMASK(&BlockSig);
 	IsOnlineUpgrade = true;
 	TerminateChildren(SIGTERM);
 	if (CheckpointerPID != 0)
@@ -4341,7 +4342,7 @@ TerminateChildren(int signal)
 	if (PgArchPID != 0)
 		signal_child(PgArchPID, signal);
 	if (PgStatPID != 0)
-		signal_child(PgStatPID, signal);
+		signal_child(PgStatPID, IsOnlineUpgrade ? SIGQUIT : signal);
 }
 
 /*
