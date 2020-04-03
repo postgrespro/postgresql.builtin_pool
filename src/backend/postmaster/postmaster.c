@@ -1544,7 +1544,7 @@ PostmasterMain(int argc, char *argv[])
 	 * Record postmaster options.  We delay this till now to avoid recording
 	 * bogus options (eg, unusable port number).
 	 */
-	if (!CreateOptsFile(argc, argv, my_exec_path))
+	if (!IsOnlineUpgrade && !CreateOptsFile(argc, argv, my_exec_path))
 		ExitPostmaster(1);
 
 	/*
