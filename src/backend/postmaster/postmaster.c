@@ -574,6 +574,7 @@ typedef struct
 	HANDLE		UsedShmemSegID;
 #endif
 	void	   *UsedShmemSegAddr;
+	void       *AnonymousShmem;
 	slock_t    *ShmemLock;
 	VariableCache ShmemVariableCache;
 #ifndef HAVE_SPINLOCKS
@@ -622,7 +623,7 @@ static bool SavePostmasterParameters(void)
 #endif
 	param.UsedShmemSegID = UsedShmemSegID;
 	param.UsedShmemSegAddr = UsedShmemSegAddr;
-
+	param.AnonymousShmem = AnonymousShmem;
 	param.ShmemLock = ShmemLock;
 	param.ShmemVariableCache = ShmemVariableCache;
 
@@ -722,6 +723,7 @@ RestorePostmasterParameters(void)
 #endif
 	UsedShmemSegID = param.UsedShmemSegID;
 	UsedShmemSegAddr = param.UsedShmemSegAddr;
+	AnonymousShmem = param.AnonymousShmem;
 
 	ShmemLock = param.ShmemLock;
 	ShmemVariableCache = param.ShmemVariableCache;
@@ -1244,7 +1246,7 @@ PostmasterMain(int argc, char *argv[])
 	if (IsOnlineUpgrade)
 	{
 		PGSharedMemoryReAttach();
-		InitShmemAccess(UsedShmemSegAddr);
+		InitShmemAccess(AnonymousShmem ? AnonymousShmem : UsedShmemSegAddr);
 		IsUnderPostmaster = true;
 		/* Attach process to shared data structures */
 		CreateSharedMemoryAndSemaphores();

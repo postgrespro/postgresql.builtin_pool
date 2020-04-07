@@ -32,14 +32,15 @@
 #endif
 
 #include "miscadmin.h"
+#include "common/file_perm.h"
 #include "portability/mem.h"
+#include "postmaster/postmaster.h"
 #include "storage/dsm.h"
 #include "storage/fd.h"
 #include "storage/ipc.h"
 #include "storage/pg_shmem.h"
 #include "utils/guc.h"
 #include "utils/pidfile.h"
-
 
 /*
  * As of PostgreSQL 9.3, we normally allocate only a very small amount of
@@ -96,8 +97,8 @@ typedef enum
 unsigned long UsedShmemSegID = 0;
 void	   *UsedShmemSegAddr = NULL;
 
+void *AnonymousShmem = NULL;
 static Size AnonymousShmemSize;
-static void *AnonymousShmem = NULL;
 
 static void *InternalIpcMemoryCreate(IpcMemoryKey memKey, Size size);
 static void IpcMemoryDetach(int status, Datum shmaddr);
@@ -535,6 +536,31 @@ CreateAnonymousSegment(Size *size)
 	Size		allocsize = *size;
 	void	   *ptr = MAP_FAILED;
 	int			mmap_errno = 0;
+	int         fd = -1;
+	void       *hint = NULL;
+	int         mmap_flags = PG_MMAP_FLAGS;
+
+	if (OnlineUpgradePath)
+	{
+		int shm_flags = O_RDWR;
+		char path[64];
+		mmap_flags &= ~MAP_ANONYMOUS;
+		sprintf(path, "/%d", MyProcPid);
+
+		if (IsOnlineUpgrade)
+		{
+			mmap_flags |= MAP_FIXED;
+			hint = AnonymousShmem;
+		}
+		else
+		{
+			shm_flags |= O_CREAT|O_TRUNC;
+		}
+		fd = shm_open(path, shm_flags, pg_file_create_mode);
+		if (fd < 0)
+			ereport(FATAL,
+					(errmsg("could not create shared memory object: %m"), 0));
+	}
 
 #ifndef MAP_HUGETLB
 	/* PGSharedMemoryCreate should have dealt with this case */
@@ -546,15 +572,21 @@ CreateAnonymousSegment(Size *size)
 		 * Round up the request size to a suitable large value.
 		 */
 		Size		hugepagesize;
-		int			mmap_flags;
+		int			huge_flags;
 
-		GetHugePageSize(&hugepagesize, &mmap_flags);
+		GetHugePageSize(&hugepagesize, &huge_flags);
 
 		if (allocsize % hugepagesize != 0)
 			allocsize += hugepagesize - (allocsize % hugepagesize);
 
-		ptr = mmap(NULL, allocsize, PROT_READ | PROT_WRITE,
-				   PG_MMAP_FLAGS | mmap_flags, -1, 0);
+		if (fd >= 0 && !IsOnlineUpgrade)
+		{
+			if (ftruncate(fd, allocsize) < 0)
+				ereport(FATAL,
+						(errmsg("could not truncate shared memory file: %m"), 0));
+		}
+		ptr = mmap(hint, allocsize, PROT_READ | PROT_WRITE,
+				   huge_flags | mmap_flags, fd, 0);
 		mmap_errno = errno;
 		if (huge_pages == HUGE_PAGES_TRY && ptr == MAP_FAILED)
 			elog(DEBUG1, "mmap(%zu) with MAP_HUGETLB failed, huge pages disabled: %m",
@@ -569,8 +601,14 @@ CreateAnonymousSegment(Size *size)
 		 * to non-huge pages.
 		 */
 		allocsize = *size;
-		ptr = mmap(NULL, allocsize, PROT_READ | PROT_WRITE,
-				   PG_MMAP_FLAGS, -1, 0);
+		if (fd >= 0 && !IsOnlineUpgrade)
+		{
+			if (ftruncate(fd, allocsize) < 0)
+				ereport(FATAL,
+						(errmsg("could not truncate shared memory file: %m"), 0));
+		}
+		ptr = mmap(hint, allocsize, PROT_READ | PROT_WRITE,
+				   mmap_flags, fd, 0);
 		mmap_errno = errno;
 	}
 
@@ -758,7 +796,7 @@ PGSharedMemoryCreate(Size size,
 
 	*shim = hdr;
 	if (IsOnlineUpgrade)
-		return hdr;
+		return AnonymousShmem ? AnonymousShmem : (void*)hdr;
 
 	hdr->creatorPID = getpid();
 	hdr->magic = PGShmemMagic;
@@ -834,6 +872,16 @@ PGSharedMemoryReAttach(void)
 	dsm_set_control_handle(hdr->dsm_control);
 
 	UsedShmemSegAddr = hdr;		/* probably redundant */
+
+	if (IsOnlineUpgrade && AnonymousShmem)
+	{
+		Size size = hdr->totalsize;
+		void* addr = CreateAnonymousSegment(&size);
+		Assert(addr == AnonymousShmem);
+		Assert(size == hdr->totalsize);
+		AnonymousShmemSize = size;
+		elog(LOG, "Online upgrade maps anonymous segment to %p", addr);
+	}
 }
 
 /*
