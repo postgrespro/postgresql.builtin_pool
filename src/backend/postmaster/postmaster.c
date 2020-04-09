@@ -575,6 +575,7 @@ typedef struct
 #endif
 	void	   *UsedShmemSegAddr;
 	void       *AnonymousShmem;
+	int         AnonymousShmemFile;
 	slock_t    *ShmemLock;
 	VariableCache ShmemVariableCache;
 #ifndef HAVE_SPINLOCKS
@@ -624,6 +625,7 @@ static bool SavePostmasterParameters(void)
 	param.UsedShmemSegID = UsedShmemSegID;
 	param.UsedShmemSegAddr = UsedShmemSegAddr;
 	param.AnonymousShmem = AnonymousShmem;
+	param.AnonymousShmemFile = AnonymousShmemFile;
 	param.ShmemLock = ShmemLock;
 	param.ShmemVariableCache = ShmemVariableCache;
 
@@ -724,6 +726,7 @@ RestorePostmasterParameters(void)
 	UsedShmemSegID = param.UsedShmemSegID;
 	UsedShmemSegAddr = param.UsedShmemSegAddr;
 	AnonymousShmem = param.AnonymousShmem;
+	AnonymousShmemFile = param.AnonymousShmemFile;
 
 	ShmemLock = param.ShmemLock;
 	ShmemVariableCache = param.ShmemVariableCache;

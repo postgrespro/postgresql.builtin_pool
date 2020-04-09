@@ -98,6 +98,7 @@ unsigned long UsedShmemSegID = 0;
 void	   *UsedShmemSegAddr = NULL;
 
 void *AnonymousShmem = NULL;
+int   AnonymousShmemFile = -1;
 static Size AnonymousShmemSize;
 
 static void *InternalIpcMemoryCreate(IpcMemoryKey memKey, Size size);
@@ -540,26 +541,31 @@ CreateAnonymousSegment(Size *size)
 	void       *hint = NULL;
 	int         mmap_flags = PG_MMAP_FLAGS;
 
-	if (OnlineUpgradePath)
+	if (shared_memory_type == SHMEM_TYPE_POSIX)
 	{
-		int shm_flags = O_RDWR;
-		char path[64];
 		mmap_flags &= ~MAP_ANONYMOUS;
-		sprintf(path, "/%d", MyProcPid);
-
 		if (IsOnlineUpgrade)
 		{
+			Assert(AnonymousShmemFile >= 0);
+			fd = AnonymousShmemFile;
 			mmap_flags |= MAP_FIXED;
 			hint = AnonymousShmem;
 		}
 		else
 		{
-			shm_flags |= O_CREAT|O_TRUNC;
+			int flags;
+			char path[64];
+			sprintf(path, "/%d", MyProcPid);
+			fd = shm_open(path, O_CREAT|O_TRUNC|O_RDWR, pg_file_create_mode);
+			if (fd < 0)
+				ereport(FATAL,
+						(errmsg("could not create shared memory object: %m"), 0));
+			AnonymousShmemFile = fd;
+			shm_unlink(path);
+			flags = fcntl(fd, F_GETFD);
+			flags &= ~FD_CLOEXEC;
+			fcntl(fd, F_SETFD, flags);
 		}
-		fd = shm_open(path, shm_flags, pg_file_create_mode);
-		if (fd < 0)
-			ereport(FATAL,
-					(errmsg("could not create shared memory object: %m"), 0));
 	}
 
 #ifndef MAP_HUGETLB
@@ -692,7 +698,7 @@ PGSharedMemoryCreate(Size size,
 	/* Room for a header? */
 	Assert(size > MAXALIGN(sizeof(PGShmemHeader)));
 
-	if (shared_memory_type == SHMEM_TYPE_MMAP)
+	if (shared_memory_type != SHMEM_TYPE_SYSV)
 	{
 		AnonymousShmem = CreateAnonymousSegment(&size);
 		AnonymousShmemSize = size;

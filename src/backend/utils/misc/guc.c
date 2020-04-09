@@ -160,6 +160,8 @@ static bool check_wal_consistency_checking(char **newval, void **extra,
 										   GucSource source);
 static void assign_wal_consistency_checking(const char *newval, void *extra);
 
+static bool check_online_update_support(char **newval, void **extra, GucSource source);
+
 #ifdef HAVE_SYSLOG
 static int	syslog_facility = LOG_LOCAL0;
 #else
@@ -460,6 +462,7 @@ const struct config_enum_entry ssl_protocol_versions_info[] = {
 static struct config_enum_entry shared_memory_options[] = {
 #ifndef WIN32
 	{"sysv", SHMEM_TYPE_SYSV, false},
+	{"posix", SHMEM_TYPE_POSIX, false},
 #endif
 #ifndef EXEC_BACKEND
 	{"mmap", SHMEM_TYPE_MMAP, false},
@@ -3675,8 +3678,8 @@ static struct config_string ConfigureNamesString[] =
 		 GUC_SUPERUSER_ONLY
 		},
 		&OnlineUpgradePath,
-		"",
-		NULL, NULL, NULL
+		NULL,
+		check_online_update_support, NULL, NULL
 	},
 
 	{
@@ -11723,6 +11726,21 @@ check_default_with_oids(bool *newval, void **extra, GucSource source)
 		return false;
 	}
 
+	return true;
+}
+
+static bool
+check_online_update_support(char **newval, void **extra, GucSource source)
+{
+	if (*newval && **newval != '\0')
+	{
+		if (shared_memory_type == SHMEM_TYPE_MMAP)
+		{
+			GUC_check_errcode(ERRCODE_FEATURE_NOT_SUPPORTED);
+			GUC_check_errmsg("Online upgrade is not possible with shared_memory_type=mmap, please use sysv or posix");
+			return false;
+		}
+	}
 	return true;
 }
 

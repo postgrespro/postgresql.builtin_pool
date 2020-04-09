@@ -58,7 +58,8 @@ typedef enum
 {
 	SHMEM_TYPE_WINDOWS,
 	SHMEM_TYPE_SYSV,
-	SHMEM_TYPE_MMAP
+	SHMEM_TYPE_MMAP,
+	SHMEM_TYPE_POSIX
 }			PGShmemType;
 
 #ifndef WIN32
@@ -69,6 +70,7 @@ extern void *ShmemProtectiveRegion;
 #endif
 extern void *UsedShmemSegAddr;
 extern void *AnonymousShmem;
+extern int   AnonymousShmemFile;
 
 #if !defined(WIN32) && !defined(EXEC_BACKEND)
 #define DEFAULT_SHARED_MEMORY_TYPE SHMEM_TYPE_MMAP
