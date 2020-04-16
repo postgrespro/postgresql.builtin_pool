@@ -3678,7 +3678,7 @@ static struct config_string ConfigureNamesString[] =
 		 GUC_SUPERUSER_ONLY
 		},
 		&OnlineUpgradePath,
-		NULL,
+		"",
 		check_online_update_support, NULL, NULL
 	},
 
