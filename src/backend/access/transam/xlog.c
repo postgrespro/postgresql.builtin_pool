@@ -46,6 +46,7 @@
 #include "port/atomics.h"
 #include "postmaster/bgwriter.h"
 #include "postmaster/walwriter.h"
+#include "postmaster/postmaster.h"
 #include "postmaster/startup.h"
 #include "replication/basebackup.h"
 #include "replication/logical.h"
@@ -8837,7 +8838,7 @@ CreateCheckPoint(int flags)
 	 * We now have ProcLastRecPtr = start of actual checkpoint record, recptr
 	 * = end of actual checkpoint record.
 	 */
-	if (shutdown && checkPoint.redo != ProcLastRecPtr)
+	if (shutdown && checkPoint.redo != ProcLastRecPtr && OnlineUpgradePath == NULL)
 		ereport(PANIC,
 				(errmsg("concurrent write-ahead log activity while database system is shutting down")));
 
