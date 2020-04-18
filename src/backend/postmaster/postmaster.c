@@ -1376,12 +1376,14 @@ PostmasterMain(int argc, char *argv[])
 	 * First, mark them all closed, and set up an on_proc_exit function that's
 	 * charged with closing the sockets again at postmaster shutdown.
 	 */
-	for (i = 0; i < MAXLISTEN; i++)
-		ListenSocket[i] = PGINVALID_SOCKET;
-
+	if (!IsOnlineUpgrade)
+	{
+		for (i = 0; i < MAXLISTEN; i++)
+			ListenSocket[i] = PGINVALID_SOCKET;
+	}
 	on_proc_exit(CloseServerPorts, 0);
 
-	if (ListenAddresses)
+	if (ListenAddresses && !IsOnlineUpgrade)
 	{
 		char	   *rawstring;
 		List	   *elemlist;
