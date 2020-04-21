@@ -8838,7 +8838,7 @@ CreateCheckPoint(int flags)
 	 * We now have ProcLastRecPtr = start of actual checkpoint record, recptr
 	 * = end of actual checkpoint record.
 	 */
-	if (shutdown && checkPoint.redo != ProcLastRecPtr && *OnlineUpgradePath == '\0')
+	if (shutdown && checkPoint.redo != ProcLastRecPtr)
 		ereport(PANIC,
 				(errmsg("concurrent write-ahead log activity while database system is shutting down")));
 

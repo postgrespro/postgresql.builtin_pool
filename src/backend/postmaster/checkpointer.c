@@ -47,6 +47,7 @@
 #include "miscadmin.h"
 #include "pgstat.h"
 #include "postmaster/bgwriter.h"
+#include "postmaster/postmaster.h"
 #include "replication/syncrep.h"
 #include "storage/bufmgr.h"
 #include "storage/condition_variable.h"
@@ -823,7 +824,13 @@ chkpt_quickdie(SIGNAL_ARGS)
 	 * should ensure the postmaster sees this as a crash, too, but no harm in
 	 * being doubly sure.)
 	 */
-	_exit(2);
+	if (*OnlineUpgradePath != '\0')
+	{
+		/* Normal exit from the checkpointer is here */
+		proc_exit(0);		/* done */
+	}
+	else
+		_exit(2);
 }
 
 /* SIGHUP: set flag to re-read config file at next convenient time */

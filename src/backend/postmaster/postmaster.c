@@ -786,7 +786,7 @@ UpgradePostgres(void)
 	IsOnlineUpgrade = true;
 	TerminateChildren(SIGTERM);
 	if (CheckpointerPID != 0)
-		signal_child(CheckpointerPID, SIGUSR2);
+		signal_child(CheckpointerPID, SIGQUIT/*SIGUSR2*/);
 
 	if (!SavePostmasterParameters())
 	{

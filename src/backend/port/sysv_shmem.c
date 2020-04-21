@@ -870,8 +870,8 @@ PGSharedMemoryReAttach(void)
 	else
 		state = PGSharedMemoryAttach(shmid, UsedShmemSegAddr, &hdr);
 	if (state != SHMSTATE_ATTACHED)
-		elog(FATAL, "could not reattach to shared memory (key=%d, addr=%p): %m",
-			 (int) UsedShmemSegID, UsedShmemSegAddr);
+		elog(FATAL, "could not reattach to shared memory (key=%d, addr=%p, state=%d): %m",
+			 (int) UsedShmemSegID, UsedShmemSegAddr, state);
 	if (hdr != origUsedShmemSegAddr)
 		elog(FATAL, "reattaching to shared memory returned unexpected address (got %p, expected %p)",
 			 hdr, origUsedShmemSegAddr);
