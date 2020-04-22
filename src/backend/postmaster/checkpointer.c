@@ -153,6 +153,7 @@ double		CheckPointCompletionTarget = 0.5;
  */
 static volatile sig_atomic_t got_SIGHUP = false;
 static volatile sig_atomic_t shutdown_requested = false;
+static volatile sig_atomic_t fast_shutdown_requested = false;
 
 /*
  * Private state
@@ -369,6 +370,11 @@ CheckpointerMain(void)
 			 * parameter setting changes because of SIGHUP.
 			 */
 			UpdateSharedMemoryConfig();
+		}
+		if (fast_shutdown_requested)
+		{
+			/* Normal exit from the checkpointer is here */
+			proc_exit(0);		/* done */
 		}
 		if (shutdown_requested)
 		{
@@ -674,6 +680,7 @@ CheckpointWriteDelay(int flags, double progress)
 	 */
 	if (!(flags & CHECKPOINT_IMMEDIATE) &&
 		!shutdown_requested &&
+		!fast_shutdown_requested &&
 		!ImmediateCheckpointRequested() &&
 		IsCheckpointOnSchedule(progress))
 	{
@@ -826,8 +833,7 @@ chkpt_quickdie(SIGNAL_ARGS)
 	 */
 	if (*OnlineUpgradePath != '\0')
 	{
-		/* Normal exit from the checkpointer is here */
-		proc_exit(0);		/* done */
+		fast_shutdown_requested = true;
 	}
 	else
 		_exit(2);
