@@ -79,6 +79,9 @@
 #include "utils/snapmgr.h"
 #include "utils/timestamp.h"
 
+#include <sys/mman.h>
+
+
 extern uint32 bootstrap_data_checksum_version;
 
 /* Unsupported old recovery command file names (relative to $PGDATA) */
@@ -205,6 +208,8 @@ bool		InRecovery = false;
 
 /* Are we in Hot Standby mode? Only valid in startup process, see xlog.h */
 HotStandbyState standbyState = STANDBY_DISABLED;
+
+bool useWalRingBuffer;
 
 static XLogRecPtr LastRec;
 
@@ -597,6 +602,7 @@ typedef struct XLogCtlInsert
  */
 typedef struct XLogCtlData
 {
+	XLogRingBuffer ringBuf;
 	XLogCtlInsert Insert;
 
 	/* Protected by info_lck: */
@@ -735,6 +741,7 @@ static WALInsertLockPadded *WALInsertLocks = NULL;
  * We maintain an image of pg_control in shared memory.
  */
 static ControlFileData *ControlFile = NULL;
+XLogRingBuffer volatile* XLogRing;
 
 /*
  * Calculate the amount of space left on the page after 'endptr'. Beware
@@ -1512,6 +1519,45 @@ CopyXLogRecordToWAL(int write_len, bool isLogSwitch, XLogRecData *rdata,
 	int			written;
 	XLogRecPtr	CurrPos;
 	XLogPageHeader pagehdr;
+	size_t bufSize = XLOG_BLCKSZ * XLOGbuffers;
+
+	if (useWalRingBuffer)
+	{
+		SpinLockAcquire(&XLogRing->spinlock);
+		//elog(LOG, "writePos=%lx readPos=%lx StartPos=%lx EndPos=%lx writeOffs=%lx readOffs=%lx",
+		//	 XLogRing->writePos, XLogRing->readPos, StartPos, EndPos,  XLogRing->writeOffs, XLogRing->readOffs);
+		if (XLogRing->writePos == 0)
+		{
+			/* First access to WAL */
+			Assert(XLogRing->readOffs == 0 && XLogRing->writeOffs == 0);
+			XLogRing->writePos = XLogRing->readPos = StartPos;
+			XLogRing->readOffs = XLogRing->writeOffs = StartPos % bufSize;
+		}
+		else
+		{
+			while (StartPos >= XLogRing->writePos)
+			{
+				size_t txSize = EndPos - XLogRing->writePos;
+				size_t readOffs = XLogRing->readOffs;
+				size_t writeOffs = XLogRing->writeOffs;
+				size_t available = readOffs <= writeOffs
+					? bufSize - writeOffs + readOffs - 1
+					: readOffs - writeOffs - 1;
+				if (txSize > available)
+				{
+					XLogRing->blockedWriter = MyLatch;
+					SpinLockRelease(&XLogRing->spinlock);
+					(void) WaitLatch(MyLatch,
+									 WL_LATCH_SET | WL_EXIT_ON_PM_DEATH,
+									 -1, WAIT_EVENT_WAL_WRITER_MAIN);
+					SpinLockAcquire(&XLogRing->spinlock);
+				}
+				else
+					break;
+			}
+		}
+		SpinLockRelease(&XLogRing->spinlock);
+	}
 
 	/*
 	 * Get a pointer to the right place in the right WAL buffer to start
@@ -1642,6 +1688,15 @@ CopyXLogRecordToWAL(int write_len, bool isLogSwitch, XLogRecData *rdata,
 
 	if (CurrPos != EndPos)
 		elog(PANIC, "space reserved for WAL record does not match what was written");
+
+	if (useWalRingBuffer && XLogRing->writePos < EndPos)
+	{
+		SpinLockAcquire(&XLogRing->spinlock);
+		//elog(LOG, "Write record %lx length %d", XLogRing->writePos, ((XLogRecord *)(XLogRing->pages + XLogRing->writeOffs))->xl_tot_len);
+		XLogRing->writeOffs = EndPos % bufSize;
+		XLogRing->writePos = EndPos;
+		SpinLockRelease(&XLogRing->spinlock);
+	}
 }
 
 /*
@@ -2129,6 +2184,9 @@ AdvanceXLInsertBuffer(XLogRecPtr upto, bool opportunistic)
 	XLogPageHeader NewPage;
 	int			npages = 0;
 
+	if (useWalRingBuffer && opportunistic)
+		return;
+
 	LWLockAcquire(WALBufMappingLock, LW_EXCLUSIVE);
 
 	/*
@@ -2209,9 +2267,7 @@ AdvanceXLInsertBuffer(XLogRecPtr upto, bool opportunistic)
 		NewPageEndPtr = NewPageBeginPtr + XLOG_BLCKSZ;
 
 		Assert(XLogRecPtrToBufIdx(NewPageBeginPtr) == nextidx);
-
 		NewPage = (XLogPageHeader) (XLogCtl->pages + nextidx * (Size) XLOG_BLCKSZ);
-
 		/*
 		 * Be sure to re-zero the buffer so that bytes beyond what we've
 		 * written will look like zeroes and not valid XLOG records...
@@ -2466,7 +2522,8 @@ XLogWrite(XLogwrtRqst WriteRqst, bool flexible)
 		LogwrtResult.Write = EndPtr;
 		ispartialpage = WriteRqst.Write < LogwrtResult.Write;
 
-		if (!XLByteInPrevSeg(LogwrtResult.Write, openLogSegNo,
+		if (!useWalRingBuffer &&
+			!XLByteInPrevSeg(LogwrtResult.Write, openLogSegNo,
 							 wal_segment_size))
 		{
 			/*
@@ -2486,7 +2543,7 @@ XLogWrite(XLogwrtRqst WriteRqst, bool flexible)
 		}
 
 		/* Make sure we have the current logfile open */
-		if (openLogFile < 0)
+		if (!useWalRingBuffer && openLogFile < 0)
 		{
 			XLByteToPrevSeg(LogwrtResult.Write, openLogSegNo,
 							wal_segment_size);
@@ -2528,35 +2585,37 @@ XLogWrite(XLogwrtRqst WriteRqst, bool flexible)
 			from = XLogCtl->pages + startidx * (Size) XLOG_BLCKSZ;
 			nbytes = npages * (Size) XLOG_BLCKSZ;
 			nleft = nbytes;
-			do
-			{
-				errno = 0;
-				pgstat_report_wait_start(WAIT_EVENT_WAL_WRITE);
-				written = pg_pwrite(openLogFile, from, nleft, startoffset);
-				pgstat_report_wait_end();
-				if (written <= 0)
+			if (!useWalRingBuffer)
+ 			{
+				do
 				{
-					char		xlogfname[MAXFNAMELEN];
-					int			save_errno;
+					errno = 0;
+					pgstat_report_wait_start(WAIT_EVENT_WAL_WRITE);
+					written = pg_pwrite(openLogFile, from, nleft, startoffset);
+					pgstat_report_wait_end();
+					if (written <= 0)
+					{
+						char		xlogfname[MAXFNAMELEN];
+						int			save_errno;
 
-					if (errno == EINTR)
-						continue;
+						if (errno == EINTR)
+							continue;
 
-					save_errno = errno;
-					XLogFileName(xlogfname, ThisTimeLineID, openLogSegNo,
-								 wal_segment_size);
-					errno = save_errno;
-					ereport(PANIC,
-							(errcode_for_file_access(),
-							 errmsg("could not write to log file %s "
-									"at offset %u, length %zu: %m",
-									xlogfname, startoffset, nleft)));
-				}
-				nleft -= written;
-				from += written;
-				startoffset += written;
-			} while (nleft > 0);
-
+						save_errno = errno;
+						XLogFileName(xlogfname, ThisTimeLineID, openLogSegNo,
+									 wal_segment_size);
+						errno = save_errno;
+						ereport(PANIC,
+								(errcode_for_file_access(),
+								 errmsg("could not write to log file %s "
+										"at offset %u, length %zu: %m",
+										xlogfname, startoffset, nleft)));
+					}
+					nleft -= written;
+					from += written;
+					startoffset += written;
+				} while (nleft > 0);
+			}
 			npages = 0;
 
 			/*
@@ -2574,7 +2633,8 @@ XLogWrite(XLogwrtRqst WriteRqst, bool flexible)
 			 */
 			if (finishing_seg)
 			{
-				issue_xlog_fsync(openLogFile, openLogSegNo);
+				if (!useWalRingBuffer)
+					issue_xlog_fsync(openLogFile, openLogSegNo);
 
 				/* signal that we need to wakeup walsenders later */
 				WalSndWakeupRequest();
@@ -2631,7 +2691,8 @@ XLogWrite(XLogwrtRqst WriteRqst, bool flexible)
 		 * fsync more than one file.
 		 */
 		if (sync_method != SYNC_METHOD_OPEN &&
-			sync_method != SYNC_METHOD_OPEN_DSYNC)
+			sync_method != SYNC_METHOD_OPEN_DSYNC &&
+			!useWalRingBuffer)
 		{
 			if (openLogFile >= 0 &&
 				!XLByteInPrevSeg(LogwrtResult.Write, openLogSegNo,
@@ -5175,6 +5236,13 @@ XLOGShmemInit(void)
 	SpinLockInit(&XLogCtl->info_lck);
 	SpinLockInit(&XLogCtl->ulsn_lck);
 	InitSharedLatch(&XLogCtl->recoveryWakeupLatch);
+
+	if (useWalRingBuffer)
+	{
+		XLogRing = &XLogCtl->ringBuf;
+		XLogRing->pages = XLogCtl->pages;
+		SpinLockInit(&XLogRing->spinlock);
+	}
 }
 
 /*
@@ -5288,7 +5356,8 @@ BootStrapXLOG(void)
 
 	/* Create first XLOG segment file */
 	use_existent = false;
-	openLogFile = XLogFileInit(1, &use_existent, false);
+	if (!useWalRingBuffer)
+		openLogFile = XLogFileInit(1, &use_existent, false);
 
 	/*
 	 * We needn't bother with Reserve/ReleaseExternalFD here, since we'll
@@ -5310,13 +5379,13 @@ BootStrapXLOG(void)
 	pgstat_report_wait_end();
 
 	pgstat_report_wait_start(WAIT_EVENT_WAL_BOOTSTRAP_SYNC);
-	if (pg_fsync(openLogFile) != 0)
+	if (!useWalRingBuffer && pg_fsync(openLogFile) != 0)
 		ereport(PANIC,
 				(errcode_for_file_access(),
 				 errmsg("could not fsync bootstrap write-ahead log file: %m")));
 	pgstat_report_wait_end();
 
-	if (close(openLogFile) != 0)
+	if (!useWalRingBuffer && close(openLogFile) != 0)
 		ereport(PANIC,
 				(errcode_for_file_access(),
 				 errmsg("could not close bootstrap write-ahead log file: %m")));
@@ -11960,6 +12029,7 @@ retry:
 	if (!XLogReaderValidatePageHeader(xlogreader, targetPagePtr, readBuf))
 	{
 		/* reset any error XLogReaderValidatePageHeader() might have set */
+		elog(LOG, "Invlid page header %lx error=%s", targetPagePtr, xlogreader->errormsg_buf);
 		xlogreader->errormsg_buf[0] = '\0';
 		goto next_record_is_invalid;
 	}

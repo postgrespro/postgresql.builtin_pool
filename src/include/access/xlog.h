@@ -19,7 +19,10 @@
 #include "lib/stringinfo.h"
 #include "nodes/pg_list.h"
 #include "storage/fd.h"
-
+#ifndef FRONTEND
+#include "storage/latch.h"
+#include "storage/s_lock.h"
+#endif
 
 /* Sync methods */
 #define SYNC_METHOD_FSYNC		0
@@ -383,5 +386,21 @@ extern SessionBackupState get_backup_status(void);
 /* files to signal promotion to primary */
 #define PROMOTE_SIGNAL_FILE		"promote"
 #define FALLBACK_PROMOTE_SIGNAL_FILE  "fallback_promote"
+
+#ifndef FRONTEND
+typedef struct
+{
+	size_t     readOffs;
+	size_t     writeOffs;
+	XLogRecPtr readPos;
+	XLogRecPtr writePos;
+	char*      pages;
+	Latch*     blockedWriter;
+	slock_t	   spinlock;
+} XLogRingBuffer;
+
+extern XLogRingBuffer volatile* XLogRing;
+extern bool useWalRingBuffer;
+#endif
 
 #endif							/* XLOG_H */

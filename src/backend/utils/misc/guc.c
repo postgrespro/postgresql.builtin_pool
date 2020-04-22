@@ -1272,6 +1272,16 @@ static struct config_bool ConfigureNamesBool[] =
 		true,
 		NULL, NULL, NULL
 	},
+	{
+		{"use_wal_ring_buffer", PGC_SIGHUP, WAL_SETTINGS,
+		 gettext_noop("Send data to WAL sender through rig buffer"),
+		 NULL
+		},
+		&useWalRingBuffer,
+		false,
+		NULL, NULL, NULL
+	},
+
 
 	{
 		{"wal_log_hints", PGC_POSTMASTER, WAL_SETTINGS,
