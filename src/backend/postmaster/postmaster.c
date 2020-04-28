@@ -581,7 +581,6 @@ typedef struct
 #ifndef HAVE_SPINLOCKS
 	PGSemaphore *SpinlockSemaArray;
 #endif
-	int			NamedLWLockTrancheRequests;
 	NamedLWLockTranche *NamedLWLockTrancheArray;
 	LWLockPadded *MainLWLockArray;
 	slock_t    *ProcStructLock;
@@ -632,7 +631,6 @@ static bool SavePostmasterParameters(void)
 #ifndef HAVE_SPINLOCKS
 	param.SpinlockSemaArray = SpinlockSemaArray;
 #endif
-	param.NamedLWLockTrancheRequests = NamedLWLockTrancheRequests;
 	param.NamedLWLockTrancheArray = NamedLWLockTrancheArray;
 	param.MainLWLockArray = MainLWLockArray;
 	param.ProcStructLock = ProcStructLock;
@@ -734,7 +732,6 @@ RestorePostmasterParameters(void)
 #ifndef HAVE_SPINLOCKS
 	SpinlockSemaArray = param.SpinlockSemaArray;
 #endif
-	NamedLWLockTrancheRequests = param.NamedLWLockTrancheRequests;
 	NamedLWLockTrancheArray = param.NamedLWLockTrancheArray;
 	MainLWLockArray = param.MainLWLockArray;
 	ProcStructLock = param.ProcStructLock;
