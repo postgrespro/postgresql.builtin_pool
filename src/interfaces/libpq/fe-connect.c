@@ -320,13 +320,13 @@ static const internalPQconninfoOption PQconninfoOptions[] = {
 		"Require-Peer", "", 10,
 	offsetof(struct pg_conn, requirepeer)},
 
-	{"sslminprotocolversion", "PGSSLMINPROTOCOLVERSION", NULL, NULL,
+	{"ssl_min_protocol_version", "PGSSLMINPROTOCOLVERSION", "TLSv1.2", NULL,
 		"SSL-Minimum-Protocol-Version", "", 8,	/* sizeof("TLSv1.x") == 8 */
-	offsetof(struct pg_conn, sslminprotocolversion)},
+	offsetof(struct pg_conn, ssl_min_protocol_version)},
 
-	{"sslmaxprotocolversion", "PGSSLMAXPROTOCOLVERSION", NULL, NULL,
+	{"ssl_max_protocol_version", "PGSSLMAXPROTOCOLVERSION", NULL, NULL,
 		"SSL-Maximum-Protocol-Version", "", 8,	/* sizeof("TLSv1.x") == 8 */
-	offsetof(struct pg_conn, sslmaxprotocolversion)},
+	offsetof(struct pg_conn, ssl_max_protocol_version)},
 
 	/*
 	 * As with SSL, all GSS options are exposed even in builds that don't have
@@ -1240,8 +1240,8 @@ connectOptions2(PGconn *conn)
 		{
 			conn->status = CONNECTION_BAD;
 			printfPQExpBuffer(&conn->errorMessage,
-							  libpq_gettext("invalid channel_binding value: \"%s\"\n"),
-							  conn->channel_binding);
+							  libpq_gettext("invalid %s value: \"%s\"\n"),
+							  "channel_binding", conn->channel_binding);
 			return false;
 		}
 	}
@@ -1266,8 +1266,8 @@ connectOptions2(PGconn *conn)
 		{
 			conn->status = CONNECTION_BAD;
 			printfPQExpBuffer(&conn->errorMessage,
-							  libpq_gettext("invalid sslmode value: \"%s\"\n"),
-							  conn->sslmode);
+							  libpq_gettext("invalid %s value: \"%s\"\n"),
+							  "sslmode", conn->sslmode);
 			return false;
 		}
 
@@ -1301,23 +1301,25 @@ connectOptions2(PGconn *conn)
 	}
 
 	/*
-	 * Validate TLS protocol versions for sslminprotocolversion and
-	 * sslmaxprotocolversion.
+	 * Validate TLS protocol versions for ssl_min_protocol_version and
+	 * ssl_max_protocol_version.
 	 */
-	if (!sslVerifyProtocolVersion(conn->sslminprotocolversion))
+	if (!sslVerifyProtocolVersion(conn->ssl_min_protocol_version))
 	{
 		conn->status = CONNECTION_BAD;
 		printfPQExpBuffer(&conn->errorMessage,
-						  libpq_gettext("invalid sslminprotocolversion value: \"%s\"\n"),
-						  conn->sslminprotocolversion);
+						  libpq_gettext("invalid %s value: \"%s\"\n"),
+						  "ssl_min_protocol_version",
+						  conn->ssl_min_protocol_version);
 		return false;
 	}
-	if (!sslVerifyProtocolVersion(conn->sslmaxprotocolversion))
+	if (!sslVerifyProtocolVersion(conn->ssl_max_protocol_version))
 	{
 		conn->status = CONNECTION_BAD;
 		printfPQExpBuffer(&conn->errorMessage,
-						  libpq_gettext("invalid sslmaxprotocolversion value: \"%s\"\n"),
-						  conn->sslmaxprotocolversion);
+						  libpq_gettext("invalid %s value: \"%s\"\n"),
+						  "ssl_max_protocol_version",
+						  conn->ssl_max_protocol_version);
 		return false;
 	}
 
@@ -1328,12 +1330,12 @@ connectOptions2(PGconn *conn)
 	 * already-built SSL context when the connection is being established, as
 	 * it would be doomed anyway.
 	 */
-	if (!sslVerifyProtocolRange(conn->sslminprotocolversion,
-								conn->sslmaxprotocolversion))
+	if (!sslVerifyProtocolRange(conn->ssl_min_protocol_version,
+								conn->ssl_max_protocol_version))
 	{
 		conn->status = CONNECTION_BAD;
 		printfPQExpBuffer(&conn->errorMessage,
-						  libpq_gettext("invalid SSL protocol version range"));
+						  libpq_gettext("invalid SSL protocol version range\n"));
 		return false;
 	}
 
@@ -1348,7 +1350,8 @@ connectOptions2(PGconn *conn)
 		{
 			conn->status = CONNECTION_BAD;
 			printfPQExpBuffer(&conn->errorMessage,
-							  libpq_gettext("invalid gssencmode value: \"%s\"\n"),
+							  libpq_gettext("invalid %s value: \"%s\"\n"),
+							  "gssencmode",
 							  conn->gssencmode);
 			return false;
 		}
@@ -1392,7 +1395,8 @@ connectOptions2(PGconn *conn)
 		{
 			conn->status = CONNECTION_BAD;
 			printfPQExpBuffer(&conn->errorMessage,
-							  libpq_gettext("invalid target_session_attrs value: \"%s\"\n"),
+							  libpq_gettext("invalid %s value: \"%s\"\n"),
+							  "target_settion_attrs",
 							  conn->target_session_attrs);
 			return false;
 		}
@@ -4037,7 +4041,10 @@ freePGconn(PGconn *conn)
 	if (conn->sslkey)
 		free(conn->sslkey);
 	if (conn->sslpassword)
+	{
+		explicit_bzero(conn->sslpassword, strlen(conn->sslpassword));
 		free(conn->sslpassword);
+	}
 	if (conn->sslrootcert)
 		free(conn->sslrootcert);
 	if (conn->sslcrl)
@@ -4046,10 +4053,10 @@ freePGconn(PGconn *conn)
 		free(conn->sslcompression);
 	if (conn->requirepeer)
 		free(conn->requirepeer);
-	if (conn->sslminprotocolversion)
-		free(conn->sslminprotocolversion);
-	if (conn->sslmaxprotocolversion)
-		free(conn->sslmaxprotocolversion);
+	if (conn->ssl_min_protocol_version)
+		free(conn->ssl_min_protocol_version);
+	if (conn->ssl_max_protocol_version)
+		free(conn->ssl_max_protocol_version);
 	if (conn->gssencmode)
 		free(conn->gssencmode);
 	if (conn->krbsrvname)
@@ -7120,7 +7127,7 @@ pgpassfileWarning(PGconn *conn)
 /*
  * Check if the SSL procotol value given in input is valid or not.
  * This is used as a sanity check routine for the connection parameters
- * sslminprotocolversion and sslmaxprotocolversion.
+ * ssl_min_protocol_version and ssl_max_protocol_version.
  */
 static bool
 sslVerifyProtocolVersion(const char *version)

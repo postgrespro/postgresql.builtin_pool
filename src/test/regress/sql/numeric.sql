@@ -883,6 +883,19 @@ select div(12345678901234567890, 123);
 select div(12345678901234567890, 123) * 123 + 12345678901234567890 % 123;
 
 --
+-- Test some corner cases for square root
+--
+
+select sqrt(1.000000000000003::numeric);
+select sqrt(1.000000000000004::numeric);
+select sqrt(96627521408608.56340355805::numeric);
+select sqrt(96627521408608.56340355806::numeric);
+select sqrt(515549506212297735.073688290367::numeric);
+select sqrt(515549506212297735.073688290368::numeric);
+select sqrt(8015491789940783531003294973900306::numeric);
+select sqrt(8015491789940783531003294973900307::numeric);
+
+--
 -- Test code path for raising to integer powers
 --
 
@@ -1098,3 +1111,24 @@ FROM (VALUES (0::numeric, 0::numeric),
              (4232.820::numeric, 132.72000::numeric)) AS v(a, b);
 
 SELECT lcm(9999 * (10::numeric)^131068 + (10::numeric^131068 - 1), 2); -- overflow
+
+--
+-- Tests for factorial
+--
+SELECT 4!;
+SELECT !!3;
+SELECT factorial(15);
+SELECT 100000!;
+SELECT 0!;
+SELECT -4!;
+SELECT factorial(-4);
+
+--
+-- Tests for pg_lsn()
+--
+SELECT pg_lsn(23783416::numeric);
+SELECT pg_lsn(0::numeric);
+SELECT pg_lsn(18446744073709551615::numeric);
+SELECT pg_lsn(-1::numeric);
+SELECT pg_lsn(18446744073709551616::numeric);
+SELECT pg_lsn('NaN'::numeric);

@@ -141,6 +141,32 @@ char	   *pgstat_stat_tmpname = NULL;
  */
 PgStat_MsgBgWriter BgWriterStats;
 
+/*
+ * List of SLRU names that we keep stats for.  There is no central registry of
+ * SLRUs, so we use this fixed list instead.  The "other" entry is used for
+ * all SLRUs without an explicit entry (e.g. SLRUs in extensions).
+ */
+static const char *const slru_names[] = {
+	"CommitTs",
+	"MultiXactMember",
+	"MultiXactOffset",
+	"Notify",
+	"Serial",
+	"Subtrans",
+	"Xact",
+	"other"						/* has to be last */
+};
+
+#define SLRU_NUM_ELEMENTS	lengthof(slru_names)
+
+/*
+ * SLRU statistics counts waiting to be sent to the collector.  These are
+ * stored directly in stats message format so they can be sent without needing
+ * to copy things around.  We assume this variable inits to zeroes.  Entries
+ * are one-to-one with slru_names[].
+ */
+static PgStat_MsgSLRU SLRUStats[SLRU_NUM_ELEMENTS];
+
 /* ----------
  * Local data
  * ----------
@@ -255,6 +281,7 @@ static int	localNumBackends = 0;
  */
 static PgStat_ArchiverStats archiverStats;
 static PgStat_GlobalStats globalStats;
+static PgStat_SLRUStats slruStats[SLRU_NUM_ELEMENTS];
 
 /*
  * List of OIDs of databases we need to write out.  If an entry is InvalidOid,
@@ -297,6 +324,7 @@ static bool pgstat_db_requested(Oid databaseid);
 
 static void pgstat_send_tabstat(PgStat_MsgTabstat *tsmsg);
 static void pgstat_send_funcstats(void);
+static void pgstat_send_slru(void);
 static HTAB *pgstat_collect_oids(Oid catalogid, AttrNumber anum_oid);
 
 static PgStat_TableStatus *get_tabstat_entry(Oid rel_id, bool isshared);
@@ -319,11 +347,13 @@ static void pgstat_recv_dropdb(PgStat_MsgDropdb *msg, int len);
 static void pgstat_recv_resetcounter(PgStat_MsgResetcounter *msg, int len);
 static void pgstat_recv_resetsharedcounter(PgStat_MsgResetsharedcounter *msg, int len);
 static void pgstat_recv_resetsinglecounter(PgStat_MsgResetsinglecounter *msg, int len);
+static void pgstat_recv_resetslrucounter(PgStat_MsgResetslrucounter *msg, int len);
 static void pgstat_recv_autovac(PgStat_MsgAutovacStart *msg, int len);
 static void pgstat_recv_vacuum(PgStat_MsgVacuum *msg, int len);
 static void pgstat_recv_analyze(PgStat_MsgAnalyze *msg, int len);
 static void pgstat_recv_archiver(PgStat_MsgArchiver *msg, int len);
 static void pgstat_recv_bgwriter(PgStat_MsgBgWriter *msg, int len);
+static void pgstat_recv_slru(PgStat_MsgSLRU *msg, int len);
 static void pgstat_recv_funcstat(PgStat_MsgFuncstat *msg, int len);
 static void pgstat_recv_funcpurge(PgStat_MsgFuncpurge *msg, int len);
 static void pgstat_recv_recoveryconflict(PgStat_MsgRecoveryConflict *msg, int len);
@@ -907,6 +937,9 @@ pgstat_report_stat(bool force)
 
 	/* Now, send function statistics */
 	pgstat_send_funcstats();
+
+	/* Finally send SLRU statistics */
+	pgstat_send_slru();
 }
 
 /*
@@ -1373,6 +1406,30 @@ pgstat_reset_single_counter(Oid objoid, PgStat_Single_Reset_Type type)
 }
 
 /* ----------
+ * pgstat_reset_slru_counter() -
+ *
+ *	Tell the statistics collector to reset a single SLRU counter, or all
+ *	SLRU counters (when name is null).
+ *
+ *	Permission checking for this function is managed through the normal
+ *	GRANT system.
+ * ----------
+ */
+void
+pgstat_reset_slru_counter(const char *name)
+{
+	PgStat_MsgResetslrucounter msg;
+
+	if (pgStatSock == PGINVALID_SOCKET)
+		return;
+
+	pgstat_setheader(&msg.m_hdr, PGSTAT_MTYPE_RESETSLRUCOUNTER);
+	msg.m_index = (name) ? pgstat_slru_index(name) : -1;
+
+	pgstat_send(&msg, sizeof(msg));
+}
+
+/* ----------
  * pgstat_report_autovac() -
  *
  *	Called from autovacuum.c to report startup of an autovacuum process.
@@ -1750,11 +1807,7 @@ pgstat_initstats(Relation rel)
 	char		relkind = rel->rd_rel->relkind;
 
 	/* We only count stats for things that have storage */
-	if (!(relkind == RELKIND_RELATION ||
-		  relkind == RELKIND_MATVIEW ||
-		  relkind == RELKIND_INDEX ||
-		  relkind == RELKIND_TOASTVALUE ||
-		  relkind == RELKIND_SEQUENCE))
+	if (!RELKIND_HAS_STORAGE(relkind))
 	{
 		rel->pgstat_info = NULL;
 		return;
@@ -2619,6 +2672,23 @@ pgstat_fetch_global(void)
 	backend_read_statsfile();
 
 	return &globalStats;
+}
+
+
+/*
+ * ---------
+ * pgstat_fetch_slru() -
+ *
+ *	Support function for the SQL-callable pgstat* functions. Returns
+ *	a pointer to the slru statistics struct.
+ * ---------
+ */
+PgStat_SLRUStats *
+pgstat_fetch_slru(void)
+{
+	backend_read_statsfile();
+
+	return slruStats;
 }
 
 
@@ -3700,56 +3770,53 @@ pgstat_get_wait_ipc(WaitEventIPC w)
 		case WAIT_EVENT_CHECKPOINT_START:
 			event_name = "CheckpointStart";
 			break;
-		case WAIT_EVENT_CLOG_GROUP_UPDATE:
-			event_name = "ClogGroupUpdate";
-			break;
 		case WAIT_EVENT_EXECUTE_GATHER:
 			event_name = "ExecuteGather";
 			break;
-		case WAIT_EVENT_HASH_BATCH_ALLOCATING:
-			event_name = "Hash/Batch/Allocating";
+		case WAIT_EVENT_HASH_BATCH_ALLOCATE:
+			event_name = "HashBatchAllocate";
 			break;
-		case WAIT_EVENT_HASH_BATCH_ELECTING:
-			event_name = "Hash/Batch/Electing";
+		case WAIT_EVENT_HASH_BATCH_ELECT:
+			event_name = "HashBatchElect";
 			break;
-		case WAIT_EVENT_HASH_BATCH_LOADING:
-			event_name = "Hash/Batch/Loading";
+		case WAIT_EVENT_HASH_BATCH_LOAD:
+			event_name = "HashBatchLoad";
 			break;
-		case WAIT_EVENT_HASH_BUILD_ALLOCATING:
-			event_name = "Hash/Build/Allocating";
+		case WAIT_EVENT_HASH_BUILD_ALLOCATE:
+			event_name = "HashBuildAllocate";
 			break;
-		case WAIT_EVENT_HASH_BUILD_ELECTING:
-			event_name = "Hash/Build/Electing";
+		case WAIT_EVENT_HASH_BUILD_ELECT:
+			event_name = "HashBuildElect";
 			break;
-		case WAIT_EVENT_HASH_BUILD_HASHING_INNER:
-			event_name = "Hash/Build/HashingInner";
+		case WAIT_EVENT_HASH_BUILD_HASH_INNER:
+			event_name = "HashBuildHashInner";
 			break;
-		case WAIT_EVENT_HASH_BUILD_HASHING_OUTER:
-			event_name = "Hash/Build/HashingOuter";
+		case WAIT_EVENT_HASH_BUILD_HASH_OUTER:
+			event_name = "HashBuildHashOuter";
 			break;
-		case WAIT_EVENT_HASH_GROW_BATCHES_ALLOCATING:
-			event_name = "Hash/GrowBatches/Allocating";
+		case WAIT_EVENT_HASH_GROW_BATCHES_ALLOCATE:
+			event_name = "HashGrowBatchesAllocate";
 			break;
-		case WAIT_EVENT_HASH_GROW_BATCHES_DECIDING:
-			event_name = "Hash/GrowBatches/Deciding";
+		case WAIT_EVENT_HASH_GROW_BATCHES_DECIDE:
+			event_name = "HashGrowBatchesDecide";
 			break;
-		case WAIT_EVENT_HASH_GROW_BATCHES_ELECTING:
-			event_name = "Hash/GrowBatches/Electing";
+		case WAIT_EVENT_HASH_GROW_BATCHES_ELECT:
+			event_name = "HashGrowBatchesElect";
 			break;
-		case WAIT_EVENT_HASH_GROW_BATCHES_FINISHING:
-			event_name = "Hash/GrowBatches/Finishing";
+		case WAIT_EVENT_HASH_GROW_BATCHES_FINISH:
+			event_name = "HashGrowBatchesFinish";
 			break;
-		case WAIT_EVENT_HASH_GROW_BATCHES_REPARTITIONING:
-			event_name = "Hash/GrowBatches/Repartitioning";
+		case WAIT_EVENT_HASH_GROW_BATCHES_REPARTITION:
+			event_name = "HashGrowBatchesRepartition";
 			break;
-		case WAIT_EVENT_HASH_GROW_BUCKETS_ALLOCATING:
-			event_name = "Hash/GrowBuckets/Allocating";
+		case WAIT_EVENT_HASH_GROW_BUCKETS_ALLOCATE:
+			event_name = "HashGrowBucketsAllocate";
 			break;
-		case WAIT_EVENT_HASH_GROW_BUCKETS_ELECTING:
-			event_name = "Hash/GrowBuckets/Electing";
+		case WAIT_EVENT_HASH_GROW_BUCKETS_ELECT:
+			event_name = "HashGrowBucketsElect";
 			break;
-		case WAIT_EVENT_HASH_GROW_BUCKETS_REINSERTING:
-			event_name = "Hash/GrowBuckets/Reinserting";
+		case WAIT_EVENT_HASH_GROW_BUCKETS_REINSERT:
+			event_name = "HashGrowBucketsReinsert";
 			break;
 		case WAIT_EVENT_LOGICAL_SYNC_DATA:
 			event_name = "LogicalSyncData";
@@ -3781,8 +3848,17 @@ pgstat_get_wait_ipc(WaitEventIPC w)
 		case WAIT_EVENT_PROCARRAY_GROUP_UPDATE:
 			event_name = "ProcArrayGroupUpdate";
 			break;
+		case WAIT_EVENT_PROC_SIGNAL_BARRIER:
+			event_name = "ProcSignalBarrier";
+			break;
 		case WAIT_EVENT_PROMOTE:
 			event_name = "Promote";
+			break;
+		case WAIT_EVENT_RECOVERY_CONFLICT_SNAPSHOT:
+			event_name = "RecoveryConflictSnapshot";
+			break;
+		case WAIT_EVENT_RECOVERY_CONFLICT_TABLESPACE:
+			event_name = "RecoveryConflictTablespace";
 			break;
 		case WAIT_EVENT_RECOVERY_PAUSE:
 			event_name = "RecoveryPause";
@@ -3798,6 +3874,9 @@ pgstat_get_wait_ipc(WaitEventIPC w)
 			break;
 		case WAIT_EVENT_SYNC_REP:
 			event_name = "SyncRep";
+			break;
+		case WAIT_EVENT_XACT_GROUP_UPDATE:
+			event_name = "XactGroupUpdate";
 			break;
 			/* no default case, so that compiler will warn */
 	}
@@ -3852,6 +3931,9 @@ pgstat_get_wait_io(WaitEventIO w)
 
 	switch (w)
 	{
+		case WAIT_EVENT_BASEBACKUP_READ:
+			event_name = "BaseBackupRead";
+			break;
 		case WAIT_EVENT_BUFFILE_READ:
 			event_name = "BufFileRead";
 			break;
@@ -3944,9 +4026,6 @@ pgstat_get_wait_io(WaitEventIO w)
 			break;
 		case WAIT_EVENT_LOGICAL_REWRITE_WRITE:
 			event_name = "LogicalRewriteWrite";
-			break;
-		case WAIT_EVENT_PROC_SIGNAL_BARRIER:
-			event_name = "ProcSignalBarrier";
 			break;
 		case WAIT_EVENT_RELATION_MAP_READ:
 			event_name = "RelationMapRead";
@@ -4325,6 +4404,44 @@ pgstat_send_bgwriter(void)
 	MemSet(&BgWriterStats, 0, sizeof(BgWriterStats));
 }
 
+/* ----------
+ * pgstat_send_slru() -
+ *
+ *		Send SLRU statistics to the collector
+ * ----------
+ */
+static void
+pgstat_send_slru(void)
+{
+	/* We assume this initializes to zeroes */
+	static const PgStat_MsgSLRU all_zeroes;
+
+	for (int i = 0; i < SLRU_NUM_ELEMENTS; i++)
+	{
+		/*
+		 * This function can be called even if nothing at all has happened. In
+		 * this case, avoid sending a completely empty message to the stats
+		 * collector.
+		 */
+		if (memcmp(&SLRUStats[i], &all_zeroes, sizeof(PgStat_MsgSLRU)) == 0)
+			continue;
+
+		/* set the SLRU type before each send */
+		SLRUStats[i].m_index = i;
+
+		/*
+		 * Prepare and send the message
+		 */
+		pgstat_setheader(&SLRUStats[i].m_hdr, PGSTAT_MTYPE_SLRU);
+		pgstat_send(&SLRUStats[i], sizeof(PgStat_MsgSLRU));
+
+		/*
+		 * Clear out the statistics buffer, so it can be re-used.
+		 */
+		MemSet(&SLRUStats[i], 0, sizeof(PgStat_MsgSLRU));
+	}
+}
+
 
 /* ----------
  * PgstatCollectorMain() -
@@ -4493,6 +4610,11 @@ PgstatCollectorMain(int argc, char *argv[])
 												   len);
 					break;
 
+				case PGSTAT_MTYPE_RESETSLRUCOUNTER:
+					pgstat_recv_resetslrucounter(&msg.msg_resetslrucounter,
+												 len);
+					break;
+
 				case PGSTAT_MTYPE_AUTOVAC_START:
 					pgstat_recv_autovac(&msg.msg_autovacuum_start, len);
 					break;
@@ -4511,6 +4633,10 @@ PgstatCollectorMain(int argc, char *argv[])
 
 				case PGSTAT_MTYPE_BGWRITER:
 					pgstat_recv_bgwriter(&msg.msg_bgwriter, len);
+					break;
+
+				case PGSTAT_MTYPE_SLRU:
+					pgstat_recv_slru(&msg.msg_slru, len);
 					break;
 
 				case PGSTAT_MTYPE_FUNCSTAT:
@@ -4701,6 +4827,7 @@ pgstat_get_tab_entry(PgStat_StatDBEntry *dbentry, Oid tableoid, bool create)
 		result->n_live_tuples = 0;
 		result->n_dead_tuples = 0;
 		result->changes_since_analyze = 0;
+		result->inserts_since_vacuum = 0;
 		result->blocks_fetched = 0;
 		result->blocks_hit = 0;
 		result->vacuum_timestamp = 0;
@@ -4779,6 +4906,12 @@ pgstat_write_statsfiles(bool permanent, bool allDbs)
 	 * Write archiver stats struct
 	 */
 	rc = fwrite(&archiverStats, sizeof(archiverStats), 1, fpout);
+	(void) rc;					/* we'll check for error with ferror */
+
+	/*
+	 * Write SLRU stats struct
+	 */
+	rc = fwrite(slruStats, sizeof(slruStats), 1, fpout);
 	(void) rc;					/* we'll check for error with ferror */
 
 	/*
@@ -5016,6 +5149,7 @@ pgstat_read_statsfiles(Oid onlydb, bool permanent, bool deep)
 	int32		format_id;
 	bool		found;
 	const char *statfile = permanent ? PGSTAT_STAT_PERMANENT_FILENAME : pgstat_stat_filename;
+	int			i;
 
 	/*
 	 * The tables will live in pgStatLocalContext.
@@ -5038,6 +5172,7 @@ pgstat_read_statsfiles(Oid onlydb, bool permanent, bool deep)
 	 */
 	memset(&globalStats, 0, sizeof(globalStats));
 	memset(&archiverStats, 0, sizeof(archiverStats));
+	memset(&slruStats, 0, sizeof(slruStats));
 
 	/*
 	 * Set the current timestamp (will be kept only in case we can't load an
@@ -5045,6 +5180,12 @@ pgstat_read_statsfiles(Oid onlydb, bool permanent, bool deep)
 	 */
 	globalStats.stat_reset_timestamp = GetCurrentTimestamp();
 	archiverStats.stat_reset_timestamp = globalStats.stat_reset_timestamp;
+
+	/*
+	 * Set the same reset timestamp for all SLRU items too.
+	 */
+	for (i = 0; i < SLRU_NUM_ELEMENTS; i++)
+		slruStats[i].stat_reset_timestamp = globalStats.stat_reset_timestamp;
 
 	/*
 	 * Try to open the stats file. If it doesn't exist, the backends simply
@@ -5105,6 +5246,17 @@ pgstat_read_statsfiles(Oid onlydb, bool permanent, bool deep)
 		ereport(pgStatRunningInCollector ? LOG : WARNING,
 				(errmsg("corrupted statistics file \"%s\"", statfile)));
 		memset(&archiverStats, 0, sizeof(archiverStats));
+		goto done;
+	}
+
+	/*
+	 * Read SLRU stats struct
+	 */
+	if (fread(slruStats, 1, sizeof(slruStats), fpin) != sizeof(slruStats))
+	{
+		ereport(pgStatRunningInCollector ? LOG : WARNING,
+				(errmsg("corrupted statistics file \"%s\"", statfile)));
+		memset(&slruStats, 0, sizeof(slruStats));
 		goto done;
 	}
 
@@ -5406,6 +5558,7 @@ pgstat_read_db_statsfile_timestamp(Oid databaseid, bool permanent,
 	PgStat_StatDBEntry dbentry;
 	PgStat_GlobalStats myGlobalStats;
 	PgStat_ArchiverStats myArchiverStats;
+	PgStat_SLRUStats mySLRUStats[SLRU_NUM_ELEMENTS];
 	FILE	   *fpin;
 	int32		format_id;
 	const char *statfile = permanent ? PGSTAT_STAT_PERMANENT_FILENAME : pgstat_stat_filename;
@@ -5453,6 +5606,17 @@ pgstat_read_db_statsfile_timestamp(Oid databaseid, bool permanent,
 	 */
 	if (fread(&myArchiverStats, 1, sizeof(myArchiverStats),
 			  fpin) != sizeof(myArchiverStats))
+	{
+		ereport(pgStatRunningInCollector ? LOG : WARNING,
+				(errmsg("corrupted statistics file \"%s\"", statfile)));
+		FreeFile(fpin);
+		return false;
+	}
+
+	/*
+	 * Read SLRU stats struct
+	 */
+	if (fread(mySLRUStats, 1, sizeof(mySLRUStats), fpin) != sizeof(mySLRUStats))
 	{
 		ereport(pgStatRunningInCollector ? LOG : WARNING,
 				(errmsg("corrupted statistics file \"%s\"", statfile)));
@@ -5831,6 +5995,7 @@ pgstat_recv_tabstat(PgStat_MsgTabstat *msg, int len)
 			tabentry->n_live_tuples = tabmsg->t_counts.t_delta_live_tuples;
 			tabentry->n_dead_tuples = tabmsg->t_counts.t_delta_dead_tuples;
 			tabentry->changes_since_analyze = tabmsg->t_counts.t_changed_tuples;
+			tabentry->inserts_since_vacuum = tabmsg->t_counts.t_tuples_inserted;
 			tabentry->blocks_fetched = tabmsg->t_counts.t_blocks_fetched;
 			tabentry->blocks_hit = tabmsg->t_counts.t_blocks_hit;
 
@@ -5860,10 +6025,12 @@ pgstat_recv_tabstat(PgStat_MsgTabstat *msg, int len)
 			{
 				tabentry->n_live_tuples = 0;
 				tabentry->n_dead_tuples = 0;
+				tabentry->inserts_since_vacuum = 0;
 			}
 			tabentry->n_live_tuples += tabmsg->t_counts.t_delta_live_tuples;
 			tabentry->n_dead_tuples += tabmsg->t_counts.t_delta_dead_tuples;
 			tabentry->changes_since_analyze += tabmsg->t_counts.t_changed_tuples;
+			tabentry->inserts_since_vacuum += tabmsg->t_counts.t_tuples_inserted;
 			tabentry->blocks_fetched += tabmsg->t_counts.t_blocks_fetched;
 			tabentry->blocks_hit += tabmsg->t_counts.t_blocks_hit;
 		}
@@ -6058,9 +6225,32 @@ pgstat_recv_resetsinglecounter(PgStat_MsgResetsinglecounter *msg, int len)
 }
 
 /* ----------
+ * pgstat_recv_resetslrucounter() -
+ *
+ *	Reset some SLRU statistics of the cluster.
+ * ----------
+ */
+static void
+pgstat_recv_resetslrucounter(PgStat_MsgResetslrucounter *msg, int len)
+{
+	int			i;
+	TimestampTz ts = GetCurrentTimestamp();
+
+	for (i = 0; i < SLRU_NUM_ELEMENTS; i++)
+	{
+		/* reset entry with the given index, or all entries (index is -1) */
+		if ((msg->m_index == -1) || (msg->m_index == i))
+		{
+			memset(&slruStats[i], 0, sizeof(slruStats[i]));
+			slruStats[i].stat_reset_timestamp = ts;
+		}
+	}
+}
+
+/* ----------
  * pgstat_recv_autovac() -
  *
- *	Process an autovacuum signalling message.
+ *	Process an autovacuum signaling message.
  * ----------
  */
 static void
@@ -6097,6 +6287,18 @@ pgstat_recv_vacuum(PgStat_MsgVacuum *msg, int len)
 
 	tabentry->n_live_tuples = msg->m_live_tuples;
 	tabentry->n_dead_tuples = msg->m_dead_tuples;
+
+	/*
+	 * It is quite possible that a non-aggressive VACUUM ended up skipping
+	 * various pages, however, we'll zero the insert counter here regardless.
+	 * It's currently used only to track when we need to perform an "insert"
+	 * autovacuum, which are mainly intended to freeze newly inserted tuples.
+	 * Zeroing this may just mean we'll not try to vacuum the table again
+	 * until enough tuples have been inserted to trigger another insert
+	 * autovacuum.  An anti-wraparound autovacuum will catch any persistent
+	 * stragglers.
+	 */
+	tabentry->inserts_since_vacuum = 0;
 
 	if (msg->m_autovacuum)
 	{
@@ -6199,6 +6401,24 @@ pgstat_recv_bgwriter(PgStat_MsgBgWriter *msg, int len)
 	globalStats.buf_written_backend += msg->m_buf_written_backend;
 	globalStats.buf_fsync_backend += msg->m_buf_fsync_backend;
 	globalStats.buf_alloc += msg->m_buf_alloc;
+}
+
+/* ----------
+ * pgstat_recv_slru() -
+ *
+ *	Process a SLRU message.
+ * ----------
+ */
+static void
+pgstat_recv_slru(PgStat_MsgSLRU *msg, int len)
+{
+	slruStats[msg->m_index].blocks_zeroed += msg->m_blocks_zeroed;
+	slruStats[msg->m_index].blocks_hit += msg->m_blocks_hit;
+	slruStats[msg->m_index].blocks_read += msg->m_blocks_read;
+	slruStats[msg->m_index].blocks_written += msg->m_blocks_written;
+	slruStats[msg->m_index].blocks_exists += msg->m_blocks_exists;
+	slruStats[msg->m_index].flush += msg->m_flush;
+	slruStats[msg->m_index].truncate += msg->m_truncate;
 }
 
 /* ----------
@@ -6454,4 +6674,108 @@ pgstat_clip_activity(const char *raw_activity)
 	activity[cliplen] = '\0';
 
 	return activity;
+}
+
+/*
+ * pgstat_slru_index
+ *
+ * Determine index of entry for a SLRU with a given name. If there's no exact
+ * match, returns index of the last "other" entry used for SLRUs defined in
+ * external proejcts.
+ */
+int
+pgstat_slru_index(const char *name)
+{
+	int			i;
+
+	for (i = 0; i < SLRU_NUM_ELEMENTS; i++)
+	{
+		if (strcmp(slru_names[i], name) == 0)
+			return i;
+	}
+
+	/* return index of the last entry (which is the "other" one) */
+	return (SLRU_NUM_ELEMENTS - 1);
+}
+
+/*
+ * pgstat_slru_name
+ *
+ * Returns SLRU name for an index. The index may be above SLRU_NUM_ELEMENTS,
+ * in which case this returns NULL. This allows writing code that does not
+ * know the number of entries in advance.
+ */
+const char *
+pgstat_slru_name(int slru_idx)
+{
+	if (slru_idx < 0 || slru_idx >= SLRU_NUM_ELEMENTS)
+		return NULL;
+
+	return slru_names[slru_idx];
+}
+
+/*
+ * slru_entry
+ *
+ * Returns pointer to entry with counters for given SLRU (based on the name
+ * stored in SlruCtl as lwlock tranche name).
+ */
+static inline PgStat_MsgSLRU *
+slru_entry(int slru_idx)
+{
+	/*
+	 * The postmaster should never register any SLRU statistics counts; if it
+	 * did, the counts would be duplicated into child processes via fork().
+	 */
+	Assert(IsUnderPostmaster || !IsPostmasterEnvironment);
+
+	Assert((slru_idx >= 0) && (slru_idx < SLRU_NUM_ELEMENTS));
+
+	return &SLRUStats[slru_idx];
+}
+
+/*
+ * SLRU statistics count accumulation functions --- called from slru.c
+ */
+
+void
+pgstat_count_slru_page_zeroed(int slru_idx)
+{
+	slru_entry(slru_idx)->m_blocks_zeroed += 1;
+}
+
+void
+pgstat_count_slru_page_hit(int slru_idx)
+{
+	slru_entry(slru_idx)->m_blocks_hit += 1;
+}
+
+void
+pgstat_count_slru_page_exists(int slru_idx)
+{
+	slru_entry(slru_idx)->m_blocks_exists += 1;
+}
+
+void
+pgstat_count_slru_page_read(int slru_idx)
+{
+	slru_entry(slru_idx)->m_blocks_read += 1;
+}
+
+void
+pgstat_count_slru_page_written(int slru_idx)
+{
+	slru_entry(slru_idx)->m_blocks_written += 1;
+}
+
+void
+pgstat_count_slru_flush(int slru_idx)
+{
+	slru_entry(slru_idx)->m_flush += 1;
+}
+
+void
+pgstat_count_slru_truncate(int slru_idx)
+{
+	slru_entry(slru_idx)->m_truncate += 1;
 }

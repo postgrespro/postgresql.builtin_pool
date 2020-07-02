@@ -44,6 +44,8 @@ static bool ValidXLogRecordHeader(XLogReaderState *state, XLogRecPtr RecPtr,
 static bool ValidXLogRecord(XLogReaderState *state, XLogRecord *record,
 							XLogRecPtr recptr);
 static void ResetDecoder(XLogReaderState *state);
+static void WALOpenSegmentInit(WALOpenSegment *seg, WALSegmentContext *segcxt,
+							   int segsize, const char *waldir);
 
 /* size of the buffer allocated for error message. */
 #define MAX_ERRORMSG_LEN 1000
@@ -71,7 +73,7 @@ report_invalid_record(XLogReaderState *state, const char *fmt,...)
  */
 XLogReaderState *
 XLogReaderAllocate(int wal_segment_size, const char *waldir,
-				   XLogPageReadCB pagereadfunc, void *private_data)
+				   XLogReaderRoutine *routine, void *private_data)
 {
 	XLogReaderState *state;
 
@@ -80,6 +82,9 @@ XLogReaderAllocate(int wal_segment_size, const char *waldir,
 						MCXT_ALLOC_NO_OOM | MCXT_ALLOC_ZERO);
 	if (!state)
 		return NULL;
+
+	/* initialize caller-provided support functions */
+	state->routine = *routine;
 
 	state->max_block_id = -1;
 
@@ -102,7 +107,6 @@ XLogReaderAllocate(int wal_segment_size, const char *waldir,
 	WALOpenSegmentInit(&state->seg, &state->segcxt, wal_segment_size,
 					   waldir);
 
-	state->read_page = pagereadfunc;
 	/* system_identifier initialized to zeroes above */
 	state->private_data = private_data;
 	/* ReadRecPtr, EndRecPtr and readLen initialized to zeroes above */
@@ -135,6 +139,9 @@ void
 XLogReaderFree(XLogReaderState *state)
 {
 	int			block_id;
+
+	if (state->seg.ws_file != -1)
+		state->routine.segment_close(state);
 
 	for (block_id = 0; block_id <= XLR_MAX_BLOCK_ID; block_id++)
 	{
@@ -205,7 +212,7 @@ allocate_recordbuf(XLogReaderState *state, uint32 reclength)
 /*
  * Initialize the passed segment structs.
  */
-void
+static void
 WALOpenSegmentInit(WALOpenSegment *seg, WALSegmentContext *segcxt,
 				   int segsize, const char *waldir)
 {
@@ -247,7 +254,7 @@ XLogBeginRead(XLogReaderState *state, XLogRecPtr RecPtr)
  * XLogBeginRead() or XLogFindNextRecord() must be called before the first call
  * to XLogReadRecord().
  *
- * If the read_page callback fails to read the requested data, NULL is
+ * If the page_read callback fails to read the requested data, NULL is
  * returned.  The callback is expected to have reported the error; errormsg
  * is set to NULL.
  *
@@ -556,10 +563,10 @@ err:
 
 /*
  * Read a single xlog page including at least [pageptr, reqLen] of valid data
- * via the read_page() callback.
+ * via the page_read() callback.
  *
  * Returns -1 if the required page cannot be read for some reason; errormsg_buf
- * is set in that case (unless the error occurs in the read_page callback).
+ * is set in that case (unless the error occurs in the page_read callback).
  *
  * We fetch the page from a reader-local cache if we know we have the required
  * data and if there hasn't been any error since caching the data.
@@ -585,9 +592,9 @@ ReadPageInternal(XLogReaderState *state, XLogRecPtr pageptr, int reqLen)
 	/*
 	 * Data is not in our buffer.
 	 *
-	 * Every time we actually read the page, even if we looked at parts of it
-	 * before, we need to do verification as the read_page callback might now
-	 * be rereading data from a different source.
+	 * Every time we actually read the segment, even if we looked at parts of
+	 * it before, we need to do verification as the page_read callback might
+	 * now be rereading data from a different source.
 	 *
 	 * Whenever switching to a new WAL segment, we read the first page of the
 	 * file and validate its header, even if that's not where the target
@@ -598,9 +605,9 @@ ReadPageInternal(XLogReaderState *state, XLogRecPtr pageptr, int reqLen)
 	{
 		XLogRecPtr	targetSegmentPtr = pageptr - targetPageOff;
 
-		readLen = state->read_page(state, targetSegmentPtr, XLOG_BLCKSZ,
-								   state->currRecPtr,
-								   state->readBuf);
+		readLen = state->routine.page_read(state, targetSegmentPtr, XLOG_BLCKSZ,
+										   state->currRecPtr,
+										   state->readBuf);
 		if (readLen < 0)
 			goto err;
 
@@ -616,9 +623,9 @@ ReadPageInternal(XLogReaderState *state, XLogRecPtr pageptr, int reqLen)
 	 * First, read the requested data length, but at least a short page header
 	 * so that we can validate it.
 	 */
-	readLen = state->read_page(state, pageptr, Max(reqLen, SizeOfXLogShortPHD),
-							   state->currRecPtr,
-							   state->readBuf);
+	readLen = state->routine.page_read(state, pageptr, Max(reqLen, SizeOfXLogShortPHD),
+									   state->currRecPtr,
+									   state->readBuf);
 	if (readLen < 0)
 		goto err;
 
@@ -635,9 +642,9 @@ ReadPageInternal(XLogReaderState *state, XLogRecPtr pageptr, int reqLen)
 	/* still not enough */
 	if (readLen < XLogPageHeaderSize(hdr))
 	{
-		readLen = state->read_page(state, pageptr, XLogPageHeaderSize(hdr),
-								   state->currRecPtr,
-								   state->readBuf);
+		readLen = state->routine.page_read(state, pageptr, XLogPageHeaderSize(hdr),
+										   state->currRecPtr,
+										   state->readBuf);
 		if (readLen < 0)
 			goto err;
 	}
@@ -1038,11 +1045,12 @@ err:
 #endif							/* FRONTEND */
 
 /*
+ * Helper function to ease writing of XLogRoutine->page_read callbacks.
+ * If this function is used, caller must supply a segment_open callback in
+ * 'state', as that is used here.
+ *
  * Read 'count' bytes into 'buf', starting at location 'startptr', from WAL
  * fetched from timeline 'tli'.
- *
- * 'seg/segcxt' identify the last segment used.  'openSegment' is a callback
- * to open the next segment, if necessary.
  *
  * Returns true if succeeded, false if an error occurs, in which case
  * 'errinfo' receives error details.
@@ -1051,9 +1059,9 @@ err:
  * WAL buffers when possible.
  */
 bool
-WALRead(char *buf, XLogRecPtr startptr, Size count, TimeLineID tli,
-		WALOpenSegment *seg, WALSegmentContext *segcxt,
-		WALSegmentOpen openSegment, WALReadError *errinfo)
+WALRead(XLogReaderState *state,
+		char *buf, XLogRecPtr startptr, Size count, TimeLineID tli,
+		WALReadError *errinfo)
 {
 	char	   *p;
 	XLogRecPtr	recptr;
@@ -1069,33 +1077,36 @@ WALRead(char *buf, XLogRecPtr startptr, Size count, TimeLineID tli,
 		int			segbytes;
 		int			readbytes;
 
-		startoff = XLogSegmentOffset(recptr, segcxt->ws_segsize);
+		startoff = XLogSegmentOffset(recptr, state->segcxt.ws_segsize);
 
 		/*
 		 * If the data we want is not in a segment we have open, close what we
 		 * have (if anything) and open the next one, using the caller's
 		 * provided openSegment callback.
 		 */
-		if (seg->ws_file < 0 ||
-			!XLByteInSeg(recptr, seg->ws_segno, segcxt->ws_segsize) ||
-			tli != seg->ws_tli)
+		if (state->seg.ws_file < 0 ||
+			!XLByteInSeg(recptr, state->seg.ws_segno, state->segcxt.ws_segsize) ||
+			tli != state->seg.ws_tli)
 		{
 			XLogSegNo	nextSegNo;
 
-			if (seg->ws_file >= 0)
-				close(seg->ws_file);
+			if (state->seg.ws_file >= 0)
+				state->routine.segment_close(state);
 
-			XLByteToSeg(recptr, nextSegNo, segcxt->ws_segsize);
-			seg->ws_file = openSegment(nextSegNo, segcxt, &tli);
+			XLByteToSeg(recptr, nextSegNo, state->segcxt.ws_segsize);
+			state->routine.segment_open(state, nextSegNo, &tli);
+
+			/* This shouldn't happen -- indicates a bug in segment_open */
+			Assert(state->seg.ws_file >= 0);
 
 			/* Update the current segment info. */
-			seg->ws_tli = tli;
-			seg->ws_segno = nextSegNo;
+			state->seg.ws_tli = tli;
+			state->seg.ws_segno = nextSegNo;
 		}
 
 		/* How many bytes are within this segment? */
-		if (nbytes > (segcxt->ws_segsize - startoff))
-			segbytes = segcxt->ws_segsize - startoff;
+		if (nbytes > (state->segcxt.ws_segsize - startoff))
+			segbytes = state->segcxt.ws_segsize - startoff;
 		else
 			segbytes = nbytes;
 
@@ -1105,7 +1116,7 @@ WALRead(char *buf, XLogRecPtr startptr, Size count, TimeLineID tli,
 
 		/* Reset errno first; eases reporting non-errno-affecting errors */
 		errno = 0;
-		readbytes = pg_pread(seg->ws_file, p, segbytes, (off_t) startoff);
+		readbytes = pg_pread(state->seg.ws_file, p, segbytes, (off_t) startoff);
 
 #ifndef FRONTEND
 		pgstat_report_wait_end();
@@ -1117,7 +1128,7 @@ WALRead(char *buf, XLogRecPtr startptr, Size count, TimeLineID tli,
 			errinfo->wre_req = segbytes;
 			errinfo->wre_read = readbytes;
 			errinfo->wre_off = startoff;
-			errinfo->wre_seg = *seg;
+			errinfo->wre_seg = state->seg;
 			return false;
 		}
 
@@ -1586,9 +1597,9 @@ RestoreBlockImage(XLogReaderState *record, uint8 block_id, char *page)
 FullTransactionId
 XLogRecGetFullXid(XLogReaderState *record)
 {
-	TransactionId	xid,
-					next_xid;
-	uint32			epoch;
+	TransactionId xid,
+				next_xid;
+	uint32		epoch;
 
 	/*
 	 * This function is only safe during replay, because it depends on the
@@ -1601,8 +1612,8 @@ XLogRecGetFullXid(XLogReaderState *record)
 	epoch = EpochFromFullTransactionId(ShmemVariableCache->nextFullXid);
 
 	/*
-	 * If xid is numerically greater than next_xid, it has to be from the
-	 * last epoch.
+	 * If xid is numerically greater than next_xid, it has to be from the last
+	 * epoch.
 	 */
 	if (unlikely(xid > next_xid))
 		--epoch;

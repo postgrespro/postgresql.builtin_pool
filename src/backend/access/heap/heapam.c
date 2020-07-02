@@ -21,7 +21,6 @@
  *		heap_multi_insert - insert multiple tuples into a relation
  *		heap_delete		- delete a tuple from a relation
  *		heap_update		- replace a tuple in a relation with another tuple
- *		heap_sync		- sync heap, for when no WAL has been written
  *
  * NOTES
  *	  This file contains the heap_ routines which implement
@@ -1272,21 +1271,6 @@ heap_endscan(TableScanDesc sscan)
 	pfree(scan);
 }
 
-#ifdef HEAPDEBUGALL
-#define HEAPDEBUG_1 \
-	elog(DEBUG2, "heap_getnext([%s,nkeys=%d],dir=%d) called", \
-		 RelationGetRelationName(scan->rs_rd), scan->rs_nkeys, (int) direction)
-#define HEAPDEBUG_2 \
-	elog(DEBUG2, "heap_getnext returning EOS")
-#define HEAPDEBUG_3 \
-	elog(DEBUG2, "heap_getnext returning tuple")
-#else
-#define HEAPDEBUG_1
-#define HEAPDEBUG_2
-#define HEAPDEBUG_3
-#endif							/* !defined(HEAPDEBUGALL) */
-
-
 HeapTuple
 heap_getnext(TableScanDesc sscan, ScanDirection direction)
 {
@@ -1306,8 +1290,6 @@ heap_getnext(TableScanDesc sscan, ScanDirection direction)
 
 	/* Note: no locking manipulations needed */
 
-	HEAPDEBUG_1;				/* heap_getnext( info ) */
-
 	if (scan->rs_base.rs_flags & SO_ALLOW_PAGEMODE)
 		heapgettup_pagemode(scan, direction,
 							scan->rs_base.rs_nkeys, scan->rs_base.rs_key);
@@ -1316,35 +1298,17 @@ heap_getnext(TableScanDesc sscan, ScanDirection direction)
 				   scan->rs_base.rs_nkeys, scan->rs_base.rs_key);
 
 	if (scan->rs_ctup.t_data == NULL)
-	{
-		HEAPDEBUG_2;			/* heap_getnext returning EOS */
 		return NULL;
-	}
 
 	/*
 	 * if we get here it means we have a new current scan tuple, so point to
 	 * the proper return buffer and return the tuple.
 	 */
-	HEAPDEBUG_3;				/* heap_getnext returning tuple */
 
 	pgstat_count_heap_getnext(scan->rs_base.rs_rd);
 
 	return &scan->rs_ctup;
 }
-
-#ifdef HEAPAMSLOTDEBUGALL
-#define HEAPAMSLOTDEBUG_1 \
-	elog(DEBUG2, "heapam_getnextslot([%s,nkeys=%d],dir=%d) called", \
-		 RelationGetRelationName(scan->rs_base.rs_rd), scan->rs_base.rs_nkeys, (int) direction)
-#define HEAPAMSLOTDEBUG_2 \
-	elog(DEBUG2, "heapam_getnextslot returning EOS")
-#define HEAPAMSLOTDEBUG_3 \
-	elog(DEBUG2, "heapam_getnextslot returning tuple")
-#else
-#define HEAPAMSLOTDEBUG_1
-#define HEAPAMSLOTDEBUG_2
-#define HEAPAMSLOTDEBUG_3
-#endif
 
 bool
 heap_getnextslot(TableScanDesc sscan, ScanDirection direction, TupleTableSlot *slot)
@@ -1353,8 +1317,6 @@ heap_getnextslot(TableScanDesc sscan, ScanDirection direction, TupleTableSlot *s
 
 	/* Note: no locking manipulations needed */
 
-	HEAPAMSLOTDEBUG_1;			/* heap_getnextslot( info ) */
-
 	if (sscan->rs_flags & SO_ALLOW_PAGEMODE)
 		heapgettup_pagemode(scan, direction, sscan->rs_nkeys, sscan->rs_key);
 	else
@@ -1362,7 +1324,6 @@ heap_getnextslot(TableScanDesc sscan, ScanDirection direction, TupleTableSlot *s
 
 	if (scan->rs_ctup.t_data == NULL)
 	{
-		HEAPAMSLOTDEBUG_2;		/* heap_getnextslot returning EOS */
 		ExecClearTuple(slot);
 		return false;
 	}
@@ -1371,7 +1332,6 @@ heap_getnextslot(TableScanDesc sscan, ScanDirection direction, TupleTableSlot *s
 	 * if we get here it means we have a new current scan tuple, so point to
 	 * the proper return buffer and return the tuple.
 	 */
-	HEAPAMSLOTDEBUG_3;			/* heap_getnextslot returning tuple */
 
 	pgstat_count_heap_getnext(scan->rs_base.rs_rd);
 
@@ -1939,7 +1899,7 @@ heap_insert(Relation relation, HeapTuple tup, CommandId cid,
 	MarkBufferDirty(buffer);
 
 	/* XLOG stuff */
-	if (!(options & HEAP_INSERT_SKIP_WAL) && RelationNeedsWAL(relation))
+	if (RelationNeedsWAL(relation))
 	{
 		xl_heap_insert xlrec;
 		xl_heap_header xlhdr;
@@ -2122,7 +2082,7 @@ heap_multi_insert(Relation relation, TupleTableSlot **slots, int ntuples,
 	/* currently not needed (thus unsupported) for heap_multi_insert() */
 	AssertArg(!(options & HEAP_INSERT_NO_LOGICAL));
 
-	needwal = !(options & HEAP_INSERT_SKIP_WAL) && RelationNeedsWAL(relation);
+	needwal = RelationNeedsWAL(relation);
 	saveFreeSpace = RelationGetTargetPageFreeSpace(relation,
 												   HEAP_DEFAULT_FILLFACTOR);
 
@@ -2193,8 +2153,8 @@ heap_multi_insert(Relation relation, TupleTableSlot **slots, int ntuples,
 		RelationPutHeapTuple(relation, buffer, heaptuples[ndone], false);
 
 		/*
-		 * Note that heap_multi_insert is not used for catalog tuples yet,
-		 * but this will cover the gap once that is the case.
+		 * Note that heap_multi_insert is not used for catalog tuples yet, but
+		 * this will cover the gap once that is the case.
 		 */
 		if (needwal && need_cids)
 			log_heap_new_cid(relation, heaptuples[ndone]);
@@ -5582,6 +5542,7 @@ heap_abort_speculative(Relation relation, ItemPointer tid)
 	Page		page;
 	BlockNumber block;
 	Buffer		buffer;
+	TransactionId prune_xid;
 
 	Assert(ItemPointerIsValid(tid));
 
@@ -5624,13 +5585,21 @@ heap_abort_speculative(Relation relation, ItemPointer tid)
 	START_CRIT_SECTION();
 
 	/*
-	 * The tuple will become DEAD immediately.  Flag that this page
-	 * immediately is a candidate for pruning by setting xmin to
-	 * RecentGlobalXmin.  That's not pretty, but it doesn't seem worth
-	 * inventing a nicer API for this.
+	 * The tuple will become DEAD immediately.  Flag that this page is a
+	 * candidate for pruning by setting xmin to TransactionXmin. While not
+	 * immediately prunable, it is the oldest xid we can cheaply determine
+	 * that's safe against wraparound / being older than the table's
+	 * relfrozenxid.  To defend against the unlikely case of a new relation
+	 * having a newer relfrozenxid than our TransactionXmin, use relfrozenxid
+	 * if so (vacuum can't subsequently move relfrozenxid to beyond
+	 * TransactionXmin, so there's no race here).
 	 */
-	Assert(TransactionIdIsValid(RecentGlobalXmin));
-	PageSetPrunable(page, RecentGlobalXmin);
+	Assert(TransactionIdIsValid(TransactionXmin));
+	if (TransactionIdPrecedes(TransactionXmin, relation->rd_rel->relfrozenxid))
+		prune_xid = relation->rd_rel->relfrozenxid;
+	else
+		prune_xid = TransactionXmin;
+	PageSetPrunable(page, prune_xid);
 
 	/* store transaction information of xact deleting the tuple */
 	tp.t_data->t_infomask &= ~(HEAP_XMAX_BITS | HEAP_MOVED);
@@ -8921,46 +8890,6 @@ heap2_redo(XLogReaderState *record)
 }
 
 /*
- *	heap_sync		- sync a heap, for use when no WAL has been written
- *
- * This forces the heap contents (including TOAST heap if any) down to disk.
- * If we skipped using WAL, and WAL is otherwise needed, we must force the
- * relation down to disk before it's safe to commit the transaction.  This
- * requires writing out any dirty buffers and then doing a forced fsync.
- *
- * Indexes are not touched.  (Currently, index operations associated with
- * the commands that use this are WAL-logged and so do not need fsync.
- * That behavior might change someday, but in any case it's likely that
- * any fsync decisions required would be per-index and hence not appropriate
- * to be done here.)
- */
-void
-heap_sync(Relation rel)
-{
-	/* non-WAL-logged tables never need fsync */
-	if (!RelationNeedsWAL(rel))
-		return;
-
-	/* main heap */
-	FlushRelationBuffers(rel);
-	/* FlushRelationBuffers will have opened rd_smgr */
-	smgrimmedsync(rel->rd_smgr, MAIN_FORKNUM);
-
-	/* FSM is not critical, don't bother syncing it */
-
-	/* toast heap, if any */
-	if (OidIsValid(rel->rd_rel->reltoastrelid))
-	{
-		Relation	toastrel;
-
-		toastrel = table_open(rel->rd_rel->reltoastrelid, AccessShareLock);
-		FlushRelationBuffers(toastrel);
-		smgrimmedsync(toastrel->rd_smgr, MAIN_FORKNUM);
-		table_close(toastrel, AccessShareLock);
-	}
-}
-
-/*
  * Mask a heap page before performing consistency checks on it.
  */
 void
@@ -9046,15 +8975,13 @@ heap_mask(char *pagedata, BlockNumber blkno)
 
 /*
  * HeapCheckForSerializableConflictOut
- *		We are reading a tuple which has been modified.  If it is visible to
- *		us but has been deleted, that indicates a rw-conflict out.  If it's
- *		not visible and was created by a concurrent (overlapping)
- *		serializable transaction, that is also a rw-conflict out,
+ *		We are reading a tuple.  If it's not visible, there may be a
+ *		rw-conflict out with the inserter.  Otherwise, if it is visible to us
+ *		but has been deleted, there may be a rw-conflict out with the deleter.
  *
  * We will determine the top level xid of the writing transaction with which
- * we may be in conflict, and check for overlap with our own transaction.
- * If the transactions overlap (i.e., they cannot see each other's writes),
- * then we have a conflict out.
+ * we may be in conflict, and ask CheckForSerializableConflictOut() to check
+ * for overlap with our own transaction.
  *
  * This function should be called just about anywhere in heapam.c where a
  * tuple has been read. The caller must hold at least a shared lock on the
@@ -9078,6 +9005,10 @@ HeapCheckForSerializableConflictOut(bool visible, Relation relation,
 	 * while it is visible to us.  The "visible" bool indicates whether the
 	 * tuple is visible to us, while HeapTupleSatisfiesVacuum checks what else
 	 * is going on with it.
+	 *
+	 * In the event of a concurrently inserted tuple that also happens to have
+	 * been concurrently updated (by a separate transaction), the xmin of the
+	 * tuple will be used -- not the updater's xid.
 	 */
 	htsvResult = HeapTupleSatisfiesVacuum(tuple, TransactionXmin, buffer);
 	switch (htsvResult)
@@ -9088,17 +9019,24 @@ HeapCheckForSerializableConflictOut(bool visible, Relation relation,
 			xid = HeapTupleHeaderGetXmin(tuple->t_data);
 			break;
 		case HEAPTUPLE_RECENTLY_DEAD:
-			if (!visible)
-				return;
-			xid = HeapTupleHeaderGetUpdateXid(tuple->t_data);
-			break;
 		case HEAPTUPLE_DELETE_IN_PROGRESS:
-			xid = HeapTupleHeaderGetUpdateXid(tuple->t_data);
+			if (visible)
+				xid = HeapTupleHeaderGetUpdateXid(tuple->t_data);
+			else
+				xid = HeapTupleHeaderGetXmin(tuple->t_data);
+
+			if (TransactionIdPrecedes(xid, TransactionXmin))
+			{
+				/* This is like the HEAPTUPLE_DEAD case */
+				Assert(!visible);
+				return;
+			}
 			break;
 		case HEAPTUPLE_INSERT_IN_PROGRESS:
 			xid = HeapTupleHeaderGetXmin(tuple->t_data);
 			break;
 		case HEAPTUPLE_DEAD:
+			Assert(!visible);
 			return;
 		default:
 

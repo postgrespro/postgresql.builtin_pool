@@ -166,7 +166,7 @@ WHERE p1.oid < p2.oid AND
 -- Note: ignore aggregate functions here, since they all point to the same
 -- dummy built-in function.  Likewise, ignore range constructor functions.
 
-SELECT DISTINCT p1.prorettype, p2.prorettype
+SELECT DISTINCT p1.prorettype::regtype, p2.prorettype::regtype
 FROM pg_proc AS p1, pg_proc AS p2
 WHERE p1.oid != p2.oid AND
     p1.prosrc = p2.prosrc AND
@@ -177,7 +177,7 @@ WHERE p1.oid != p2.oid AND
     (p1.prorettype < p2.prorettype)
 ORDER BY 1, 2;
 
-SELECT DISTINCT p1.proargtypes[0], p2.proargtypes[0]
+SELECT DISTINCT p1.proargtypes[0]::regtype, p2.proargtypes[0]::regtype
 FROM pg_proc AS p1, pg_proc AS p2
 WHERE p1.oid != p2.oid AND
     p1.prosrc = p2.prosrc AND
@@ -188,7 +188,7 @@ WHERE p1.oid != p2.oid AND
     (p1.proargtypes[0] < p2.proargtypes[0])
 ORDER BY 1, 2;
 
-SELECT DISTINCT p1.proargtypes[1], p2.proargtypes[1]
+SELECT DISTINCT p1.proargtypes[1]::regtype, p2.proargtypes[1]::regtype
 FROM pg_proc AS p1, pg_proc AS p2
 WHERE p1.oid != p2.oid AND
     p1.prosrc = p2.prosrc AND
@@ -199,7 +199,7 @@ WHERE p1.oid != p2.oid AND
     (p1.proargtypes[1] < p2.proargtypes[1])
 ORDER BY 1, 2;
 
-SELECT DISTINCT p1.proargtypes[2], p2.proargtypes[2]
+SELECT DISTINCT p1.proargtypes[2]::regtype, p2.proargtypes[2]::regtype
 FROM pg_proc AS p1, pg_proc AS p2
 WHERE p1.oid != p2.oid AND
     p1.prosrc = p2.prosrc AND
@@ -208,7 +208,7 @@ WHERE p1.oid != p2.oid AND
     (p1.proargtypes[2] < p2.proargtypes[2])
 ORDER BY 1, 2;
 
-SELECT DISTINCT p1.proargtypes[3], p2.proargtypes[3]
+SELECT DISTINCT p1.proargtypes[3]::regtype, p2.proargtypes[3]::regtype
 FROM pg_proc AS p1, pg_proc AS p2
 WHERE p1.oid != p2.oid AND
     p1.prosrc = p2.prosrc AND
@@ -217,7 +217,7 @@ WHERE p1.oid != p2.oid AND
     (p1.proargtypes[3] < p2.proargtypes[3])
 ORDER BY 1, 2;
 
-SELECT DISTINCT p1.proargtypes[4], p2.proargtypes[4]
+SELECT DISTINCT p1.proargtypes[4]::regtype, p2.proargtypes[4]::regtype
 FROM pg_proc AS p1, pg_proc AS p2
 WHERE p1.oid != p2.oid AND
     p1.prosrc = p2.prosrc AND
@@ -226,7 +226,7 @@ WHERE p1.oid != p2.oid AND
     (p1.proargtypes[4] < p2.proargtypes[4])
 ORDER BY 1, 2;
 
-SELECT DISTINCT p1.proargtypes[5], p2.proargtypes[5]
+SELECT DISTINCT p1.proargtypes[5]::regtype, p2.proargtypes[5]::regtype
 FROM pg_proc AS p1, pg_proc AS p2
 WHERE p1.oid != p2.oid AND
     p1.prosrc = p2.prosrc AND
@@ -235,7 +235,7 @@ WHERE p1.oid != p2.oid AND
     (p1.proargtypes[5] < p2.proargtypes[5])
 ORDER BY 1, 2;
 
-SELECT DISTINCT p1.proargtypes[6], p2.proargtypes[6]
+SELECT DISTINCT p1.proargtypes[6]::regtype, p2.proargtypes[6]::regtype
 FROM pg_proc AS p1, pg_proc AS p2
 WHERE p1.oid != p2.oid AND
     p1.prosrc = p2.prosrc AND
@@ -244,7 +244,7 @@ WHERE p1.oid != p2.oid AND
     (p1.proargtypes[6] < p2.proargtypes[6])
 ORDER BY 1, 2;
 
-SELECT DISTINCT p1.proargtypes[7], p2.proargtypes[7]
+SELECT DISTINCT p1.proargtypes[7]::regtype, p2.proargtypes[7]::regtype
 FROM pg_proc AS p1, pg_proc AS p2
 WHERE p1.oid != p2.oid AND
     p1.prosrc = p2.prosrc AND
@@ -1335,7 +1335,7 @@ WHERE p1.amopopr = p2.oid AND p2.oprcode = p3.oid AND
 SELECT p1.amprocfamily, p1.amprocnum
 FROM pg_amproc as p1
 WHERE p1.amprocfamily = 0 OR p1.amproclefttype = 0 OR p1.amprocrighttype = 0
-    OR p1.amprocnum < 1 OR p1.amproc = 0;
+    OR p1.amprocnum < 0 OR p1.amproc = 0;
 
 -- Support routines that are primary members of opfamilies must be immutable
 -- (else it suggests that the index ordering isn't fixed).  But cross-type

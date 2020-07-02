@@ -68,7 +68,7 @@ extern Size ShmemBackendArraySize(void);
 extern void ShmemBackendArrayAllocation(void);
 #endif
 
-extern int  ParseStartupPacket(struct Port* port, MemoryContext memctx, void* pkg_body, int pkg_size, bool SSLdone);
+extern int  ParseStartupPacket(struct Port* port, MemoryContext memctx, void* pkg_body, int pkg_size, bool ssl_done, bool gss_done);
 extern int	BackendStartup(struct Port* port, int* backend_pid);
 
 /*

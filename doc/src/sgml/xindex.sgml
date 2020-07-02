@@ -409,9 +409,18 @@
    <xref linkend="btree-support-funcs"/>.
   </para>
 
+  <para>
+   Additionally, some opclasses allow users to specify parameters which
+   control their behavior.  Each builtin index access method has an optional
+   <function>options</function> support function, which defines a set of
+   opclass-specific parameters.
+  </para>
+
    <table tocentry="1" id="xindex-btree-support-table">
     <title>B-Tree Support Functions</title>
     <tgroup cols="2">
+     <colspec colname="col1" colwidth="3*"/>
+     <colspec colname="col2" colwidth="1*"/>
      <thead>
       <row>
        <entry>Function</entry>
@@ -448,6 +457,13 @@
        </entry>
        <entry>4</entry>
       </row>
+      <row>
+       <entry>
+        Defines a set of options that are specific to this operator class
+        (optional)
+       </entry>
+       <entry>5</entry>
+      </row>
      </tbody>
     </tgroup>
    </table>
@@ -461,6 +477,8 @@
    <table tocentry="1" id="xindex-hash-support-table">
     <title>Hash Support Functions</title>
     <tgroup cols="2">
+     <colspec colname="col1" colwidth="3*"/>
+     <colspec colname="col2" colwidth="1*"/>
      <thead>
       <row>
        <entry>Function</entry>
@@ -481,6 +499,13 @@
        </entry>
        <entry>2</entry>
       </row>
+      <row>
+       <entry>
+        Defines a set of options that are specific to this operator class
+        (optional)
+       </entry>
+       <entry>3</entry>
+      </row>
      </tbody>
     </tgroup>
    </table>
@@ -494,6 +519,9 @@
    <table tocentry="1" id="xindex-gist-support-table">
     <title>GiST Support Functions</title>
     <tgroup cols="3">
+     <colspec colname="col1" colwidth="2*"/>
+     <colspec colname="col2" colwidth="3*"/>
+     <colspec colname="col3" colwidth="1*"/>
      <thead>
       <row>
        <entry>Function</entry>
@@ -553,6 +581,14 @@
        index-only scans (optional)</entry>
        <entry>9</entry>
       </row>
+      <row>
+       <entry><function>options</function></entry>
+       <entry>
+        Defines a set of options that are specific to this operator class
+        (optional)
+       </entry>
+       <entry>10</entry>
+      </row>
      </tbody>
     </tgroup>
    </table>
@@ -566,6 +602,9 @@
    <table tocentry="1" id="xindex-spgist-support-table">
     <title>SP-GiST Support Functions</title>
     <tgroup cols="3">
+     <colspec colname="col1" colwidth="2*"/>
+     <colspec colname="col2" colwidth="3*"/>
+     <colspec colname="col3" colwidth="1*"/>
      <thead>
       <row>
        <entry>Function</entry>
@@ -601,6 +640,14 @@
         query qualifier</entry>
        <entry>5</entry>
       </row>
+      <row>
+       <entry><function>options</function></entry>
+       <entry>
+        Defines a set of options that are specific to this operator class
+        (optional)
+       </entry>
+       <entry>6</entry>
+      </row>
      </tbody>
     </tgroup>
    </table>
@@ -614,6 +661,9 @@
    <table tocentry="1" id="xindex-gin-support-table">
     <title>GIN Support Functions</title>
     <tgroup cols="3">
+     <colspec colname="col1" colwidth="2*"/>
+     <colspec colname="col2" colwidth="3*"/>
+     <colspec colname="col3" colwidth="1*"/>
      <thead>
       <row>
        <entry>Function</entry>
@@ -667,6 +717,14 @@
        </entry>
        <entry>6</entry>
       </row>
+      <row>
+       <entry><function>options</function></entry>
+       <entry>
+        Defines a set of options that are specific to this operator class
+        (optional)
+       </entry>
+       <entry>7</entry>
+      </row>
      </tbody>
     </tgroup>
    </table>
@@ -681,6 +739,9 @@
    <table tocentry="1" id="xindex-brin-support-table">
     <title>BRIN Support Functions</title>
     <tgroup cols="3">
+     <colspec colname="col1" colwidth="2*"/>
+     <colspec colname="col2" colwidth="3*"/>
+     <colspec colname="col3" colwidth="1*"/>
      <thead>
       <row>
        <entry>Function</entry>
@@ -713,6 +774,14 @@
         compute union of two summary tuples
        </entry>
        <entry>4</entry>
+      </row>
+      <row>
+       <entry><function>options</function></entry>
+       <entry>
+        Defines a set of options that are specific to this operator class
+        (optional)
+       </entry>
+       <entry>5</entry>
       </row>
      </tbody>
     </tgroup>

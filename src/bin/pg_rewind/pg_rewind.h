@@ -42,13 +42,15 @@ extern uint64 fetch_done;
 
 /* in parsexlog.c */
 extern void extractPageMap(const char *datadir, XLogRecPtr startpoint,
-						   int tliIndex, XLogRecPtr endpoint);
+						   int tliIndex, XLogRecPtr endpoint,
+						   const char *restoreCommand);
 extern void findLastCheckpoint(const char *datadir, XLogRecPtr searchptr,
 							   int tliIndex,
 							   XLogRecPtr *lastchkptrec, TimeLineID *lastchkpttli,
-							   XLogRecPtr *lastchkptredo);
+							   XLogRecPtr *lastchkptredo,
+							   const char *restoreCommand);
 extern XLogRecPtr readOneRecord(const char *datadir, XLogRecPtr ptr,
-								int tliIndex);
+								int tliIndex, const char *restoreCommand);
 
 /* in pg_rewind.c */
 extern void progress_report(bool force);

@@ -1,4 +1,4 @@
-#!/usr/bin/perl -w
+#!/usr/bin/perl
 #----------------------------------------------------------------------
 #
 # genbki.pl
@@ -17,9 +17,8 @@ use strict;
 use warnings;
 use Getopt::Long;
 
-use File::Basename;
-use File::Spec;
-BEGIN { use lib File::Spec->rel2abs(dirname(__FILE__)); }
+use FindBin;
+use lib $FindBin::RealBin;
 
 use Catalog;
 
@@ -110,7 +109,7 @@ foreach my $header (@ARGV)
 				}
 				else
 				{
-					push @{ $catalog_data{pg_description}}, \%descr;
+					push @{ $catalog_data{pg_description} }, \%descr;
 				}
 			}
 
@@ -680,8 +679,8 @@ close $bki;
 close $schemapg;
 
 # Finally, rename the completed files into place.
-Catalog::RenameTempFile($bkifile,     $tmpext);
-Catalog::RenameTempFile($schemafile,  $tmpext);
+Catalog::RenameTempFile($bkifile,    $tmpext);
+Catalog::RenameTempFile($schemafile, $tmpext);
 
 exit 0;
 

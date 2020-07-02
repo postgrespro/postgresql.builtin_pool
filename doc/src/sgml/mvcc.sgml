@@ -535,6 +535,20 @@ ERROR:  could not serialize access due to concurrent update
     of explicit locks to block conflicting transactions.
    </para>
 
+   <para>
+    The Repeatable Read isolation level is implemented using a technique
+    known in academic database literature and in some other database products
+    as <firstterm>Snapshot Isolation</firstterm>.  Differences in behavior
+    and performance may be observed when compared with systems that use a
+    traditional locking technique that reduces concurrency.  Some other
+    systems may even offer Repeatable Read and Snapshot Isolation as distinct
+    isolation levels with different behavior.  The permitted phenomena that
+    distinguish the two techniques were not formalized by database researchers
+    until after the SQL standard was developed, and are outside the scope of
+    this manual.  For a full treatment, please see
+    <xref linkend="berenson95"/>.
+   </para>
+
    <note>
     <para>
      Prior to <productname>PostgreSQL</productname> version 9.1, a request
@@ -782,6 +796,15 @@ ERROR:  could not serialize access due to read/write dependencies among transact
       </para>
      </listitem>
     </itemizedlist>
+   </para>
+
+   <para>
+    The Serializable isolation level is implemented using a technique known
+    in academic database literature as Serializable Snapshot Isolation, which
+    builds on Snapshot Isolation by adding checks for serialization anomalies.
+    Some differences in behavior and performance may be observed when compared
+    with other systems that use a traditional locking technique.  Please see
+    <xref linkend="ports12"/> for detailed information.
    </para>
   </sect2>
  </sect1>
@@ -1039,7 +1062,7 @@ ERROR:  could not serialize access due to read/write dependencies among transact
      </tip>
 
    <para>
-    Once acquired, a lock is normally held till end of transaction.  But if a
+    Once acquired, a lock is normally held until the end of the transaction.  But if a
     lock is acquired after establishing a savepoint, the lock is released
     immediately if the savepoint is rolled back to.  This is consistent with
     the principle that <command>ROLLBACK</command> cancels all effects of the
@@ -1053,28 +1076,35 @@ ERROR:  could not serialize access due to read/write dependencies among transact
     <table tocentry="1" id="table-lock-compatibility">
      <title> Conflicting Lock Modes</title>
      <tgroup cols="9">
-      <colspec colnum="2" colname="lockst"/>
-      <colspec colnum="9" colname="lockend"/>
-      <spanspec namest="lockst" nameend="lockend" spanname="lockreq"/>
+      <colspec colnum="1" colwidth="1.25*"/>
+      <colspec colnum="2" colwidth="1*" colname="lockst"/>
+      <colspec colnum="3" colwidth="1*"/>
+      <colspec colnum="4" colwidth="1*"/>
+      <colspec colnum="5" colwidth="1*"/>
+      <colspec colnum="6" colwidth="1*"/>
+      <colspec colnum="7" colwidth="1*"/>
+      <colspec colnum="8" colwidth="1*"/>
+      <colspec colnum="9" colwidth="1*" colname="lockend"/>
+      <spanspec spanname="lockreq" namest="lockst" nameend="lockend" align="center"/>
       <thead>
        <row>
         <entry morerows="1">Requested Lock Mode</entry>
-        <entry spanname="lockreq">Current Lock Mode</entry>
+        <entry spanname="lockreq">Existing Lock Mode</entry>
        </row>
        <row>
-        <entry>ACCESS SHARE</entry>
-        <entry>ROW SHARE</entry>
-        <entry>ROW EXCLUSIVE</entry>
-        <entry>SHARE UPDATE EXCLUSIVE</entry>
-        <entry>SHARE</entry>
-        <entry>SHARE ROW EXCLUSIVE</entry>
-        <entry>EXCLUSIVE</entry>
-        <entry>ACCESS EXCLUSIVE</entry>
+        <entry><literal>ACCESS SHARE</literal></entry>
+        <entry><literal>ROW SHARE</literal></entry>
+        <entry><literal>ROW EXCL.</literal></entry>
+        <entry><literal>SHARE UPDATE EXCL.</literal></entry>
+        <entry><literal>SHARE</literal></entry>
+        <entry><literal>SHARE ROW EXCL.</literal></entry>
+        <entry><literal>EXCL.</literal></entry>
+        <entry><literal>ACCESS EXCL.</literal></entry>
        </row>
       </thead>
       <tbody>
        <row>
-        <entry>ACCESS SHARE</entry>
+        <entry><literal>ACCESS SHARE</literal></entry>
         <entry align="center"></entry>
         <entry align="center"></entry>
         <entry align="center"></entry>
@@ -1085,7 +1115,7 @@ ERROR:  could not serialize access due to read/write dependencies among transact
         <entry align="center">X</entry>
        </row>
        <row>
-        <entry>ROW SHARE</entry>
+        <entry><literal>ROW SHARE</literal></entry>
         <entry align="center"></entry>
         <entry align="center"></entry>
         <entry align="center"></entry>
@@ -1096,7 +1126,7 @@ ERROR:  could not serialize access due to read/write dependencies among transact
         <entry align="center">X</entry>
        </row>
        <row>
-        <entry>ROW EXCLUSIVE</entry>
+        <entry><literal>ROW EXCL.</literal></entry>
         <entry align="center"></entry>
         <entry align="center"></entry>
         <entry align="center"></entry>
@@ -1107,7 +1137,7 @@ ERROR:  could not serialize access due to read/write dependencies among transact
         <entry align="center">X</entry>
        </row>
        <row>
-        <entry>SHARE UPDATE EXCLUSIVE</entry>
+        <entry><literal>SHARE UPDATE EXCL.</literal></entry>
         <entry align="center"></entry>
         <entry align="center"></entry>
         <entry align="center"></entry>
@@ -1118,7 +1148,7 @@ ERROR:  could not serialize access due to read/write dependencies among transact
         <entry align="center">X</entry>
        </row>
        <row>
-        <entry>SHARE</entry>
+        <entry><literal>SHARE</literal></entry>
         <entry align="center"></entry>
         <entry align="center"></entry>
         <entry align="center">X</entry>
@@ -1129,7 +1159,7 @@ ERROR:  could not serialize access due to read/write dependencies among transact
         <entry align="center">X</entry>
        </row>
        <row>
-        <entry>SHARE ROW EXCLUSIVE</entry>
+        <entry><literal>SHARE ROW EXCL.</literal></entry>
         <entry align="center"></entry>
         <entry align="center"></entry>
         <entry align="center">X</entry>
@@ -1140,7 +1170,7 @@ ERROR:  could not serialize access due to read/write dependencies among transact
         <entry align="center">X</entry>
        </row>
        <row>
-        <entry>EXCLUSIVE</entry>
+        <entry><literal>EXCL.</literal></entry>
         <entry align="center"></entry>
         <entry align="center">X</entry>
         <entry align="center">X</entry>
@@ -1151,7 +1181,7 @@ ERROR:  could not serialize access due to read/write dependencies among transact
         <entry align="center">X</entry>
        </row>
        <row>
-        <entry>ACCESS EXCLUSIVE</entry>
+        <entry><literal>ACCESS EXCL.</literal></entry>
         <entry align="center">X</entry>
         <entry align="center">X</entry>
         <entry align="center">X</entry>
@@ -1178,7 +1208,10 @@ ERROR:  could not serialize access due to read/write dependencies among transact
      conflicting locks on the same row, even in different subtransactions;
      but other than that, two transactions can never hold conflicting locks
      on the same row.  Row-level locks do not affect data querying; they
-     block only <emphasis>writers and lockers</emphasis> to the same row.
+     block only <emphasis>writers and lockers</emphasis> to the same
+     row.  Row-level locks are released at transaction end or during
+     savepoint rollback, just like table-level locks.
+
     </para>
 
      <variablelist>
@@ -1286,8 +1319,11 @@ ERROR:  could not serialize access due to read/write dependencies among transact
     <table tocentry="1" id="row-lock-compatibility">
      <title>Conflicting Row-Level Locks</title>
      <tgroup cols="5">
-      <colspec colnum="2" colname="lockst"/>
-      <colspec colnum="5" colname="lockend"/>
+      <colspec colname="col1"    colwidth="1.5*"/>
+      <colspec colname="lockst"  colwidth="1*"/>
+      <colspec colname="col3"    colwidth="1*"/>
+      <colspec colname="col4"    colwidth="1*"/>
+      <colspec colname="lockend" colwidth="1*"/>
       <spanspec namest="lockst" nameend="lockend" spanname="lockreq"/>
       <thead>
        <row>
@@ -1712,6 +1748,16 @@ SELECT pg_advisory_lock(q.id) FROM
     state, a Repeatable Read transaction run on the standby can sometimes
     see a transient state that is inconsistent with any serial execution
     of the transactions on the master.
+   </para>
+
+   <para>
+    Internal access to the system catalogs is not done using the isolation
+    level of the current transaction.  This means that newly created database
+    objects such as tables are visible to concurrent Repeatable Read and
+    Serializable transactions, even though the rows they contain are not.  In
+    contrast, queries that explicitly examine the system catalogs don't see
+    rows representing concurrently created database objects, in the higher
+    isolation levels.
    </para>
   </sect1>
 

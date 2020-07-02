@@ -192,8 +192,7 @@ WITH ( MODULUS <replaceable class="parameter">numeric_literal</replaceable>, REM
       can be written before <literal>TEMPORARY</literal> or <literal>TEMP</literal>.
       This presently makes no difference in <productname>PostgreSQL</productname>
       and is deprecated; see
-      <xref linkend="sql-createtable-compatibility"
-      endterm="sql-createtable-compatibility-title"/>.
+      <xref linkend="sql-createtable-compatibility"/> below.
      </para>
     </listitem>
    </varlistentry>
@@ -399,7 +398,9 @@ WITH ( MODULUS <replaceable class="parameter">numeric_literal</replaceable>, REM
       Creates the table as a <firstterm>partition</firstterm> of the specified
       parent table. The table can be created either as a partition for specific
       values using <literal>FOR VALUES</literal> or as a default partition
-      using <literal>DEFAULT</literal>.
+      using <literal>DEFAULT</literal>.  Any indexes, constraints and
+      user-defined row-level triggers that exist in the parent table are cloned
+      on the new partition.
      </para>
 
      <para>
@@ -842,15 +843,27 @@ WITH ( MODULUS <replaceable class="parameter">numeric_literal</replaceable>, REM
 
      <para>
       The clauses <literal>ALWAYS</literal> and <literal>BY DEFAULT</literal>
-      determine how the sequence value is given precedence over a
-      user-specified value in an <command>INSERT</command> statement.
-      If <literal>ALWAYS</literal> is specified, a user-specified value is
-      only accepted if the <command>INSERT</command> statement
-      specifies <literal>OVERRIDING SYSTEM VALUE</literal>.  If <literal>BY
-      DEFAULT</literal> is specified, then the user-specified value takes
-      precedence.  See <xref linkend="sql-insert"/> for details.  (In
-      the <command>COPY</command> command, user-specified values are always
-      used regardless of this setting.)
+      determine how explicitly user-specified values are handled in
+      <command>INSERT</command> and <command>UPDATE</command> commands.
+     </para>
+
+     <para>
+      In an <command>INSERT</command> command, if <literal>ALWAYS</literal> is
+      selected, a user-specified value is only accepted if the
+      <command>INSERT</command> statement specifies <literal>OVERRIDING SYSTEM
+      VALUE</literal>.  If <literal>BY DEFAULT</literal> is selected, then the
+      user-specified value takes precedence.  See <xref linkend="sql-insert"/>
+      for details.  (In the <command>COPY</command> command, user-specified
+      values are always used regardless of this setting.)
+     </para>
+
+     <para>
+      In an <command>UPDATE</command> command, if <literal>ALWAYS</literal> is
+      selected, any update of the column to any value other than
+      <literal>DEFAULT</literal> will be rejected.  If <literal>BY
+      DEFAULT</literal> is selected, the column can be updated normally.
+      (There is no <literal>OVERRIDING</literal> clause for the
+      <command>UPDATE</command> command.)
      </para>
 
      <para>
@@ -1187,8 +1200,7 @@ WITH ( MODULUS <replaceable class="parameter">numeric_literal</replaceable>, REM
     <listitem>
      <para>
       This clause specifies optional storage parameters for a table or index;
-      see <xref linkend="sql-createtable-storage-parameters"
-      endterm="sql-createtable-storage-parameters-title"/> for more
+      see <xref linkend="sql-createtable-storage-parameters"/> below for more
       information.  For backward-compatibility the <literal>WITH</literal>
       clause for a table can also include <literal>OIDS=FALSE</literal> to
       specify that rows of the new table should not contain OIDs (object
@@ -1288,8 +1300,8 @@ WITH ( MODULUS <replaceable class="parameter">numeric_literal</replaceable>, REM
 
   </variablelist>
 
-  <refsect2 id="sql-createtable-storage-parameters">
-   <title id="sql-createtable-storage-parameters-title">Storage Parameters</title>
+  <refsect2 id="sql-createtable-storage-parameters" xreflabel="Storage Parameters">
+   <title>Storage Parameters</title>
 
  <indexterm zone="sql-createtable-storage-parameters">
   <primary>storage parameters</primary>
@@ -1470,6 +1482,36 @@ WITH ( MODULUS <replaceable class="parameter">numeric_literal</replaceable>, REM
     <listitem>
      <para>
       Per-table value for <xref linkend="guc-autovacuum-vacuum-scale-factor"/>
+      parameter.
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="reloption-autovacuum-vacuum-insert-threshold" xreflabel="autovacuum_vacuum_insert_threshold">
+    <term><literal>autovacuum_vacuum_insert_threshold</literal>, <literal>toast.autovacuum_vacuum_insert_threshold</literal> (<type>integer</type>)
+    <indexterm>
+     <primary><varname>autovacuum_vacuum_insert_threshold</varname></primary>
+     <secondary>storage parameter</secondary>
+    </indexterm>
+    </term>
+    <listitem>
+     <para>
+      Per-table value for <xref linkend="guc-autovacuum-vacuum-insert-threshold"/>
+      parameter.  The special value of -1 may be used to disable insert vacuums on the table.
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="reloption-autovacuum-vacuum-insert-scale-factor" xreflabel="autovacuum_vacuum_insert_scale_factor">
+    <term><literal>autovacuum_vacuum_insert_scale_factor</literal>, <literal>toast.autovacuum_vacuum_insert_scale_factor</literal> (<type>float4</type>)
+    <indexterm>
+     <primary><varname>autovacuum_vacuum_insert_scale_factor</varname> </primary>
+     <secondary>storage parameter</secondary>
+    </indexterm>
+    </term>
+    <listitem>
+     <para>
+      Per-table value for <xref linkend="guc-autovacuum-vacuum-insert-scale-factor"/>
       parameter.
      </para>
     </listitem>
@@ -2019,8 +2061,8 @@ CREATE TABLE cities_partdef
 </programlisting></para>
  </refsect1>
 
- <refsect1 id="sql-createtable-compatibility">
-  <title id="sql-createtable-compatibility-title">Compatibility</title>
+ <refsect1 id="sql-createtable-compatibility" xreflabel="Compatibility">
+  <title>Compatibility</title>
 
   <para>
    The <command>CREATE TABLE</command> command conforms to the

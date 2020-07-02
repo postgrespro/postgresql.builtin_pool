@@ -981,12 +981,13 @@ _equalQuery(const Query *a, const Query *b)
 	COMPARE_NODE_FIELD(sortClause);
 	COMPARE_NODE_FIELD(limitOffset);
 	COMPARE_NODE_FIELD(limitCount);
+	COMPARE_SCALAR_FIELD(limitOption);
 	COMPARE_NODE_FIELD(rowMarks);
 	COMPARE_NODE_FIELD(setOperations);
 	COMPARE_NODE_FIELD(constraintDeps);
 	COMPARE_NODE_FIELD(withCheckOptions);
 	COMPARE_LOCATION_FIELD(stmt_location);
-	COMPARE_LOCATION_FIELD(stmt_len);
+	COMPARE_SCALAR_FIELD(stmt_len);
 
 	return true;
 }
@@ -996,7 +997,7 @@ _equalRawStmt(const RawStmt *a, const RawStmt *b)
 {
 	COMPARE_NODE_FIELD(stmt);
 	COMPARE_LOCATION_FIELD(stmt_location);
-	COMPARE_LOCATION_FIELD(stmt_len);
+	COMPARE_SCALAR_FIELD(stmt_len);
 
 	return true;
 }
@@ -1055,6 +1056,7 @@ _equalSelectStmt(const SelectStmt *a, const SelectStmt *b)
 	COMPARE_NODE_FIELD(sortClause);
 	COMPARE_NODE_FIELD(limitOffset);
 	COMPARE_NODE_FIELD(limitCount);
+	COMPARE_SCALAR_FIELD(limitOption);
 	COMPARE_NODE_FIELD(lockingClause);
 	COMPARE_NODE_FIELD(withClause);
 	COMPARE_SCALAR_FIELD(op);
@@ -1345,6 +1347,8 @@ _equalIndexStmt(const IndexStmt *a, const IndexStmt *b)
 	COMPARE_STRING_FIELD(idxcomment);
 	COMPARE_SCALAR_FIELD(indexOid);
 	COMPARE_SCALAR_FIELD(oldNode);
+	COMPARE_SCALAR_FIELD(oldCreateSubid);
+	COMPARE_SCALAR_FIELD(oldFirstRelfilenodeSubid);
 	COMPARE_SCALAR_FIELD(unique);
 	COMPARE_SCALAR_FIELD(primary);
 	COMPARE_SCALAR_FIELD(isconstraint);
@@ -1445,6 +1449,7 @@ _equalAlterObjectDependsStmt(const AlterObjectDependsStmt *a, const AlterObjectD
 	COMPARE_NODE_FIELD(relation);
 	COMPARE_NODE_FIELD(object);
 	COMPARE_NODE_FIELD(extname);
+	COMPARE_SCALAR_FIELD(remove);
 
 	return true;
 }
@@ -2572,6 +2577,7 @@ _equalIndexElem(const IndexElem *a, const IndexElem *b)
 	COMPARE_STRING_FIELD(indexcolname);
 	COMPARE_NODE_FIELD(collation);
 	COMPARE_NODE_FIELD(opclass);
+	COMPARE_NODE_FIELD(opclassopts);
 	COMPARE_SCALAR_FIELD(ordering);
 	COMPARE_SCALAR_FIELD(nulls_ordering);
 

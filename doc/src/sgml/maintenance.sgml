@@ -606,14 +606,13 @@ SELECT datname, age(datfrozenxid) FROM pg_database;
    </para>
 
    <para>
-    If for some reason autovacuum fails to clear old XIDs from a table,
-    the system will begin to emit warning messages like this when the
-    database's oldest XIDs reach ten million transactions from the wraparound
-    point:
+    If for some reason autovacuum fails to clear old XIDs from a table, the
+    system will begin to emit warning messages like this when the database's
+    oldest XIDs reach eleven million transactions from the wraparound point:
 
 <programlisting>
-WARNING:  database "mydb" must be vacuumed within 177009986 transactions
-HINT:  To avoid a database shutdown, execute a database-wide VACUUM in "mydb".
+WARNING:  database "mydb" must be vacuumed within 10985967 transactions
+HINT:  To avoid a database shutdown, execute a database-wide VACUUM in that database.
 </programlisting>
 
     (A manual <command>VACUUM</command> should fix the problem, as suggested by the
@@ -777,13 +776,33 @@ vacuum threshold = vacuum base threshold + vacuum scale factor * number of tuple
     <xref linkend="guc-autovacuum-vacuum-scale-factor"/>,
     and the number of tuples is
     <structname>pg_class</structname>.<structfield>reltuples</structfield>.
-    The number of obsolete tuples is obtained from the statistics
-    collector; it is a semi-accurate count updated by each
-    <command>UPDATE</command> and <command>DELETE</command> operation.  (It
-    is only semi-accurate because some information might be lost under heavy
-    load.)  If the <structfield>relfrozenxid</structfield> value of the table is more
-    than <varname>vacuum_freeze_table_age</varname> transactions old, an aggressive
-    vacuum is performed to freeze old tuples and advance
+   </para>
+
+   <para>
+    The table is also vacuumed if the number of tuples inserted since the last
+    vacuum has exceeded the defined insert threshold, which is defined as:
+<programlisting>
+vacuum insert threshold = vacuum base insert threshold + vacuum insert scale factor * number of tuples
+</programlisting>
+    where the vacuum insert base threshold is
+    <xref linkend="guc-autovacuum-vacuum-insert-threshold"/>,
+    and vacuum insert scale factor is
+    <xref linkend="guc-autovacuum-vacuum-insert-scale-factor"/>.
+    Such vacuums may allow portions of the table to be marked as
+    <firstterm>all visible</firstterm> and also allow tuples to be frozen, which
+    can reduce the work required in subsequent vacuums.
+    For tables which receive <command>INSERT</command> operations but no or
+    almost no <command>UPDATE</command>/<command>DELETE</command> operations,
+    it may be beneficial to lower the table's
+    <xref linkend="reloption-autovacuum-freeze-min-age"/> as this may allow
+    tuples to be frozen by earlier vacuums.  The number of obsolete tuples and
+    the number of inserted tuples are obtained from the statistics collector;
+    it is a semi-accurate count updated by each <command>UPDATE</command>,
+    <command>DELETE</command> and <command>INSERT</command> operation.  (It is
+    only semi-accurate because some information might be lost under heavy
+    load.)  If the <structfield>relfrozenxid</structfield> value of the table
+    is more than <varname>vacuum_freeze_table_age</varname> transactions old,
+    an aggressive vacuum is performed to freeze old tuples and advance
     <structfield>relfrozenxid</structfield>; otherwise, only pages that have been modified
     since the last vacuum are scanned.
    </para>
@@ -807,8 +826,7 @@ analyze threshold = analyze base threshold + analyze scale factor * number of tu
     The default thresholds and scale factors are taken from
     <filename>postgresql.conf</filename>, but it is possible to override them
     (and many other autovacuum control parameters) on a per-table basis; see
-    <xref linkend="sql-createtable-storage-parameters"
-    endterm="sql-createtable-storage-parameters-title"/> for more information.
+    <xref linkend="sql-createtable-storage-parameters"/> for more information.
     If a setting has been changed via a table's storage parameters, that value
     is used when processing that table; otherwise the global settings are
     used. See <xref linkend="runtime-config-autovacuum"/> for more details on

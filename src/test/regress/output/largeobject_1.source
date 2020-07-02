@@ -326,7 +326,7 @@ SELECT lo_lseek(fd, 0, 2) FROM lotest_stash_values;
    680800
 (1 row)
 
--- with the default BLKSZ, LOBLKSZ = 2048, so this positions us for a block
+-- with the default BLCKSZ, LOBLKSIZE = 2048, so this positions us for a block
 -- edge case
 SELECT lo_lseek(fd, 2030, 0) FROM lotest_stash_values;
  lo_lseek 
@@ -469,13 +469,13 @@ SELECT lo_get(:newloid);
 
 -- Create one more object that we leave behind for testing pg_dump/pg_upgrade;
 -- this one intentionally has an OID in the system range
-SELECT lo_create(3001);
+SELECT lo_create(2121);
  lo_create 
 -----------
-      3001
+      2121
 (1 row)
 
-COMMENT ON LARGE OBJECT 3001 IS 'testing comments';
+COMMENT ON LARGE OBJECT 2121 IS 'testing comments';
 -- Clean up
 DROP TABLE lotest_stash_values;
 DROP ROLE regress_lo_user;

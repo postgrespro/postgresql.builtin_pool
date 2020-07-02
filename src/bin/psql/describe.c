@@ -2939,14 +2939,22 @@ describeOneTableDetails(const char *schemaname,
 		printfPQExpBuffer(&buf,
 						  "SELECT t.tgname, "
 						  "pg_catalog.pg_get_triggerdef(t.oid%s), "
-						  "t.tgenabled, %s\n"
+						  "t.tgenabled, %s, %s\n"
 						  "FROM pg_catalog.pg_trigger t\n"
 						  "WHERE t.tgrelid = '%s' AND ",
 						  (pset.sversion >= 90000 ? ", true" : ""),
 						  (pset.sversion >= 90000 ? "t.tgisinternal" :
 						   pset.sversion >= 80300 ?
 						   "t.tgconstraint <> 0 AS tgisinternal" :
-						   "false AS tgisinternal"), oid);
+						   "false AS tgisinternal"),
+						  (pset.sversion >= 130000 ?
+						   "(SELECT (NULLIF(a.relid, t.tgrelid))::pg_catalog.regclass"
+						   " FROM pg_catalog.pg_trigger AS u, "
+						   "      pg_catalog.pg_partition_ancestors(t.tgrelid) AS a"
+						   " WHERE u.tgname = t.tgname AND u.tgrelid = a.relid"
+						   "       AND u.tgparentid = 0) AS parent" :
+						   "NULL AS parent"),
+						  oid);
 		if (pset.sversion >= 110000)
 			appendPQExpBufferStr(&buf, "(NOT t.tgisinternal OR (t.tgisinternal AND t.tgenabled = 'D') \n"
 								 "    OR EXISTS (SELECT 1 FROM pg_catalog.pg_depend WHERE objid = t.oid \n"
@@ -3062,6 +3070,12 @@ describeOneTableDetails(const char *schemaname,
 						tgdef = usingpos + 9;
 
 					printfPQExpBuffer(&buf, "    %s", tgdef);
+
+					/* Visually distinguish inherited triggers */
+					if (!PQgetisnull(result, i, 4))
+						appendPQExpBuffer(&buf, ", ON TABLE %s",
+										  PQgetvalue(result, i, 4));
+
 					printTableAddFooter(&cont, buf.data);
 				}
 			}
@@ -5707,7 +5721,7 @@ listPublications(const char *pattern)
 	PQExpBufferData buf;
 	PGresult   *res;
 	printQueryOpt myopt = pset.popt;
-	static const bool translate_columns[] = {false, false, false, false, false, false, false};
+	static const bool translate_columns[] = {false, false, false, false, false, false, false, false};
 
 	if (pset.sversion < 100000)
 	{
@@ -5738,6 +5752,10 @@ listPublications(const char *pattern)
 		appendPQExpBuffer(&buf,
 						  ",\n  pubtruncate AS \"%s\"",
 						  gettext_noop("Truncates"));
+	if (pset.sversion >= 130000)
+		appendPQExpBuffer(&buf,
+						  ",\n  pubviaroot AS \"%s\"",
+						  gettext_noop("Via root"));
 
 	appendPQExpBufferStr(&buf,
 						 "\nFROM pg_catalog.pg_publication\n");
@@ -5779,6 +5797,7 @@ describePublications(const char *pattern)
 	int			i;
 	PGresult   *res;
 	bool		has_pubtruncate;
+	bool		has_pubviaroot;
 
 	if (pset.sversion < 100000)
 	{
@@ -5791,6 +5810,7 @@ describePublications(const char *pattern)
 	}
 
 	has_pubtruncate = (pset.sversion >= 110000);
+	has_pubviaroot = (pset.sversion >= 130000);
 
 	initPQExpBuffer(&buf);
 
@@ -5801,6 +5821,9 @@ describePublications(const char *pattern)
 	if (has_pubtruncate)
 		appendPQExpBufferStr(&buf,
 							 ", pubtruncate");
+	if (has_pubviaroot)
+		appendPQExpBufferStr(&buf,
+							 ", pubviaroot");
 	appendPQExpBufferStr(&buf,
 						 "\nFROM pg_catalog.pg_publication\n");
 
@@ -5850,6 +5873,8 @@ describePublications(const char *pattern)
 
 		if (has_pubtruncate)
 			ncols++;
+		if (has_pubviaroot)
+			ncols++;
 
 		initPQExpBuffer(&title);
 		printfPQExpBuffer(&title, _("Publication %s"), pubname);
@@ -5862,6 +5887,8 @@ describePublications(const char *pattern)
 		printTableAddHeader(&cont, gettext_noop("Deletes"), true, align);
 		if (has_pubtruncate)
 			printTableAddHeader(&cont, gettext_noop("Truncates"), true, align);
+		if (has_pubviaroot)
+			printTableAddHeader(&cont, gettext_noop("Via root"), true, align);
 
 		printTableAddCell(&cont, PQgetvalue(res, i, 2), false, false);
 		printTableAddCell(&cont, PQgetvalue(res, i, 3), false, false);
@@ -5870,6 +5897,8 @@ describePublications(const char *pattern)
 		printTableAddCell(&cont, PQgetvalue(res, i, 6), false, false);
 		if (has_pubtruncate)
 			printTableAddCell(&cont, PQgetvalue(res, i, 7), false, false);
+		if (has_pubviaroot)
+			printTableAddCell(&cont, PQgetvalue(res, i, 8), false, false);
 
 		if (!puballtables)
 		{
@@ -6031,8 +6060,7 @@ listOperatorClasses(const char *access_method_pattern,
 	PGresult   *res;
 	printQueryOpt myopt = pset.popt;
 	bool		have_where = false;
-	static const bool translate_columns[] = {false, false, false, false, false,
-	false, false, false};
+	static const bool translate_columns[] = {false, false, false, false, false, false, false};
 
 	initPQExpBuffer(&buf);
 
@@ -6074,7 +6102,7 @@ listOperatorClasses(const char *access_method_pattern,
 					  "\nFROM pg_catalog.pg_opclass c\n"
 					  "  LEFT JOIN pg_catalog.pg_am am on am.oid = c.opcmethod\n"
 					  "  LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.opcnamespace\n"
-					  "  LEFT JOIN pg_catalog.pg_type t1 ON t1.oid = c.opcintype\n"
+					  "  LEFT JOIN pg_catalog.pg_type t ON t.oid = c.opcintype\n"
 		);
 	if (verbose)
 		appendPQExpBuffer(&buf,
@@ -6086,7 +6114,7 @@ listOperatorClasses(const char *access_method_pattern,
 										   false, false, NULL, "am.amname", NULL, NULL);
 	if (type_pattern)
 		processSQLNamePattern(pset.db, &buf, type_pattern, have_where, false,
-							  NULL, "t1.typname", NULL, NULL);
+							  NULL, "t.typname", NULL, NULL);
 
 	appendPQExpBufferStr(&buf, "ORDER BY 1, 2, 4;");
 	res = PSQLexec(buf.data);
@@ -6120,8 +6148,7 @@ listOperatorFamilies(const char *access_method_pattern,
 	PGresult   *res;
 	printQueryOpt myopt = pset.popt;
 	bool		have_where = false;
-	static const bool translate_columns[] = {false, false, false, false, false,
-	false, false, false};
+	static const bool translate_columns[] = {false, false, false, false};
 
 	initPQExpBuffer(&buf);
 
@@ -6201,8 +6228,7 @@ listOpFamilyOperators(const char *access_method_pattern,
 	printQueryOpt myopt = pset.popt;
 	bool		have_where = false;
 
-	static const bool translate_columns[] = {false, false, false, false, false,
-	false, false, true, false};
+	static const bool translate_columns[] = {false, false, false, false, false, false};
 
 	initPQExpBuffer(&buf);
 
@@ -6224,7 +6250,7 @@ listOpFamilyOperators(const char *access_method_pattern,
 					  "    pg_catalog.format_type(o.amoprighttype, NULL)\n"
 					  "  ) AS \"%s\"\n",
 					  gettext_noop("AM"),
-					  gettext_noop("Opfamily Name"),
+					  gettext_noop("Operator family"),
 					  gettext_noop("Operator"));
 
 	if (verbose)
@@ -6259,7 +6285,11 @@ listOpFamilyOperators(const char *access_method_pattern,
 		processSQLNamePattern(pset.db, &buf, family_pattern, have_where, false,
 							  "nsf.nspname", "of.opfname", NULL, NULL);
 
-	appendPQExpBufferStr(&buf, "ORDER BY 1, 2, o.amopstrategy, 3;");
+	appendPQExpBufferStr(&buf, "ORDER BY 1, 2,\n"
+						 "  o.amoplefttype = o.amoprighttype DESC,\n"
+						 "  pg_catalog.format_type(o.amoplefttype, NULL),\n"
+						 "  pg_catalog.format_type(o.amoprighttype, NULL),\n"
+						 "  o.amopstrategy;");
 
 	res = PSQLexec(buf.data);
 	termPQExpBuffer(&buf);
@@ -6280,25 +6310,25 @@ listOpFamilyOperators(const char *access_method_pattern,
 
 /*
  * \dAp
- * Lists procedures of operator families
+ * Lists support functions of operator families
  *
  * Takes an optional regexps to filter by index access method and operator
  * family.
  */
 bool
-listOpFamilyProcedures(const char *access_method_pattern,
-					   const char *family_pattern)
+listOpFamilyFunctions(const char *access_method_pattern,
+					  const char *family_pattern)
 {
 	PQExpBufferData buf;
 	PGresult   *res;
 	printQueryOpt myopt = pset.popt;
 	bool		have_where = false;
-	static const bool translate_columns[] = {false, false, false, false, false, false, false};
+	static const bool translate_columns[] = {false, false, false, false, false, false};
 
 	initPQExpBuffer(&buf);
 
 	printfPQExpBuffer(&buf,
-					  "SELECT DISTINCT\n"
+					  "SELECT\n"
 					  "  am.amname AS \"%s\",\n"
 					  "  CASE\n"
 					  "    WHEN pg_catalog.pg_opfamily_is_visible(of.oid)\n"
@@ -6314,7 +6344,7 @@ listOpFamilyProcedures(const char *access_method_pattern,
 					  gettext_noop("Left arg type"),
 					  gettext_noop("Right arg type"),
 					  gettext_noop("Number"),
-					  gettext_noop("Proc name"));
+					  gettext_noop("Function"));
 
 	appendPQExpBuffer(&buf,
 					  "FROM pg_catalog.pg_amproc ap\n"
@@ -6331,8 +6361,9 @@ listOpFamilyProcedures(const char *access_method_pattern,
 		processSQLNamePattern(pset.db, &buf, family_pattern, have_where, false,
 							  "ns.nspname", "of.opfname", NULL, NULL);
 
-	appendPQExpBufferStr(&buf,
-						 "ORDER BY 1, 2, 3, 4, 5;");
+	appendPQExpBufferStr(&buf, "ORDER BY 1, 2,\n"
+						 "  ap.amproclefttype = ap.amprocrighttype DESC,\n"
+						 "  3, 4, 5;");
 
 	res = PSQLexec(buf.data);
 	termPQExpBuffer(&buf);
@@ -6340,7 +6371,7 @@ listOpFamilyProcedures(const char *access_method_pattern,
 		return false;
 
 	myopt.nullPrint = NULL;
-	myopt.title = _("List of procedures of operator families");
+	myopt.title = _("List of support functions of operator families");
 	myopt.translate_header = true;
 	myopt.translate_columns = translate_columns;
 	myopt.n_translate_columns = lengthof(translate_columns);

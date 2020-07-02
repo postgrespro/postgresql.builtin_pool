@@ -1360,6 +1360,13 @@ select * from another;
 
 drop table another;
 
+-- Create an index that skips WAL, then perform a SET DATA TYPE that skips
+-- rewriting the index.
+begin;
+create table skip_wal_skip_rewrite_index (c varchar(10) primary key);
+alter table skip_wal_skip_rewrite_index alter c type varchar(20);
+commit;
+
 -- table's row type
 create table tab1 (a int, b text);
 create table tab2 (x int, y tab1);
@@ -1464,6 +1471,12 @@ alter table test_storage alter a set storage extended; -- re-add TOAST table
 select reltoastrelid <> 0 as has_toast_table
 from pg_class
 where oid = 'test_storage'::regclass;
+
+-- test that SET STORAGE propagates to index correctly
+create index test_storage_idx on test_storage (b, a);
+alter table test_storage alter column a set storage external;
+\d+ test_storage
+\d+ test_storage_idx
 
 -- ALTER COLUMN TYPE with a check constraint and a child table (bug #13779)
 CREATE TABLE test_inh_check (a float check (a > 10.2), b float);
@@ -1638,7 +1651,7 @@ from pg_locks l join pg_class c on l.relation = c.oid
 where virtualtransaction = (
         select virtualtransaction
         from pg_locks
-        where transactionid = txid_current()::integer)
+        where transactionid = pg_current_xact_id()::xid)
 and locktype = 'relation'
 and relnamespace != (select oid from pg_namespace where nspname = 'pg_catalog')
 and c.relname != 'my_locks'
@@ -1725,7 +1738,7 @@ from pg_locks l join pg_class c on l.relation = c.oid
 where virtualtransaction = (
         select virtualtransaction
         from pg_locks
-        where transactionid = txid_current()::integer)
+        where transactionid = pg_current_xact_id()::xid)
 and locktype = 'relation'
 and relnamespace != (select oid from pg_namespace where nspname = 'pg_catalog')
 and c.relname = 'my_locks'
@@ -2545,7 +2558,7 @@ DROP TABLE quuux;
 -- check validation when attaching hash partitions
 
 -- Use hand-rolled hash functions and operator class to get predictable result
--- on different matchines. part_test_int4_ops is defined in insert.sql.
+-- on different machines. part_test_int4_ops is defined in insert.sql.
 
 -- check that the new partition won't overlap with an existing partition
 CREATE TABLE hash_parted (
@@ -2840,3 +2853,28 @@ create trigger xtrig
 update bar1 set a = a + 1;
 
 /* End test case for bug #16242 */
+
+-- Test that ALTER TABLE rewrite preserves a clustered index
+-- for normal indexes and indexes on constraints.
+create table alttype_cluster (a int);
+alter table alttype_cluster add primary key (a);
+create index alttype_cluster_ind on alttype_cluster (a);
+alter table alttype_cluster cluster on alttype_cluster_ind;
+-- Normal index remains clustered.
+select indexrelid::regclass, indisclustered from pg_index
+  where indrelid = 'alttype_cluster'::regclass
+  order by indexrelid::regclass::text;
+alter table alttype_cluster alter a type bigint;
+select indexrelid::regclass, indisclustered from pg_index
+  where indrelid = 'alttype_cluster'::regclass
+  order by indexrelid::regclass::text;
+-- Constraint index remains clustered.
+alter table alttype_cluster cluster on alttype_cluster_pkey;
+select indexrelid::regclass, indisclustered from pg_index
+  where indrelid = 'alttype_cluster'::regclass
+  order by indexrelid::regclass::text;
+alter table alttype_cluster alter a type int;
+select indexrelid::regclass, indisclustered from pg_index
+  where indrelid = 'alttype_cluster'::regclass
+  order by indexrelid::regclass::text;
+drop table alttype_cluster;

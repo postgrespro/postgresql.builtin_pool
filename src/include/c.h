@@ -1076,6 +1076,10 @@ extern void ExceptionalCondition(const char *conditionName,
  * ----------------------------------------------------------------
  */
 
+#ifdef HAVE_STRUCT_SOCKADDR_UN
+#define HAVE_UNIX_SOCKETS 1
+#endif
+
 /*
  * Invert the sign of a qsort-style comparison result, ie, exchange negative
  * and positive integer values, being careful not to get the wrong answer
@@ -1129,7 +1133,6 @@ typedef union PGAlignedXLogBlock
 #define STATUS_OK				(0)
 #define STATUS_ERROR			(-1)
 #define STATUS_EOF				(-2)
-#define STATUS_WAITING			(2)
 
 /*
  * gettext support

@@ -120,7 +120,7 @@ StartupDecodingContext(List *output_plugin_options,
 					   TransactionId xmin_horizon,
 					   bool need_full_snapshot,
 					   bool fast_forward,
-					   XLogPageReadCB read_page,
+					   XLogReaderRoutine *xl_routine,
 					   LogicalOutputPluginWriterPrepareWrite prepare_write,
 					   LogicalOutputPluginWriterWrite do_write,
 					   LogicalOutputPluginWriterUpdateProgress update_progress)
@@ -169,7 +169,7 @@ StartupDecodingContext(List *output_plugin_options,
 
 	ctx->slot = slot;
 
-	ctx->reader = XLogReaderAllocate(wal_segment_size, NULL, read_page, ctx);
+	ctx->reader = XLogReaderAllocate(wal_segment_size, NULL, xl_routine, ctx);
 	if (!ctx->reader)
 		ereport(ERROR,
 				(errcode(ERRCODE_OUT_OF_MEMORY),
@@ -215,7 +215,8 @@ StartupDecodingContext(List *output_plugin_options,
  *		Otherwise, we set for decoding to start from the given LSN without
  *		marking WAL reserved beforehand.  In that scenario, it's up to the
  *		caller to guarantee that WAL remains available.
- * read_page, prepare_write, do_write, update_progress --
+ * xl_routine -- XLogReaderRoutine for underlying XLogReader
+ * prepare_write, do_write, update_progress --
  *		callbacks that perform the use-case dependent, actual, work.
  *
  * Needs to be called while in a memory context that's at least as long lived
@@ -230,7 +231,7 @@ CreateInitDecodingContext(char *plugin,
 						  List *output_plugin_options,
 						  bool need_full_snapshot,
 						  XLogRecPtr restart_lsn,
-						  XLogPageReadCB read_page,
+						  XLogReaderRoutine *xl_routine,
 						  LogicalOutputPluginWriterPrepareWrite prepare_write,
 						  LogicalOutputPluginWriterWrite do_write,
 						  LogicalOutputPluginWriterUpdateProgress update_progress)
@@ -327,7 +328,7 @@ CreateInitDecodingContext(char *plugin,
 
 	ctx = StartupDecodingContext(NIL, restart_lsn, xmin_horizon,
 								 need_full_snapshot, false,
-								 read_page, prepare_write, do_write,
+								 xl_routine, prepare_write, do_write,
 								 update_progress);
 
 	/* call output plugin initialization callback */
@@ -357,7 +358,10 @@ CreateInitDecodingContext(char *plugin,
  * fast_forward
  *		bypass the generation of logical changes.
  *
- * read_page, prepare_write, do_write, update_progress
+ * xl_routine
+ *		XLogReaderRoutine used by underlying xlogreader
+ *
+ * prepare_write, do_write, update_progress
  *		callbacks that have to be filled to perform the use-case dependent,
  *		actual work.
  *
@@ -372,7 +376,7 @@ LogicalDecodingContext *
 CreateDecodingContext(XLogRecPtr start_lsn,
 					  List *output_plugin_options,
 					  bool fast_forward,
-					  XLogPageReadCB read_page,
+					  XLogReaderRoutine *xl_routine,
 					  LogicalOutputPluginWriterPrepareWrite prepare_write,
 					  LogicalOutputPluginWriterWrite do_write,
 					  LogicalOutputPluginWriterUpdateProgress update_progress)
@@ -425,7 +429,7 @@ CreateDecodingContext(XLogRecPtr start_lsn,
 
 	ctx = StartupDecodingContext(output_plugin_options,
 								 start_lsn, InvalidTransactionId, false,
-								 fast_forward, read_page, prepare_write,
+								 fast_forward, xl_routine, prepare_write,
 								 do_write, update_progress);
 
 	/* call output plugin initialization callback */
@@ -968,6 +972,7 @@ LogicalIncreaseRestartDecodingForSlot(XLogRecPtr current_lsn, XLogRecPtr restart
 	{
 		slot->candidate_restart_valid = current_lsn;
 		slot->candidate_restart_lsn = restart_lsn;
+		SpinLockRelease(&slot->mutex);
 
 		elog(DEBUG1, "got new restart lsn %X/%X at %X/%X",
 			 (uint32) (restart_lsn >> 32), (uint32) restart_lsn,
@@ -975,18 +980,25 @@ LogicalIncreaseRestartDecodingForSlot(XLogRecPtr current_lsn, XLogRecPtr restart
 	}
 	else
 	{
+		XLogRecPtr	candidate_restart_lsn;
+		XLogRecPtr	candidate_restart_valid;
+		XLogRecPtr	confirmed_flush;
+
+		candidate_restart_lsn = slot->candidate_restart_lsn;
+		candidate_restart_valid = slot->candidate_restart_valid;
+		confirmed_flush = slot->data.confirmed_flush;
+		SpinLockRelease(&slot->mutex);
+
 		elog(DEBUG1, "failed to increase restart lsn: proposed %X/%X, after %X/%X, current candidate %X/%X, current after %X/%X, flushed up to %X/%X",
 			 (uint32) (restart_lsn >> 32), (uint32) restart_lsn,
 			 (uint32) (current_lsn >> 32), (uint32) current_lsn,
-			 (uint32) (slot->candidate_restart_lsn >> 32),
-			 (uint32) slot->candidate_restart_lsn,
-			 (uint32) (slot->candidate_restart_valid >> 32),
-			 (uint32) slot->candidate_restart_valid,
-			 (uint32) (slot->data.confirmed_flush >> 32),
-			 (uint32) slot->data.confirmed_flush
-			);
+			 (uint32) (candidate_restart_lsn >> 32),
+			 (uint32) candidate_restart_lsn,
+			 (uint32) (candidate_restart_valid >> 32),
+			 (uint32) candidate_restart_valid,
+			 (uint32) (confirmed_flush >> 32),
+			 (uint32) confirmed_flush);
 	}
-	SpinLockRelease(&slot->mutex);
 
 	/* candidates are already valid with the current flush position, apply */
 	if (updated_lsn)

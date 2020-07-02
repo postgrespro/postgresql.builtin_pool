@@ -57,6 +57,8 @@
  *	  backwards, unless they're empty or already at their optimal position.
  */
 
+#include "port/pg_bitutils.h"
+
 /* helpers */
 #define SH_MAKE_PREFIX(a) CppConcat(a,_)
 #define SH_MAKE_NAME(name) SH_MAKE_NAME_(SH_MAKE_PREFIX(SH_PREFIX),name)
@@ -215,27 +217,6 @@ SH_SCOPE void SH_STAT(SH_TYPE * tb);
 #ifndef SIMPLEHASH_H
 #define SIMPLEHASH_H
 
-/* FIXME: can we move these to a central location? */
-
-/* calculate ceil(log base 2) of num */
-static inline uint64
-sh_log2(uint64 num)
-{
-	int			i;
-	uint64		limit;
-
-	for (i = 0, limit = 1; limit < num; i++, limit <<= 1)
-		;
-	return i;
-}
-
-/* calculate first power of 2 >= num */
-static inline uint64
-sh_pow2(uint64 num)
-{
-	return ((uint64) 1) << sh_log2(num);
-}
-
 #ifdef FRONTEND
 #define sh_error(...) pg_log_error(__VA_ARGS__)
 #define sh_log(...) pg_log_info(__VA_ARGS__)
@@ -259,7 +240,7 @@ SH_COMPUTE_PARAMETERS(SH_TYPE * tb, uint32 newsize)
 	size = Max(newsize, 2);
 
 	/* round up size to the next power of 2, that's how bucketing works */
-	size = sh_pow2(size);
+	size = pg_nextpower2_64(size);
 	Assert(size <= SH_MAX_SIZE);
 
 	/*
@@ -434,7 +415,7 @@ SH_GROW(SH_TYPE * tb, uint32 newsize)
 	uint32		startelem = 0;
 	uint32		copyelem;
 
-	Assert(oldsize == sh_pow2(oldsize));
+	Assert(oldsize == pg_nextpower2_64(oldsize));
 	Assert(oldsize != SH_MAX_SIZE);
 	Assert(oldsize < newsize);
 
@@ -534,7 +515,7 @@ SH_GROW(SH_TYPE * tb, uint32 newsize)
  * This is a separate static inline function, so it can be reliably be inlined
  * into its wrapper functions even if SH_SCOPE is extern.
  */
-static inline	SH_ELEMENT_TYPE *
+static inline SH_ELEMENT_TYPE *
 SH_INSERT_HASH_INTERNAL(SH_TYPE * tb, SH_KEY_TYPE key, uint32 hash, bool *found)
 {
 	uint32		startelem;
@@ -652,7 +633,7 @@ restart:
 			/* shift forward, starting at last occupied element */
 
 			/*
-			 * TODO: This could be optimized to be one memcpy in may cases,
+			 * TODO: This could be optimized to be one memcpy in many cases,
 			 * excepting wrapping around at the end of ->data. Hasn't shown up
 			 * in profiles so far though.
 			 */
@@ -708,7 +689,7 @@ restart:
 SH_SCOPE	SH_ELEMENT_TYPE *
 SH_INSERT(SH_TYPE * tb, SH_KEY_TYPE key, bool *found)
 {
-	uint32 hash = SH_HASH_KEY(tb, key);
+	uint32		hash = SH_HASH_KEY(tb, key);
 
 	return SH_INSERT_HASH_INTERNAL(tb, key, hash, found);
 }
@@ -728,7 +709,7 @@ SH_INSERT_HASH(SH_TYPE * tb, SH_KEY_TYPE key, uint32 hash, bool *found)
  * This is a separate static inline function, so it can be reliably be inlined
  * into its wrapper functions even if SH_SCOPE is extern.
  */
-static inline	SH_ELEMENT_TYPE *
+static inline SH_ELEMENT_TYPE *
 SH_LOOKUP_HASH_INTERNAL(SH_TYPE * tb, SH_KEY_TYPE key, uint32 hash)
 {
 	const uint32 startelem = SH_INITIAL_BUCKET(tb, hash);
@@ -765,7 +746,7 @@ SH_LOOKUP_HASH_INTERNAL(SH_TYPE * tb, SH_KEY_TYPE key, uint32 hash)
 SH_SCOPE	SH_ELEMENT_TYPE *
 SH_LOOKUP(SH_TYPE * tb, SH_KEY_TYPE key)
 {
-	uint32 hash = SH_HASH_KEY(tb, key);
+	uint32		hash = SH_HASH_KEY(tb, key);
 
 	return SH_LOOKUP_HASH_INTERNAL(tb, key, hash);
 }
@@ -1010,8 +991,8 @@ SH_STAT(SH_TYPE * tb)
 	}
 
 	sh_log("size: " UINT64_FORMAT ", members: %u, filled: %f, total chain: %u, max chain: %u, avg chain: %f, total_collisions: %u, max_collisions: %i, avg_collisions: %f",
-		 tb->size, tb->members, fillfactor, total_chain_length, max_chain_length, avg_chain_length,
-		 total_collisions, max_collisions, avg_collisions);
+		   tb->size, tb->members, fillfactor, total_chain_length, max_chain_length, avg_chain_length,
+		   total_collisions, max_collisions, avg_collisions);
 }
 
 #endif							/* SH_DEFINE */

@@ -22,6 +22,7 @@
 #include "common/file_perm.h"
 #include "common/file_utils.h"
 #include "common/restricted_token.h"
+#include "common/string.h"
 #include "fe_utils/recovery_gen.h"
 #include "fetch.h"
 #include "file_ops.h"
@@ -38,6 +39,7 @@ static void createBackupLabel(XLogRecPtr startpoint, TimeLineID starttli,
 static void digestControlFile(ControlFileData *ControlFile, char *source,
 							  size_t size);
 static void syncTargetDirectory(void);
+static void getRestoreCommand(const char *argv0);
 static void sanityChecks(void);
 static void findCommonAncestorTimeline(XLogRecPtr *recptr, int *tliIndex);
 static void ensureCleanShutdown(const char *argv0);
@@ -53,11 +55,13 @@ int			WalSegSz;
 char	   *datadir_target = NULL;
 char	   *datadir_source = NULL;
 char	   *connstr_source = NULL;
+char	   *restore_command = NULL;
 
 static bool debug = false;
 bool		showprogress = false;
 bool		dry_run = false;
 bool		do_sync = true;
+bool		restore_wal = false;
 
 /* Target history */
 TimeLineHistoryEntry *targetHistory;
@@ -74,17 +78,19 @@ usage(const char *progname)
 	printf(_("%s resynchronizes a PostgreSQL cluster with another copy of the cluster.\n\n"), progname);
 	printf(_("Usage:\n  %s [OPTION]...\n\n"), progname);
 	printf(_("Options:\n"));
+	printf(_("  -c, --restore-target-wal       use restore_command in target configuration to\n"
+			 "                                 retrieve WAL files from archives\n"));
 	printf(_("  -D, --target-pgdata=DIRECTORY  existing data directory to modify\n"));
 	printf(_("      --source-pgdata=DIRECTORY  source data directory to synchronize with\n"));
 	printf(_("      --source-server=CONNSTR    source server to synchronize with\n"));
-	printf(_("  -R, --write-recovery-conf      write configuration for replication\n"
-			 "                                 (requires --source-server)\n"));
 	printf(_("  -n, --dry-run                  stop before modifying anything\n"));
 	printf(_("  -N, --no-sync                  do not wait for changes to be written\n"
 			 "                                 safely to disk\n"));
 	printf(_("  -P, --progress                 write progress messages\n"));
-	printf(_("      --no-ensure-shutdown       do not automatically fix unclean shutdown\n"));
+	printf(_("  -R, --write-recovery-conf      write configuration for replication\n"
+			 "                                 (requires --source-server)\n"));
 	printf(_("      --debug                    write a lot of debug messages\n"));
+	printf(_("      --no-ensure-shutdown       do not automatically fix unclean shutdown\n"));
 	printf(_("  -V, --version                  output version information, then exit\n"));
 	printf(_("  -?, --help                     show this help, then exit\n"));
 	printf(_("\nReport bugs to <%s>.\n"), PACKAGE_BUGREPORT);
@@ -103,6 +109,7 @@ main(int argc, char **argv)
 		{"source-server", required_argument, NULL, 2},
 		{"no-ensure-shutdown", no_argument, NULL, 4},
 		{"version", no_argument, NULL, 'V'},
+		{"restore-target-wal", no_argument, NULL, 'c'},
 		{"dry-run", no_argument, NULL, 'n'},
 		{"no-sync", no_argument, NULL, 'N'},
 		{"progress", no_argument, NULL, 'P'},
@@ -144,13 +151,17 @@ main(int argc, char **argv)
 		}
 	}
 
-	while ((c = getopt_long(argc, argv, "D:nNPR", long_options, &option_index)) != -1)
+	while ((c = getopt_long(argc, argv, "cD:nNPR", long_options, &option_index)) != -1)
 	{
 		switch (c)
 		{
 			case '?':
 				fprintf(stderr, _("Try \"%s --help\" for more information.\n"), progname);
 				exit(1);
+
+			case 'c':
+				restore_wal = true;
+				break;
 
 			case 'P':
 				showprogress = true;
@@ -214,7 +225,7 @@ main(int argc, char **argv)
 
 	if (writerecoveryconf && connstr_source == NULL)
 	{
-		pg_log_error("no source server information (--source--server) specified for --write-recovery-conf");
+		pg_log_error("no source server information (--source-server) specified for --write-recovery-conf");
 		fprintf(stderr, _("Try \"%s --help\" for more information.\n"), progname);
 		exit(1);
 	}
@@ -254,6 +265,8 @@ main(int argc, char **argv)
 	}
 
 	umask(pg_mode_mask);
+
+	getRestoreCommand(argv[0]);
 
 	atexit(disconnect_atexit);
 
@@ -326,7 +339,8 @@ main(int argc, char **argv)
 			/* Read the checkpoint record on the target to see where it ends. */
 			chkptendrec = readOneRecord(datadir_target,
 										ControlFile_target.checkPoint,
-										targetNentries - 1);
+										targetNentries - 1,
+										restore_command);
 
 			/*
 			 * If the histories diverged exactly at the end of the shutdown
@@ -350,9 +364,8 @@ main(int argc, char **argv)
 		exit(0);
 	}
 
-	findLastCheckpoint(datadir_target, divergerec,
-					   lastcommontliIndex,
-					   &chkptrec, &chkpttli, &chkptredo);
+	findLastCheckpoint(datadir_target, divergerec, lastcommontliIndex,
+					   &chkptrec, &chkpttli, &chkptredo, restore_command);
 	pg_log_info("rewinding from last common checkpoint at %X/%X on timeline %u",
 				(uint32) (chkptrec >> 32), (uint32) chkptrec,
 				chkpttli);
@@ -378,7 +391,7 @@ main(int argc, char **argv)
 	if (showprogress)
 		pg_log_info("reading WAL in target");
 	extractPageMap(datadir_target, chkptrec, lastcommontliIndex,
-				   ControlFile_target.checkPoint);
+				   ControlFile_target.checkPoint, restore_command);
 	filemap_finalize();
 
 	if (showprogress)
@@ -805,6 +818,71 @@ syncTargetDirectory(void)
 }
 
 /*
+ * Get value of GUC parameter restore_command from the target cluster.
+ *
+ * This uses a logic based on "postgres -C" to get the value from the
+ * cluster.
+ */
+static void
+getRestoreCommand(const char *argv0)
+{
+	int			rc;
+	char		postgres_exec_path[MAXPGPATH],
+				postgres_cmd[MAXPGPATH],
+				cmd_output[MAXPGPATH];
+
+	if (!restore_wal)
+		return;
+
+	/* find postgres executable */
+	rc = find_other_exec(argv0, "postgres",
+						 PG_BACKEND_VERSIONSTR,
+						 postgres_exec_path);
+
+	if (rc < 0)
+	{
+		char		full_path[MAXPGPATH];
+
+		if (find_my_exec(argv0, full_path) < 0)
+			strlcpy(full_path, progname, sizeof(full_path));
+
+		if (rc == -1)
+			pg_log_error("The program \"%s\" is needed by %s but was not found in the\n"
+						 "same directory as \"%s\".\n"
+						 "Check your installation.",
+						 "postgres", progname, full_path);
+		else
+			pg_log_error("The program \"%s\" was found by \"%s\"\n"
+						 "but was not the same version as %s.\n"
+						 "Check your installation.",
+						 "postgres", full_path, progname);
+		exit(1);
+	}
+
+	/*
+	 * Build a command able to retrieve the value of GUC parameter
+	 * restore_command, if set.
+	 */
+	snprintf(postgres_cmd, sizeof(postgres_cmd),
+			 "\"%s\" -D \"%s\" -C restore_command",
+			 postgres_exec_path, datadir_target);
+
+	if (!pipe_read_line(postgres_cmd, cmd_output, sizeof(cmd_output)))
+		exit(1);
+
+	(void) pg_strip_crlf(cmd_output);
+
+	if (strcmp(cmd_output, "") == 0)
+		pg_fatal("restore_command is not set in the target cluster");
+
+	restore_command = pg_strdup(cmd_output);
+
+	pg_log_debug("using for rewind restore_command = \'%s\'",
+				 restore_command);
+}
+
+
+/*
  * Ensure clean shutdown of target instance by launching single-user mode
  * postgres to do crash recovery.
  */
@@ -827,13 +905,13 @@ ensureCleanShutdown(const char *argv0)
 			strlcpy(full_path, progname, sizeof(full_path));
 
 		if (ret == -1)
-			pg_fatal("The program \"%s\" is needed by %s but was\n"
-					 "not found in the same directory as \"%s\".\n"
+			pg_fatal("The program \"%s\" is needed by %s but was not found in the\n"
+					 "same directory as \"%s\".\n"
 					 "Check your installation.",
 					 "postgres", progname, full_path);
 		else
-			pg_fatal("The program \"%s\" was found by \"%s\" but was\n"
-					 "not the same version as %s.\n"
+			pg_fatal("The program \"%s\" was found by \"%s\"\n"
+					 "but was not the same version as %s.\n"
 					 "Check your installation.",
 					 "postgres", full_path, progname);
 	}
@@ -858,7 +936,7 @@ ensureCleanShutdown(const char *argv0)
 
 	if (system(cmd) != 0)
 	{
-		pg_log_error("postgres single-user mode of target instance failed");
+		pg_log_error("postgres single-user mode in target cluster failed");
 		pg_fatal("Command was: %s", cmd);
 	}
 }

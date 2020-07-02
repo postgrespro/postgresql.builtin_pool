@@ -251,7 +251,7 @@ btree_xlog_insert(bool isleaf, bool ismeta, bool posting,
 }
 
 static void
-btree_xlog_split(bool onleft, XLogReaderState *record)
+btree_xlog_split(bool newitemonleft, XLogReaderState *record)
 {
 	XLogRecPtr	lsn = record->EndRecPtr;
 	xl_btree_split *xlrec = (xl_btree_split *) XLogRecGetData(record);
@@ -323,7 +323,7 @@ btree_xlog_split(bool onleft, XLogReaderState *record)
 
 		datapos = XLogRecGetBlockData(record, 0, &datalen);
 
-		if (onleft || xlrec->postingoff != 0)
+		if (newitemonleft || xlrec->postingoff != 0)
 		{
 			newitem = (IndexTuple) datapos;
 			newitemsz = MAXALIGN(IndexTupleSize(newitem));
@@ -368,7 +368,7 @@ btree_xlog_split(bool onleft, XLogReaderState *record)
 			elog(PANIC, "failed to add high key to left page after split");
 		leftoff = OffsetNumberNext(leftoff);
 
-		for (off = P_FIRSTDATAKEY(lopaque); off < xlrec->firstright; off++)
+		for (off = P_FIRSTDATAKEY(lopaque); off < xlrec->firstrightoff; off++)
 		{
 			ItemId		itemid;
 			Size		itemsz;
@@ -377,7 +377,8 @@ btree_xlog_split(bool onleft, XLogReaderState *record)
 			/* Add replacement posting list when required */
 			if (off == replacepostingoff)
 			{
-				Assert(onleft || xlrec->firstright == xlrec->newitemoff);
+				Assert(newitemonleft ||
+					   xlrec->firstrightoff == xlrec->newitemoff);
 				if (PageAddItem(newlpage, (Item) nposting,
 								MAXALIGN(IndexTupleSize(nposting)), leftoff,
 								false, false) == InvalidOffsetNumber)
@@ -387,7 +388,7 @@ btree_xlog_split(bool onleft, XLogReaderState *record)
 			}
 
 			/* add the new item if it was inserted on left page */
-			else if (onleft && off == xlrec->newitemoff)
+			else if (newitemonleft && off == xlrec->newitemoff)
 			{
 				if (PageAddItem(newlpage, (Item) newitem, newitemsz, leftoff,
 								false, false) == InvalidOffsetNumber)
@@ -405,7 +406,7 @@ btree_xlog_split(bool onleft, XLogReaderState *record)
 		}
 
 		/* cope with possibility that newitem goes at the end */
-		if (onleft && off == xlrec->newitemoff)
+		if (newitemonleft && off == xlrec->newitemoff)
 		{
 			if (PageAddItem(newlpage, (Item) newitem, newitemsz, leftoff,
 							false, false) == InvalidOffsetNumber)
@@ -482,6 +483,7 @@ btree_xlog_dedup(XLogReaderState *record)
 
 		state = (BTDedupState) palloc(sizeof(BTDedupStateData));
 		state->deduplicate = true;	/* unused */
+		state->nmaxitems = 0;	/* unused */
 		/* Conservatively use larger maxpostingsize than primary */
 		state->maxpostingsize = BTMaxItemSize(page);
 		state->base = NULL;
@@ -703,7 +705,7 @@ btree_xlog_mark_page_halfdead(uint8 info, XLogReaderState *record)
 	 * target page or not (since it's surely empty).
 	 */
 
-	/* parent page */
+	/* to-be-deleted subtree's parent page */
 	if (XLogReadBufferForRedo(record, 1, &buffer) == BLK_NEEDS_REDO)
 	{
 		OffsetNumber poffset;
@@ -748,8 +750,8 @@ btree_xlog_mark_page_halfdead(uint8 info, XLogReaderState *record)
 	pageop->btpo_cycleid = 0;
 
 	/*
-	 * Construct a dummy hikey item that points to the next parent to be
-	 * deleted (if any).
+	 * Construct a dummy high key item that points to top parent page (value
+	 * is InvalidBlockNumber when the top parent page is the leaf page itself)
 	 */
 	MemSet(&trunctuple, 0, sizeof(IndexTupleData));
 	trunctuple.t_info = sizeof(IndexTupleData);
@@ -836,7 +838,7 @@ btree_xlog_unlink_page(uint8 info, XLogReaderState *record)
 	/*
 	 * If we deleted a parent of the targeted leaf page, instead of the leaf
 	 * itself, update the leaf to point to the next remaining child in the
-	 * branch.
+	 * to-be-deleted subtree
 	 */
 	if (XLogRecHasBlockRef(record, 3))
 	{

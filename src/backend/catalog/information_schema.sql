@@ -182,7 +182,7 @@ CREATE FUNCTION _pg_interval_type(typid oid, mod int4) RETURNS text
     AS
 $$SELECT
   CASE WHEN $1 IN (1186) /* interval */
-           THEN pg_catalog.upper(substring(pg_catalog.format_type($1, $2) from 'interval[()0-9]* #"%#"' for '#'))
+           THEN pg_catalog.upper(substring(pg_catalog.format_type($1, $2) similar 'interval[()0-9]* #"%#"' escape '#'))
        ELSE null
   END$$;
 
@@ -1670,6 +1670,7 @@ INSERT INTO sql_parts VALUES ('10', 'Object Language Bindings (SQL/OLB)', 'NO', 
 INSERT INTO sql_parts VALUES ('11', 'Information and Definition Schema (SQL/Schemata)', 'NO', NULL, '');
 INSERT INTO sql_parts VALUES ('13', 'Routines and Types Using the Java Programming Language (SQL/JRT)', 'NO', NULL, '');
 INSERT INTO sql_parts VALUES ('14', 'XML-Related Specifications (SQL/XML)', 'NO', NULL, '');
+INSERT INTO sql_parts VALUES ('15', 'Multi-Dimensional Arrays (SQL/MDA)', 'NO', NULL, '');
 
 
 /*
@@ -2045,8 +2046,15 @@ CREATE VIEW triggers AS
            CAST(
              -- To determine action order, partition by schema, table,
              -- event_manipulation (INSERT/DELETE/UPDATE), ROW/STATEMENT (1),
-             -- BEFORE/AFTER (66), then order by trigger name
-             rank() OVER (PARTITION BY n.oid, c.oid, em.num, t.tgtype & 1, t.tgtype & 66 ORDER BY t.tgname)
+             -- BEFORE/AFTER (66), then order by trigger name.  It's preferable
+             -- to partition by view output columns, so that query constraints
+             -- can be pushed down below the window function.
+             rank() OVER (PARTITION BY CAST(n.nspname AS sql_identifier),
+                                       CAST(c.relname AS sql_identifier),
+                                       em.num,
+                                       t.tgtype & 1,
+                                       t.tgtype & 66
+                                       ORDER BY t.tgname)
              AS cardinal_number) AS action_order,
            CAST(
              CASE WHEN pg_has_role(c.relowner, 'USAGE')

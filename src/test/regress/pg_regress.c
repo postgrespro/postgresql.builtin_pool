@@ -292,7 +292,7 @@ stop_postmaster(void)
  * remove the directory.  Ignore errors; leaking a temporary directory is
  * unimportant.  This can run from a signal handler.  The code is not
  * acceptable in a Windows signal handler (see initdb.c:trapsig()), but
- * Windows is not a HAVE_UNIX_SOCKETS platform.
+ * on Windows, pg_regress does not use Unix sockets by default.
  */
 static void
 remove_temp(void)
@@ -330,7 +330,8 @@ signal_remove_temp(int signum)
 static const char *
 make_temp_sockdir(void)
 {
-	char	   *template = pg_strdup("/tmp/pg_regress-XXXXXX");
+	char	   *template = psprintf("%s/pg_regress-XXXXXX",
+									getenv("TMPDIR") ? getenv("TMPDIR") : "/tmp");
 
 	temp_sockdir = mkdtemp(template);
 	if (temp_sockdir == NULL)
@@ -464,8 +465,7 @@ convert_sourcefiles_in(const char *source_subdir, const char *dest_dir, const ch
 {
 	char		testtablespace[MAXPGPATH];
 	char		indir[MAXPGPATH];
-	struct stat st;
-	int			ret;
+	char		outdir_sub[MAXPGPATH];
 	char	  **name;
 	char	  **names;
 	int			count = 0;
@@ -473,8 +473,7 @@ convert_sourcefiles_in(const char *source_subdir, const char *dest_dir, const ch
 	snprintf(indir, MAXPGPATH, "%s/%s", inputdir, source_subdir);
 
 	/* Check that indir actually exists and is a directory */
-	ret = stat(indir, &st);
-	if (ret != 0 || !S_ISDIR(st.st_mode))
+	if (!directory_exists(indir))
 	{
 		/*
 		 * No warning, to avoid noise in tests that do not have these
@@ -488,29 +487,12 @@ convert_sourcefiles_in(const char *source_subdir, const char *dest_dir, const ch
 		/* Error logged in pgfnames */
 		exit(2);
 
+	/* Create the "dest" subdirectory if not present */
+	snprintf(outdir_sub, MAXPGPATH, "%s/%s", dest_dir, dest_subdir);
+	if (!directory_exists(outdir_sub))
+		make_directory(outdir_sub);
+
 	snprintf(testtablespace, MAXPGPATH, "%s/testtablespace", outputdir);
-
-#ifdef WIN32
-
-	/*
-	 * On Windows only, clean out the test tablespace dir, or create it if it
-	 * doesn't exist.  On other platforms we expect the Makefile to take care
-	 * of that.  (We don't migrate that functionality in here because it'd be
-	 * harder to cope with platform-specific issues such as SELinux.)
-	 *
-	 * XXX it would be better if pg_regress.c had nothing at all to do with
-	 * testtablespace, and this were handled by a .BAT file or similar on
-	 * Windows.  See pgsql-hackers discussion of 2008-01-18.
-	 */
-	if (directory_exists(testtablespace))
-		if (!rmtree(testtablespace, true))
-		{
-			fprintf(stderr, _("\n%s: could not remove test tablespace \"%s\"\n"),
-					progname, testtablespace);
-			exit(2);
-		}
-	make_directory(testtablespace);
-#endif
 
 	/* finally loop on each file and do the replacement */
 	for (name = names; *name; name++)
@@ -2105,6 +2087,7 @@ regression_main(int argc, char *argv[], init_function ifunc, test_function tfunc
 		{NULL, 0, NULL, 0}
 	};
 
+	bool		use_unix_sockets;
 	_stringlist *sl;
 	int			c;
 	int			i;
@@ -2120,10 +2103,22 @@ regression_main(int argc, char *argv[], init_function ifunc, test_function tfunc
 
 	atexit(stop_postmaster);
 
-#ifndef HAVE_UNIX_SOCKETS
-	/* no unix domain sockets available, so change default */
-	hostname = "localhost";
+#if !defined(HAVE_UNIX_SOCKETS)
+	use_unix_sockets = false;
+#elif defined(WIN32)
+
+	/*
+	 * We don't use Unix-domain sockets on Windows by default, even if the
+	 * build supports them.  (See comment at remove_temp() for a reason.)
+	 * Override at your own risk.
+	 */
+	use_unix_sockets = getenv("PG_TEST_USE_UNIX_SOCKETS") ? true : false;
+#else
+	use_unix_sockets = true;
 #endif
+
+	if (!use_unix_sockets)
+		hostname = "localhost";
 
 	/*
 	 * We call the initialization function here because that way we can set
@@ -2238,7 +2233,8 @@ regression_main(int argc, char *argv[], init_function ifunc, test_function tfunc
 	if (config_auth_datadir)
 	{
 #ifdef ENABLE_SSPI
-		config_sspi_auth(config_auth_datadir, user);
+		if (!use_unix_sockets)
+			config_sspi_auth(config_auth_datadir, user);
 #endif
 		exit(0);
 	}
@@ -2359,13 +2355,15 @@ regression_main(int argc, char *argv[], init_function ifunc, test_function tfunc
 		fclose(pg_conf);
 
 #ifdef ENABLE_SSPI
-
-		/*
-		 * Since we successfully used the same buffer for the much-longer
-		 * "initdb" command, this can't truncate.
-		 */
-		snprintf(buf, sizeof(buf), "%s/data", temp_instance);
-		config_sspi_auth(buf, NULL);
+		if (!use_unix_sockets)
+		{
+			/*
+			 * Since we successfully used the same buffer for the much-longer
+			 * "initdb" command, this can't truncate.
+			 */
+			snprintf(buf, sizeof(buf), "%s/data", temp_instance);
+			config_sspi_auth(buf, NULL);
+		}
 #elif !defined(HAVE_UNIX_SOCKETS)
 #error Platform has no means to secure the test installation.
 #endif

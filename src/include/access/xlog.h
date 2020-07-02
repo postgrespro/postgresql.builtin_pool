@@ -108,6 +108,7 @@ extern int	wal_segment_size;
 extern int	min_wal_size_mb;
 extern int	max_wal_size_mb;
 extern int	wal_keep_segments;
+extern int	max_slot_wal_keep_size_mb;
 extern int	XLOGbuffers;
 extern int	XLogArchiveTimeout;
 extern int	wal_retrieve_retry_interval;
@@ -129,6 +130,7 @@ extern int	recoveryTargetAction;
 extern int	recovery_min_apply_delay;
 extern char *PrimaryConnInfo;
 extern char *PrimarySlotName;
+extern bool wal_receiver_create_temp_slot;
 
 /* indirectly set via GUC system */
 extern TransactionId recoveryTargetXid;
@@ -163,6 +165,14 @@ typedef enum WalLevel
 	WAL_LEVEL_REPLICA,
 	WAL_LEVEL_LOGICAL
 } WalLevel;
+
+/* Recovery states */
+typedef enum RecoveryState
+{
+	RECOVERY_STATE_CRASH = 0,	/* crash recovery */
+	RECOVERY_STATE_ARCHIVE,		/* archive recovery */
+	RECOVERY_STATE_DONE			/* currently in production */
+} RecoveryState;
 
 extern PGDLLIMPORT int wal_level;
 
@@ -254,11 +264,25 @@ typedef struct CheckpointStatsData
 
 extern CheckpointStatsData CheckpointStats;
 
+/*
+ * GetWALAvailability return codes
+ */
+typedef enum WALAvailability
+{
+	WALAVAIL_INVALID_LSN,		/* parameter error */
+	WALAVAIL_RESERVED,			/* WAL segment is within max_wal_size */
+	WALAVAIL_EXTENDED,			/* WAL segment is reserved by a slot or
+								 * wal_keep_segments */
+	WALAVAIL_UNRESERVED,		/* no longer reserved, but not removed yet */
+	WALAVAIL_REMOVED			/* WAL segment has been removed */
+} WALAvailability;
+
 struct XLogRecData;
 
 extern XLogRecPtr XLogInsertRecord(struct XLogRecData *rdata,
 								   XLogRecPtr fpw_lsn,
-								   uint8 flags);
+								   uint8 flags,
+								   int num_fpi);
 extern void XLogFlush(XLogRecPtr RecPtr);
 extern bool XLogBackgroundFlush(void);
 extern bool XLogNeedsFlush(XLogRecPtr RecPtr);
@@ -277,6 +301,7 @@ extern const char *xlog_identify(uint8 info);
 extern void issue_xlog_fsync(int fd, XLogSegNo segno);
 
 extern bool RecoveryInProgress(void);
+extern RecoveryState GetRecoveryState(void);
 extern bool HotStandbyActive(void);
 extern bool HotStandbyActiveInReplay(void);
 extern bool XLogInsertAllowed(void);
@@ -303,6 +328,8 @@ extern void ShutdownXLOG(int code, Datum arg);
 extern void InitXLOGAccess(void);
 extern void CreateCheckPoint(int flags);
 extern bool CreateRestartPoint(int flags);
+extern WALAvailability GetWALAvailability(XLogRecPtr targetLSN);
+extern XLogRecPtr CalculateMaxmumSafeLSN(void);
 extern void XLogPutNextOid(Oid nextOid);
 extern XLogRecPtr XLogRestorePoint(const char *rpName);
 extern void UpdateFullPageWrites(void);
@@ -318,6 +345,7 @@ extern bool CheckPromoteSignal(void);
 extern void WakeupRecovery(void);
 extern void SetWalWriterSleeping(bool sleeping);
 
+extern void StartupRequestWalReceiverRestart(void);
 extern void XLogRequestWalReceiverReply(void);
 
 extern void assign_max_wal_size(int newval, void *extra);
@@ -346,7 +374,7 @@ typedef enum SessionBackupState
 
 extern XLogRecPtr do_pg_start_backup(const char *backupidstr, bool fast,
 									 TimeLineID *starttli_p, StringInfo labelfile,
-									 List **tablespaces, StringInfo tblspcmapfile, bool infotbssize,
+									 List **tablespaces, StringInfo tblspcmapfile,
 									 bool needtblspcmapfile);
 extern XLogRecPtr do_pg_stop_backup(char *labelfile, bool waitforarchive,
 									TimeLineID *stoptli_p);

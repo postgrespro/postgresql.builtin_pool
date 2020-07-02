@@ -1,6 +1,25 @@
 CREATE EXTENSION pg_visibility;
 
 --
+-- recently-dropped table
+--
+\set VERBOSITY sqlstate
+BEGIN;
+CREATE TABLE droppedtest (c int);
+SELECT 'droppedtest'::regclass::oid AS oid \gset
+SAVEPOINT q; DROP TABLE droppedtest; RELEASE q;
+SAVEPOINT q; SELECT * FROM pg_visibility_map(:oid); ROLLBACK TO q;
+-- ERROR:  could not open relation with OID 16xxx
+SAVEPOINT q; SELECT 1; ROLLBACK TO q;
+SAVEPOINT q; SELECT 1; ROLLBACK TO q;
+SELECT pg_relation_size(:oid), pg_relation_filepath(:oid),
+  has_table_privilege(:oid, 'SELECT');
+SELECT * FROM pg_visibility_map(:oid);
+-- ERROR:  could not open relation with OID 16xxx
+ROLLBACK;
+\set VERBOSITY default
+
+--
 -- check that using the module's functions with unsupported relations will fail
 --
 
@@ -49,12 +68,15 @@ select pg_check_frozen('test_foreign_table');
 select pg_truncate_visibility_map('test_foreign_table');
 
 -- check some of the allowed relkinds
-create table regular_table (a int);
-insert into regular_table values (1), (2);
+create table regular_table (a int, b text);
+alter table regular_table alter column b set storage external;
+insert into regular_table values (1, repeat('one', 1000)), (2, repeat('two', 1000));
 vacuum regular_table;
 select count(*) > 0 from pg_visibility('regular_table');
+select count(*) > 0 from pg_visibility((select reltoastrelid from pg_class where relname = 'regular_table'));
 truncate regular_table;
 select count(*) > 0 from pg_visibility('regular_table');
+select count(*) > 0 from pg_visibility((select reltoastrelid from pg_class where relname = 'regular_table'));
 
 create materialized view matview_visibility_test as select * from regular_table;
 vacuum matview_visibility_test;

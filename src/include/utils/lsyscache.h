@@ -82,6 +82,7 @@ extern bool get_op_hash_functions(Oid opno,
 								  RegProcedure *lhs_procno, RegProcedure *rhs_procno);
 extern List *get_op_btree_interpretation(Oid opno);
 extern bool equality_ops_are_compatible(Oid opno1, Oid opno2);
+extern bool comparison_ops_are_compatible(Oid opno1, Oid opno2);
 extern Oid	get_opfamily_proc(Oid opfamily, Oid lefttype, Oid righttype,
 							  int16 procnum);
 extern char *get_attname(Oid relid, AttrNumber attnum, bool missing_ok);
@@ -90,6 +91,7 @@ extern char get_attgenerated(Oid relid, AttrNumber attnum);
 extern Oid	get_atttype(Oid relid, AttrNumber attnum);
 extern void get_atttypetypmodcoll(Oid relid, AttrNumber attnum,
 								  Oid *typid, int32 *typmod, Oid *collid);
+extern Datum get_attoptions(Oid relid, int16 attnum);
 extern Oid	get_cast_oid(Oid sourcetypeid, Oid targettypeid, bool missing_ok);
 extern char *get_collation_name(Oid colloid);
 extern bool get_collation_isdeterministic(Oid colloid);
@@ -182,8 +184,9 @@ extern char *get_namespace_name_or_temp(Oid nspid);
 extern Oid	get_range_subtype(Oid rangeOid);
 extern Oid	get_range_collation(Oid rangeOid);
 extern Oid	get_index_column_opclass(Oid index_oid, int attno);
-extern bool	get_index_isreplident(Oid index_oid);
+extern bool get_index_isreplident(Oid index_oid);
 extern bool get_index_isvalid(Oid index_oid);
+extern bool get_index_isclustered(Oid index_oid);
 
 #define type_is_array(typid)  (get_element_type(typid) != InvalidOid)
 /* type_is_array_domain accepts both plain arrays and domains over arrays */

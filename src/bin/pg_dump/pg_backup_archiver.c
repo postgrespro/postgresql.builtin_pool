@@ -209,14 +209,14 @@ dumpOptionsFromRestoreOptions(RestoreOptions *ropt)
 /*
  *	Wrapper functions.
  *
- *	The objective it to make writing new formats and dumpers as simple
+ *	The objective is to make writing new formats and dumpers as simple
  *	as possible, if necessary at the expense of extra function calls etc.
  *
  */
 
 /*
  * The dump worker setup needs lots of knowledge of the internals of pg_dump,
- * so It's defined in pg_dump.c and passed into OpenArchive. The restore worker
+ * so it's defined in pg_dump.c and passed into OpenArchive. The restore worker
  * setup doesn't need to know anything much, so it's defined here.
  */
 static void
@@ -1450,7 +1450,7 @@ SortTocFromFile(Archive *AHX)
 }
 
 /**********************
- * 'Convenience functions that look like standard IO functions
+ * Convenience functions that look like standard IO functions
  * for writing data when in dump mode.
  **********************/
 
@@ -3085,6 +3085,18 @@ _tocEntryRestorePass(TocEntry *te)
 	if (strcmp(te->desc, "EVENT TRIGGER") == 0 ||
 		strcmp(te->desc, "MATERIALIZED VIEW DATA") == 0)
 		return RESTORE_PASS_POST_ACL;
+
+	/*
+	 * Comments need to be emitted in the same pass as their parent objects.
+	 * ACLs haven't got comments, and neither do matview data objects, but
+	 * event triggers do.  (Fortunately, event triggers haven't got ACLs, or
+	 * we'd need yet another weird special case.)
+	 */
+	if (strcmp(te->desc, "COMMENT") == 0 &&
+		strncmp(te->tag, "EVENT TRIGGER ", 14) == 0)
+		return RESTORE_PASS_POST_ACL;
+
+	/* All else can be handled in the main pass. */
 	return RESTORE_PASS_MAIN;
 }
 

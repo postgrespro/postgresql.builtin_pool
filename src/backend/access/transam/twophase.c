@@ -460,12 +460,12 @@ MarkAsPreparingGuts(GlobalTransaction gxact, TransactionId xid, const char *gid,
 	MemSet(proc, 0, sizeof(PGPROC));
 	proc->pgprocno = gxact->pgprocno;
 	SHMQueueElemInit(&(proc->links));
-	proc->waitStatus = STATUS_OK;
+	proc->waitStatus = PROC_WAIT_STATUS_OK;
 	/* We set up the gxact's VXID as InvalidBackendId/XID */
 	proc->lxid = (LocalTransactionId) xid;
 	pgxact->xid = xid;
 	pgxact->xmin = InvalidTransactionId;
-	pgxact->delayChkpt = false;
+	proc->delayChkpt = false;
 	pgxact->vacuumFlags = 0;
 	proc->pid = 0;
 	proc->backendId = InvalidBackendId;
@@ -1114,7 +1114,7 @@ EndPrepare(GlobalTransaction gxact)
 
 	START_CRIT_SECTION();
 
-	MyPgXact->delayChkpt = true;
+	MyProc->delayChkpt = true;
 
 	XLogBeginInsert();
 	for (record = records.head; record != NULL; record = record->next)
@@ -1157,7 +1157,7 @@ EndPrepare(GlobalTransaction gxact)
 	 * checkpoint starting after this will certainly see the gxact as a
 	 * candidate for fsyncing.
 	 */
-	MyPgXact->delayChkpt = false;
+	MyProc->delayChkpt = false;
 
 	/*
 	 * Remember that we have this GlobalTransaction entry locked for us.  If
@@ -1331,7 +1331,10 @@ XlogReadTwoPhaseData(XLogRecPtr lsn, char **buf, int *len)
 	char	   *errormsg;
 
 	xlogreader = XLogReaderAllocate(wal_segment_size, NULL,
-									&read_local_xlog_page, NULL);
+									XL_ROUTINE(.page_read = &read_local_xlog_page,
+											   .segment_open = &wal_segment_open,
+											   .segment_close = &wal_segment_close),
+									NULL);
 	if (!xlogreader)
 		ereport(ERROR,
 				(errcode(ERRCODE_OUT_OF_MEMORY),
@@ -2204,7 +2207,7 @@ RecordTransactionCommitPrepared(TransactionId xid,
 	START_CRIT_SECTION();
 
 	/* See notes in RecordTransactionCommit */
-	MyPgXact->delayChkpt = true;
+	MyProc->delayChkpt = true;
 
 	/*
 	 * Emit the XLOG commit record. Note that we mark 2PC commits as
@@ -2214,7 +2217,7 @@ RecordTransactionCommitPrepared(TransactionId xid,
 	recptr = XactLogCommitRecord(committs,
 								 nchildren, children, nrels, rels,
 								 ninvalmsgs, invalmsgs,
-								 initfileinval, false,
+								 initfileinval,
 								 MyXactFlags | XACT_FLAGS_ACQUIREDACCESSEXCLUSIVELOCK,
 								 xid, gid);
 
@@ -2252,7 +2255,7 @@ RecordTransactionCommitPrepared(TransactionId xid,
 	TransactionIdCommitTree(xid, nchildren, children);
 
 	/* Checkpoint can proceed now */
-	MyPgXact->delayChkpt = false;
+	MyProc->delayChkpt = false;
 
 	END_CRIT_SECTION();
 

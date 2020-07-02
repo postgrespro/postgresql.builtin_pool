@@ -62,7 +62,7 @@ typedef struct WriteTarState
 	int			tablespacenum;
 	char		filename[MAXPGPATH];
 	FILE	   *tarfile;
-	char		tarhdr[512];
+	char		tarhdr[TAR_BLOCK_SIZE];
 	bool		basetablespace;
 	bool		in_tarhdr;
 	bool		skip_file;
@@ -88,6 +88,12 @@ typedef struct UnpackTarState
 	FILE	   *file;
 } UnpackTarState;
 
+typedef struct WriteManifestState
+{
+	char		filename[MAXPGPATH];
+	FILE	   *file;
+} WriteManifestState;
+
 typedef void (*WriteDataCallback) (size_t nbytes, char *buf,
 								   void *callback_data);
 
@@ -101,6 +107,11 @@ typedef void (*WriteDataCallback) (size_t nbytes, char *buf,
  * Temporary replication slots are supported from version 10.
  */
 #define MINIMUM_VERSION_FOR_TEMP_SLOTS 100000
+
+/*
+ * Backup manifests are supported from version 13.
+ */
+#define MINIMUM_VERSION_FOR_MANIFESTS	130000
 
 /*
  * Different ways to include WAL
@@ -136,6 +147,9 @@ static bool temp_replication_slot = true;
 static bool create_slot = false;
 static bool no_slot = false;
 static bool verify_checksums = true;
+static bool manifest = true;
+static bool manifest_force_encode = false;
+static char *manifest_checksums = NULL;
 
 static bool success = false;
 static bool made_new_pgdata = false;
@@ -181,6 +195,12 @@ static void ReceiveTarCopyChunk(size_t r, char *copybuf, void *callback_data);
 static void ReceiveAndUnpackTarFile(PGconn *conn, PGresult *res, int rownum);
 static void ReceiveTarAndUnpackCopyChunk(size_t r, char *copybuf,
 										 void *callback_data);
+static void ReceiveBackupManifest(PGconn *conn);
+static void ReceiveBackupManifestChunk(size_t r, char *copybuf,
+									   void *callback_data);
+static void ReceiveBackupManifestInMemory(PGconn *conn, PQExpBuffer buf);
+static void ReceiveBackupManifestInMemoryChunk(size_t r, char *copybuf,
+											   void *callback_data);
 static void BaseBackup(void);
 
 static bool reached_end_position(XLogRecPtr segendpos, uint32 timeline,
@@ -384,10 +404,15 @@ usage(void)
 	printf(_("  -S, --slot=SLOTNAME    replication slot to use\n"));
 	printf(_("  -v, --verbose          output verbose messages\n"));
 	printf(_("  -V, --version          output version information, then exit\n"));
+	printf(_("      --manifest-checksums=SHA{224,256,384,512}|CRC32C|NONE\n"
+			 "                         use algorithm for manifest checksums\n"));
+	printf(_("      --manifest-force-encode\n"
+			 "                         hex encode all file names in manifest\n"));
+	printf(_("      --no-estimate-size do not estimate backup size in server side\n"));
+	printf(_("      --no-manifest      suppress generation of backup manifest\n"));
 	printf(_("      --no-slot          prevent creation of temporary replication slot\n"));
 	printf(_("      --no-verify-checksums\n"
 			 "                         do not verify checksums\n"));
-	printf(_("      --no-estimate-size do not estimate backup size in server side\n"));
 	printf(_("  -?, --help             show this help, then exit\n"));
 	printf(_("\nConnection options:\n"));
 	printf(_("  -d, --dbname=CONNSTR   connection string\n"));
@@ -967,8 +992,12 @@ writeTarData(WriteTarState *state, char *buf, int r)
 #ifdef HAVE_LIBZ
 	if (state->ztarfile != NULL)
 	{
+		errno = 0;
 		if (gzwrite(state->ztarfile, buf, r) != r)
 		{
+			/* if write didn't set errno, assume problem is no disk space */
+			if (errno == 0)
+				errno = ENOSPC;
 			pg_log_error("could not write to compressed file \"%s\": %s",
 						 state->filename, get_gz_error(state->ztarfile));
 			exit(1);
@@ -977,8 +1006,12 @@ writeTarData(WriteTarState *state, char *buf, int r)
 	else
 #endif
 	{
+		errno = 0;
 		if (fwrite(buf, r, 1, state->tarfile) != 1)
 		{
+			/* if write didn't set errno, assume problem is no disk space */
+			if (errno == 0)
+				errno = ENOSPC;
 			pg_log_error("could not write to file \"%s\": %m",
 						 state->filename);
 			exit(1);
@@ -999,7 +1032,7 @@ writeTarData(WriteTarState *state, char *buf, int r)
 static void
 ReceiveTarFile(PGconn *conn, PGresult *res, int rownum)
 {
-	char		zerobuf[1024];
+	char		zerobuf[TAR_BLOCK_SIZE * 2];
 	WriteTarState state;
 
 	memset(&state, 0, sizeof(state));
@@ -1025,7 +1058,8 @@ ReceiveTarFile(PGconn *conn, PGresult *res, int rownum)
 #ifdef HAVE_LIBZ
 			if (compresslevel != 0)
 			{
-				int		fd = dup(fileno(stdout));
+				int			fd = dup(fileno(stdout));
+
 				if (fd < 0)
 				{
 					pg_log_error("could not duplicate stdout: %m");
@@ -1143,7 +1177,7 @@ ReceiveTarFile(PGconn *conn, PGresult *res, int rownum)
 
 	if (state.basetablespace && writerecoveryconf)
 	{
-		char		header[512];
+		char		header[TAR_BLOCK_SIZE];
 
 		/*
 		 * If postgresql.auto.conf has not been found in the streamed data,
@@ -1162,7 +1196,7 @@ ReceiveTarFile(PGconn *conn, PGresult *res, int rownum)
 							pg_file_create_mode, 04000, 02000,
 							time(NULL));
 
-			padding = ((recoveryconfcontents->len + 511) & ~511) - recoveryconfcontents->len;
+			padding = tarPaddingBytesRequired(recoveryconfcontents->len);
 
 			writeTarData(&state, header, sizeof(header));
 			writeTarData(&state, recoveryconfcontents->data,
@@ -1182,11 +1216,41 @@ ReceiveTarFile(PGconn *conn, PGresult *res, int rownum)
 							time(NULL));
 
 			writeTarData(&state, header, sizeof(header));
-			writeTarData(&state, zerobuf, 511);
+
+			/*
+			 * we don't need to pad out to a multiple of the tar block size
+			 * here, because the file is zero length, which is a multiple of
+			 * any block size.
+			 */
 		}
 	}
 
-	/* 2 * 512 bytes empty data at end of file */
+	/*
+	 * Normally, we emit the backup manifest as a separate file, but when
+	 * we're writing a tarfile to stdout, we don't have that option, so
+	 * include it in the one tarfile we've got.
+	 */
+	if (strcmp(basedir, "-") == 0 && manifest)
+	{
+		char		header[TAR_BLOCK_SIZE];
+		PQExpBufferData buf;
+
+		initPQExpBuffer(&buf);
+		ReceiveBackupManifestInMemory(conn, &buf);
+		if (PQExpBufferDataBroken(buf))
+		{
+			pg_log_error("out of memory");
+			exit(1);
+		}
+		tarCreateHeader(header, "backup_manifest", NULL, buf.len,
+						pg_file_create_mode, 04000, 02000,
+						time(NULL));
+		writeTarData(&state, header, sizeof(header));
+		writeTarData(&state, buf.data, buf.len);
+		termPQExpBuffer(&buf);
+	}
+
+	/* 2 * TAR_BLOCK_SIZE bytes empty data at end of file */
 	writeTarData(&state, zerobuf, sizeof(zerobuf));
 
 #ifdef HAVE_LIBZ
@@ -1247,9 +1311,9 @@ ReceiveTarCopyChunk(size_t r, char *copybuf, void *callback_data)
 		 *
 		 * To do this, we have to process the individual files inside the TAR
 		 * stream. The stream consists of a header and zero or more chunks,
-		 * all 512 bytes long. The stream from the server is broken up into
-		 * smaller pieces, so we have to track the size of the files to find
-		 * the next header structure.
+		 * each with a length equal to TAR_BLOCK_SIZE. The stream from the
+		 * server is broken up into smaller pieces, so we have to track the
+		 * size of the files to find the next header structure.
 		 */
 		int			rr = r;
 		int			pos = 0;
@@ -1262,17 +1326,17 @@ ReceiveTarCopyChunk(size_t r, char *copybuf, void *callback_data)
 				 * We're currently reading a header structure inside the TAR
 				 * stream, i.e. the file metadata.
 				 */
-				if (state->tarhdrsz < 512)
+				if (state->tarhdrsz < TAR_BLOCK_SIZE)
 				{
 					/*
 					 * Copy the header structure into tarhdr in case the
-					 * header is not aligned to 512 bytes or it's not returned
-					 * in whole by the last PQgetCopyData call.
+					 * header is not aligned properly or it's not returned in
+					 * whole by the last PQgetCopyData call.
 					 */
 					int			hdrleft;
 					int			bytes2copy;
 
-					hdrleft = 512 - state->tarhdrsz;
+					hdrleft = TAR_BLOCK_SIZE - state->tarhdrsz;
 					bytes2copy = (rr > hdrleft ? hdrleft : rr);
 
 					memcpy(&state->tarhdr[state->tarhdrsz], copybuf + pos,
@@ -1305,14 +1369,14 @@ ReceiveTarCopyChunk(size_t r, char *copybuf, void *callback_data)
 
 					state->filesz = read_tar_number(&state->tarhdr[124], 12);
 					state->file_padding_len =
-						((state->filesz + 511) & ~511) - state->filesz;
+						tarPaddingBytesRequired(state->filesz);
 
 					if (state->is_recovery_guc_supported &&
 						state->is_postgresql_auto_conf &&
 						writerecoveryconf)
 					{
 						/* replace tar header */
-						char		header[512];
+						char		header[TAR_BLOCK_SIZE];
 
 						tarCreateHeader(header, "postgresql.auto.conf", NULL,
 										state->filesz + recoveryconfcontents->len,
@@ -1332,7 +1396,7 @@ ReceiveTarCopyChunk(size_t r, char *copybuf, void *callback_data)
 							 * If we're not skipping the file, write the tar
 							 * header unmodified.
 							 */
-							writeTarData(state, state->tarhdr, 512);
+							writeTarData(state, state->tarhdr, TAR_BLOCK_SIZE);
 						}
 					}
 
@@ -1369,15 +1433,15 @@ ReceiveTarCopyChunk(size_t r, char *copybuf, void *callback_data)
 					int			padding;
 					int			tailsize;
 
-					tailsize = (512 - state->file_padding_len) + recoveryconfcontents->len;
-					padding = ((tailsize + 511) & ~511) - tailsize;
+					tailsize = (TAR_BLOCK_SIZE - state->file_padding_len) + recoveryconfcontents->len;
+					padding = tarPaddingBytesRequired(tailsize);
 
 					writeTarData(state, recoveryconfcontents->data,
 								 recoveryconfcontents->len);
 
 					if (padding)
 					{
-						char		zerobuf[512];
+						char		zerobuf[TAR_BLOCK_SIZE];
 
 						MemSet(zerobuf, 0, sizeof(zerobuf));
 						writeTarData(state, zerobuf, padding);
@@ -1495,12 +1559,12 @@ ReceiveTarAndUnpackCopyChunk(size_t r, char *copybuf, void *callback_data)
 		/*
 		 * No current file, so this must be the header for a new file
 		 */
-		if (r != 512)
+		if (r != TAR_BLOCK_SIZE)
 		{
 			pg_log_error("invalid tar block header size: %zu", r);
 			exit(1);
 		}
-		totaldone += 512;
+		totaldone += TAR_BLOCK_SIZE;
 
 		state->current_len_left = read_tar_number(&copybuf[124], 12);
 
@@ -1510,10 +1574,10 @@ ReceiveTarAndUnpackCopyChunk(size_t r, char *copybuf, void *callback_data)
 #endif
 
 		/*
-		 * All files are padded up to 512 bytes
+		 * All files are padded up to a multiple of TAR_BLOCK_SIZE
 		 */
 		state->current_padding =
-			((state->current_len_left + 511) & ~511) - state->current_len_left;
+			tarPaddingBytesRequired(state->current_len_left);
 
 		/*
 		 * First part of header is zero terminated filename
@@ -1635,8 +1699,12 @@ ReceiveTarAndUnpackCopyChunk(size_t r, char *copybuf, void *callback_data)
 			return;
 		}
 
+		errno = 0;
 		if (fwrite(copybuf, r, 1, state->file) != 1)
 		{
+			/* if write didn't set errno, assume problem is no disk space */
+			if (errno == 0)
+				errno = ENOSPC;
 			pg_log_error("could not write to file \"%s\": %m", state->filename);
 			exit(1);
 		}
@@ -1657,6 +1725,68 @@ ReceiveTarAndUnpackCopyChunk(size_t r, char *copybuf, void *callback_data)
 	}							/* continuing data in existing file */
 }
 
+/*
+ * Receive the backup manifest file and write it out to a file.
+ */
+static void
+ReceiveBackupManifest(PGconn *conn)
+{
+	WriteManifestState state;
+
+	snprintf(state.filename, sizeof(state.filename),
+			 "%s/backup_manifest.tmp", basedir);
+	state.file = fopen(state.filename, "wb");
+	if (state.file == NULL)
+	{
+		pg_log_error("could not create file \"%s\": %m", state.filename);
+		exit(1);
+	}
+
+	ReceiveCopyData(conn, ReceiveBackupManifestChunk, &state);
+
+	fclose(state.file);
+}
+
+/*
+ * Receive one chunk of the backup manifest file and write it out to a file.
+ */
+static void
+ReceiveBackupManifestChunk(size_t r, char *copybuf, void *callback_data)
+{
+	WriteManifestState *state = callback_data;
+
+	errno = 0;
+	if (fwrite(copybuf, r, 1, state->file) != 1)
+	{
+		/* if write didn't set errno, assume problem is no disk space */
+		if (errno == 0)
+			errno = ENOSPC;
+		pg_log_error("could not write to file \"%s\": %m", state->filename);
+		exit(1);
+	}
+}
+
+/*
+ * Receive the backup manifest file and write it out to a file.
+ */
+static void
+ReceiveBackupManifestInMemory(PGconn *conn, PQExpBuffer buf)
+{
+	ReceiveCopyData(conn, ReceiveBackupManifestInMemoryChunk, buf);
+}
+
+/*
+ * Receive one chunk of the backup manifest file and write it out to a file.
+ */
+static void
+ReceiveBackupManifestInMemoryChunk(size_t r, char *copybuf,
+								   void *callback_data)
+{
+	PQExpBuffer buf = callback_data;
+
+	appendPQExpBuffer(buf, copybuf, r);
+}
+
 static void
 BaseBackup(void)
 {
@@ -1667,6 +1797,8 @@ BaseBackup(void)
 	char	   *basebkp;
 	char		escaped_label[MAXPGPATH];
 	char	   *maxrate_clause = NULL;
+	char	   *manifest_clause = NULL;
+	char	   *manifest_checksums_clause = "";
 	int			i;
 	char		xlogstart[64];
 	char		xlogend[64];
@@ -1674,6 +1806,7 @@ BaseBackup(void)
 				maxServerMajor;
 	int			serverVersion,
 				serverMajor;
+	int			writing_to_stdout;
 
 	Assert(conn != NULL);
 
@@ -1728,6 +1861,17 @@ BaseBackup(void)
 	if (maxrate > 0)
 		maxrate_clause = psprintf("MAX_RATE %u", maxrate);
 
+	if (manifest)
+	{
+		if (manifest_force_encode)
+			manifest_clause = "MANIFEST 'force-encode'";
+		else
+			manifest_clause = "MANIFEST 'yes'";
+		if (manifest_checksums != NULL)
+			manifest_checksums_clause = psprintf("MANIFEST_CHECKSUMS '%s'",
+												 manifest_checksums);
+	}
+
 	if (verbose)
 		pg_log_info("initiating base backup, waiting for checkpoint to complete");
 
@@ -1741,7 +1885,7 @@ BaseBackup(void)
 	}
 
 	basebkp =
-		psprintf("BASE_BACKUP LABEL '%s' %s %s %s %s %s %s %s",
+		psprintf("BASE_BACKUP LABEL '%s' %s %s %s %s %s %s %s %s %s",
 				 escaped_label,
 				 estimatesize ? "PROGRESS" : "",
 				 includewal == FETCH_WAL ? "WAL" : "",
@@ -1749,7 +1893,9 @@ BaseBackup(void)
 				 includewal == NO_WAL ? "" : "NOWAIT",
 				 maxrate_clause ? maxrate_clause : "",
 				 format == 't' ? "TABLESPACE_MAP" : "",
-				 verify_checksums ? "" : "NOVERIFY_CHECKSUMS");
+				 verify_checksums ? "" : "NOVERIFY_CHECKSUMS",
+				 manifest_clause ? manifest_clause : "",
+				 manifest_checksums_clause);
 
 	if (PQsendQuery(conn, basebkp) == 0)
 	{
@@ -1837,7 +1983,8 @@ BaseBackup(void)
 	/*
 	 * When writing to stdout, require a single tablespace
 	 */
-	if (format == 't' && strcmp(basedir, "-") == 0 && PQntuples(res) > 1)
+	writing_to_stdout = format == 't' && strcmp(basedir, "-") == 0;
+	if (writing_to_stdout && PQntuples(res) > 1)
 	{
 		pg_log_error("can only write single tablespace to stdout, database has %d",
 					 PQntuples(res));
@@ -1865,6 +2012,19 @@ BaseBackup(void)
 		else
 			ReceiveAndUnpackTarFile(conn, res, i);
 	}							/* Loop over all tablespaces */
+
+	/*
+	 * Now receive backup manifest, if appropriate.
+	 *
+	 * If we're writing a tarfile to stdout, ReceiveTarFile will have already
+	 * processed the backup manifest and included it in the output tarfile.
+	 * Such a configuration doesn't allow for writing multiple files.
+	 *
+	 * If we're talking to an older server, it won't send a backup manifest,
+	 * so don't try to receive one.
+	 */
+	if (!writing_to_stdout && manifest)
+		ReceiveBackupManifest(conn);
 
 	if (showprogress)
 	{
@@ -2031,6 +2191,29 @@ BaseBackup(void)
 		}
 	}
 
+	/*
+	 * After synchronizing data to disk, perform a durable rename of
+	 * backup_manifest.tmp to backup_manifest, if we wrote such a file. This
+	 * way, a failure or system crash before we reach this point will leave us
+	 * without a backup_manifest file, decreasing the chances that a directory
+	 * we leave behind will be mistaken for a valid backup.
+	 */
+	if (!writing_to_stdout && manifest)
+	{
+		char		tmp_filename[MAXPGPATH];
+		char		filename[MAXPGPATH];
+
+		if (verbose)
+			pg_log_info("renaming backup_manifest.tmp to backup_manifest");
+
+		snprintf(tmp_filename, MAXPGPATH, "%s/backup_manifest.tmp", basedir);
+		snprintf(filename, MAXPGPATH, "%s/backup_manifest", basedir);
+
+		/* durable_rename emits its own log message in case of failure */
+		if (durable_rename(tmp_filename, filename) != 0)
+			exit(1);
+	}
+
 	if (verbose)
 		pg_log_info("base backup completed");
 }
@@ -2069,6 +2252,9 @@ main(int argc, char **argv)
 		{"no-slot", no_argument, NULL, 2},
 		{"no-verify-checksums", no_argument, NULL, 3},
 		{"no-estimate-size", no_argument, NULL, 4},
+		{"no-manifest", no_argument, NULL, 5},
+		{"manifest-force-encode", no_argument, NULL, 6},
+		{"manifest-checksums", required_argument, NULL, 7},
 		{NULL, 0, NULL, 0}
 	};
 	int			c;
@@ -2240,6 +2426,15 @@ main(int argc, char **argv)
 			case 4:
 				estimatesize = false;
 				break;
+			case 5:
+				manifest = false;
+				break;
+			case 6:
+				manifest_force_encode = true;
+				break;
+			case 7:
+				manifest_checksums = pg_strdup(optarg);
+				break;
 			default:
 
 				/*
@@ -2326,7 +2521,8 @@ main(int argc, char **argv)
 
 		if (no_slot)
 		{
-			pg_log_error("--create-slot and --no-slot are incompatible options");
+			pg_log_error("%s and %s are incompatible options",
+						 "--create-slot", "--no-slot");
 			fprintf(stderr, _("Try \"%s --help\" for more information.\n"),
 					progname);
 			exit(1);
@@ -2364,7 +2560,26 @@ main(int argc, char **argv)
 
 	if (showprogress && !estimatesize)
 	{
-		pg_log_error("--progress and --no-estimate-size are incompatible options");
+		pg_log_error("%s and %s are incompatible options",
+					 "--progress", "--no-estimate-size");
+		fprintf(stderr, _("Try \"%s --help\" for more information.\n"),
+				progname);
+		exit(1);
+	}
+
+	if (!manifest && manifest_checksums != NULL)
+	{
+		pg_log_error("%s and %s are incompatible options",
+					 "--no-manifest", "--manifest-checksums");
+		fprintf(stderr, _("Try \"%s --help\" for more information.\n"),
+				progname);
+		exit(1);
+	}
+
+	if (!manifest && manifest_force_encode)
+	{
+		pg_log_error("%s and %s are incompatible options",
+					 "--no-manifest", "--manifest-force-encode");
 		fprintf(stderr, _("Try \"%s --help\" for more information.\n"),
 				progname);
 		exit(1);
@@ -2388,6 +2603,10 @@ main(int argc, char **argv)
 	 * RetrieveDataDirCreatePerm() and then call SetDataDirectoryCreatePerm().
 	 */
 	umask(pg_mode_mask);
+
+	/* Backup manifests are supported in 13 and newer versions */
+	if (PQserverVersion(conn) < MINIMUM_VERSION_FOR_MANIFESTS)
+		manifest = false;
 
 	/*
 	 * Verify that the target directory exists, or create it. For plaintext

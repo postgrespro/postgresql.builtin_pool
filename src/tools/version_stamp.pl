@@ -1,4 +1,4 @@
-#! /usr/bin/perl -w
+#! /usr/bin/perl
 
 #################################################################
 # version_stamp.pl -- update version stamps throughout the source tree
@@ -21,10 +21,11 @@
 #
 
 use strict;
+use warnings;
 
 # Major version is hard-wired into the script.  We update it when we branch
 # a new development version.
-my $majorversion = 13;
+my $majorversion = 14;
 
 # Validate argument and compute derived variables
 my $minor = shift;
@@ -34,23 +35,23 @@ my ($dotneeded);
 
 if ($minor =~ m/^\d+$/)
 {
-	$dotneeded    = 1;
+	$dotneeded = 1;
 }
 elsif ($minor eq "devel")
 {
-	$dotneeded    = 0;
+	$dotneeded = 0;
 }
 elsif ($minor =~ m/^alpha\d+$/)
 {
-	$dotneeded    = 0;
+	$dotneeded = 0;
 }
 elsif ($minor =~ m/^beta\d+$/)
 {
-	$dotneeded    = 0;
+	$dotneeded = 0;
 }
 elsif ($minor =~ m/^rc\d+$/)
 {
-	$dotneeded    = 0;
+	$dotneeded = 0;
 }
 else
 {

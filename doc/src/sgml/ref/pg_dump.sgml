@@ -33,9 +33,7 @@ PostgreSQL documentation
 
 
  <refsect1 id="pg-dump-description">
-  <title>
-   Description
-  </title>
+  <title>Description</title>
 
   <para>
    <application>pg_dump</application> is a utility for backing up a
@@ -387,12 +385,12 @@ PostgreSQL documentation
         selected by writing multiple <option>-n</option> switches.  The
         <replaceable class="parameter">pattern</replaceable> parameter is
         interpreted as a pattern according to the same rules used by
-        <application>psql</application>'s <literal>\d</literal> commands (see <xref
-        linkend="app-psql-patterns" endterm="app-psql-patterns-title"/>),
+        <application>psql</application>'s <literal>\d</literal> commands
+        (see <xref linkend="app-psql-patterns"/> below),
         so multiple schemas can also be selected by writing wildcard characters
         in the pattern.  When using wildcards, be careful to quote the pattern
         if needed to prevent the shell from expanding the wildcards;  see
-        <xref linkend="pg-dump-examples" endterm="pg-dump-examples-title"/>.
+        <xref linkend="pg-dump-examples"/> below.
        </para>
 
        <note>
@@ -524,12 +522,12 @@ PostgreSQL documentation
         can be selected by writing multiple <option>-t</option> switches.  The
         <replaceable class="parameter">pattern</replaceable> parameter is
         interpreted as a pattern according to the same rules used by
-        <application>psql</application>'s <literal>\d</literal> commands (see <xref
-        linkend="app-psql-patterns" endterm="app-psql-patterns-title"/>),
+        <application>psql</application>'s <literal>\d</literal> commands
+        (see <xref linkend="app-psql-patterns"/> below),
         so multiple tables can also be selected by writing wildcard characters
         in the pattern.  When using wildcards, be careful to quote the pattern
         if needed to prevent the shell from expanding the wildcards;  see
-        <xref linkend="pg-dump-examples" endterm="pg-dump-examples-title"/>.
+        <xref linkend="pg-dump-examples"/> below.
        </para>
 
        <para>
@@ -764,6 +762,36 @@ PostgreSQL documentation
         clause) when cleaning database objects.  This option is not valid
         unless <option>--clean</option> is also specified.
        </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><option>--include-foreign-data=<replaceable class="parameter">foreignserver</replaceable></option></term>
+      <listitem>
+       <para>
+        Dump the data for any foreign table with a foreign server
+        matching <replaceable class="parameter">foreignserver</replaceable>
+        pattern. Multiple foreign servers can be selected by writing multiple
+        <option>--include-foreign-data</option> switches.
+        Also, the <replaceable class="parameter">foreignserver</replaceable> parameter is
+        interpreted as a pattern according to the same rules used by
+        <application>psql</application>'s <literal>\d</literal> commands
+        (see <xref linkend="app-psql-patterns"/> below),
+        so multiple foreign servers can also be selected by writing wildcard characters
+        in the pattern.  When using wildcards, be careful to quote the pattern
+        if needed to prevent the shell from expanding the wildcards; see
+        <xref linkend="pg-dump-examples"/> below.
+        The only exception is that an empty pattern is disallowed.
+       </para>
+
+       <note>
+        <para>
+         When <option>--include-foreign-data</option> is specified,
+         <application>pg_dump</application> does not check that the foreign
+         table is writeable.  Therefore, there is no guarantee that the
+         results of a foreign table dump can be successfully restored.
+        </para>
+       </note>
       </listitem>
      </varlistentry>
 
@@ -1337,8 +1365,8 @@ CREATE DATABASE foo WITH TEMPLATE template0;
   </para>
  </refsect1>
 
- <refsect1 id="pg-dump-examples">
-  <title id="pg-dump-examples-title">Examples</title>
+ <refsect1 id="pg-dump-examples" xreflabel="Examples">
+  <title>Examples</title>
 
   <para>
    To dump a database called <literal>mydb</literal> into a SQL-script file:
@@ -1447,8 +1475,7 @@ CREATE DATABASE foo WITH TEMPLATE template0;
   <para>
    To specify an upper-case or mixed-case name in <option>-t</option> and related
    switches, you need to double-quote the name; else it will be folded to
-   lower case (see <xref
-   linkend="app-psql-patterns" endterm="app-psql-patterns-title"/>).  But
+   lower case (see <xref linkend="app-psql-patterns"/> below).  But
    double quotes are special to the shell, so in turn they must be quoted.
    Thus, to dump a single table with a mixed-case name, you need something
    like

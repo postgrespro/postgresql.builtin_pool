@@ -714,8 +714,8 @@ CheckAttributeType(const char *attname,
  *		Construct and insert a new tuple in pg_attribute.
  *
  * Caller has already opened and locked pg_attribute.  new_attribute is the
- * attribute to insert.  attcacheoff is always initialized to -1, attacl and
- * attoptions are always initialized to NULL.
+ * attribute to insert.  attcacheoff is always initialized to -1, attacl,
+ * attfdwoptions and attmissingval are always initialized to NULL.
  *
  * indstate is the index state for CatalogTupleInsertWithInfo.  It can be
  * passed as NULL, in which case we'll fetch the necessary info.  (Don't do
@@ -725,6 +725,7 @@ CheckAttributeType(const char *attname,
 void
 InsertPgAttributeTuple(Relation pg_attribute_rel,
 					   Form_pg_attribute new_attribute,
+					   Datum attoptions,
 					   CatalogIndexState indstate)
 {
 	Datum		values[Natts_pg_attribute];
@@ -756,10 +757,11 @@ InsertPgAttributeTuple(Relation pg_attribute_rel,
 	values[Anum_pg_attribute_attislocal - 1] = BoolGetDatum(new_attribute->attislocal);
 	values[Anum_pg_attribute_attinhcount - 1] = Int32GetDatum(new_attribute->attinhcount);
 	values[Anum_pg_attribute_attcollation - 1] = ObjectIdGetDatum(new_attribute->attcollation);
+	values[Anum_pg_attribute_attoptions - 1] = attoptions;
 
 	/* start out with empty permissions and empty options */
 	nulls[Anum_pg_attribute_attacl - 1] = true;
-	nulls[Anum_pg_attribute_attoptions - 1] = true;
+	nulls[Anum_pg_attribute_attoptions - 1] = attoptions == (Datum) 0;
 	nulls[Anum_pg_attribute_attfdwoptions - 1] = true;
 	nulls[Anum_pg_attribute_attmissingval - 1] = true;
 
@@ -813,24 +815,18 @@ AddNewAttributeTuples(Oid new_rel_oid,
 		/* Make sure this is OK, too */
 		attr->attstattarget = -1;
 
-		InsertPgAttributeTuple(rel, attr, indstate);
+		InsertPgAttributeTuple(rel, attr, (Datum) 0, indstate);
 
 		/* Add dependency info */
-		myself.classId = RelationRelationId;
-		myself.objectId = new_rel_oid;
-		myself.objectSubId = i + 1;
-		referenced.classId = TypeRelationId;
-		referenced.objectId = attr->atttypid;
-		referenced.objectSubId = 0;
+		ObjectAddressSubSet(myself, RelationRelationId, new_rel_oid, i + 1);
+		ObjectAddressSet(referenced, TypeRelationId, attr->atttypid);
 		recordDependencyOn(&myself, &referenced, DEPENDENCY_NORMAL);
 
 		/* The default collation is pinned, so don't bother recording it */
 		if (OidIsValid(attr->attcollation) &&
 			attr->attcollation != DEFAULT_COLLATION_OID)
 		{
-			referenced.classId = CollationRelationId;
-			referenced.objectId = attr->attcollation;
-			referenced.objectSubId = 0;
+			ObjectAddressSet(referenced, CollationRelationId, attr->attcollation);
 			recordDependencyOn(&myself, &referenced, DEPENDENCY_NORMAL);
 		}
 	}
@@ -851,7 +847,7 @@ AddNewAttributeTuples(Oid new_rel_oid,
 			/* Fill in the correct relation OID in the copied tuple */
 			attStruct.attrelid = new_rel_oid;
 
-			InsertPgAttributeTuple(rel, &attStruct, indstate);
+			InsertPgAttributeTuple(rel, &attStruct, (Datum) 0, indstate);
 		}
 	}
 
@@ -1941,13 +1937,8 @@ heap_drop_with_catalog(Oid relid)
 	/*
 	 * Schedule unlinking of the relation's physical files at commit.
 	 */
-	if (rel->rd_rel->relkind != RELKIND_VIEW &&
-		rel->rd_rel->relkind != RELKIND_COMPOSITE_TYPE &&
-		rel->rd_rel->relkind != RELKIND_FOREIGN_TABLE &&
-		rel->rd_rel->relkind != RELKIND_PARTITIONED_TABLE)
-	{
+	if (RELKIND_HAS_STORAGE(rel->rd_rel->relkind))
 		RelationDropStorage(rel);
-	}
 
 	/*
 	 * Close relcache entry, but *keep* AccessExclusiveLock on the relation
@@ -3462,7 +3453,7 @@ restart:
 	 */
 	foreach(cell, parent_cons)
 	{
-		Oid		parent = lfirst_oid(cell);
+		Oid			parent = lfirst_oid(cell);
 
 		ScanKeyInit(&key,
 					Anum_pg_constraint_oid,
@@ -3485,9 +3476,9 @@ restart:
 			 *
 			 * Because of this arrangement, we can correctly catch all
 			 * relevant relations by adding to 'parent_cons' all rows with
-			 * valid conparentid, and to the 'oids' list all rows with a
-			 * zero conparentid.  If any oids are added to 'oids', redo the
-			 * first loop above by setting 'restart'.
+			 * valid conparentid, and to the 'oids' list all rows with a zero
+			 * conparentid.  If any oids are added to 'oids', redo the first
+			 * loop above by setting 'restart'.
 			 */
 			if (OidIsValid(con->conparentid))
 				parent_cons = list_append_unique_oid(parent_cons,

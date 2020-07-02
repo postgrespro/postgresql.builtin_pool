@@ -936,14 +936,9 @@ DecodeDateTime(char **field, int *ftype, int nf,
 				if (dterr)
 					return dterr;
 
-				/*
-				 * Check upper limit on hours; other limits checked in
-				 * DecodeTime()
-				 */
-				/* test for > 24:00:00 */
-				if (tm->tm_hour > HOURS_PER_DAY ||
-					(tm->tm_hour == HOURS_PER_DAY &&
-					 (tm->tm_min > 0 || tm->tm_sec > 0 || *fsec > 0)))
+				/* check for time overflow */
+				if (time_overflows(tm->tm_hour, tm->tm_min, tm->tm_sec,
+								   *fsec))
 					return DTERR_FIELD_OVERFLOW;
 				break;
 
@@ -2218,16 +2213,8 @@ DecodeTimeOnly(char **field, int *ftype, int nf,
 	else if (mer == PM && tm->tm_hour != HOURS_PER_DAY / 2)
 		tm->tm_hour += HOURS_PER_DAY / 2;
 
-	/*
-	 * This should match the checks in make_timestamp_internal
-	 */
-	if (tm->tm_hour < 0 || tm->tm_min < 0 || tm->tm_min > MINS_PER_HOUR - 1 ||
-		tm->tm_sec < 0 || tm->tm_sec > SECS_PER_MINUTE ||
-		tm->tm_hour > HOURS_PER_DAY ||
-	/* test for > 24:00:00 */
-		(tm->tm_hour == HOURS_PER_DAY &&
-		 (tm->tm_min > 0 || tm->tm_sec > 0 || *fsec > 0)) ||
-		*fsec < INT64CONST(0) || *fsec > USECS_PER_SEC)
+	/* check for time overflow */
+	if (time_overflows(tm->tm_hour, tm->tm_min, tm->tm_sec, *fsec))
 		return DTERR_FIELD_OVERFLOW;
 
 	if ((fmask & DTK_TIME_M) != DTK_TIME_M)
@@ -3862,7 +3849,7 @@ EncodeDateOnly(struct pg_tm *tm, int style, char *str)
 		case USE_XSD_DATES:
 			/* compatible with ISO date formats */
 			str = pg_ultostr_zeropad(str,
-									(tm->tm_year > 0) ? tm->tm_year : -(tm->tm_year - 1), 4);
+									 (tm->tm_year > 0) ? tm->tm_year : -(tm->tm_year - 1), 4);
 			*str++ = '-';
 			str = pg_ultostr_zeropad(str, tm->tm_mon, 2);
 			*str++ = '-';
@@ -3885,7 +3872,7 @@ EncodeDateOnly(struct pg_tm *tm, int style, char *str)
 			}
 			*str++ = '/';
 			str = pg_ultostr_zeropad(str,
-									(tm->tm_year > 0) ? tm->tm_year : -(tm->tm_year - 1), 4);
+									 (tm->tm_year > 0) ? tm->tm_year : -(tm->tm_year - 1), 4);
 			break;
 
 		case USE_GERMAN_DATES:
@@ -3895,7 +3882,7 @@ EncodeDateOnly(struct pg_tm *tm, int style, char *str)
 			str = pg_ultostr_zeropad(str, tm->tm_mon, 2);
 			*str++ = '.';
 			str = pg_ultostr_zeropad(str,
-									(tm->tm_year > 0) ? tm->tm_year : -(tm->tm_year - 1), 4);
+									 (tm->tm_year > 0) ? tm->tm_year : -(tm->tm_year - 1), 4);
 			break;
 
 		case USE_POSTGRES_DATES:
@@ -3915,7 +3902,7 @@ EncodeDateOnly(struct pg_tm *tm, int style, char *str)
 			}
 			*str++ = '-';
 			str = pg_ultostr_zeropad(str,
-									(tm->tm_year > 0) ? tm->tm_year : -(tm->tm_year - 1), 4);
+									 (tm->tm_year > 0) ? tm->tm_year : -(tm->tm_year - 1), 4);
 			break;
 	}
 
@@ -3985,7 +3972,7 @@ EncodeDateTime(struct pg_tm *tm, fsec_t fsec, bool print_tz, int tz, const char 
 		case USE_XSD_DATES:
 			/* Compatible with ISO-8601 date formats */
 			str = pg_ultostr_zeropad(str,
-									(tm->tm_year > 0) ? tm->tm_year : -(tm->tm_year - 1), 4);
+									 (tm->tm_year > 0) ? tm->tm_year : -(tm->tm_year - 1), 4);
 			*str++ = '-';
 			str = pg_ultostr_zeropad(str, tm->tm_mon, 2);
 			*str++ = '-';
@@ -4016,7 +4003,7 @@ EncodeDateTime(struct pg_tm *tm, fsec_t fsec, bool print_tz, int tz, const char 
 			}
 			*str++ = '/';
 			str = pg_ultostr_zeropad(str,
-									(tm->tm_year > 0) ? tm->tm_year : -(tm->tm_year - 1), 4);
+									 (tm->tm_year > 0) ? tm->tm_year : -(tm->tm_year - 1), 4);
 			*str++ = ' ';
 			str = pg_ultostr_zeropad(str, tm->tm_hour, 2);
 			*str++ = ':';
@@ -4026,7 +4013,8 @@ EncodeDateTime(struct pg_tm *tm, fsec_t fsec, bool print_tz, int tz, const char 
 
 			/*
 			 * Note: the uses of %.*s in this function would be risky if the
-			 * timezone names ever contain non-ASCII characters.  However, all
+			 * timezone names ever contain non-ASCII characters, since we are
+			 * not being careful to do encoding-aware clipping.  However, all
 			 * TZ abbreviations in the IANA database are plain ASCII.
 			 */
 			if (print_tz)
@@ -4048,7 +4036,7 @@ EncodeDateTime(struct pg_tm *tm, fsec_t fsec, bool print_tz, int tz, const char 
 			str = pg_ultostr_zeropad(str, tm->tm_mon, 2);
 			*str++ = '.';
 			str = pg_ultostr_zeropad(str,
-									(tm->tm_year > 0) ? tm->tm_year : -(tm->tm_year - 1), 4);
+									 (tm->tm_year > 0) ? tm->tm_year : -(tm->tm_year - 1), 4);
 			*str++ = ' ';
 			str = pg_ultostr_zeropad(str, tm->tm_hour, 2);
 			*str++ = ':';
@@ -4098,7 +4086,7 @@ EncodeDateTime(struct pg_tm *tm, fsec_t fsec, bool print_tz, int tz, const char 
 			str = AppendTimestampSeconds(str, tm, fsec);
 			*str++ = ' ';
 			str = pg_ultostr_zeropad(str,
-									(tm->tm_year > 0) ? tm->tm_year : -(tm->tm_year - 1), 4);
+									 (tm->tm_year > 0) ? tm->tm_year : -(tm->tm_year - 1), 4);
 
 			if (print_tz)
 			{
@@ -4471,7 +4459,7 @@ TemporalSimplify(int32 max_precis, Node *node)
 
 	typmod = (Node *) lsecond(expr->args);
 
-	if (IsA(typmod, Const) &&!((Const *) typmod)->constisnull)
+	if (IsA(typmod, Const) && !((Const *) typmod)->constisnull)
 	{
 		Node	   *source = (Node *) linitial(expr->args);
 		int32		old_precis = exprTypmod(source);

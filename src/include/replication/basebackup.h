@@ -20,7 +20,6 @@
 #define MAX_RATE_LOWER	32
 #define MAX_RATE_UPPER	1048576
 
-
 typedef struct
 {
 	char	   *oid;
@@ -30,7 +29,5 @@ typedef struct
 } tablespaceinfo;
 
 extern void SendBaseBackup(BaseBackupCmd *cmd);
-
-extern int64 sendTablespace(char *path, bool sizeonly);
 
 #endif							/* _BASEBACKUP_H */

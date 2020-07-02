@@ -30,6 +30,7 @@
 #include "access/xlog.h"
 #include "access/xloginsert.h"
 #include "access/xlogutils.h"
+#include "catalog/index.h"
 #include "catalog/namespace.h"
 #include "catalog/pg_enum.h"
 #include "catalog/storage.h"
@@ -1047,7 +1048,9 @@ CommandCounterIncrement(void)
  * ForceSyncCommit
  *
  * Interface routine to allow commands to force a synchronous commit of the
- * current top-level transaction
+ * current top-level transaction.  Currently, two-phase commit does not
+ * persist and restore this variable.  So long as all callers use
+ * PreventInTransactionBlock(), that omission has no consequences.
  */
 void
 ForceSyncCommit(void)
@@ -1307,14 +1310,14 @@ RecordTransactionCommit(void)
 		 * a bit fuzzy, but it doesn't matter.
 		 */
 		START_CRIT_SECTION();
-		MyPgXact->delayChkpt = true;
+		MyProc->delayChkpt = true;
 
 		SetCurrentTransactionStopTimestamp();
 
 		XactLogCommitRecord(xactStopTimestamp,
 							nchildren, children, nrels, rels,
 							nmsgs, invalMessages,
-							RelcacheInitFileInval, forceSyncCommit,
+							RelcacheInitFileInval,
 							MyXactFlags,
 							InvalidTransactionId, NULL /* plain commit */ );
 
@@ -1408,7 +1411,7 @@ RecordTransactionCommit(void)
 	 */
 	if (markXidCommitted)
 	{
-		MyPgXact->delayChkpt = false;
+		MyProc->delayChkpt = false;
 		END_CRIT_SECTION();
 	}
 
@@ -2109,6 +2112,13 @@ CommitTransaction(void)
 	 */
 	PreCommit_on_commit_actions();
 
+	/*
+	 * Synchronize files that are created and not WAL-logged during this
+	 * transaction. This must happen before AtEOXact_RelationMap(), so that we
+	 * don't see committed-but-broken files after a crash.
+	 */
+	smgrDoPendingSyncs(true, is_parallel_worker);
+
 	/* close large objects before lower-level cleanup */
 	AtEOXact_LargeObject(true);
 
@@ -2341,6 +2351,13 @@ PrepareTransaction(void)
 	 * cursors, to avoid dangling-reference problems)
 	 */
 	PreCommit_on_commit_actions();
+
+	/*
+	 * Synchronize files that are created and not WAL-logged during this
+	 * transaction. This must happen before EndPrepare(), so that we don't see
+	 * committed-but-broken files after a crash and COMMIT PREPARED.
+	 */
+	smgrDoPendingSyncs(true, false);
 
 	/* close large objects before lower-level cleanup */
 	AtEOXact_LargeObject(true);
@@ -2648,6 +2665,9 @@ AbortTransaction(void)
 	 */
 	SetUserIdAndSecContext(s->prevUser, s->prevSecContext);
 
+	/* Forget about any active REINDEX. */
+	ResetReindexState(s->nestingLevel);
+
 	/* If in parallel mode, clean up workers and exit parallel mode. */
 	if (IsInParallelMode())
 	{
@@ -2660,6 +2680,7 @@ AbortTransaction(void)
 	 */
 	AfterTriggerEndXact(false); /* 'false' means it's abort */
 	AtAbort_Portals();
+	smgrDoPendingSyncs(false, is_parallel_worker);
 	AtEOXact_LargeObject(false);
 	AtAbort_Notify();
 	AtEOXact_RelationMap(false, is_parallel_worker);
@@ -3731,7 +3752,7 @@ EndTransactionBlock(bool chain)
 			if (chain)
 				ereport(ERROR,
 						(errcode(ERRCODE_NO_ACTIVE_SQL_TRANSACTION),
-						 /* translator: %s represents an SQL statement name */
+				/* translator: %s represents an SQL statement name */
 						 errmsg("%s can only be used in transaction blocks",
 								"COMMIT AND CHAIN")));
 			else
@@ -3810,7 +3831,7 @@ EndTransactionBlock(bool chain)
 			if (chain)
 				ereport(ERROR,
 						(errcode(ERRCODE_NO_ACTIVE_SQL_TRANSACTION),
-						 /* translator: %s represents an SQL statement name */
+				/* translator: %s represents an SQL statement name */
 						 errmsg("%s can only be used in transaction blocks",
 								"COMMIT AND CHAIN")));
 			else
@@ -3933,7 +3954,7 @@ UserAbortTransactionBlock(bool chain)
 			if (chain)
 				ereport(ERROR,
 						(errcode(ERRCODE_NO_ACTIVE_SQL_TRANSACTION),
-						 /* translator: %s represents an SQL statement name */
+				/* translator: %s represents an SQL statement name */
 						 errmsg("%s can only be used in transaction blocks",
 								"ROLLBACK AND CHAIN")));
 			else
@@ -4946,6 +4967,9 @@ AbortSubTransaction(void)
 	 */
 	SetUserIdAndSecContext(s->prevUser, s->prevSecContext);
 
+	/* Forget about any active REINDEX. */
+	ResetReindexState(s->nestingLevel);
+
 	/* Exit from parallel mode, if necessary. */
 	if (IsInParallelMode())
 	{
@@ -5446,7 +5470,7 @@ XactLogCommitRecord(TimestampTz commit_time,
 					int nsubxacts, TransactionId *subxacts,
 					int nrels, RelFileNode *rels,
 					int nmsgs, SharedInvalidationMessage *msgs,
-					bool relcacheInval, bool forceSync,
+					bool relcacheInval,
 					int xactflags, TransactionId twophase_xid,
 					const char *twophase_gid)
 {

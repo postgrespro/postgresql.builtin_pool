@@ -20,6 +20,9 @@
 
 #include "common/unicode_norm.h"
 #include "common/unicode_norm_table.h"
+#ifndef FRONTEND
+#include "common/unicode_normprops_table.h"
+#endif
 
 #ifndef FRONTEND
 #define ALLOC(size) palloc(size)
@@ -109,8 +112,8 @@ get_decomposed_size(pg_wchar code, bool compat)
 	/*
 	 * Fast path for Hangul characters not stored in tables to save memory as
 	 * decomposition is algorithmic. See
-	 * https://www.unicode.org/reports/tr15/tr15-18.html, annex 10 for details on
-	 * the matter.
+	 * https://www.unicode.org/reports/tr15/tr15-18.html, annex 10 for details
+	 * on the matter.
 	 */
 	if (code >= SBASE && code < SBASE + SCOUNT)
 	{
@@ -235,8 +238,8 @@ decompose_code(pg_wchar code, bool compat, pg_wchar **result, int *current)
 	/*
 	 * Fast path for Hangul characters not stored in tables to save memory as
 	 * decomposition is algorithmic. See
-	 * https://www.unicode.org/reports/tr15/tr15-18.html, annex 10 for details on
-	 * the matter.
+	 * https://www.unicode.org/reports/tr15/tr15-18.html, annex 10 for details
+	 * on the matter.
 	 */
 	if (code >= SBASE && code < SBASE + SCOUNT)
 	{
@@ -366,8 +369,8 @@ unicode_normalize(UnicodeNormalizationForm form, const pg_wchar *input)
 			continue;
 
 		/*
-		 * Per Unicode (https://www.unicode.org/reports/tr15/tr15-18.html) annex 4,
-		 * a sequence of two adjacent characters in a string is an
+		 * Per Unicode (https://www.unicode.org/reports/tr15/tr15-18.html)
+		 * annex 4, a sequence of two adjacent characters in a string is an
 		 * exchangeable pair if the combining class (from the Unicode
 		 * Character Database) for the first character is greater than the
 		 * combining class for the second, and the second is not a starter.  A
@@ -393,10 +396,10 @@ unicode_normalize(UnicodeNormalizationForm form, const pg_wchar *input)
 		return decomp_chars;
 
 	/*
-	 * The last phase of NFC and NFKC is the recomposition of the reordered Unicode
-	 * string using combining classes. The recomposed string cannot be longer
-	 * than the decomposed one, so make the allocation of the output string
-	 * based on that assumption.
+	 * The last phase of NFC and NFKC is the recomposition of the reordered
+	 * Unicode string using combining classes. The recomposed string cannot be
+	 * longer than the decomposed one, so make the allocation of the output
+	 * string based on that assumption.
 	 */
 	recomp_chars = (pg_wchar *) ALLOC((decomp_size + 1) * sizeof(pg_wchar));
 	if (!recomp_chars)
@@ -442,3 +445,110 @@ unicode_normalize(UnicodeNormalizationForm form, const pg_wchar *input)
 
 	return recomp_chars;
 }
+
+/*
+ * Normalization "quick check" algorithm; see
+ * <http://www.unicode.org/reports/tr15/#Detecting_Normalization_Forms>
+ */
+
+/* We only need this in the backend. */
+#ifndef FRONTEND
+
+static uint8
+get_canonical_class(pg_wchar ch)
+{
+	pg_unicode_decomposition *entry = get_code_entry(ch);
+
+	if (!entry)
+		return 0;
+	else
+		return entry->comb_class;
+}
+
+static int
+qc_compare(const void *p1, const void *p2)
+{
+	uint32		v1,
+				v2;
+
+	v1 = ((const pg_unicode_normprops *) p1)->codepoint;
+	v2 = ((const pg_unicode_normprops *) p2)->codepoint;
+	return (v1 - v2);
+}
+
+/*
+ * Look up the normalization quick check character property
+ */
+static UnicodeNormalizationQC
+qc_is_allowed(UnicodeNormalizationForm form, pg_wchar ch)
+{
+	pg_unicode_normprops key;
+	pg_unicode_normprops *found = NULL;
+
+	key.codepoint = ch;
+
+	switch (form)
+	{
+		case UNICODE_NFC:
+			found = bsearch(&key,
+							UnicodeNormProps_NFC_QC,
+							lengthof(UnicodeNormProps_NFC_QC),
+							sizeof(pg_unicode_normprops),
+							qc_compare);
+			break;
+		case UNICODE_NFKC:
+			found = bsearch(&key,
+							UnicodeNormProps_NFKC_QC,
+							lengthof(UnicodeNormProps_NFKC_QC),
+							sizeof(pg_unicode_normprops),
+							qc_compare);
+			break;
+		default:
+			Assert(false);
+			break;
+	}
+
+	if (found)
+		return found->quickcheck;
+	else
+		return UNICODE_NORM_QC_YES;
+}
+
+UnicodeNormalizationQC
+unicode_is_normalized_quickcheck(UnicodeNormalizationForm form, const pg_wchar *input)
+{
+	uint8		lastCanonicalClass = 0;
+	UnicodeNormalizationQC result = UNICODE_NORM_QC_YES;
+
+	/*
+	 * For the "D" forms, we don't run the quickcheck.  We don't include the
+	 * lookup tables for those because they are huge, checking for these
+	 * particular forms is less common, and running the slow path is faster
+	 * for the "D" forms than the "C" forms because you don't need to
+	 * recompose, which is slow.
+	 */
+	if (form == UNICODE_NFD || form == UNICODE_NFKD)
+		return UNICODE_NORM_QC_MAYBE;
+
+	for (const pg_wchar *p = input; *p; p++)
+	{
+		pg_wchar	ch = *p;
+		uint8		canonicalClass;
+		UnicodeNormalizationQC check;
+
+		canonicalClass = get_canonical_class(ch);
+		if (lastCanonicalClass > canonicalClass && canonicalClass != 0)
+			return UNICODE_NORM_QC_NO;
+
+		check = qc_is_allowed(form, ch);
+		if (check == UNICODE_NORM_QC_NO)
+			return UNICODE_NORM_QC_NO;
+		else if (check == UNICODE_NORM_QC_MAYBE)
+			result = UNICODE_NORM_QC_MAYBE;
+
+		lastCanonicalClass = canonicalClass;
+	}
+	return result;
+}
+
+#endif							/* !FRONTEND */

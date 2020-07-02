@@ -776,31 +776,31 @@ PGPing PQping(const char *conninfo);
      </listitem>
     </varlistentry>
 
-    <varlistentry id="libpq-pqsetsslkeypasshook">
-     <term><function>PQsetSSLKeyPassHook</function><indexterm><primary>PQsetSSLKeyPassHook</primary></indexterm></term>
+    <varlistentry id="libpq-pqsetsslkeypasshook-openssl">
+     <term><function>PQsetSSLKeyPassHook_OpenSSL</function><indexterm><primary>PQsetSSLKeyPassHook_OpenSSL</primary></indexterm></term>
      <listitem>
       <para>
-       <function>PQsetSSLKeyPassHook</function> lets an application override
+       <function>PQsetSSLKeyPassHook_OpenSSL</function> lets an application override
        <literal>libpq</literal>'s <link linkend="libpq-ssl-clientcert">default
        handling of encrypted client certificate key files</link> using
        <xref linkend="libpq-connect-sslpassword"/> or interactive prompting.
 
 <synopsis>
-void PQsetSSLKeyPassHook(PQsslKeyPassHook_type hook);
+void PQsetSSLKeyPassHook_OpenSSL(PQsslKeyPassHook_OpenSSL_type hook);
 </synopsis>
 
        The application passes a pointer to a callback function with signature:
-       <programlisting>
-       int callback_fn(char *buf, int size, PGconn *conn);
-       </programlisting>
+<programlisting>
+int callback_fn(char *buf, int size, PGconn *conn);
+</programlisting>
        which <literal>libpq</literal> will then call <emphasis>instead of</emphasis>
-       its default <function>PQdefaultSSLKeyPassHook</function> handler. The callback
+       its default <function>PQdefaultSSLKeyPassHook_OpenSSL</function> handler. The callback
        should determine the password for the key and copy it to result-buffer
        <literal>buf</literal> of size <literal>size</literal>. The string in <literal>
-       buf</literal> must be null-terminated. The calback must return the length of
+       buf</literal> must be null-terminated. The callback must return the length of
        the password stored in <literal>buf</literal> excluding the null terminator.
        On failure, the callback should set <literal>buf[0] = '\0'</literal> and return 0.
-       See <function>PQdefaultSSLKeyPassHook</function> in <literal>libpq</literal>'s
+       See <function>PQdefaultSSLKeyPassHook_OpenSSL</function> in <literal>libpq</literal>'s
        source code for an example.
       </para>
        
@@ -814,7 +814,7 @@ void PQsetSSLKeyPassHook(PQsslKeyPassHook_type hook);
 
       <para>
        The app callback may choose to delegate unhandled cases to
-       <function>PQdefaultSSLKeyPassHook</function>,
+       <function>PQdefaultSSLKeyPassHook_OpenSSL</function>,
        or call it first and try something else if it returns 0, or completely override it.
       </para>
 
@@ -826,16 +826,16 @@ void PQsetSSLKeyPassHook(PQsslKeyPassHook_type hook);
      </listitem>
     </varlistentry>
 
-    <varlistentry id="libpq-pqgetsslkeypasshook">
-     <term><function>PQgetSSLKeyPassHook</function><indexterm><primary>PQgetSSLKeyPassHook</primary></indexterm></term>
+    <varlistentry id="libpq-pqgetsslkeypasshook-openssl">
+     <term><function>PQgetSSLKeyPassHook_OpenSSL</function><indexterm><primary>PQgetSSLKeyPassHook_OpenSSL</primary></indexterm></term>
      <listitem>
       <para>
-       <function>PQgetSSLKeyPassHook</function> returns the current
+       <function>PQgetSSLKeyPassHook_OpenSSL</function> returns the current
        client certificate key password hook, or <literal>NULL</literal>
        if none has been set.
 
 <synopsis>
-PQsslKeyPassHook_type PQgetSSLKeyPassHook(void);
+PQsslKeyPassHook_OpenSSL_type PQgetSSLKeyPassHook_OpenSSL(void);
 </synopsis>
       </para>
 
@@ -925,11 +925,11 @@ postgresql:///mydb?host=localhost&amp;port=5433
    </para>
 
    <para>
-    Connection <acronym>URI</acronym> needs to be encoded with 
-    <ulink url="https://tools.ietf.org/html/rfc3986#section-2.1">Percent-encoding</ulink> 
-    if it includes symbols with special meaning in any of its parts. 
-    Here is an example where equal sign (<literal>=</literal>) is replaced
-    with <literal>%3D</literal> and whitespace character with
+    The connection <acronym>URI</acronym> needs to be encoded with <ulink
+    url="https://tools.ietf.org/html/rfc3986#section-2.1">percent-encoding</ulink>
+    if it includes symbols with special meaning in any of its parts.  Here is
+    an example where the equal sign (<literal>=</literal>) is replaced with
+    <literal>%3D</literal> and the space character with
     <literal>%20</literal>:
 <programlisting>
 postgresql://user@localhost:5433/mydb?options=-c%20synchronous_commit%3Doff
@@ -959,8 +959,9 @@ postgresql://[2001:db8::1234]/database
    <para>
     The host component is interpreted as described for the parameter <xref
     linkend="libpq-connect-host"/>.  In particular, a Unix-domain socket
-    connection is chosen if the host part is either empty or starts with a
-    slash, otherwise a TCP/IP connection is initiated.  Note, however, that the
+    connection is chosen if the host part is either empty or looks like an
+    absolute path name,
+    otherwise a TCP/IP connection is initiated.  Note, however, that the
     slash is a reserved character in the hierarchical part of the URI.  So, to
     specify a non-standard Unix-domain socket directory, either omit the host
     specification in the URI and specify the host as a parameter, or
@@ -1035,16 +1036,19 @@ postgresql://%2Fvar%2Flib%2Fpostgresql/dbname
       <term><literal>host</literal></term>
       <listitem>
        <para>
-        Name of host to connect to.<indexterm><primary>host name</primary></indexterm>
-        If a host name begins with a slash, it specifies Unix-domain
-        communication rather than TCP/IP communication; the value is the
-        name of the directory in which the socket file is stored.
-        The default behavior when <literal>host</literal> is
-        not specified, or is empty, is to connect to a Unix-domain
+        Name of host to connect to.<indexterm><primary>host
+        name</primary></indexterm> If a host name looks like an absolute path
+        name, it specifies Unix-domain communication rather than TCP/IP
+        communication; the value is the name of the directory in which the
+        socket file is stored.  (On Unix, an absolute path name begins with a
+        slash.  On Windows, paths starting with drive letters are also
+        recognized.)  The default behavior when <literal>host</literal> is not
+        specified, or is empty, is to connect to a Unix-domain
         socket<indexterm><primary>Unix domain socket</primary></indexterm> in
         <filename>/tmp</filename> (or whatever socket directory was specified
-        when <productname>PostgreSQL</productname> was built). On machines without
-        Unix-domain sockets, the default is to connect to <literal>localhost</literal>.
+        when <productname>PostgreSQL</productname> was built).  On Windows and
+        on machines without Unix-domain sockets, the default is to connect to
+        <literal>localhost</literal>.
        </para>
        <para>
         A comma-separated list of host names is also accepted, in which case
@@ -1123,8 +1127,8 @@ postgresql://%2Fvar%2Flib%2Fpostgresql/dbname
        </para>
        <para>
         Without either a host name or host address,
-        <application>libpq</application> will connect using a
-        local Unix-domain socket; or on machines without Unix-domain
+        <application>libpq</application> will connect using a local
+        Unix-domain socket; or on Windows and on machines without Unix-domain
         sockets, it will attempt to connect to <literal>localhost</literal>.
        </para>
        </listitem>
@@ -1664,7 +1668,7 @@ postgresql://%2Fvar%2Flib%2Fpostgresql/dbname
        </para>
        <para>
         Specifying this parameter with any non-empty value suppresses the
-        <literal>Enter PEM passphrase:</literal>
+        <literal>Enter PEM pass phrase:</literal>
         prompt that OpenSSL will emit by default when an encrypted client
         certificate key is provided to <literal>libpq</literal>.
        </para>
@@ -1732,8 +1736,8 @@ postgresql://%2Fvar%2Flib%2Fpostgresql/dbname
       </listitem>
      </varlistentry>
 
-     <varlistentry id="libpq-connect-sslminprotocolversion" xreflabel="sslminprotocolversion">
-      <term><literal>sslminprotocolversion</literal></term>
+     <varlistentry id="libpq-connect-ssl-min-protocol-version" xreflabel="ssl_min_protocol_version">
+      <term><literal>ssl_min_protocol_version</literal></term>
       <listitem>
        <para>
         This parameter specifies the minimum SSL/TLS protocol version to allow
@@ -1741,15 +1745,15 @@ postgresql://%2Fvar%2Flib%2Fpostgresql/dbname
         <literal>TLSv1.1</literal>, <literal>TLSv1.2</literal> and
         <literal>TLSv1.3</literal>. The supported protocols depend on the
         version of <productname>OpenSSL</productname> used, older versions
-        not supporting the most modern protocol versions. If not set, this
-        parameter is ignored and the connection will use the minimum bound
-        defined by the backend.
+        not supporting the most modern protocol versions. If not specified,
+        the default is <literal>TLSv1.2</literal>, which satisfies industry
+        best practices as of this writing.
        </para>
       </listitem>
      </varlistentry>
 
-     <varlistentry id="libpq-connect-sslmaxprotocolversion" xreflabel="sslmaxprotocolversion">
-      <term><literal>sslmaxprotocolversion</literal></term>
+     <varlistentry id="libpq-connect-ssl-max-protocol-version" xreflabel="ssl_max_protocol_version">
+      <term><literal>ssl_max_protocol_version</literal></term>
       <listitem>
        <para>
         This parameter specifies the maximum SSL/TLS protocol version to allow
@@ -7160,7 +7164,7 @@ myEventProc(PGEventId evtId, void *evtInfo, void *passThrough)
        <primary><envar>PGSSLMINPROTOCOLVERSION</envar></primary>
       </indexterm>
       <envar>PGSSLMINPROTOCOLVERSION</envar> behaves the same as the <xref
-      linkend="libpq-connect-sslminprotocolversion"/> connection parameter.
+      linkend="libpq-connect-ssl-min-protocol-version"/> connection parameter.
      </para>
     </listitem>
 
@@ -7170,7 +7174,7 @@ myEventProc(PGEventId evtId, void *evtInfo, void *passThrough)
        <primary><envar>PGSSLMAXPROTOCOLVERSION</envar></primary>
       </indexterm>
       <envar>PGSSLMAXPROTOCOLVERSION</envar> behaves the same as the <xref
-      linkend="libpq-connect-sslminprotocolversion"/> connection parameter.
+      linkend="libpq-connect-ssl-min-protocol-version"/> connection parameter.
      </para>
     </listitem>
 
@@ -7663,13 +7667,11 @@ ldap://ldap.acme.com/cn=dbserver,cn=hosts?pgconnectinfo?base?(objectclass=*)
    may be provided in the <xref linkend="libpq-connect-sslpassword"/> connection
    option. If an encrypted key is supplied and the <literal>sslpassword</literal>
    option is absent or blank, a password will be prompted for interactively by
-   OpenSSL with a
-   <programlisting>
-    Enter PEM Passphrase:
-   </programlisting>
+   OpenSSL with a <literal>Enter PEM pass phrase:</literal>
    prompt if a TTY is available. Applications can override the client certificate
    prompt and the handling of the <literal>sslpassword</literal> parameter by supplying
-   their own key password callback; see <xref linkend="libpq-pqsetsslkeypasshook"/>.
+   their own key password callback; see
+   <xref linkend="libpq-pqsetsslkeypasshook-openssl"/>.
   </para>
 
   <para>
@@ -7759,6 +7761,10 @@ ldap://ldap.acme.com/cn=dbserver,cn=hosts?pgconnectinfo?base?(objectclass=*)
   <table id="libpq-ssl-sslmode-statements">
    <title>SSL Mode Descriptions</title>
    <tgroup cols="4">
+    <colspec colname="col1" colwidth="1*"/>
+    <colspec colname="col2" colwidth="1*"/>
+    <colspec colname="col3" colwidth="1*"/>
+    <colspec colname="col4" colwidth="2*"/>
     <thead>
      <row>
       <entry><literal>sslmode</literal></entry>

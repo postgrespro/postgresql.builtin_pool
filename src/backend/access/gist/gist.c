@@ -62,6 +62,7 @@ gisthandler(PG_FUNCTION_ARGS)
 
 	amroutine->amstrategies = 0;
 	amroutine->amsupport = GISTNProcs;
+	amroutine->amoptsprocnum = GIST_OPTIONS_PROC;
 	amroutine->amcanorder = false;
 	amroutine->amcanorderbyop = true;
 	amroutine->amcanbackward = false;
@@ -1346,8 +1347,8 @@ gistfinishsplit(GISTInsertState *state, GISTInsertStack *stack,
 							 left->buf, right->buf, false, false))
 		{
 			/*
-			 * If the parent page was split, the existing downlink might
-			 * have moved.
+			 * If the parent page was split, the existing downlink might have
+			 * moved.
 			 */
 			stack->downlinkoffnum = InvalidOffsetNumber;
 		}
@@ -1369,9 +1370,10 @@ gistfinishsplit(GISTInsertState *state, GISTInsertStack *stack,
 						 tuples, 2,
 						 stack->downlinkoffnum,
 						 left->buf, right->buf,
-						 true,		/* Unlock parent */
-						 unlockbuf	/* Unlock stack->buffer if caller wants that */
-			))
+						 true,	/* Unlock parent */
+						 unlockbuf	/* Unlock stack->buffer if caller wants
+									 * that */
+						 ))
 	{
 		/*
 		 * If the parent page was split, the downlink might have moved.

@@ -53,14 +53,15 @@
 static void AlterOpFamilyAdd(AlterOpFamilyStmt *stmt,
 							 Oid amoid, Oid opfamilyoid,
 							 int maxOpNumber, int maxProcNumber,
-							 List *items);
+							 int opclassOptsProcNumber, List *items);
 static void AlterOpFamilyDrop(AlterOpFamilyStmt *stmt,
 							  Oid amoid, Oid opfamilyoid,
 							  int maxOpNumber, int maxProcNumber,
 							  List *items);
 static void processTypesSpec(List *args, Oid *lefttype, Oid *righttype);
 static void assignOperTypes(OpFamilyMember *member, Oid amoid, Oid typeoid);
-static void assignProcTypes(OpFamilyMember *member, Oid amoid, Oid typeoid);
+static void assignProcTypes(OpFamilyMember *member, Oid amoid, Oid typeoid,
+							int opclassOptsProcNum);
 static void addFamilyMember(List **list, OpFamilyMember *member, bool isProc);
 static void storeOperators(List *opfamilyname, Oid amoid,
 						   Oid opfamilyoid, Oid opclassoid,
@@ -337,6 +338,7 @@ DefineOpClass(CreateOpClassStmt *stmt)
 				opfamilyoid,	/* oid of containing opfamily */
 				opclassoid;		/* oid of opclass we create */
 	int			maxOpNumber,	/* amstrategies value */
+				optsProcNumber, /* amoptsprocnum value */
 				maxProcNumber;	/* amsupport value */
 	bool		amstorage;		/* amstorage flag */
 	List	   *operators;		/* OpFamilyMember list for operators */
@@ -381,6 +383,7 @@ DefineOpClass(CreateOpClassStmt *stmt)
 	if (maxOpNumber <= 0)
 		maxOpNumber = SHRT_MAX;
 	maxProcNumber = amroutine->amsupport;
+	optsProcNumber = amroutine->amoptsprocnum;
 	amstorage = amroutine->amstorage;
 
 	/* XXX Should we make any privilege check against the AM? */
@@ -536,7 +539,6 @@ DefineOpClass(CreateOpClassStmt *stmt)
 					aclcheck_error(ACLCHECK_NOT_OWNER, OBJECT_FUNCTION,
 								   get_func_name(funcOid));
 #endif
-
 				/* Save the info */
 				member = (OpFamilyMember *) palloc0(sizeof(OpFamilyMember));
 				member->object = funcOid;
@@ -547,7 +549,7 @@ DefineOpClass(CreateOpClassStmt *stmt)
 					processTypesSpec(item->class_args,
 									 &member->lefttype, &member->righttype);
 
-				assignProcTypes(member, amoid, typeoid);
+				assignProcTypes(member, amoid, typeoid, optsProcNumber);
 				addFamilyMember(&procedures, member, true);
 				break;
 			case OPCLASS_ITEM_STORAGETYPE:
@@ -777,6 +779,7 @@ AlterOpFamily(AlterOpFamilyStmt *stmt)
 	Oid			amoid,			/* our AM's oid */
 				opfamilyoid;	/* oid of opfamily */
 	int			maxOpNumber,	/* amstrategies value */
+				optsProcNumber, /* amopclassopts value */
 				maxProcNumber;	/* amsupport value */
 	HeapTuple	tup;
 	Form_pg_am	amform;
@@ -800,6 +803,7 @@ AlterOpFamily(AlterOpFamilyStmt *stmt)
 	if (maxOpNumber <= 0)
 		maxOpNumber = SHRT_MAX;
 	maxProcNumber = amroutine->amsupport;
+	optsProcNumber = amroutine->amoptsprocnum;
 
 	/* XXX Should we make any privilege check against the AM? */
 
@@ -824,7 +828,8 @@ AlterOpFamily(AlterOpFamilyStmt *stmt)
 						  maxOpNumber, maxProcNumber, stmt->items);
 	else
 		AlterOpFamilyAdd(stmt, amoid, opfamilyoid,
-						 maxOpNumber, maxProcNumber, stmt->items);
+						 maxOpNumber, maxProcNumber, optsProcNumber,
+						 stmt->items);
 
 	return opfamilyoid;
 }
@@ -834,7 +839,8 @@ AlterOpFamily(AlterOpFamilyStmt *stmt)
  */
 static void
 AlterOpFamilyAdd(AlterOpFamilyStmt *stmt, Oid amoid, Oid opfamilyoid,
-				 int maxOpNumber, int maxProcNumber, List *items)
+				 int maxOpNumber, int maxProcNumber, int optsProcNumber,
+				 List *items)
 {
 	List	   *operators;		/* OpFamilyMember list for operators */
 	List	   *procedures;		/* OpFamilyMember list for support procs */
@@ -926,7 +932,7 @@ AlterOpFamilyAdd(AlterOpFamilyStmt *stmt, Oid amoid, Oid opfamilyoid,
 					processTypesSpec(item->class_args,
 									 &member->lefttype, &member->righttype);
 
-				assignProcTypes(member, amoid, InvalidOid);
+				assignProcTypes(member, amoid, InvalidOid, optsProcNumber);
 				addFamilyMember(&procedures, member, true);
 				break;
 			case OPCLASS_ITEM_STORAGETYPE:
@@ -1129,7 +1135,8 @@ assignOperTypes(OpFamilyMember *member, Oid amoid, Oid typeoid)
  * and do any validity checking we can manage.
  */
 static void
-assignProcTypes(OpFamilyMember *member, Oid amoid, Oid typeoid)
+assignProcTypes(OpFamilyMember *member, Oid amoid, Oid typeoid,
+				int opclassOptsProcNum)
 {
 	HeapTuple	proctup;
 	Form_pg_proc procform;
@@ -1140,6 +1147,35 @@ assignProcTypes(OpFamilyMember *member, Oid amoid, Oid typeoid)
 		elog(ERROR, "cache lookup failed for function %u", member->object);
 	procform = (Form_pg_proc) GETSTRUCT(proctup);
 
+	/* Check the signature of the opclass options parsing function */
+	if (member->number == opclassOptsProcNum)
+	{
+		if (OidIsValid(typeoid))
+		{
+			if ((OidIsValid(member->lefttype) && member->lefttype != typeoid) ||
+				(OidIsValid(member->righttype) && member->righttype != typeoid))
+				ereport(ERROR,
+						(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
+						 errmsg("associated data types for opclass options parsing functions must match opclass input type")));
+		}
+		else
+		{
+			if (member->lefttype != member->righttype)
+				ereport(ERROR,
+						(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
+						 errmsg("left and right associated data types for opclass options parsing functions must match")));
+		}
+
+		if (procform->prorettype != VOIDOID ||
+			procform->pronargs != 1 ||
+			procform->proargtypes.values[0] != INTERNALOID)
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
+					 errmsg("invalid opclass options parsing function"),
+					 errhint("Valid signature of opclass options parsing function is '%s'.",
+							 "(internal) RETURNS void")));
+	}
+
 	/*
 	 * btree comparison procs must be 2-arg procs returning int4.  btree
 	 * sortsupport procs must take internal and return void.  btree in_range
@@ -1148,7 +1184,7 @@ assignProcTypes(OpFamilyMember *member, Oid amoid, Oid typeoid)
 	 * returning int4, while proc 2 must be a 2-arg proc returning int8.
 	 * Otherwise we don't know.
 	 */
-	if (amoid == BTREE_AM_OID)
+	else if (amoid == BTREE_AM_OID)
 	{
 		if (member->number == BTORDER_PROC)
 		{
@@ -1216,6 +1252,7 @@ assignProcTypes(OpFamilyMember *member, Oid amoid, Oid typeoid)
 				ereport(ERROR,
 						(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
 						 errmsg("btree equal image functions must return boolean")));
+
 			/*
 			 * pg_amproc functions are indexed by (lefttype, righttype), but
 			 * an equalimage function can only be called at CREATE INDEX time.
@@ -1618,105 +1655,6 @@ dropProcedures(List *opfamilyname, Oid amoid, Oid opfamilyoid,
 
 		performDeletion(&object, DROP_RESTRICT, 0);
 	}
-}
-
-/*
- * Deletion subroutines for use by dependency.c.
- */
-void
-RemoveOpFamilyById(Oid opfamilyOid)
-{
-	Relation	rel;
-	HeapTuple	tup;
-
-	rel = table_open(OperatorFamilyRelationId, RowExclusiveLock);
-
-	tup = SearchSysCache1(OPFAMILYOID, ObjectIdGetDatum(opfamilyOid));
-	if (!HeapTupleIsValid(tup)) /* should not happen */
-		elog(ERROR, "cache lookup failed for opfamily %u", opfamilyOid);
-
-	CatalogTupleDelete(rel, &tup->t_self);
-
-	ReleaseSysCache(tup);
-
-	table_close(rel, RowExclusiveLock);
-}
-
-void
-RemoveOpClassById(Oid opclassOid)
-{
-	Relation	rel;
-	HeapTuple	tup;
-
-	rel = table_open(OperatorClassRelationId, RowExclusiveLock);
-
-	tup = SearchSysCache1(CLAOID, ObjectIdGetDatum(opclassOid));
-	if (!HeapTupleIsValid(tup)) /* should not happen */
-		elog(ERROR, "cache lookup failed for opclass %u", opclassOid);
-
-	CatalogTupleDelete(rel, &tup->t_self);
-
-	ReleaseSysCache(tup);
-
-	table_close(rel, RowExclusiveLock);
-}
-
-void
-RemoveAmOpEntryById(Oid entryOid)
-{
-	Relation	rel;
-	HeapTuple	tup;
-	ScanKeyData skey[1];
-	SysScanDesc scan;
-
-	ScanKeyInit(&skey[0],
-				Anum_pg_amop_oid,
-				BTEqualStrategyNumber, F_OIDEQ,
-				ObjectIdGetDatum(entryOid));
-
-	rel = table_open(AccessMethodOperatorRelationId, RowExclusiveLock);
-
-	scan = systable_beginscan(rel, AccessMethodOperatorOidIndexId, true,
-							  NULL, 1, skey);
-
-	/* we expect exactly one match */
-	tup = systable_getnext(scan);
-	if (!HeapTupleIsValid(tup))
-		elog(ERROR, "could not find tuple for amop entry %u", entryOid);
-
-	CatalogTupleDelete(rel, &tup->t_self);
-
-	systable_endscan(scan);
-	table_close(rel, RowExclusiveLock);
-}
-
-void
-RemoveAmProcEntryById(Oid entryOid)
-{
-	Relation	rel;
-	HeapTuple	tup;
-	ScanKeyData skey[1];
-	SysScanDesc scan;
-
-	ScanKeyInit(&skey[0],
-				Anum_pg_amproc_oid,
-				BTEqualStrategyNumber, F_OIDEQ,
-				ObjectIdGetDatum(entryOid));
-
-	rel = table_open(AccessMethodProcedureRelationId, RowExclusiveLock);
-
-	scan = systable_beginscan(rel, AccessMethodProcedureOidIndexId, true,
-							  NULL, 1, skey);
-
-	/* we expect exactly one match */
-	tup = systable_getnext(scan);
-	if (!HeapTupleIsValid(tup))
-		elog(ERROR, "could not find tuple for amproc entry %u", entryOid);
-
-	CatalogTupleDelete(rel, &tup->t_self);
-
-	systable_endscan(scan);
-	table_close(rel, RowExclusiveLock);
 }
 
 /*

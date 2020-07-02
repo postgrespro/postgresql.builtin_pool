@@ -78,8 +78,8 @@
 
  <para>
   PostgreSQL supports most of the major features of SQL:2016.  Out of
-  179 mandatory features required for full Core conformance,
-  PostgreSQL conforms to at least 160.  In addition, there is a long
+  177 mandatory features required for full Core conformance,
+  PostgreSQL conforms to at least 170.  In addition, there is a long
   list of supported optional features.  It might be worth noting that at
   the time of writing, no current version of any database management
   system claims full conformance to Core SQL:2016.
@@ -111,6 +111,10 @@
    <para>
     <informaltable>
      <tgroup cols="4">
+      <colspec colname="col1" colwidth="1.5*"/>
+      <colspec colname="col2" colwidth="1*"/>
+      <colspec colname="col3" colwidth="7*"/>
+      <colspec colname="col4" colwidth="3*"/>
       <thead>
        <row>
         <entry>Identifier</entry>
@@ -138,6 +142,10 @@
 
     <informaltable>
      <tgroup cols="4">
+      <colspec colname="col1" colwidth="1.5*"/>
+      <colspec colname="col2" colwidth="1*"/>
+      <colspec colname="col3" colwidth="7*"/>
+      <colspec colname="col4" colwidth="3*"/>
       <thead>
        <row>
         <entry>Identifier</entry>
@@ -411,9 +419,7 @@
    </sect2>
 
    <sect2 id="functions-xml-limits-postgresql">
-    <title>
-     Incidental limits of the implementation
-    </title>
+    <title>Incidental Limits of the Implementation</title>
 
     <para>
      This section concerns limits that are not inherent in the

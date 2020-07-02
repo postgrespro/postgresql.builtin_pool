@@ -106,10 +106,11 @@ extern void pgfnames_cleanup(char **filenames);
 /* Portable locale initialization (in exec.c) */
 extern void set_pglocale_pgservice(const char *argv0, const char *app);
 
-/* Portable way to find binaries (in exec.c) */
+/* Portable way to find and execute binaries (in exec.c) */
 extern int	find_my_exec(const char *argv0, char *retpath);
 extern int	find_other_exec(const char *argv0, const char *target,
 							const char *versionstr, char *retpath);
+extern char *pipe_read_line(char *cmd, char *line, int maxsize);
 
 /* Doesn't belong here, but this is used with find_other_exec(), so... */
 #define PG_BACKEND_VERSIONSTR "postgres (PostgreSQL) " PG_VERSION "\n"
@@ -386,7 +387,7 @@ extern float pg_strtof(const char *nptr, char **endptr);
 #endif
 
 #ifndef HAVE_LINK
-extern int link(const char *src, const char *dst);
+extern int	link(const char *src, const char *dst);
 #endif
 
 #ifndef HAVE_MKDTEMP

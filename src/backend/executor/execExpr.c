@@ -2366,7 +2366,7 @@ get_last_attnums_walker(Node *node, LastAttnumInfo *info)
  * evaluation of the expression will have the same type of slot, with an
  * equivalent descriptor.
  *
- * Returns true if the the deforming step is required, false otherwise.
+ * Returns true if the deforming step is required, false otherwise.
  */
 static bool
 ExecComputeSlotInfo(ExprState *state, ExprEvalStep *op)
@@ -3238,7 +3238,7 @@ ExecBuildAggTransCall(ExprState *state, AggState *aggstate,
 					  bool nullcheck)
 {
 	ExprContext *aggcontext;
-	int adjust_jumpnull = -1;
+	int			adjust_jumpnull = -1;
 
 	if (ishash)
 		aggcontext = aggstate->hashcontext;

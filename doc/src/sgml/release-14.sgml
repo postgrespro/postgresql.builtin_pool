@@ -1,12 +1,12 @@
-<!-- doc/src/sgml/release-13.sgml -->
+<!-- doc/src/sgml/release-14.sgml -->
 <!-- See header comment in release.sgml about typical markup -->
 
- <sect1 id="release-13">
-  <title>Release 13</title>
+ <sect1 id="release-14">
+  <title>Release 14</title>
 
   <formalpara>
    <title>Release date:</title>
-   <para>2020-??-??</para>
+   <para>2021-??-??</para>
   </formalpara>
 
   <para>

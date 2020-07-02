@@ -36,6 +36,7 @@
 #include "access/xlog_internal.h"
 #include "catalog/namespace.h"
 #include "catalog/pg_authid.h"
+#include "catalog/storage.h"
 #include "commands/async.h"
 #include "commands/prepare.h"
 #include "commands/trigger.h"
@@ -462,18 +463,9 @@ static const struct config_enum_entry plan_cache_mode_options[] = {
 	{NULL, 0, false}
 };
 
-/*
- * password_encryption used to be a boolean, so accept all the likely
- * variants of "on", too. "off" used to store passwords in plaintext,
- * but we don't support that anymore.
- */
 static const struct config_enum_entry password_encryption_options[] = {
 	{"md5", PASSWORD_TYPE_MD5, false},
 	{"scram-sha-256", PASSWORD_TYPE_SCRAM_SHA_256, false},
-	{"on", PASSWORD_TYPE_MD5, true},
-	{"true", PASSWORD_TYPE_MD5, true},
-	{"yes", PASSWORD_TYPE_MD5, true},
-	{"1", PASSWORD_TYPE_MD5, true},
 	{NULL, 0, false}
 };
 
@@ -522,7 +514,6 @@ extern const struct config_enum_entry dynamic_shared_memory_options[];
  * GUC option variables that are exported from this module
  */
 bool		log_duration = false;
-bool		log_parameters_on_error = false;
 bool		Debug_print_plan = false;
 bool		Debug_print_parse = false;
 bool		Debug_print_rewritten = false;
@@ -551,6 +542,8 @@ int			log_min_messages = WARNING;
 int			client_min_messages = NOTICE;
 int			log_min_duration_sample = -1;
 int			log_min_duration_statement = -1;
+int			log_parameter_max_length = -1;
+int			log_parameter_max_length_on_error = 0;
 int			log_temp_files = -1;
 double		log_statement_sample_rate = 1.0;
 double		log_xact_sample_rate = 0;
@@ -999,6 +992,15 @@ static struct config_bool ConfigureNamesBool[] =
 		NULL, NULL, NULL
 	},
 	{
+		{"enable_incrementalsort", PGC_USERSET, QUERY_TUNING_METHOD,
+			gettext_noop("Enables the planner's use of incremental sort steps."),
+			NULL
+		},
+		&enable_incrementalsort,
+		true,
+		NULL, NULL, NULL
+	},
+	{
 		{"enable_hashagg", PGC_USERSET, QUERY_TUNING_METHOD,
 			gettext_noop("Enables the planner's use of hashed aggregation plans."),
 			NULL,
@@ -1009,22 +1011,12 @@ static struct config_bool ConfigureNamesBool[] =
 		NULL, NULL, NULL
 	},
 	{
-		{"enable_hashagg_disk", PGC_USERSET, QUERY_TUNING_METHOD,
-			gettext_noop("Enables the planner's use of hashed aggregation plans that are expected to exceed work_mem."),
+		{"hashagg_avoid_disk_plan", PGC_USERSET, QUERY_TUNING_METHOD,
+			gettext_noop("Causes the planner to avoid hashed aggregation plans that are expected to use the disk."),
 			NULL,
 			GUC_EXPLAIN
 		},
-		&enable_hashagg_disk,
-		true,
-		NULL, NULL, NULL
-	},
-	{
-		{"enable_groupingsets_hash_disk", PGC_USERSET, QUERY_TUNING_METHOD,
-			gettext_noop("Enables the planner's use of hashed aggregation plans for groupingsets when the total size of the hash tables is expected to exceed work_mem."),
-			NULL,
-			GUC_EXPLAIN
-		},
-		&enable_groupingsets_hash_disk,
+		&hashagg_avoid_disk_plan,
 		false,
 		NULL, NULL, NULL
 	},
@@ -1417,15 +1409,6 @@ static struct config_bool ConfigureNamesBool[] =
 			NULL
 		},
 		&log_duration,
-		false,
-		NULL, NULL, NULL
-	},
-	{
-		{"log_parameters_on_error", PGC_SUSET, LOGGING_WHAT,
-			gettext_noop("Logs bind parameters of the logged statements where possible."),
-			NULL
-		},
-		&log_parameters_on_error,
 		false,
 		NULL, NULL, NULL
 	},
@@ -2093,7 +2076,7 @@ static struct config_bool ConfigureNamesBool[] =
 			gettext_noop("Sets whether a WAL receiver should create a temporary replication slot if no permanent slot is configured."),
 		},
 		&wal_receiver_create_temp_slot,
-		true,
+		false,
 		NULL, NULL, NULL
 	},
 
@@ -2847,6 +2830,17 @@ static struct config_int ConfigureNamesInt[] =
 	},
 
 	{
+		{"wal_skip_threshold", PGC_USERSET, WAL_SETTINGS,
+			gettext_noop("Size of new file to fsync instead of writing WAL."),
+			NULL,
+			GUC_UNIT_KB
+		},
+		&wal_skip_threshold,
+		2048, 0, MAX_KILOBYTES,
+		NULL, NULL, NULL
+	},
+
+	{
 		{"max_wal_senders", PGC_POSTMASTER, REPLICATION_SENDING,
 			gettext_noop("Sets the maximum number of simultaneously running WAL sender processes."),
 			NULL
@@ -2864,6 +2858,19 @@ static struct config_int ConfigureNamesInt[] =
 		},
 		&max_replication_slots,
 		10, 0, MAX_BACKENDS /* XXX? */ ,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"max_slot_wal_keep_size", PGC_SIGHUP, REPLICATION_SENDING,
+			gettext_noop("Sets the maximum WAL size that can be reserved by replication slots."),
+			gettext_noop("Replication slots will be marked as failed, and segments released "
+						 "for deletion or recycling, if this much space is occupied by WAL "
+						 "on disk."),
+			GUC_UNIT_MB
+		},
+		&max_slot_wal_keep_size_mb,
+		-1, -1, MAX_KILOBYTES,
 		NULL, NULL, NULL
 	},
 
@@ -2948,6 +2955,28 @@ static struct config_int ConfigureNamesInt[] =
 		},
 		&Log_autovacuum_min_duration,
 		-1, -1, INT_MAX,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"log_parameter_max_length", PGC_SUSET, LOGGING_WHAT,
+			gettext_noop("When logging statements, limit logged parameter values to first N bytes."),
+			gettext_noop("-1 to print values in full."),
+			GUC_UNIT_BYTE
+		},
+		&log_parameter_max_length,
+		-1, -1, INT_MAX / 2,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"log_parameter_max_length_on_error", PGC_USERSET, LOGGING_WHAT,
+			gettext_noop("When reporting an error, limit logged parameter values to first N bytes."),
+			gettext_noop("-1 to print values in full."),
+			GUC_UNIT_BYTE
+		},
+		&log_parameter_max_length_on_error,
+		0, -1, INT_MAX / 2,
 		NULL, NULL, NULL
 	},
 
@@ -3196,6 +3225,15 @@ static struct config_int ConfigureNamesInt[] =
 		},
 		&autovacuum_vac_thresh,
 		50, 0, INT_MAX,
+		NULL, NULL, NULL
+	},
+	{
+		{"autovacuum_vacuum_insert_threshold", PGC_SIGHUP, AUTOVACUUM,
+			gettext_noop("Minimum number of tuple inserts prior to vacuum, or -1 to disable insert vacuums"),
+			NULL
+		},
+		&autovacuum_vac_ins_thresh,
+		1000, -1, INT_MAX,
 		NULL, NULL, NULL
 	},
 	{
@@ -3645,6 +3683,17 @@ static struct config_real ConfigureNamesReal[] =
 		0.2, 0.0, 100.0,
 		NULL, NULL, NULL
 	},
+
+	{
+		{"autovacuum_vacuum_insert_scale_factor", PGC_SIGHUP, AUTOVACUUM,
+			gettext_noop("Number of tuple inserts prior to vacuum as a fraction of reltuples."),
+			NULL
+		},
+		&autovacuum_vac_ins_scale,
+		0.2, 0.0, 100.0,
+		NULL, NULL, NULL
+	},
+
 	{
 		{"autovacuum_analyze_scale_factor", PGC_SIGHUP, AUTOVACUUM,
 			gettext_noop("Number of tuple inserts, updates, or deletes prior to analyze as a fraction of reltuples."),
@@ -3813,7 +3862,7 @@ static struct config_string ConfigureNamesString[] =
 	},
 
 	{
-		{"primary_conninfo", PGC_POSTMASTER, REPLICATION_STANDBY,
+		{"primary_conninfo", PGC_SIGHUP, REPLICATION_STANDBY,
 			gettext_noop("Sets the connection string to be used to connect to the sending server."),
 			NULL,
 			GUC_SUPERUSER_ONLY
@@ -3824,7 +3873,7 @@ static struct config_string ConfigureNamesString[] =
 	},
 
 	{
-		{"primary_slot_name", PGC_POSTMASTER, REPLICATION_STANDBY,
+		{"primary_slot_name", PGC_SIGHUP, REPLICATION_STANDBY,
 			gettext_noop("Sets the name of the replication slot to use on the sending server."),
 			NULL
 		},
@@ -4757,13 +4806,11 @@ static struct config_enum ConfigureNamesEnum[] =
 
 	{
 		{"password_encryption", PGC_USERSET, CONN_AUTH_AUTH,
-			gettext_noop("Encrypt passwords."),
-			gettext_noop("When a password is specified in CREATE USER or "
-						 "ALTER USER without writing either ENCRYPTED or UNENCRYPTED, "
-						 "this parameter determines whether the password is to be encrypted.")
+			gettext_noop("Chooses the algorithm for encrypting passwords."),
+			NULL
 		},
 		&Password_encryption,
-		PASSWORD_TYPE_MD5, password_encryption_options,
+		PASSWORD_TYPE_SCRAM_SHA_256, password_encryption_options,
 		NULL, NULL, NULL
 	},
 
@@ -11759,7 +11806,7 @@ check_backtrace_functions(char **newval, void **extra, GucSource source)
 		else if ((*newval)[i] == ' ' ||
 				 (*newval)[i] == '\n' ||
 				 (*newval)[i] == '\t')
-			;	/* ignore these */
+			;					/* ignore these */
 		else
 			someval[j++] = (*newval)[i];	/* copy anything else */
 	}

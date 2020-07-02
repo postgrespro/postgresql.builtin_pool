@@ -826,7 +826,8 @@ EncodeDateTime(struct tm *tm, fsec_t fsec, bool print_tz, int tz, const char *tz
 
 			/*
 			 * Note: the uses of %.*s in this function would be risky if the
-			 * timezone names ever contain non-ASCII characters.  However, all
+			 * timezone names ever contain non-ASCII characters, since we are
+			 * not being careful to do encoding-aware clipping.  However, all
 			 * TZ abbreviations in the IANA database are plain ASCII.
 			 */
 
@@ -1039,7 +1040,8 @@ abstime2tm(AbsoluteTime _time, int *tzp, struct tm *tm, char **tzn)
 	}
 	else
 		tm->tm_isdst = -1;
-#else							/* not (HAVE_STRUCT_TM_TM_ZONE || HAVE_INT_TIMEZONE) */
+#else							/* not (HAVE_STRUCT_TM_TM_ZONE ||
+								 * HAVE_INT_TIMEZONE) */
 	if (tzp != NULL)
 	{
 		/* default to UTC */

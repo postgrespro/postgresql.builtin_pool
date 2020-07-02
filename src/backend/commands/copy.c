@@ -367,8 +367,7 @@ static bool CopyReadLine(CopyState cstate);
 static bool CopyReadLineText(CopyState cstate);
 static int	CopyReadAttributesText(CopyState cstate);
 static int	CopyReadAttributesCSV(CopyState cstate);
-static Datum CopyReadBinaryAttribute(CopyState cstate,
-									 int column_no, FmgrInfo *flinfo,
+static Datum CopyReadBinaryAttribute(CopyState cstate, FmgrInfo *flinfo,
 									 Oid typioparam, int32 typmod,
 									 bool *isnull);
 static void CopyAttributeOutText(CopyState cstate, char *string);
@@ -1081,13 +1080,8 @@ DoCopy(ParseState *pstate, const CopyStmt *stmt,
 		EndCopyTo(cstate);
 	}
 
-	/*
-	 * Close the relation. If reading, we can release the AccessShareLock we
-	 * got; if writing, we should hold the lock until end of transaction to
-	 * ensure that updates will be committed before lock is released.
-	 */
 	if (rel != NULL)
-		table_close(rel, (is_from ? NoLock : AccessShareLock));
+		table_close(rel, NoLock);
 }
 
 /*
@@ -1580,7 +1574,8 @@ BeginCopy(ParseState *pstate,
 		}
 
 		/* plan the query */
-		plan = pg_plan_query(query, CURSOR_OPT_PARALLEL_OK, NULL);
+		plan = pg_plan_query(query, pstate->p_sourcetext,
+							 CURSOR_OPT_PARALLEL_OK, NULL);
 
 		/*
 		 * With row level security and a user using "COPY relation TO", we
@@ -2308,11 +2303,7 @@ CopyFromErrorCallback(void *arg)
 /*
  * Make sure we don't print an unreasonable amount of COPY data in a message.
  *
- * It would seem a lot easier to just use the sprintf "precision" limit to
- * truncate the string.  However, some versions of glibc have a bug/misfeature
- * that vsnprintf will always fail (return -1) if it is asked to truncate
- * a string that contains invalid byte sequences for the current encoding.
- * So, do our own truncation.  We return a pstrdup'd copy of the input.
+ * Returns a pstrdup'd copy of the input.
  */
 static char *
 limit_printout_length(const char *str)
@@ -2713,63 +2704,15 @@ CopyFrom(CopyState cstate)
 							RelationGetRelationName(cstate->rel))));
 	}
 
-	/*----------
-	 * Check to see if we can avoid writing WAL
-	 *
-	 * If archive logging/streaming is not enabled *and* either
-	 *	- table was created in same transaction as this COPY
-	 *	- data is being written to relfilenode created in this transaction
-	 * then we can skip writing WAL.  It's safe because if the transaction
-	 * doesn't commit, we'll discard the table (or the new relfilenode file).
-	 * If it does commit, we'll have done the table_finish_bulk_insert() at
-	 * the bottom of this routine first.
-	 *
-	 * As mentioned in comments in utils/rel.h, the in-same-transaction test
-	 * is not always set correctly, since in rare cases rd_newRelfilenodeSubid
-	 * can be cleared before the end of the transaction. The exact case is
-	 * when a relation sets a new relfilenode twice in same transaction, yet
-	 * the second one fails in an aborted subtransaction, e.g.
-	 *
-	 * BEGIN;
-	 * TRUNCATE t;
-	 * SAVEPOINT save;
-	 * TRUNCATE t;
-	 * ROLLBACK TO save;
-	 * COPY ...
-	 *
-	 * Also, if the target file is new-in-transaction, we assume that checking
-	 * FSM for free space is a waste of time, even if we must use WAL because
-	 * of archiving.  This could possibly be wrong, but it's unlikely.
-	 *
-	 * The comments for table_tuple_insert and RelationGetBufferForTuple
-	 * specify that skipping WAL logging is only safe if we ensure that our
-	 * tuples do not go into pages containing tuples from any other
-	 * transactions --- but this must be the case if we have a new table or
-	 * new relfilenode, so we need no additional work to enforce that.
-	 *
-	 * We currently don't support this optimization if the COPY target is a
-	 * partitioned table as we currently only lazily initialize partition
-	 * information when routing the first tuple to the partition.  We cannot
-	 * know at this stage if we can perform this optimization.  It should be
-	 * possible to improve on this, but it does mean maintaining heap insert
-	 * option flags per partition and setting them when we first open the
-	 * partition.
-	 *
-	 * This optimization is not supported for relation types which do not
-	 * have any physical storage, with foreign tables and views using
-	 * INSTEAD OF triggers entering in this category.  Partitioned tables
-	 * are not supported as per the description above.
-	 *----------
+	/*
+	 * If the target file is new-in-transaction, we assume that checking FSM
+	 * for free space is a waste of time.  This could possibly be wrong, but
+	 * it's unlikely.
 	 */
-	/* createSubid is creation check, newRelfilenodeSubid is truncation check */
 	if (RELKIND_HAS_STORAGE(cstate->rel->rd_rel->relkind) &&
 		(cstate->rel->rd_createSubid != InvalidSubTransactionId ||
-		 cstate->rel->rd_newRelfilenodeSubid != InvalidSubTransactionId))
-	{
+		 cstate->rel->rd_firstRelfilenodeSubid != InvalidSubTransactionId))
 		ti_options |= TABLE_INSERT_SKIP_FSM;
-		if (!XLogIsNeeded())
-			ti_options |= TABLE_INSERT_SKIP_WAL;
-	}
 
 	/*
 	 * Optimize if new relfilenode was created in this subxact or one of its
@@ -3828,7 +3771,6 @@ NextCopyFrom(CopyState cstate, ExprContext *econtext,
 					 errmsg("row field count is %d, expected %d",
 							(int) fld_count, attr_count)));
 
-		i = 0;
 		foreach(cur, cstate->attnumlist)
 		{
 			int			attnum = lfirst_int(cur);
@@ -3836,9 +3778,7 @@ NextCopyFrom(CopyState cstate, ExprContext *econtext,
 			Form_pg_attribute att = TupleDescAttr(tupDesc, m);
 
 			cstate->cur_attname = NameStr(att->attname);
-			i++;
 			values[m] = CopyReadBinaryAttribute(cstate,
-												i,
 												&in_functions[m],
 												typioparams[m],
 												att->atttypmod,
@@ -4766,8 +4706,7 @@ endfield:
  * Read a binary attribute
  */
 static Datum
-CopyReadBinaryAttribute(CopyState cstate,
-						int column_no, FmgrInfo *flinfo,
+CopyReadBinaryAttribute(CopyState cstate, FmgrInfo *flinfo,
 						Oid typioparam, int32 typmod,
 						bool *isnull)
 {

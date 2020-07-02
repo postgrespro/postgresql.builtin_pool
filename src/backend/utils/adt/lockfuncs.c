@@ -23,7 +23,10 @@
 #include "utils/builtins.h"
 
 
-/* This must match enum LockTagType! */
+/*
+ * This must match enum LockTagType!  Also, be sure to document any changes
+ * in the docs for the pg_locks view and for wait event types.
+ */
 const char *const LockTagTypeNames[] = {
 	"relation",
 	"extend",
@@ -31,7 +34,7 @@ const char *const LockTagTypeNames[] = {
 	"tuple",
 	"transactionid",
 	"virtualxid",
-	"speculative token",
+	"spectoken",
 	"object",
 	"userlock",
 	"advisory"
