@@ -299,7 +299,7 @@ client_connect(Channel* chan, int startup_packet_size)
 	MyProcPort = chan->client_port;
 	pq_init();
 
-	if (ParseStartupPacket(chan->client_port, chan->proxy->parse_ctx, startup_packet+4, startup_packet_size-4, false) != STATUS_OK) /* skip packet size */
+	if (ParseStartupPacket(chan->client_port, chan->proxy->parse_ctx, startup_packet+4, startup_packet_size-4, false, false) != STATUS_OK) /* skip packet size */
 	{
 		MyProcPort = NULL;
 		MemoryContextSwitchTo(proxy_ctx);
