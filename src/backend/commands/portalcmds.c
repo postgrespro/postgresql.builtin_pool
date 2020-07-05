@@ -59,7 +59,8 @@ PerformCursorOpen(ParseState *pstate, DeclareCursorStmt *cstmt, ParamListInfo pa
 				(errcode(ERRCODE_INVALID_CURSOR_NAME),
 				 errmsg("invalid cursor name: must not be empty")));
 
-	MyProc->is_tainted = true; /* cursors are not compatible with builtin connection pooler */
+	if (cstmt->options & CURSOR_OPT_HOLD)
+		MyProc->is_tainted = true; /* cursors are not compatible with builtin connection pooler */
 
 	/*
 	 * If this is a non-holdable cursor, we require that this statement has

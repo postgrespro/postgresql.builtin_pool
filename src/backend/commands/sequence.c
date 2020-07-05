@@ -253,13 +253,13 @@ DefineSequence(ParseState *pstate, CreateSeqStmt *seq)
 
 	/*
 	 * TODO:
-	 * Using currval() may cause incorrect behaviour with connectoin pooler.
-	 * Unfortunately makring backend as tainted in currval() is too late.
-	 * This is why it is done in nextval(), althougth it is not strictly required, because
+	 * Using currval() may cause incorrect behavior with connection pooler.
+	 * Unfortunately marking backend as tainted in currval() is too late.
+	 * This is why it is done in nextval(), although it is not strictly required, because
 	 * nextval() may be not followed by currval().
-	 * But currval() may be not preceeded by nextval().
-	 * To make regression tests passed, backend is also marker ias tainted when it creates
-	 * sequence. Certainly it is just temoporary workaround, because sequence may be created
+	 * But currval() may be not preceded by nextval().
+	 * To make regression tests passed, backend is also marker as tainted when it creates
+	 * sequence. Certainly it is just temporary workaround, because sequence may be created
 	 * in one backend and accessed in another.
 	 */
 	MyProc->is_tainted = true; /* in case of using currval() */
