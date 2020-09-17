@@ -28,7 +28,7 @@
  */
 static DumpableObject **dumpIdMap = NULL;
 static int	allocedDumpIds = 0;
-static DumpId lastDumpId = 0;
+static DumpId lastDumpId = 0;	/* Note: 0 is InvalidDumpId */
 
 /*
  * Variables for mapping CatalogId to DumpableObject
@@ -718,6 +718,9 @@ buildIndexArray(void *objArray, int numObjs, Size objSize)
 {
 	DumpableObject **ptrs;
 	int			i;
+
+	if (numObjs <= 0)
+		return NULL;
 
 	ptrs = (DumpableObject **) pg_malloc(numObjs * sizeof(DumpableObject *));
 	for (i = 0; i < numObjs; i++)

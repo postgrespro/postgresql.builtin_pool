@@ -161,7 +161,7 @@ static const char *const excludeDirContents[] =
 
 	/*
 	 * It is generally not useful to backup the contents of this directory
-	 * even if the intention is to restore to another master. See backup.sgml
+	 * even if the intention is to restore to another primary. See backup.sgml
 	 * for a more detailed description.
 	 */
 	"pg_replslot",
@@ -719,7 +719,10 @@ perform_base_backup(basebackup_options *opt)
 	{
 		if (total_checksum_failures > 1)
 			ereport(WARNING,
-					(errmsg("%lld total checksum verification failures", total_checksum_failures)));
+					(errmsg_plural("%lld total checksum verification failure",
+								   "%lld total checksum verification failures",
+								   total_checksum_failures,
+								   total_checksum_failures)));
 
 		ereport(ERROR,
 				(errcode(ERRCODE_DATA_CORRUPTED),

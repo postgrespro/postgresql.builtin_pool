@@ -842,9 +842,7 @@ executeItemOptUnwrapTarget(JsonPathExecContext *cxt, JsonPathItem *jsp,
 				lastjbv = hasNext ? &tmpjbv : palloc(sizeof(*lastjbv));
 
 				lastjbv->type = jbvNumeric;
-				lastjbv->val.numeric =
-					DatumGetNumeric(DirectFunctionCall1(int4_numeric,
-														Int32GetDatum(last)));
+				lastjbv->val.numeric = int64_to_numeric(last);
 
 				res = executeNextItem(cxt, jsp, &elem,
 									  lastjbv, found, hasNext);
@@ -1012,9 +1010,7 @@ executeItemOptUnwrapTarget(JsonPathExecContext *cxt, JsonPathItem *jsp,
 				jb = palloc(sizeof(*jb));
 
 				jb->type = jbvNumeric;
-				jb->val.numeric =
-					DatumGetNumeric(DirectFunctionCall1(int4_numeric,
-														Int32GetDatum(size)));
+				jb->val.numeric = int64_to_numeric(size);
 
 				res = executeNextItem(cxt, jsp, NULL, jb, found, false);
 			}
@@ -1044,18 +1040,19 @@ executeItemOptUnwrapTarget(JsonPathExecContext *cxt, JsonPathItem *jsp,
 				{
 					char	   *tmp = DatumGetCString(DirectFunctionCall1(numeric_out,
 																		  NumericGetDatum(jb->val.numeric)));
+					double		val;
 					bool		have_error = false;
 
-					(void) float8in_internal_opt_error(tmp,
-													   NULL,
-													   "double precision",
-													   tmp,
-													   &have_error);
+					val = float8in_internal_opt_error(tmp,
+													  NULL,
+													  "double precision",
+													  tmp,
+													  &have_error);
 
-					if (have_error)
+					if (have_error || isinf(val) || isnan(val))
 						RETURN_ERROR(ereport(ERROR,
 											 (errcode(ERRCODE_NON_NUMERIC_SQL_JSON_ITEM),
-											  errmsg("jsonpath item method .%s() can only be applied to a numeric value",
+											  errmsg("numeric argument of jsonpath item method .%s() is out of range for type double precision",
 													 jspOperationName(jsp->type)))));
 					res = jperOk;
 				}
@@ -1073,10 +1070,10 @@ executeItemOptUnwrapTarget(JsonPathExecContext *cxt, JsonPathItem *jsp,
 													  tmp,
 													  &have_error);
 
-					if (have_error || isinf(val))
+					if (have_error || isinf(val) || isnan(val))
 						RETURN_ERROR(ereport(ERROR,
 											 (errcode(ERRCODE_NON_NUMERIC_SQL_JSON_ITEM),
-											  errmsg("jsonpath item method .%s() can only be applied to a numeric value",
+											  errmsg("string argument of jsonpath item method .%s() is not a valid representation of a double precision number",
 													 jspOperationName(jsp->type)))));
 
 					jb = &jbv;
@@ -1978,8 +1975,7 @@ executeKeyValueMethod(JsonPathExecContext *cxt, JsonPathItem *jsp,
 	id += (int64) cxt->baseObject.id * INT64CONST(10000000000);
 
 	idval.type = jbvNumeric;
-	idval.val.numeric = DatumGetNumeric(DirectFunctionCall1(int8_numeric,
-															Int64GetDatum(id)));
+	idval.val.numeric = int64_to_numeric(id);
 
 	it = JsonbIteratorInit(jbc);
 
@@ -2586,9 +2582,9 @@ checkTimezoneIsUsedForCast(bool useTz, const char *type1, const char *type2)
 	if (!useTz)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("cannot convert value from %s to %s without timezone usage",
+				 errmsg("cannot convert value from %s to %s without time zone usage",
 						type1, type2),
-				 errhint("Use *_tz() function for timezone support.")));
+				 errhint("Use *_tz() function for time zone support.")));
 }
 
 /* Convert time datum to timetz datum */

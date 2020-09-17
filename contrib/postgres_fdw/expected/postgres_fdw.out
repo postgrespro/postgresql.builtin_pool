@@ -2715,7 +2715,7 @@ select sum(c1) from ft1 group by c2 having avg(c1 * (random() <= 1)::int) > 100 
          Group Key: ft1.c2
          Filter: (avg((ft1.c1 * ((random() <= '1'::double precision))::integer)) > '100'::numeric)
          ->  Foreign Scan on public.ft1
-               Output: c2, c1
+               Output: c1, c2
                Remote SQL: SELECT "C 1", c2 FROM "S 1"."T 1"
 (10 rows)
 
@@ -2964,7 +2964,7 @@ select sum(c1) filter (where (c1 / c1) * random() <= 1) from ft1 group by c2 ord
          Output: sum(c1) FILTER (WHERE ((((c1 / c1))::double precision * random()) <= '1'::double precision)), c2
          Group Key: ft1.c2
          ->  Foreign Scan on public.ft1
-               Output: c2, c1
+               Output: c1, c2
                Remote SQL: SELECT "C 1", c2 FROM "S 1"."T 1"
 (9 rows)
 
@@ -4043,6 +4043,27 @@ SELECT f_test(100);
 (1 row)
 
 DROP FUNCTION f_test(int);
+-- ===================================================================
+-- REINDEX
+-- ===================================================================
+-- remote table is not created here
+CREATE FOREIGN TABLE reindex_foreign (c1 int, c2 int)
+  SERVER loopback2 OPTIONS (table_name 'reindex_local');
+REINDEX TABLE reindex_foreign; -- error
+ERROR:  "reindex_foreign" is not a table or materialized view
+REINDEX TABLE CONCURRENTLY reindex_foreign; -- error
+ERROR:  "reindex_foreign" is not a table or materialized view
+DROP FOREIGN TABLE reindex_foreign;
+-- partitions and foreign tables
+CREATE TABLE reind_fdw_parent (c1 int) PARTITION BY RANGE (c1);
+CREATE TABLE reind_fdw_0_10 PARTITION OF reind_fdw_parent
+  FOR VALUES FROM (0) TO (10);
+CREATE FOREIGN TABLE reind_fdw_10_20 PARTITION OF reind_fdw_parent
+  FOR VALUES FROM (10) TO (20)
+  SERVER loopback OPTIONS (table_name 'reind_local_10_20');
+REINDEX TABLE reind_fdw_parent; -- ok
+REINDEX TABLE CONCURRENTLY reind_fdw_parent; -- ok
+DROP TABLE reind_fdw_parent;
 -- ===================================================================
 -- conversion error
 -- ===================================================================

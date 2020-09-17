@@ -62,10 +62,10 @@ postgres  15610  0.0  0.0  58772  3056 ?        Ss   18:07   0:00 postgres: tgl 
    (The appropriate invocation of <command>ps</command> varies across different
    platforms, as do the details of what is shown.  This example is from a
    recent Linux system.)  The first process listed here is the
-   master server process.  The command arguments
+   primary server process.  The command arguments
    shown for it are the same ones used when it was launched.  The next five
    processes are background worker processes automatically launched by the
-   master process.  (The <quote>stats collector</quote> process will not be present
+   primary process.  (The <quote>stats collector</quote> process will not be present
    if you have set the system not to start the statistics collector; likewise
    the <quote>autovacuum launcher</quote> process can be disabled.)
    Each of the remaining
@@ -206,7 +206,7 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
    When the server shuts down cleanly, a permanent copy of the statistics
    data is stored in the <filename>pg_stat</filename> subdirectory, so that
    statistics can be retained across server restarts.  When recovery is
-   performed at server start (e.g. after immediate shutdown, server crash,
+   performed at server start (e.g., after immediate shutdown, server crash,
    and point-in-time recovery), all statistics counters are reset.
   </para>
 
@@ -687,12 +687,9 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
        <structfield>leader_pid</structfield> <type>integer</type>
       </para>
       <para>
-       Process ID of the parallel group leader if this process is or
-       has been involved in parallel query, or null. This field is set
-       when a process wants to cooperate with parallel workers, and
-       remains set as long as the process exists. For a parallel group leader,
-       this field is set to its own process ID. For a parallel worker,
-       this field is set to the process ID of the parallel group leader.
+       Process ID of the parallel group leader, if this process is a
+       parallel query worker.  <literal>NULL</literal> if this process is a
+       parallel group leader or does not participate in parallel query.
       </para></entry>
      </row>
 
@@ -894,7 +891,7 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
        <structfield>state</structfield> is <literal>active</literal> this field shows the
        currently executing query. In all other states, it shows the last query
        that was executed. By default the query text is truncated at 1024
-       characters; this value can be changed via the parameter
+       bytes; this value can be changed via the parameter
        <xref linkend="guc-track-activity-query-size"/>.
       </para></entry>
      </row>
@@ -1206,6 +1203,10 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
       <entry>Waiting for a write to a buffered file.</entry>
      </row>
      <row>
+      <entry><literal>BufFileTruncate</literal></entry>
+      <entry>Waiting for a buffered file to be truncated.</entry>
+     </row>
+     <row>
       <entry><literal>ControlFileRead</literal></entry>
       <entry>Waiting for a read from the <filename>pg_control</filename>
        file.</entry>
@@ -1213,12 +1214,12 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
      <row>
       <entry><literal>ControlFileSync</literal></entry>
       <entry>Waiting for the <filename>pg_control</filename> file to reach
-       stable storage.</entry>
+       durable storage.</entry>
      </row>
      <row>
       <entry><literal>ControlFileSyncUpdate</literal></entry>
       <entry>Waiting for an update to the <filename>pg_control</filename> file
-       to reach stable storage.</entry>
+       to reach durable storage.</entry>
      </row>
      <row>
       <entry><literal>ControlFileWrite</literal></entry>
@@ -1249,12 +1250,12 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
      </row>
      <row>
       <entry><literal>DataFileFlush</literal></entry>
-      <entry>Waiting for a relation data file to reach stable storage.</entry>
+      <entry>Waiting for a relation data file to reach durable storage.</entry>
      </row>
      <row>
       <entry><literal>DataFileImmediateSync</literal></entry>
       <entry>Waiting for an immediate synchronization of a relation data file to
-       stable storage.</entry>
+       durable storage.</entry>
      </row>
      <row>
       <entry><literal>DataFilePrefetch</literal></entry>
@@ -1267,7 +1268,7 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
      </row>
      <row>
       <entry><literal>DataFileSync</literal></entry>
-      <entry>Waiting for changes to a relation data file to reach stable storage.</entry>
+      <entry>Waiting for changes to a relation data file to reach durable storage.</entry>
      </row>
      <row>
       <entry><literal>DataFileTruncate</literal></entry>
@@ -1284,7 +1285,7 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
      </row>
      <row>
       <entry><literal>LockFileAddToDataDirSync</literal></entry>
-      <entry>Waiting for data to reach stable storage while adding a line to the
+      <entry>Waiting for data to reach durable storage while adding a line to the
        data directory lock file.</entry>
      </row>
      <row>
@@ -1299,7 +1300,7 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
      </row>
      <row>
       <entry><literal>LockFileCreateSync</literal></entry>
-      <entry>Waiting for data to reach stable storage while creating the data
+      <entry>Waiting for data to reach durable storage while creating the data
        directory lock file.</entry>
      </row>
      <row>
@@ -1314,12 +1315,12 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
      </row>
      <row>
       <entry><literal>LogicalRewriteCheckpointSync</literal></entry>
-      <entry>Waiting for logical rewrite mappings to reach stable storage
+      <entry>Waiting for logical rewrite mappings to reach durable storage
        during a checkpoint.</entry>
      </row>
      <row>
       <entry><literal>LogicalRewriteMappingSync</literal></entry>
-      <entry>Waiting for mapping data to reach stable storage during a logical
+      <entry>Waiting for mapping data to reach durable storage during a logical
        rewrite.</entry>
      </row>
      <row>
@@ -1329,7 +1330,7 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
      </row>
      <row>
       <entry><literal>LogicalRewriteSync</literal></entry>
-      <entry>Waiting for logical rewrite mappings to reach stable
+      <entry>Waiting for logical rewrite mappings to reach durable
        storage.</entry>
      </row>
      <row>
@@ -1347,7 +1348,7 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
      </row>
      <row>
       <entry><literal>RelationMapSync</literal></entry>
-      <entry>Waiting for the relation map file to reach stable storage.</entry>
+      <entry>Waiting for the relation map file to reach durable storage.</entry>
      </row>
      <row>
       <entry><literal>RelationMapWrite</literal></entry>
@@ -1372,12 +1373,12 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
      </row>
      <row>
       <entry><literal>ReplicationSlotRestoreSync</literal></entry>
-      <entry>Waiting for a replication slot control file to reach stable storage
+      <entry>Waiting for a replication slot control file to reach durable storage
        while restoring it to memory.</entry>
      </row>
      <row>
       <entry><literal>ReplicationSlotSync</literal></entry>
-      <entry>Waiting for a replication slot control file to reach stable
+      <entry>Waiting for a replication slot control file to reach durable
        storage.</entry>
      </row>
      <row>
@@ -1386,7 +1387,7 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
      </row>
      <row>
       <entry><literal>SLRUFlushSync</literal></entry>
-      <entry>Waiting for SLRU data to reach stable storage during a checkpoint
+      <entry>Waiting for SLRU data to reach durable storage during a checkpoint
        or database shutdown.</entry>
      </row>
      <row>
@@ -1395,7 +1396,7 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
      </row>
      <row>
       <entry><literal>SLRUSync</literal></entry>
-      <entry>Waiting for SLRU data to reach stable storage following a page
+      <entry>Waiting for SLRU data to reach durable storage following a page
        write.</entry>
      </row>
      <row>
@@ -1410,7 +1411,7 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
      <row>
       <entry><literal>SnapbuildSync</literal></entry>
       <entry>Waiting for a serialized historical catalog snapshot to reach
-       stable storage.</entry>
+       durable storage.</entry>
      </row>
      <row>
       <entry><literal>SnapbuildWrite</literal></entry>
@@ -1420,7 +1421,7 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
      <row>
       <entry><literal>TimelineHistoryFileSync</literal></entry>
       <entry>Waiting for a timeline history file received via streaming
-       replication to reach stable storage.</entry>
+       replication to reach durable storage.</entry>
      </row>
      <row>
       <entry><literal>TimelineHistoryFileWrite</literal></entry>
@@ -1433,7 +1434,7 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
      </row>
      <row>
       <entry><literal>TimelineHistorySync</literal></entry>
-      <entry>Waiting for a newly created timeline history file to reach stable
+      <entry>Waiting for a newly created timeline history file to reach durable
        storage.</entry>
      </row>
      <row>
@@ -1447,7 +1448,7 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
      </row>
      <row>
       <entry><literal>TwophaseFileSync</literal></entry>
-      <entry>Waiting for a two phase state file to reach stable storage.</entry>
+      <entry>Waiting for a two phase state file to reach durable storage.</entry>
      </row>
      <row>
       <entry><literal>TwophaseFileWrite</literal></entry>
@@ -1455,7 +1456,7 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
      </row>
      <row>
       <entry><literal>WALBootstrapSync</literal></entry>
-      <entry>Waiting for WAL to reach stable storage during
+      <entry>Waiting for WAL to reach durable storage during
        bootstrapping.</entry>
      </row>
      <row>
@@ -1470,7 +1471,7 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
      <row>
       <entry><literal>WALCopySync</literal></entry>
       <entry>Waiting for a new WAL segment created by copying an existing one to
-       reach stable storage.</entry>
+       reach durable storage.</entry>
      </row>
      <row>
       <entry><literal>WALCopyWrite</literal></entry>
@@ -1479,7 +1480,7 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
      </row>
      <row>
       <entry><literal>WALInitSync</literal></entry>
-      <entry>Waiting for a newly initialized WAL file to reach stable
+      <entry>Waiting for a newly initialized WAL file to reach durable
        storage.</entry>
      </row>
      <row>
@@ -1497,16 +1498,32 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
      </row>
      <row>
       <entry><literal>WALSync</literal></entry>
-      <entry>Waiting for a WAL file to reach stable storage.</entry>
+      <entry>Waiting for a WAL file to reach durable storage.</entry>
      </row>
      <row>
       <entry><literal>WALSyncMethodAssign</literal></entry>
-      <entry>Waiting for data to reach stable storage while assigning a new
+      <entry>Waiting for data to reach durable storage while assigning a new
        WAL sync method.</entry>
      </row>
      <row>
       <entry><literal>WALWrite</literal></entry>
       <entry>Waiting for a write to a WAL file.</entry>
+     </row>
+     <row>
+      <entry><literal>LogicalChangesRead</literal></entry>
+      <entry>Waiting for a read from a logical changes file.</entry>
+     </row>
+     <row>
+      <entry><literal>LogicalChangesWrite</literal></entry>
+      <entry>Waiting for a write to a logical changes file.</entry>
+     </row>
+     <row>
+      <entry><literal>LogicalSubxactRead</literal></entry>
+      <entry>Waiting for a read from a logical subxact file.</entry>
+     </row>
+     <row>
+      <entry><literal>LogicalSubxactWrite</literal></entry>
+      <entry>Waiting for a write to a logical subxact file.</entry>
      </row>
     </tbody>
    </tgroup>
@@ -1746,6 +1763,12 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
       <entry>Waiting to extend a relation.</entry>
      </row>
      <row>
+      <entry><literal>frozenid</literal></entry>
+      <entry>Waiting to
+       update <structname>pg_database</structname>.<structfield>datfrozenxid</structfield>
+       and <structname>pg_database</structname>.<structfield>datminmxid</structfield>.</entry>
+     </row>
+     <row>
       <entry><literal>object</literal></entry>
       <entry>Waiting to acquire a lock on a non-relation database object.</entry>
      </row>
@@ -1912,6 +1935,11 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
      <row>
       <entry><literal>NotifyQueue</literal></entry>
       <entry>Waiting to read or update <command>NOTIFY</command> messages.</entry>
+     </row>
+     <row>
+      <entry><literal>NotifyQueueTail</literal></entry>
+      <entry>Waiting to update limit on <command>NOTIFY</command> message
+       storage.</entry>
      </row>
      <row>
       <entry><literal>NotifySLRU</literal></entry>
@@ -2088,6 +2116,11 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
      <row>
       <entry><literal>WALWrite</literal></entry>
       <entry>Waiting for WAL buffers to be written to disk.</entry>
+     </row>
+     <row>
+      <entry><literal>WrapLimitsVacuum</literal></entry>
+      <entry>Waiting to update limits on transaction id and multixact
+       consumption.</entry>
      </row>
      <row>
       <entry><literal>XactBuffer</literal></entry>
@@ -2466,38 +2499,6 @@ SELECT pid, wait_event_type, wait_event FROM pg_stat_activity WHERE wait_event i
        Send time of last reply message received from standby server
       </para></entry>
      </row>
-
-     <row>
-      <entry role="catalog_table_entry"><para role="column_definition">
-       <structfield>spill_txns</structfield> <type>bigint</type>
-      </para>
-      <para>
-       Number of transactions spilled to disk after the memory used by
-       logical decoding exceeds <literal>logical_decoding_work_mem</literal>. The
-       counter gets incremented both for toplevel transactions and
-       subtransactions.
-      </para></entry>
-     </row>
-
-     <row>
-      <entry role="catalog_table_entry"><para role="column_definition">
-       <structfield>spill_count</structfield> <type>bigint</type>
-      </para>
-      <para>
-       Number of times transactions were spilled to disk. Transactions
-       may get spilled repeatedly, and this counter gets incremented on every
-       such invocation.
-      </para></entry>
-     </row>
-
-     <row>
-      <entry role="catalog_table_entry"><para role="column_definition">
-       <structfield>spill_bytes</structfield> <type>bigint</type>
-      </para>
-      <para>
-       Amount of decoded transaction data spilled to disk.
-      </para></entry>
-     </row>
     </tbody>
    </tgroup>
   </table>
@@ -2520,12 +2521,6 @@ SELECT pid, wait_event_type, wait_event FROM pg_stat_activity WHERE wait_event i
    Lag times work automatically for physical replication. Logical decoding
    plugins may optionally emit tracking messages; if they do not, the tracking
    mechanism will simply display NULL lag.
-  </para>
-
-  <para>
-   Tracking of spilled transactions works only for logical replication.  In
-   physical replication, the tracking mechanism will display 0 for spilled
-   statistics.
   </para>
 
   <note>
@@ -3545,7 +3540,7 @@ SELECT pid, wait_event_type, wait_event FROM pg_stat_activity WHERE wait_event i
    one row per database, showing database-wide statistics about
    query cancels occurring due to conflicts with recovery on standby servers.
    This view will only contain information on standby servers, since
-   conflicts do not occur on master servers.
+   conflicts do not occur on primary servers.
   </para>
 
   <table id="pg-stat-database-conflicts-view" xreflabel="pg_stat_database_conflicts">
@@ -4469,7 +4464,7 @@ SELECT pid, wait_event_type, wait_event FROM pg_stat_activity WHERE wait_event i
        <structfield>name</structfield> <type>text</type>
       </para>
       <para>
-       name of the SLRU
+       Name of the SLRU
       </para></entry>
      </row>
 
@@ -4673,7 +4668,7 @@ SELECT pid, wait_event_type, wait_event FROM pg_stat_activity WHERE wait_event i
         argument.  The argument can be <literal>bgwriter</literal> to reset
         all the counters shown in
         the <structname>pg_stat_bgwriter</structname>
-        view,or <literal>archiver</literal> to reset all the counters shown in
+        view, or <literal>archiver</literal> to reset all the counters shown in
         the <structname>pg_stat_archiver</structname> view.
        </para>
        <para>
@@ -5213,8 +5208,8 @@ SELECT pg_stat_get_backend_pid(s.backendid) AS pid,
      <row>
       <entry><literal>finalizing analyze</literal></entry>
       <entry>
-       The command is updating pg_class. When this phase is completed,
-       <command>ANALYZE</command> will end.
+       The command is updating <structname>pg_class</structname>. When this
+       phase is completed, <command>ANALYZE</command> will end.
       </entry>
      </row>
     </tbody>
@@ -6171,7 +6166,7 @@ SELECT pg_stat_get_backend_pid(s.backendid) AS pid,
    <ulink url="https://en.wikipedia.org/wiki/DTrace">DTrace</ulink>
    utility is supported, which, at the time of this writing, is available
    on Solaris, macOS, FreeBSD, NetBSD, and Oracle Linux.  The
-   <ulink url="http://sourceware.org/systemtap/">SystemTap</ulink> project
+   <ulink url="https://sourceware.org/systemtap/">SystemTap</ulink> project
    for Linux provides a DTrace equivalent and can also be used.  Supporting other dynamic
    tracing utilities is theoretically possible by changing the definitions for
    the macros in <filename>src/include/utils/probes.h</filename>.

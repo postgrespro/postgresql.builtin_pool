@@ -7,7 +7,7 @@ use TestLib;
 use Test::More tests => 42;
 
 # Initialize a test cluster
-my $node = get_new_node('master');
+my $node = get_new_node('primary');
 $node->init();
 # Turn message level up to DEBUG1 so that we get the messages we want to see
 $node->append_conf('postgresql.conf', 'client_min_messages = DEBUG1');
@@ -56,7 +56,7 @@ run_sql_command(
 $output = run_sql_command('alter table atacc1 alter test_a set not null;');
 ok(!is_table_verified($output), 'with constraint will not scan table');
 ok( $output =~
-	  m/existing constraints on column "atacc1"."test_a" are sufficient to prove that it does not contain nulls/,
+	  m/existing constraints on column "atacc1.test_a" are sufficient to prove that it does not contain nulls/,
 	'test_a proved by constraints');
 
 run_sql_command('alter table atacc1 alter test_a drop not null;');
@@ -68,7 +68,7 @@ $output = run_sql_command(
 ok(is_table_verified($output), 'table was scanned');
 # we may miss debug message for test_a constraint because we need verify table due test_b
 ok( !(  $output =~
-		m/existing constraints on column "atacc1"."test_b" are sufficient to prove that it does not contain nulls/
+		m/existing constraints on column "atacc1.test_b" are sufficient to prove that it does not contain nulls/
 	),
 	'test_b not proved by wrong constraints');
 run_sql_command(
@@ -84,10 +84,10 @@ $output = run_sql_command(
 );
 ok(!is_table_verified($output), 'table was not scanned for both columns');
 ok( $output =~
-	  m/existing constraints on column "atacc1"."test_a" are sufficient to prove that it does not contain nulls/,
+	  m/existing constraints on column "atacc1.test_a" are sufficient to prove that it does not contain nulls/,
 	'test_a proved by constraints');
 ok( $output =~
-	  m/existing constraints on column "atacc1"."test_b" are sufficient to prove that it does not contain nulls/,
+	  m/existing constraints on column "atacc1.test_b" are sufficient to prove that it does not contain nulls/,
 	'test_b proved by constraints');
 run_sql_command('drop table atacc1;');
 

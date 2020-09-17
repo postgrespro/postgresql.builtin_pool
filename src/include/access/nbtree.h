@@ -1073,6 +1073,10 @@ extern Buffer _bt_getbuf(Relation rel, BlockNumber blkno, int access);
 extern Buffer _bt_relandgetbuf(Relation rel, Buffer obuf,
 							   BlockNumber blkno, int access);
 extern void _bt_relbuf(Relation rel, Buffer buf);
+extern void _bt_lockbuf(Relation rel, Buffer buf, int access);
+extern void _bt_unlockbuf(Relation rel, Buffer buf);
+extern bool _bt_conditionallockbuf(Relation rel, Buffer buf);
+extern void _bt_upgradelockbufcleanup(Relation rel, Buffer buf);
 extern void _bt_pageinit(Page page, Size size);
 extern bool _bt_page_recyclable(Page page);
 extern void _bt_delitems_vacuum(Relation rel, Buffer buf,
@@ -1137,6 +1141,10 @@ extern bool _bt_allequalimage(Relation rel, bool debugmessage);
  * prototypes for functions in nbtvalidate.c
  */
 extern bool btvalidate(Oid opclassoid);
+extern void btadjustmembers(Oid opfamilyoid,
+							Oid opclassoid,
+							List *operators,
+							List *functions);
 
 /*
  * prototypes for functions in nbtsort.c

@@ -43,8 +43,8 @@ PostgreSQL documentation
   <para>
    <application>pg_rewind</application> is a tool for synchronizing a PostgreSQL cluster
    with another copy of the same cluster, after the clusters' timelines have
-   diverged. A typical scenario is to bring an old master server back online
-   after failover as a standby that follows the new master.
+   diverged. A typical scenario is to bring an old primary server back online
+   after failover as a standby that follows the new primary.
   </para>
 
   <para>
@@ -73,7 +73,7 @@ PostgreSQL documentation
    from the WAL archive to the <filename>pg_wal</filename> directory, or run
    <application>pg_rewind</application> with the <literal>-c</literal> option to
    automatically retrieve them from the WAL archive. The use of
-   <application>pg_rewind</application> is not limited to failover, e.g.  a standby
+   <application>pg_rewind</application> is not limited to failover, e.g.,  a standby
    server can be promoted, run some write transactions, and then rewinded
    to become a standby again.
   </para>

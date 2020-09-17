@@ -1844,7 +1844,7 @@ AlterTableStmt:
 					AlterTableStmt *n = makeNode(AlterTableStmt);
 					n->relation = $3;
 					n->cmds = $4;
-					n->relkind = OBJECT_TABLE;
+					n->objtype = OBJECT_TABLE;
 					n->missing_ok = false;
 					$$ = (Node *)n;
 				}
@@ -1853,7 +1853,7 @@ AlterTableStmt:
 					AlterTableStmt *n = makeNode(AlterTableStmt);
 					n->relation = $5;
 					n->cmds = $6;
-					n->relkind = OBJECT_TABLE;
+					n->objtype = OBJECT_TABLE;
 					n->missing_ok = true;
 					$$ = (Node *)n;
 				}
@@ -1862,7 +1862,7 @@ AlterTableStmt:
 					AlterTableStmt *n = makeNode(AlterTableStmt);
 					n->relation = $3;
 					n->cmds = list_make1($4);
-					n->relkind = OBJECT_TABLE;
+					n->objtype = OBJECT_TABLE;
 					n->missing_ok = false;
 					$$ = (Node *)n;
 				}
@@ -1871,7 +1871,7 @@ AlterTableStmt:
 					AlterTableStmt *n = makeNode(AlterTableStmt);
 					n->relation = $5;
 					n->cmds = list_make1($6);
-					n->relkind = OBJECT_TABLE;
+					n->objtype = OBJECT_TABLE;
 					n->missing_ok = true;
 					$$ = (Node *)n;
 				}
@@ -1902,7 +1902,7 @@ AlterTableStmt:
 					AlterTableStmt *n = makeNode(AlterTableStmt);
 					n->relation = $3;
 					n->cmds = $4;
-					n->relkind = OBJECT_INDEX;
+					n->objtype = OBJECT_INDEX;
 					n->missing_ok = false;
 					$$ = (Node *)n;
 				}
@@ -1911,7 +1911,7 @@ AlterTableStmt:
 					AlterTableStmt *n = makeNode(AlterTableStmt);
 					n->relation = $5;
 					n->cmds = $6;
-					n->relkind = OBJECT_INDEX;
+					n->objtype = OBJECT_INDEX;
 					n->missing_ok = true;
 					$$ = (Node *)n;
 				}
@@ -1920,7 +1920,7 @@ AlterTableStmt:
 					AlterTableStmt *n = makeNode(AlterTableStmt);
 					n->relation = $3;
 					n->cmds = list_make1($4);
-					n->relkind = OBJECT_INDEX;
+					n->objtype = OBJECT_INDEX;
 					n->missing_ok = false;
 					$$ = (Node *)n;
 				}
@@ -1951,7 +1951,7 @@ AlterTableStmt:
 					AlterTableStmt *n = makeNode(AlterTableStmt);
 					n->relation = $3;
 					n->cmds = $4;
-					n->relkind = OBJECT_SEQUENCE;
+					n->objtype = OBJECT_SEQUENCE;
 					n->missing_ok = false;
 					$$ = (Node *)n;
 				}
@@ -1960,7 +1960,7 @@ AlterTableStmt:
 					AlterTableStmt *n = makeNode(AlterTableStmt);
 					n->relation = $5;
 					n->cmds = $6;
-					n->relkind = OBJECT_SEQUENCE;
+					n->objtype = OBJECT_SEQUENCE;
 					n->missing_ok = true;
 					$$ = (Node *)n;
 				}
@@ -1969,7 +1969,7 @@ AlterTableStmt:
 					AlterTableStmt *n = makeNode(AlterTableStmt);
 					n->relation = $3;
 					n->cmds = $4;
-					n->relkind = OBJECT_VIEW;
+					n->objtype = OBJECT_VIEW;
 					n->missing_ok = false;
 					$$ = (Node *)n;
 				}
@@ -1978,7 +1978,7 @@ AlterTableStmt:
 					AlterTableStmt *n = makeNode(AlterTableStmt);
 					n->relation = $5;
 					n->cmds = $6;
-					n->relkind = OBJECT_VIEW;
+					n->objtype = OBJECT_VIEW;
 					n->missing_ok = true;
 					$$ = (Node *)n;
 				}
@@ -1987,7 +1987,7 @@ AlterTableStmt:
 					AlterTableStmt *n = makeNode(AlterTableStmt);
 					n->relation = $4;
 					n->cmds = $5;
-					n->relkind = OBJECT_MATVIEW;
+					n->objtype = OBJECT_MATVIEW;
 					n->missing_ok = false;
 					$$ = (Node *)n;
 				}
@@ -1996,7 +1996,7 @@ AlterTableStmt:
 					AlterTableStmt *n = makeNode(AlterTableStmt);
 					n->relation = $6;
 					n->cmds = $7;
-					n->relkind = OBJECT_MATVIEW;
+					n->objtype = OBJECT_MATVIEW;
 					n->missing_ok = true;
 					$$ = (Node *)n;
 				}
@@ -2027,7 +2027,7 @@ AlterTableStmt:
 					AlterTableStmt *n = makeNode(AlterTableStmt);
 					n->relation = $4;
 					n->cmds = $5;
-					n->relkind = OBJECT_FOREIGN_TABLE;
+					n->objtype = OBJECT_FOREIGN_TABLE;
 					n->missing_ok = false;
 					$$ = (Node *)n;
 				}
@@ -2036,7 +2036,7 @@ AlterTableStmt:
 					AlterTableStmt *n = makeNode(AlterTableStmt);
 					n->relation = $6;
 					n->cmds = $7;
-					n->relkind = OBJECT_FOREIGN_TABLE;
+					n->objtype = OBJECT_FOREIGN_TABLE;
 					n->missing_ok = true;
 					$$ = (Node *)n;
 				}
@@ -2856,7 +2856,7 @@ AlterCompositeTypeStmt:
 					/* can't use qualified_name, sigh */
 					n->relation = makeRangeVarFromAnyName($3, @3, yyscanner);
 					n->cmds = $4;
-					n->relkind = OBJECT_TYPE;
+					n->objtype = OBJECT_TYPE;
 					$$ = (Node *)n;
 				}
 			;
@@ -4072,7 +4072,7 @@ CreateAsStmt:
 					CreateTableAsStmt *ctas = makeNode(CreateTableAsStmt);
 					ctas->query = $6;
 					ctas->into = $4;
-					ctas->relkind = OBJECT_TABLE;
+					ctas->objtype = OBJECT_TABLE;
 					ctas->is_select_into = false;
 					ctas->if_not_exists = false;
 					/* cram additional flags into the IntoClause */
@@ -4085,7 +4085,7 @@ CreateAsStmt:
 					CreateTableAsStmt *ctas = makeNode(CreateTableAsStmt);
 					ctas->query = $9;
 					ctas->into = $7;
-					ctas->relkind = OBJECT_TABLE;
+					ctas->objtype = OBJECT_TABLE;
 					ctas->is_select_into = false;
 					ctas->if_not_exists = true;
 					/* cram additional flags into the IntoClause */
@@ -4131,7 +4131,7 @@ CreateMatViewStmt:
 					CreateTableAsStmt *ctas = makeNode(CreateTableAsStmt);
 					ctas->query = $7;
 					ctas->into = $5;
-					ctas->relkind = OBJECT_MATVIEW;
+					ctas->objtype = OBJECT_MATVIEW;
 					ctas->is_select_into = false;
 					ctas->if_not_exists = false;
 					/* cram additional flags into the IntoClause */
@@ -4144,7 +4144,7 @@ CreateMatViewStmt:
 					CreateTableAsStmt *ctas = makeNode(CreateTableAsStmt);
 					ctas->query = $10;
 					ctas->into = $8;
-					ctas->relkind = OBJECT_MATVIEW;
+					ctas->objtype = OBJECT_MATVIEW;
 					ctas->is_select_into = false;
 					ctas->if_not_exists = true;
 					/* cram additional flags into the IntoClause */
@@ -8177,40 +8177,44 @@ ReindexStmt:
 				{
 					ReindexStmt *n = makeNode(ReindexStmt);
 					n->kind = $2;
-					n->concurrent = $3;
 					n->relation = $4;
 					n->name = NULL;
 					n->options = 0;
+					if ($3)
+						n->options |= REINDEXOPT_CONCURRENTLY;
 					$$ = (Node *)n;
 				}
 			| REINDEX reindex_target_multitable opt_concurrently name
 				{
 					ReindexStmt *n = makeNode(ReindexStmt);
 					n->kind = $2;
-					n->concurrent = $3;
 					n->name = $4;
 					n->relation = NULL;
 					n->options = 0;
+					if ($3)
+						n->options |= REINDEXOPT_CONCURRENTLY;
 					$$ = (Node *)n;
 				}
 			| REINDEX '(' reindex_option_list ')' reindex_target_type opt_concurrently qualified_name
 				{
 					ReindexStmt *n = makeNode(ReindexStmt);
 					n->kind = $5;
-					n->concurrent = $6;
 					n->relation = $7;
 					n->name = NULL;
 					n->options = $3;
+					if ($6)
+						n->options |= REINDEXOPT_CONCURRENTLY;
 					$$ = (Node *)n;
 				}
 			| REINDEX '(' reindex_option_list ')' reindex_target_multitable opt_concurrently name
 				{
 					ReindexStmt *n = makeNode(ReindexStmt);
 					n->kind = $5;
-					n->concurrent = $6;
 					n->name = $7;
 					n->relation = NULL;
 					n->options = $3;
+					if ($6)
+						n->options |= REINDEXOPT_CONCURRENTLY;
 					$$ = (Node *)n;
 				}
 		;
@@ -10695,7 +10699,7 @@ ExecuteStmt: EXECUTE name execute_param_clause
 					n->params = $8;
 					ctas->query = (Node *) n;
 					ctas->into = $4;
-					ctas->relkind = OBJECT_TABLE;
+					ctas->objtype = OBJECT_TABLE;
 					ctas->is_select_into = false;
 					ctas->if_not_exists = false;
 					/* cram additional flags into the IntoClause */
@@ -10712,7 +10716,7 @@ ExecuteStmt: EXECUTE name execute_param_clause
 					n->params = $11;
 					ctas->query = (Node *) n;
 					ctas->into = $7;
-					ctas->relkind = OBJECT_TABLE;
+					ctas->objtype = OBJECT_TABLE;
 					ctas->is_select_into = false;
 					ctas->if_not_exists = true;
 					/* cram additional flags into the IntoClause */
@@ -15016,7 +15020,7 @@ ColLabel:	IDENT									{ $$ = $1; }
  *
  * Make sure that each keyword's category in kwlist.h matches where
  * it is listed here.  (Someday we may be able to generate these lists and
- * kwlist.h's table from a common master list.)
+ * kwlist.h's table from one source of truth.)
  */
 
 /* "Unreserved" keywords --- available for use as any kind of name.
@@ -15915,7 +15919,7 @@ insertSelectOptions(SelectStmt *stmt,
 		if (!stmt->sortClause && limitClause->limitOption == LIMIT_OPTION_WITH_TIES)
 			ereport(ERROR,
 					(errcode(ERRCODE_SYNTAX_ERROR),
-					 errmsg("WITH TIES options can not be specified without ORDER BY clause")));
+					 errmsg("WITH TIES cannot be specified without ORDER BY clause")));
 		stmt->limitOption = limitClause->limitOption;
 	}
 	if (withClause)

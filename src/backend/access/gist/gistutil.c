@@ -32,7 +32,6 @@
 void
 gistfillbuffer(Page page, IndexTuple *itup, int len, OffsetNumber off)
 {
-	OffsetNumber l = InvalidOffsetNumber;
 	int			i;
 
 	if (off == InvalidOffsetNumber)
@@ -42,6 +41,7 @@ gistfillbuffer(Page page, IndexTuple *itup, int len, OffsetNumber off)
 	for (i = 0; i < len; i++)
 	{
 		Size		sz = IndexTupleSize(itup[i]);
+		OffsetNumber l;
 
 		l = PageAddItem(page, (Item) itup[i], sz, off, false, false);
 		if (l == InvalidOffsetNumber)
@@ -891,15 +891,13 @@ gistPageRecyclable(Page page)
 		 * As long as that can happen, we must keep the deleted page around as
 		 * a tombstone.
 		 *
-		 * Compare the deletion XID with RecentGlobalXmin. If deleteXid <
-		 * RecentGlobalXmin, then no scan that's still in progress could have
+		 * For that check if the deletion XID could still be visible to
+		 * anyone. If not, then no scan that's still in progress could have
 		 * seen its downlink, and we can recycle it.
 		 */
 		FullTransactionId deletexid_full = GistPageGetDeleteXid(page);
-		FullTransactionId recentxmin_full = GetFullRecentGlobalXmin();
 
-		if (FullTransactionIdPrecedes(deletexid_full, recentxmin_full))
-			return true;
+		return GlobalVisIsRemovableFullXid(NULL, deletexid_full);
 	}
 	return false;
 }

@@ -1087,7 +1087,7 @@ _equalAlterTableStmt(const AlterTableStmt *a, const AlterTableStmt *b)
 {
 	COMPARE_NODE_FIELD(relation);
 	COMPARE_NODE_FIELD(cmds);
-	COMPARE_SCALAR_FIELD(relkind);
+	COMPARE_SCALAR_FIELD(objtype);
 	COMPARE_SCALAR_FIELD(missing_ok);
 
 	return true;
@@ -1735,7 +1735,7 @@ _equalCreateTableAsStmt(const CreateTableAsStmt *a, const CreateTableAsStmt *b)
 {
 	COMPARE_NODE_FIELD(query);
 	COMPARE_NODE_FIELD(into);
-	COMPARE_SCALAR_FIELD(relkind);
+	COMPARE_SCALAR_FIELD(objtype);
 	COMPARE_SCALAR_FIELD(is_select_into);
 	COMPARE_SCALAR_FIELD(if_not_exists);
 
@@ -2135,7 +2135,6 @@ _equalReindexStmt(const ReindexStmt *a, const ReindexStmt *b)
 	COMPARE_NODE_FIELD(relation);
 	COMPARE_STRING_FIELD(name);
 	COMPARE_SCALAR_FIELD(options);
-	COMPARE_SCALAR_FIELD(concurrent);
 
 	return true;
 }

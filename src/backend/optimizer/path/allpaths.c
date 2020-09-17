@@ -911,6 +911,13 @@ set_foreign_size(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry *rte)
 
 	/* ... but do not let it set the rows estimate to zero */
 	rel->rows = clamp_row_est(rel->rows);
+
+	/*
+	 * Also, make sure rel->tuples is not insane relative to rel->rows.
+	 * Notably, this ensures sanity if pg_class.reltuples contains -1 and the
+	 * FDW doesn't do anything to replace that.
+	 */
+	rel->tuples = Max(rel->tuples, rel->rows);
 }
 
 /*
@@ -2912,7 +2919,7 @@ generate_useful_gather_paths(PlannerInfo *root, RelOptInfo *rel, bool override_r
 			 * Consider incremental sort, but only when the subpath is already
 			 * partially sorted on a pathkey prefix.
 			 */
-			if (enable_incrementalsort && presorted_keys > 0)
+			if (enable_incremental_sort && presorted_keys > 0)
 			{
 				Path	   *tmp;
 
@@ -3179,6 +3186,17 @@ standard_join_search(PlannerInfo *root, int levels_needed, List *initial_rels)
  * volatile qual could succeed for some SRF output rows and fail for others,
  * a behavior that cannot occur if it's evaluated before SRF expansion.
  *
+ * 6. If the subquery has nonempty grouping sets, we cannot push down any
+ * quals.  The concern here is that a qual referencing a "constant" grouping
+ * column could get constant-folded, which would be improper because the value
+ * is potentially nullable by grouping-set expansion.  This restriction could
+ * be removed if we had a parsetree representation that shows that such
+ * grouping columns are not really constant.  (There are other ideas that
+ * could be used to relax this restriction, but that's the approach most
+ * likely to get taken in the future.  Note that there's not much to be gained
+ * so long as subquery_planner can't move HAVING clauses to WHERE within such
+ * a subquery.)
+ *
  * In addition, we make several checks on the subquery's output columns to see
  * if it is safe to reference them in pushed-down quals.  If output column k
  * is found to be unsafe to reference, we set safetyInfo->unsafeColumns[k]
@@ -3221,6 +3239,10 @@ subquery_is_pushdown_safe(Query *subquery, Query *topquery,
 
 	/* Check point 1 */
 	if (subquery->limitOffset != NULL || subquery->limitCount != NULL)
+		return false;
+
+	/* Check point 6 */
+	if (subquery->groupClause && subquery->groupingSets)
 		return false;
 
 	/* Check points 3, 4, and 5 */
@@ -3505,8 +3527,10 @@ qual_is_pushdown_safe(Query *subquery, Index rti, Node *qual,
 	Assert(!contain_window_function(qual));
 
 	/*
-	 * Examine all Vars used in clause; since it's a restriction clause, all
-	 * such Vars must refer to subselect output columns.
+	 * Examine all Vars used in clause.  Since it's a restriction clause, all
+	 * such Vars must refer to subselect output columns ... unless this is
+	 * part of a LATERAL subquery, in which case there could be lateral
+	 * references.
 	 */
 	vars = pull_var_clause(qual, PVC_INCLUDE_PLACEHOLDERS);
 	foreach(vl, vars)
@@ -3526,7 +3550,19 @@ qual_is_pushdown_safe(Query *subquery, Index rti, Node *qual,
 			break;
 		}
 
-		Assert(var->varno == rti);
+		/*
+		 * Punt if we find any lateral references.  It would be safe to push
+		 * these down, but we'd have to convert them into outer references,
+		 * which subquery_push_qual lacks the infrastructure to do.  The case
+		 * arises so seldom that it doesn't seem worth working hard on.
+		 */
+		if (var->varno != rti)
+		{
+			safe = false;
+			break;
+		}
+
+		/* Subqueries have no system columns */
 		Assert(var->varattno >= 0);
 
 		/* Check point 4 */

@@ -1267,10 +1267,11 @@ EventTriggerSQLDropAddObject(const ObjectAddress *object, bool original, bool no
 
 	/* object identity, objname and objargs */
 	obj->objidentity =
-		getObjectIdentityParts(&obj->address, &obj->addrnames, &obj->addrargs);
+		getObjectIdentityParts(&obj->address, &obj->addrnames, &obj->addrargs,
+							   false);
 
 	/* object type */
-	obj->objecttype = getObjectTypeDescription(&obj->address);
+	obj->objecttype = getObjectTypeDescription(&obj->address, false);
 
 	slist_push_head(&(currentEventTriggerState->SQLDropList), &obj->next);
 
@@ -1645,9 +1646,15 @@ EventTriggerAlterTableEnd(void)
 	/* If no subcommands, don't collect */
 	if (list_length(currentEventTriggerState->currentCommand->d.alterTable.subcmds) != 0)
 	{
+		MemoryContext oldcxt;
+
+		oldcxt = MemoryContextSwitchTo(currentEventTriggerState->cxt);
+
 		currentEventTriggerState->commandList =
 			lappend(currentEventTriggerState->commandList,
 					currentEventTriggerState->currentCommand);
+
+		MemoryContextSwitchTo(oldcxt);
 	}
 	else
 		pfree(currentEventTriggerState->currentCommand);
@@ -1929,8 +1936,8 @@ pg_event_trigger_ddl_commands(PG_FUNCTION_ARGS)
 					else if (cmd->type == SCT_AlterTSConfig)
 						addr = cmd->d.atscfg.address;
 
-					type = getObjectTypeDescription(&addr);
-					identity = getObjectIdentity(&addr);
+					type = getObjectTypeDescription(&addr, false);
+					identity = getObjectIdentity(&addr, false);
 
 					/*
 					 * Obtain schema name, if any ("pg_temp" if a temp

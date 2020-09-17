@@ -506,9 +506,10 @@ RelationBuildTupleDesc(Relation relation)
 	AttrMissing *attrmiss = NULL;
 	int			ndef = 0;
 
-	/* copy some fields from pg_class row to rd_att */
-	relation->rd_att->tdtypeid = relation->rd_rel->reltype;
-	relation->rd_att->tdtypmod = -1;	/* unnecessary, but... */
+	/* fill rd_att's type ID fields (compare heap.c's AddNewRelationTuple) */
+	relation->rd_att->tdtypeid =
+		relation->rd_rel->reltype ? relation->rd_rel->reltype : RECORDOID;
+	relation->rd_att->tdtypmod = -1;	/* just to be sure */
 
 	constr = (TupleConstr *) MemoryContextAlloc(CacheMemoryContext,
 												sizeof(TupleConstr));
@@ -1242,14 +1243,6 @@ RelationBuildDesc(Oid targetRelId, bool insertIt)
 	if (insertIt)
 		RelationCacheInsert(relation, true);
 
-	/*
-	 * For RelationNeedsWAL() to answer correctly on parallel workers, restore
-	 * rd_firstRelfilenodeSubid.  No subtransactions start or end while in
-	 * parallel mode, so the specific SubTransactionId does not matter.
-	 */
-	if (IsParallelWorker() && RelFileNodeSkippingWAL(relation->rd_node))
-		relation->rd_firstRelfilenodeSubid = TopSubTransactionId;
-
 	/* It's fully valid */
 	relation->rd_isvalid = true;
 
@@ -1272,6 +1265,8 @@ RelationBuildDesc(Oid targetRelId, bool insertIt)
 static void
 RelationInitPhysicalAddr(Relation relation)
 {
+	Oid			oldnode = relation->rd_node.relNode;
+
 	/* these relations kinds never have storage */
 	if (!RELKIND_HAS_STORAGE(relation->rd_rel->relkind))
 		return;
@@ -1328,6 +1323,19 @@ RelationInitPhysicalAddr(Relation relation)
 		if (!OidIsValid(relation->rd_node.relNode))
 			elog(ERROR, "could not find relation mapping for relation \"%s\", OID %u",
 				 RelationGetRelationName(relation), relation->rd_id);
+	}
+
+	/*
+	 * For RelationNeedsWAL() to answer correctly on parallel workers, restore
+	 * rd_firstRelfilenodeSubid.  No subtransactions start or end while in
+	 * parallel mode, so the specific SubTransactionId does not matter.
+	 */
+	if (IsParallelWorker() && oldnode != relation->rd_node.relNode)
+	{
+		if (RelFileNodeSkippingWAL(relation->rd_node))
+			relation->rd_firstRelfilenodeSubid = TopSubTransactionId;
+		else
+			relation->rd_firstRelfilenodeSubid = InvalidSubTransactionId;
 	}
 }
 
@@ -1869,7 +1877,7 @@ formrdesc(const char *relationName, Oid relationReltype,
 
 	relation->rd_rel->relreplident = REPLICA_IDENTITY_NOTHING;
 	relation->rd_rel->relpages = 0;
-	relation->rd_rel->reltuples = 0;
+	relation->rd_rel->reltuples = -1;
 	relation->rd_rel->relallvisible = 0;
 	relation->rd_rel->relkind = RELKIND_RELATION;
 	relation->rd_rel->relnatts = (int16) natts;
@@ -1886,7 +1894,7 @@ formrdesc(const char *relationName, Oid relationReltype,
 	relation->rd_att->tdrefcount = 1;	/* mark as refcounted */
 
 	relation->rd_att->tdtypeid = relationReltype;
-	relation->rd_att->tdtypmod = -1;	/* unnecessary, but... */
+	relation->rd_att->tdtypmod = -1;	/* just to be sure */
 
 	/*
 	 * initialize tuple desc info
@@ -3691,7 +3699,7 @@ RelationSetNewRelfilenode(Relation relation, char persistence)
 		if (relation->rd_rel->relkind != RELKIND_SEQUENCE)
 		{
 			classform->relpages = 0;	/* it's empty until further notice */
-			classform->reltuples = 0;
+			classform->reltuples = -1;
 			classform->relallvisible = 0;
 		}
 		classform->relfrozenxid = freezeXid;
@@ -5692,8 +5700,8 @@ load_relcache_init_file(bool shared)
 		rel->rd_att = CreateTemplateTupleDesc(relform->relnatts);
 		rel->rd_att->tdrefcount = 1;	/* mark as refcounted */
 
-		rel->rd_att->tdtypeid = relform->reltype;
-		rel->rd_att->tdtypmod = -1; /* unnecessary, but... */
+		rel->rd_att->tdtypeid = relform->reltype ? relform->reltype : RECORDOID;
+		rel->rd_att->tdtypmod = -1; /* just to be sure */
 
 		/* next read all the attribute tuple form data entries */
 		has_not_null = false;

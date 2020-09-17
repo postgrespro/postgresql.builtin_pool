@@ -3204,7 +3204,7 @@ _copyAlterTableStmt(const AlterTableStmt *from)
 
 	COPY_NODE_FIELD(relation);
 	COPY_NODE_FIELD(cmds);
-	COPY_SCALAR_FIELD(relkind);
+	COPY_SCALAR_FIELD(objtype);
 	COPY_SCALAR_FIELD(missing_ok);
 
 	return newnode;
@@ -3980,7 +3980,7 @@ _copyCreateTableAsStmt(const CreateTableAsStmt *from)
 
 	COPY_NODE_FIELD(query);
 	COPY_NODE_FIELD(into);
-	COPY_SCALAR_FIELD(relkind);
+	COPY_SCALAR_FIELD(objtype);
 	COPY_SCALAR_FIELD(is_select_into);
 	COPY_SCALAR_FIELD(if_not_exists);
 
@@ -4450,7 +4450,6 @@ _copyReindexStmt(const ReindexStmt *from)
 	COPY_NODE_FIELD(relation);
 	COPY_STRING_FIELD(name);
 	COPY_SCALAR_FIELD(options);
-	COPY_SCALAR_FIELD(concurrent);
 
 	return newnode;
 }

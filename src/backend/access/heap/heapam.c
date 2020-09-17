@@ -41,6 +41,7 @@
 #include "access/parallel.h"
 #include "access/relscan.h"
 #include "access/subtrans.h"
+#include "access/syncscan.h"
 #include "access/sysattr.h"
 #include "access/tableam.h"
 #include "access/transam.h"
@@ -410,10 +411,10 @@ heapgetpage(TableScanDesc sscan, BlockNumber page)
 	 * visible to everyone, we can skip the per-tuple visibility tests.
 	 *
 	 * Note: In hot standby, a tuple that's already visible to all
-	 * transactions in the master might still be invisible to a read-only
+	 * transactions on the primary might still be invisible to a read-only
 	 * transaction in the standby. We partly handle this problem by tracking
 	 * the minimum xmin of visible tuples as the cut-off XID while marking a
-	 * page all-visible on master and WAL log that along with the visibility
+	 * page all-visible on the primary and WAL log that along with the visibility
 	 * map SET operation. In hot standby, we wait for (or abort) all
 	 * transactions that can potentially may not see one or more tuples on the
 	 * page. That's how index-only scans work fine in hot standby. A crucial
@@ -520,12 +521,14 @@ heapgettup(HeapScanDesc scan,
 			{
 				ParallelBlockTableScanDesc pbscan =
 				(ParallelBlockTableScanDesc) scan->rs_base.rs_parallel;
+				ParallelBlockTableScanWorker pbscanwork =
+				(ParallelBlockTableScanWorker) scan->rs_base.rs_private;
 
 				table_block_parallelscan_startblock_init(scan->rs_base.rs_rd,
-														 pbscan);
+														 pbscanwork, pbscan);
 
 				page = table_block_parallelscan_nextpage(scan->rs_base.rs_rd,
-														 pbscan);
+														 pbscanwork, pbscan);
 
 				/* Other processes might have already finished the scan. */
 				if (page == InvalidBlockNumber)
@@ -720,9 +723,11 @@ heapgettup(HeapScanDesc scan,
 		{
 			ParallelBlockTableScanDesc pbscan =
 			(ParallelBlockTableScanDesc) scan->rs_base.rs_parallel;
+			ParallelBlockTableScanWorker pbscanwork =
+			(ParallelBlockTableScanWorker) scan->rs_base.rs_private;
 
 			page = table_block_parallelscan_nextpage(scan->rs_base.rs_rd,
-													 pbscan);
+													 pbscanwork, pbscan);
 			finished = (page == InvalidBlockNumber);
 		}
 		else
@@ -834,12 +839,14 @@ heapgettup_pagemode(HeapScanDesc scan,
 			{
 				ParallelBlockTableScanDesc pbscan =
 				(ParallelBlockTableScanDesc) scan->rs_base.rs_parallel;
+				ParallelBlockTableScanWorker pbscanwork =
+				(ParallelBlockTableScanWorker) scan->rs_base.rs_private;
 
 				table_block_parallelscan_startblock_init(scan->rs_base.rs_rd,
-														 pbscan);
+														 pbscanwork, pbscan);
 
 				page = table_block_parallelscan_nextpage(scan->rs_base.rs_rd,
-														 pbscan);
+														 pbscanwork, pbscan);
 
 				/* Other processes might have already finished the scan. */
 				if (page == InvalidBlockNumber)
@@ -1019,9 +1026,11 @@ heapgettup_pagemode(HeapScanDesc scan,
 		{
 			ParallelBlockTableScanDesc pbscan =
 			(ParallelBlockTableScanDesc) scan->rs_base.rs_parallel;
+			ParallelBlockTableScanWorker pbscanwork =
+			(ParallelBlockTableScanWorker) scan->rs_base.rs_private;
 
 			page = table_block_parallelscan_nextpage(scan->rs_base.rs_rd,
-													 pbscan);
+													 pbscanwork, pbscan);
 			finished = (page == InvalidBlockNumber);
 		}
 		else
@@ -1155,6 +1164,8 @@ heap_beginscan(Relation relation, Snapshot snapshot,
 	scan->rs_base.rs_nkeys = nkeys;
 	scan->rs_base.rs_flags = flags;
 	scan->rs_base.rs_parallel = parallel_scan;
+	scan->rs_base.rs_private =
+		palloc(sizeof(ParallelBlockTableScanWorkerData));
 	scan->rs_strategy = NULL;	/* set in initscan */
 
 	/*
@@ -1287,6 +1298,16 @@ heap_getnext(TableScanDesc sscan, ScanDirection direction)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg_internal("only heap AM is supported")));
+
+	/*
+	 * We don't expect direct calls to heap_getnext with valid CheckXidAlive
+	 * for catalog or regular tables.  See detailed comments in xact.c where
+	 * these variables are declared.  Normally we have such a check at tableam
+	 * level API but this is called from many places so we need to ensure it
+	 * here.
+	 */
+	if (unlikely(TransactionIdIsValid(CheckXidAlive) && !bsysscan))
+		elog(ERROR, "unexpected heap_getnext call during logical decoding");
 
 	/* Note: no locking manipulations needed */
 
@@ -1496,6 +1517,7 @@ heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 	bool		at_chain_start;
 	bool		valid;
 	bool		skip;
+	GlobalVisState *vistest = NULL;
 
 	/* If this is not the first call, previous call returned a (live!) tuple */
 	if (all_dead)
@@ -1506,7 +1528,8 @@ heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 	at_chain_start = first_call;
 	skip = !first_call;
 
-	Assert(TransactionIdIsValid(RecentGlobalXmin));
+	/* XXX: we should assert that a snapshot is pushed or registered */
+	Assert(TransactionIdIsValid(RecentXmin));
 	Assert(BufferGetBlockNumber(buffer) == blkno);
 
 	/* Scan through possible multiple members of HOT-chain */
@@ -1595,9 +1618,14 @@ heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 		 * Note: if you change the criterion here for what is "dead", fix the
 		 * planner's get_actual_variable_range() function to match.
 		 */
-		if (all_dead && *all_dead &&
-			!HeapTupleIsSurelyDead(heapTuple, RecentGlobalXmin))
-			*all_dead = false;
+		if (all_dead && *all_dead)
+		{
+			if (!vistest)
+				vistest = GlobalVisTestFor(relation);
+
+			if (!HeapTupleIsSurelyDead(heapTuple, vistest))
+				*all_dead = false;
+		}
 
 		/*
 		 * Check to see if HOT chain continues past this tuple; if so fetch
@@ -1639,9 +1667,9 @@ heap_get_latest_tid(TableScanDesc sscan,
 	TransactionId priorXmax;
 
 	/*
-	 * table_get_latest_tid verified that the passed in tid is valid.  Assume
-	 * that t_ctid links are valid however - there shouldn't be invalid ones
-	 * in the table.
+	 * table_tuple_get_latest_tid() verified that the passed in tid is valid.
+	 * Assume that t_ctid links are valid however - there shouldn't be invalid
+	 * ones in the table.
 	 */
 	Assert(ItemPointerIsValid(tid));
 
@@ -1945,6 +1973,9 @@ heap_insert(Relation relation, HeapTuple tup, CommandId cid,
 		{
 			xlrec.flags |= XLH_INSERT_CONTAINS_NEW_TUPLE;
 			bufflags |= REGBUF_KEEP_DATA;
+
+			if (IsToastRelation(relation))
+				xlrec.flags |= XLH_INSERT_ON_TOAST_RELATION;
 		}
 
 		XLogBeginInsert();
@@ -2153,8 +2184,8 @@ heap_multi_insert(Relation relation, TupleTableSlot **slots, int ntuples,
 		RelationPutHeapTuple(relation, buffer, heaptuples[ndone], false);
 
 		/*
-		 * Note that heap_multi_insert is not used for catalog tuples yet, but
-		 * this will cover the gap once that is the case.
+		 * For logical decoding we need combocids to properly decode the
+		 * catalog.
 		 */
 		if (needwal && need_cids)
 			log_heap_new_cid(relation, heaptuples[ndone]);
@@ -2169,8 +2200,8 @@ heap_multi_insert(Relation relation, TupleTableSlot **slots, int ntuples,
 			RelationPutHeapTuple(relation, buffer, heaptup, false);
 
 			/*
-			 * We don't use heap_multi_insert for catalog tuples yet, but
-			 * better be prepared...
+			 * For logical decoding we need combocids to properly decode the
+			 * catalog.
 			 */
 			if (needwal && need_cids)
 				log_heap_new_cid(relation, heaptup);
@@ -6889,8 +6920,6 @@ HeapTupleHeaderAdvanceLatestRemovedXid(HeapTupleHeader tuple,
 	 * updated/deleted by the inserting transaction.
 	 *
 	 * Look for a committed hint bit, or if no xmin bit is set, check clog.
-	 * This needs to work on both master and standby, where it is used to
-	 * assess btree delete records.
 	 */
 	if (HeapTupleHeaderXminCommitted(tuple) ||
 		(!HeapTupleHeaderXminInvalid(tuple) && TransactionIdDidCommit(xmin)))
@@ -6951,9 +6980,9 @@ xid_horizon_prefetch_buffer(Relation rel,
  * tuples being deleted.
  *
  * We used to do this during recovery rather than on the primary, but that
- * approach now appears inferior.  It meant that the master could generate
+ * approach now appears inferior.  It meant that the primary could generate
  * a lot of work for the standby without any back-pressure to slow down the
- * master, and it required the standby to have reached consistency, whereas
+ * primary, and it required the standby to have reached consistency, whereas
  * we want to have correct information available even before that point.
  *
  * It's possible for this to generate a fair amount of I/O, since we may be
@@ -8943,7 +8972,7 @@ heap_mask(char *pagedata, BlockNumber blkno)
 			 *
 			 * During redo, heap_xlog_insert() sets t_ctid to current block
 			 * number and self offset number. It doesn't care about any
-			 * speculative insertions in master. Hence, we set t_ctid to
+			 * speculative insertions on the primary. Hence, we set t_ctid to
 			 * current block number and self offset number to ignore any
 			 * inconsistency.
 			 */

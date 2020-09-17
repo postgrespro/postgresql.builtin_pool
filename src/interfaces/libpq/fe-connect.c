@@ -477,6 +477,11 @@ pqDropConnection(PGconn *conn, bool flushInput)
 	{
 		OM_uint32	min_s;
 
+		if (conn->gcred != GSS_C_NO_CREDENTIAL)
+		{
+			gss_release_cred(&min_s, &conn->gcred);
+			conn->gcred = GSS_C_NO_CREDENTIAL;
+		}
 		if (conn->gctx)
 			gss_delete_sec_context(&min_s, &conn->gctx, GSS_C_NO_BUFFER);
 		if (conn->gtarg_nam)
@@ -496,6 +501,7 @@ pqDropConnection(PGconn *conn, bool flushInput)
 			free(conn->gss_ResultBuffer);
 			conn->gss_ResultBuffer = NULL;
 		}
+		conn->gssenc = false;
 	}
 #endif
 #ifdef ENABLE_SSPI
@@ -2027,11 +2033,6 @@ connectDBStart(PGconn *conn)
 	 */
 	resetPQExpBuffer(&conn->errorMessage);
 
-#ifdef ENABLE_GSS
-	if (conn->gssencmode[0] == 'd') /* "disable" */
-		conn->try_gss = false;
-#endif
-
 	/*
 	 * Set up to try to connect to the first host.  (Setting whichhost = -1 is
 	 * a bit of a cheat, but PQconnectPoll will advance it to 0 before
@@ -2467,6 +2468,9 @@ keep_going:						/* We will come back to here until there is
 		/* initialize these values based on SSL mode */
 		conn->allow_ssl_try = (conn->sslmode[0] != 'd');	/* "disable" */
 		conn->wait_ssl_try = (conn->sslmode[0] == 'a'); /* "allow" */
+#endif
+#ifdef ENABLE_GSS
+		conn->try_gss = (conn->gssencmode[0] != 'd');	/* "disable" */
 #endif
 
 		reset_connection_state_machine = false;
@@ -3349,12 +3353,8 @@ keep_going:						/* We will come back to here until there is
 					 */
 					if (conn->gssenc && conn->gssencmode[0] == 'p')
 					{
-						OM_uint32	minor;
-
 						/* postmaster expects us to drop the connection */
 						conn->try_gss = false;
-						conn->gssenc = false;
-						gss_delete_sec_context(&minor, &conn->gctx, NULL);
 						pqDropConnection(conn, true);
 						conn->status = CONNECTION_NEEDED;
 						goto keep_going;
@@ -3906,9 +3906,6 @@ makeEmptyPGconn(void)
 	conn->verbosity = PQERRORS_DEFAULT;
 	conn->show_context = PQSHOW_CONTEXT_ERRORS;
 	conn->sock = PGINVALID_SOCKET;
-#ifdef ENABLE_GSS
-	conn->try_gss = true;
-#endif
 
 	/*
 	 * We try to send at least 8K at a time, which is the usual size of pipe
@@ -4065,22 +4062,6 @@ freePGconn(PGconn *conn)
 		free(conn->gsslib);
 	if (conn->connip)
 		free(conn->connip);
-#ifdef ENABLE_GSS
-	if (conn->gcred != GSS_C_NO_CREDENTIAL)
-	{
-		OM_uint32	minor;
-
-		gss_release_cred(&minor, &conn->gcred);
-		conn->gcred = GSS_C_NO_CREDENTIAL;
-	}
-	if (conn->gctx)
-	{
-		OM_uint32	minor;
-
-		gss_delete_sec_context(&minor, &conn->gctx, GSS_C_NO_BUFFER);
-		conn->gctx = NULL;
-	}
-#endif
 	/* Note that conn->Pfdebug is not ours to close or free */
 	if (conn->last_query)
 		free(conn->last_query);
@@ -6956,10 +6937,7 @@ passwordFromFile(const char *hostname, const char *port, const char *dbname,
 {
 	FILE	   *fp;
 	struct stat stat_buf;
-	int			line_number = 0;
-
-#define LINELEN NAMEDATALEN*5
-	char		buf[LINELEN];
+	PQExpBufferData buf;
 
 	if (dbname == NULL || dbname[0] == '\0')
 		return NULL;
@@ -7015,89 +6993,77 @@ passwordFromFile(const char *hostname, const char *port, const char *dbname,
 	if (fp == NULL)
 		return NULL;
 
+	/* Use an expansible buffer to accommodate any reasonable line length */
+	initPQExpBuffer(&buf);
+
 	while (!feof(fp) && !ferror(fp))
 	{
-		char	   *t = buf,
-				   *ret,
-				   *p1,
-				   *p2;
-		int			len;
-		int			buflen;
-
-		if (fgets(buf, sizeof(buf), fp) == NULL)
+		/* Make sure there's a reasonable amount of room in the buffer */
+		if (!enlargePQExpBuffer(&buf, 128))
 			break;
 
-		line_number++;
-		buflen = strlen(buf);
-		if (buflen >= sizeof(buf) - 1 && buf[buflen - 1] != '\n')
+		/* Read some data, appending it to what we already have */
+		if (fgets(buf.data + buf.len, buf.maxlen - buf.len, fp) == NULL)
+			break;
+		buf.len += strlen(buf.data + buf.len);
+
+		/* If we don't yet have a whole line, loop around to read more */
+		if (!(buf.len > 0 && buf.data[buf.len - 1] == '\n') && !feof(fp))
+			continue;
+
+		/* ignore comments */
+		if (buf.data[0] != '#')
 		{
-			char		rest[LINELEN];
-			int			restlen;
+			char	   *t = buf.data;
+			int			len;
 
-			/*
-			 * Warn if this password setting line is too long, because it's
-			 * unexpectedly truncated.
-			 */
-			if (buf[0] != '#')
-				fprintf(stderr,
-						libpq_gettext("WARNING: line %d too long in password file \"%s\"\n"),
-						line_number, pgpassfile);
+			/* strip trailing newline and carriage return */
+			len = pg_strip_crlf(t);
 
-			/* eat rest of the line */
-			while (!feof(fp) && !ferror(fp))
+			if (len > 0 &&
+				(t = pwdfMatchesString(t, hostname)) != NULL &&
+				(t = pwdfMatchesString(t, port)) != NULL &&
+				(t = pwdfMatchesString(t, dbname)) != NULL &&
+				(t = pwdfMatchesString(t, username)) != NULL)
 			{
-				if (fgets(rest, sizeof(rest), fp) == NULL)
-					break;
-				restlen = strlen(rest);
-				if (restlen < sizeof(rest) - 1 || rest[restlen - 1] == '\n')
-					break;
+				/* Found a match. */
+				char	   *ret,
+						   *p1,
+						   *p2;
+
+				ret = strdup(t);
+
+				fclose(fp);
+				explicit_bzero(buf.data, buf.maxlen);
+				termPQExpBuffer(&buf);
+
+				if (!ret)
+				{
+					/* Out of memory. XXX: an error message would be nice. */
+					return NULL;
+				}
+
+				/* De-escape password. */
+				for (p1 = p2 = ret; *p1 != ':' && *p1 != '\0'; ++p1, ++p2)
+				{
+					if (*p1 == '\\' && p1[1] != '\0')
+						++p1;
+					*p2 = *p1;
+				}
+				*p2 = '\0';
+
+				return ret;
 			}
 		}
 
-		/* ignore comments */
-		if (buf[0] == '#')
-			continue;
-
-		/* strip trailing newline and carriage return */
-		len = pg_strip_crlf(buf);
-
-		if (len == 0)
-			continue;
-
-		if ((t = pwdfMatchesString(t, hostname)) == NULL ||
-			(t = pwdfMatchesString(t, port)) == NULL ||
-			(t = pwdfMatchesString(t, dbname)) == NULL ||
-			(t = pwdfMatchesString(t, username)) == NULL)
-			continue;
-
-		/* Found a match. */
-		ret = strdup(t);
-		fclose(fp);
-
-		if (!ret)
-		{
-			/* Out of memory. XXX: an error message would be nice. */
-			explicit_bzero(buf, sizeof(buf));
-			return NULL;
-		}
-
-		/* De-escape password. */
-		for (p1 = p2 = ret; *p1 != ':' && *p1 != '\0'; ++p1, ++p2)
-		{
-			if (*p1 == '\\' && p1[1] != '\0')
-				++p1;
-			*p2 = *p1;
-		}
-		*p2 = '\0';
-
-		return ret;
+		/* No match, reset buffer to prepare for next line. */
+		buf.len = 0;
 	}
 
 	fclose(fp);
-	explicit_bzero(buf, sizeof(buf));
+	explicit_bzero(buf.data, buf.maxlen);
+	termPQExpBuffer(&buf);
 	return NULL;
-
-#undef LINELEN
 }
 
 

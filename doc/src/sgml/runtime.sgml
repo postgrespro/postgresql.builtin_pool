@@ -4,8 +4,20 @@
  <title>Server Setup and Operation</title>
 
  <para>
-  This chapter discusses how to set up and run the database server
+  This chapter discusses how to set up and run the database server,
   and its interactions with the operating system.
+ </para>
+
+ <para>
+  The directions in this chapter assume that you are working with
+  plain <productname>PostgreSQL</productname> without any additional
+  infrastructure, for example a copy that you built from source
+  according to the directions in the preceding chapters.
+  If you are working with a pre-packaged or vendor-supplied
+  version of <productname>PostgreSQL</productname>, it is likely that
+  the packager has made special provisions for installing and starting
+  the database server according to your system's conventions.
+  Consult the package-level documentation for details.
  </para>
 
  <sect1 id="postgres-user">
@@ -21,9 +33,15 @@
    separate user account. This user account should only own the data
    that is managed by the server, and should not be shared with other
    daemons. (For example, using the user <literal>nobody</literal> is a bad
-   idea.) It is not advisable to install executables owned by this
-   user because compromised systems could then modify their own
-   binaries.
+   idea.) In particular, it is advisable that this user account not own
+   the <productname>PostgreSQL</productname> executable files, to ensure
+   that a compromised server process could not modify those executables.
+  </para>
+
+  <para>
+   Pre-packaged versions of <productname>PostgreSQL</productname> will
+   typically create a suitable user account automatically during
+   package installation.
   </para>
 
   <para>
@@ -71,11 +89,26 @@
    completely up to you where you choose to store your data.  There is no
    default, although locations such as
    <filename>/usr/local/pgsql/data</filename> or
-   <filename>/var/lib/pgsql/data</filename> are popular. To initialize a
-   database cluster, use the command <xref
-   linkend="app-initdb"/>,<indexterm><primary>initdb</primary></indexterm> which is
-   installed with <productname>PostgreSQL</productname>. The desired
-   file system location of your database cluster is indicated by the
+   <filename>/var/lib/pgsql/data</filename> are popular.
+   The data directory must be initialized before being used, using the program
+   <xref linkend="app-initdb"/><indexterm><primary>initdb</primary></indexterm>
+   which is installed with <productname>PostgreSQL</productname>.
+  </para>
+
+  <para>
+   If you are using a pre-packaged version
+   of <productname>PostgreSQL</productname>, it may well have a specific
+   convention for where to place the data directory, and it may also
+   provide a script for creating the data directory.  In that case you
+   should use that script in preference to
+   running <command>initdb</command> directly.
+   Consult the package-level documentation for details.
+  </para>
+
+  <para>
+   To initialize a database cluster manually,
+   run <command>initdb</command> and specify the desired
+   file system location of the database cluster with the
    <option>-D</option> option, for example:
 <screen>
 <prompt>$</prompt> <userinput>initdb -D /usr/local/pgsql/data</userinput>
@@ -309,10 +342,22 @@ postgres$ <userinput>initdb -D /usr/local/pgsql/data</userinput>
    Before anyone can access the database, you must start the database
    server. The database server program is called
    <command>postgres</command>.<indexterm><primary>postgres</primary></indexterm>
-   The <command>postgres</command> program must know where to
-   find the data it is supposed to use. This is done with the
-   <option>-D</option> option. Thus, the simplest way to start the
-   server is:
+  </para>
+
+  <para>
+   If you are using a pre-packaged version
+   of <productname>PostgreSQL</productname>, it almost certainly includes
+   provisions for running the server as a background task according to the
+   conventions of your operating system.  Using the package's
+   infrastructure to start the server will be much less work than figuring
+   out how to do this yourself.  Consult the package-level documentation
+   for details.
+  </para>
+
+  <para>
+   The bare-bones way to start the server manually is just to invoke
+   <command>postgres</command> directly, specifying the location of the
+   data directory with the <option>-D</option> option, for example:
 <screen>
 $ <userinput>postgres -D /usr/local/pgsql/data</userinput>
 </screen>
@@ -364,7 +409,7 @@ pg_ctl start -l logfile
      <secondary>starting the server during</secondary>
    </indexterm>
    Autostart scripts are operating-system-specific.
-   There are a few distributed with
+   There are a few example scripts distributed with
    <productname>PostgreSQL</productname> in the
    <filename>contrib/start-scripts</filename> directory. Installing one will require
    root privileges.
@@ -1292,7 +1337,7 @@ default:\
     optimal for <productname>PostgreSQL</productname>. Because of the
     way that the kernel implements memory overcommit, the kernel might
     terminate the <productname>PostgreSQL</productname> postmaster (the
-    master server process) if the memory demands of either
+    supervisor server process) if the memory demands of either
     <productname>PostgreSQL</productname> or another process cause the
     system to run out of virtual memory.
    </para>
@@ -1326,10 +1371,12 @@ Out of Memory: Killed process 12345 (postgres).
     system running out of memory, you can avoid the problem by changing
     your configuration.  In some cases, it may help to lower memory-related
     configuration parameters, particularly
-    <link linkend="guc-shared-buffers"><varname>shared_buffers</varname></link>
-    and <link linkend="guc-work-mem"><varname>work_mem</varname></link>.  In
-    other cases, the problem may be caused by allowing too many connections
-    to the database server itself.  In many cases, it may be better to reduce
+    <link linkend="guc-shared-buffers"><varname>shared_buffers</varname></link>,
+    <link linkend="guc-work-mem"><varname>work_mem</varname></link>, and
+    <link linkend="guc-hash-mem-multiplier"><varname>hash_mem_multiplier</varname></link>.
+    In other cases, the problem may be caused by allowing too many
+    connections to the database server itself.  In many cases, it may
+    be better to reduce
     <link linkend="guc-max-connections"><varname>max_connections</varname></link>
     and instead make use of external connection-pooling software.
    </para>
@@ -1391,13 +1438,14 @@ export PG_OOM_ADJUST_VALUE=0
     using large values of <xref linkend="guc-shared-buffers"/>.  To use this
     feature in <productname>PostgreSQL</productname> you need a kernel
     with <varname>CONFIG_HUGETLBFS=y</varname> and
-    <varname>CONFIG_HUGETLB_PAGE=y</varname>. You will also have to adjust
-    the kernel setting <varname>vm.nr_hugepages</varname>. To estimate the
-    number of huge pages needed, start <productname>PostgreSQL</productname>
-    without huge pages enabled and check the
-    postmaster's anonymous shared memory segment size, as well as the system's
-    huge page size, using the <filename>/proc</filename> file system.  This might
-    look like:
+    <varname>CONFIG_HUGETLB_PAGE=y</varname>. You will also have to configure
+    the operating system to provide enough huge pages of the desired size.
+    To estimate the number of huge pages needed, start
+    <productname>PostgreSQL</productname> without huge pages enabled and check
+    the postmaster's anonymous shared memory segment size, as well as the
+    system's default and supported huge page sizes, using the
+    <filename>/proc</filename> and <filename>/sys</filename> file systems.
+    This might look like:
 <programlisting>
 $ <userinput>head -1 $PGDATA/postmaster.pid</userinput>
 4170
@@ -1405,27 +1453,40 @@ $ <userinput>pmap 4170 | awk '/rw-s/ &amp;&amp; /zero/ {print $2}'</userinput>
 6490428K
 $ <userinput>grep ^Hugepagesize /proc/meminfo</userinput>
 Hugepagesize:       2048 kB
+$ <userinput>ls /sys/kernel/mm/hugepages</userinput>
+hugepages-1048576kB  hugepages-2048kB
 </programlisting>
+
+     In this example the default is 2MB, but you can also explicitly request
+     either 2MB or 1GB with <xref linkend="guc-huge-page-size"/>.
+
+     Assuming <literal>2MB</literal> huge pages,
      <literal>6490428</literal> / <literal>2048</literal> gives approximately
      <literal>3169.154</literal>, so in this example we need at
-     least <literal>3170</literal> huge pages, which we can set with:
+     least <literal>3170</literal> huge pages.  A larger setting would be
+     appropriate if other programs on the machine also need huge pages.
+     We can set this with:
 <programlisting>
-$ <userinput>sysctl -w vm.nr_hugepages=3170</userinput>
+# <userinput>sysctl -w vm.nr_hugepages=3170</userinput>
 </programlisting>
-    A larger setting would be appropriate if other programs on the machine
-    also need huge pages.  Don't forget to add this setting
-    to <filename>/etc/sysctl.conf</filename> so that it will be reapplied
-    after reboots.
+     Don't forget to add this setting to <filename>/etc/sysctl.conf</filename>
+     so that it is reapplied after reboots.  For non-default huge page sizes,
+     we can instead use:
+<programlisting>
+# <userinput>echo 3170 > /sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages</userinput>
+</programlisting>
+    It is also possible to provide these settings at boot time using
+    kernel parameters such as <literal>hugepagesz=2M hugepages=3170</literal>.
    </para>
 
    <para>
     Sometimes the kernel is not able to allocate the desired number of huge
-    pages immediately, so it might be necessary to repeat the command or to
-    reboot.  (Immediately after a reboot, most of the machine's memory
-    should be available to convert into huge pages.)  To verify the huge
-    page allocation situation, use:
+    pages immediately due to fragmentation, so it might be necessary
+    to repeat the command or to reboot.  (Immediately after a reboot, most of
+    the machine's memory should be available to convert into huge pages.)
+    To verify the huge page allocation situation for a given size, use:
 <programlisting>
-$ <userinput>grep Huge /proc/meminfo</userinput>
+$ <userinput>cat /sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages</userinput>
 </programlisting>
    </para>
 
@@ -1438,8 +1499,9 @@ $ <userinput>grep Huge /proc/meminfo</userinput>
 
    <para>
     The default behavior for huge pages in
-    <productname>PostgreSQL</productname> is to use them when possible and
-    to fall back to normal pages when failing. To enforce the use of huge
+    <productname>PostgreSQL</productname> is to use them when possible, with
+    the system's default huge page size, and
+    to fall back to normal pages on failure. To enforce the use of huge
     pages, you can set <xref linkend="guc-huge-pages"/>
     to <literal>on</literal> in <filename>postgresql.conf</filename>.
     Note that with this setting <productname>PostgreSQL</productname> will fail to
@@ -1464,9 +1526,23 @@ $ <userinput>grep Huge /proc/meminfo</userinput>
   </indexterm>
 
   <para>
-   There are several ways to shut down the database server. You control
-   the type of shutdown by sending different signals to the master
+   There are several ways to shut down the database server.
+   Under the hood, they all reduce to sending a signal to the supervisor
    <command>postgres</command> process.
+  </para>
+
+  <para>
+   If you are using a pre-packaged version
+   of <productname>PostgreSQL</productname>, and you used its provisions
+   for starting the server, then you should also use its provisions for
+   stopping the server.  Consult the package-level documentation for
+   details.
+  </para>
+
+  <para>
+   When managing the server directly, you can control the type of shutdown
+   by sending different signals to the <command>postgres</command>
+   process:
 
    <variablelist>
     <varlistentry>
@@ -1511,7 +1587,7 @@ $ <userinput>grep Huge /proc/meminfo</userinput>
       The server will send <systemitem>SIGQUIT</systemitem> to all child
       processes and wait for them to terminate.  If any do not terminate
       within 5 seconds, they will be sent <systemitem>SIGKILL</systemitem>.
-      The master server process exits as soon as all child processes have
+      The supervisor server process exits as soon as all child processes have
       exited, without doing normal database shutdown processing.
       This will lead to recovery (by
       replaying the WAL log) upon next start-up. This is recommended
@@ -1603,6 +1679,10 @@ $ <userinput>kill -INT `head -1 /usr/local/pgsql/data/postmaster.pid`</userinput
    is to dump and reload the database, though this can be slow.  A
    faster method is <xref linkend="pgupgrade"/>.  Replication methods are
    also available, as discussed below.
+   (If you are using a pre-packaged version
+   of <productname>PostgreSQL</productname>, it may provide scripts to
+   assist with major version upgrades.  Consult the package-level
+   documentation for details.)
   </para>
 
   <para>
@@ -1848,7 +1928,7 @@ pg_dumpall -p 5432 | psql -d postgres -p 5433
     be migrated in-place from one major <productname>PostgreSQL</productname>
     version to another.  Upgrades can be performed in minutes,
     particularly with <option>--link</option> mode.  It requires steps similar to
-    <application>pg_dumpall</application> above, e.g.  starting/stopping the server,
+    <application>pg_dumpall</application> above, e.g.,  starting/stopping the server,
     running <application>initdb</application>.  The <application>pg_upgrade</application> <link
     linkend="pgupgrade">documentation</link> outlines the necessary steps.
    </para>
@@ -1864,9 +1944,9 @@ pg_dumpall -p 5432 | psql -d postgres -p 5433
     This is possible because logical replication supports
     replication between different major versions of
     <productname>PostgreSQL</productname>.  The standby can be on the same computer or
-    a different computer.  Once it has synced up with the master server
+    a different computer.  Once it has synced up with the primary server
     (running the older version of <productname>PostgreSQL</productname>), you can
-    switch masters and make the standby the master and shut down the older
+    switch primaries and make the standby the primary and shut down the older
     database instance.  Such a switch-over results in only several seconds
     of downtime for an upgrade.
    </para>
@@ -2176,8 +2256,10 @@ pg_dumpall -p 5432 | psql -d postgres -p 5433
    The certificates of <quote>intermediate</quote> certificate authorities
    can also be appended to the file.  Doing this avoids the necessity of
    storing intermediate certificates on clients, assuming the root and
-   intermediate certificates were created with <literal>v3_ca</literal>
-   extensions.  This allows easier expiration of intermediate certificates.
+   intermediate certificates were created with <literal>v3_ca </literal>
+   extensions.  (This sets the certificate's basic constraint of
+   <literal>CA</literal> to <literal>true</literal>.)
+   This allows easier expiration of intermediate certificates.
   </para>
 
   <para>
@@ -2257,9 +2339,6 @@ pg_dumpall -p 5432 | psql -d postgres -p 5433
    intermediate certificates were created with <literal>v3_ca</literal>
    extensions).  Certificate Revocation List (CRL) entries are also
    checked if the parameter <xref linkend="guc-ssl-crl-file"/> is set.
-   (See <ulink
-   url="http://h41379.www4.hpe.com/doc/83final/ba554_90007/ch04s02.html"></ulink>
-   for diagrams showing SSL certificate usage.)
   </para>
 
   <para>
