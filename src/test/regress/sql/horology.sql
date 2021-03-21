@@ -3,6 +3,8 @@
 --
 SET DateStyle = 'Postgres, MDY';
 
+SHOW TimeZone;  -- Many of these tests depend on the prevailing setting
+
 --
 -- Test various input formats
 --
@@ -108,8 +110,8 @@ SELECT date '1994-01-01' + time '10:00' AS "Jan_01_1994_10am";
 SELECT date '1994-01-01' + timetz '11:00-5' AS "Jan_01_1994_8am";
 SELECT timestamptz(date '1994-01-01', time with time zone '11:00-5') AS "Jan_01_1994_8am";
 
-SELECT '' AS "64", d1 + interval '1 year' AS one_year FROM TIMESTAMP_TBL;
-SELECT '' AS "64", d1 - interval '1 year' AS one_year FROM TIMESTAMP_TBL;
+SELECT d1 + interval '1 year' AS one_year FROM TIMESTAMP_TBL;
+SELECT d1 - interval '1 year' AS one_year FROM TIMESTAMP_TBL;
 
 SELECT timestamp with time zone '1996-03-01' - interval '1 second' AS "Feb 29";
 SELECT timestamp with time zone '1999-03-01' - interval '1 second' AS "Feb 28";
@@ -137,8 +139,8 @@ SELECT timestamptz(date '1994-01-01', time with time zone '11:00-8') AS "Jan_01_
 SELECT timestamptz(date '1994-01-01', time with time zone '10:00-8') AS "Jan_01_1994_10am";
 SELECT timestamptz(date '1994-01-01', time with time zone '11:00-5') AS "Jan_01_1994_8am";
 
-SELECT '' AS "64", d1 + interval '1 year' AS one_year FROM TIMESTAMPTZ_TBL;
-SELECT '' AS "64", d1 - interval '1 year' AS one_year FROM TIMESTAMPTZ_TBL;
+SELECT d1 + interval '1 year' AS one_year FROM TIMESTAMPTZ_TBL;
+SELECT d1 - interval '1 year' AS one_year FROM TIMESTAMPTZ_TBL;
 
 --
 -- time, interval arithmetic
@@ -245,26 +247,26 @@ INSERT INTO TEMP_TIMESTAMP (f1)
   WHERE d1 BETWEEN '13-jun-1957' AND '1-jan-1997'
    OR d1 BETWEEN '1-jan-1999' AND '1-jan-2010';
 
-SELECT '' AS "16", f1 AS "timestamp"
+SELECT f1 AS "timestamp"
   FROM TEMP_TIMESTAMP
   ORDER BY "timestamp";
 
-SELECT '' AS "160", d.f1 AS "timestamp", t.f1 AS "interval", d.f1 + t.f1 AS plus
+SELECT d.f1 AS "timestamp", t.f1 AS "interval", d.f1 + t.f1 AS plus
   FROM TEMP_TIMESTAMP d, INTERVAL_TBL t
   ORDER BY plus, "timestamp", "interval";
 
-SELECT '' AS "160", d.f1 AS "timestamp", t.f1 AS "interval", d.f1 - t.f1 AS minus
+SELECT d.f1 AS "timestamp", t.f1 AS "interval", d.f1 - t.f1 AS minus
   FROM TEMP_TIMESTAMP d, INTERVAL_TBL t
   WHERE isfinite(d.f1)
   ORDER BY minus, "timestamp", "interval";
 
-SELECT '' AS "16", d.f1 AS "timestamp",
+SELECT d.f1 AS "timestamp",
    timestamp with time zone '1980-01-06 00:00 GMT' AS gpstime_zero,
    d.f1 - timestamp with time zone '1980-01-06 00:00 GMT' AS difference
   FROM TEMP_TIMESTAMP d
   ORDER BY difference;
 
-SELECT '' AS "226", d1.f1 AS timestamp1, d2.f1 AS timestamp2, d1.f1 - d2.f1 AS difference
+SELECT d1.f1 AS timestamp1, d2.f1 AS timestamp2, d1.f1 - d2.f1 AS difference
   FROM TEMP_TIMESTAMP d1, TEMP_TIMESTAMP d2
   ORDER BY timestamp1, timestamp2, difference;
 
@@ -272,12 +274,37 @@ SELECT '' AS "226", d1.f1 AS timestamp1, d2.f1 AS timestamp2, d1.f1 - d2.f1 AS d
 -- Conversions
 --
 
-SELECT '' AS "16", f1 AS "timestamp", date(f1) AS date
+SELECT f1 AS "timestamp", date(f1) AS date
   FROM TEMP_TIMESTAMP
   WHERE f1 <> timestamp 'now'
   ORDER BY date, "timestamp";
 
 DROP TABLE TEMP_TIMESTAMP;
+
+--
+-- Comparisons between datetime types, especially overflow cases
+---
+
+SELECT '2202020-10-05'::date::timestamp;  -- fail
+SELECT '2202020-10-05'::date > '2020-10-05'::timestamp as t;
+SELECT '2020-10-05'::timestamp > '2202020-10-05'::date as f;
+
+SELECT '2202020-10-05'::date::timestamptz;  -- fail
+SELECT '2202020-10-05'::date > '2020-10-05'::timestamptz as t;
+SELECT '2020-10-05'::timestamptz > '2202020-10-05'::date as f;
+
+-- This conversion may work depending on timezone
+SELECT '4714-11-24 BC'::date::timestamptz;
+SET TimeZone = 'UTC-2';
+SELECT '4714-11-24 BC'::date::timestamptz;  -- fail
+
+SELECT '4714-11-24 BC'::date < '2020-10-05'::timestamptz as t;
+SELECT '2020-10-05'::timestamptz >= '4714-11-24 BC'::date as t;
+
+SELECT '4714-11-24 BC'::timestamp < '2020-10-05'::timestamptz as t;
+SELECT '2020-10-05'::timestamptz >= '4714-11-24 BC'::timestamp as t;
+
+RESET TimeZone;
 
 --
 -- Formats
@@ -287,17 +314,17 @@ SET DateStyle TO 'US,Postgres';
 
 SHOW DateStyle;
 
-SELECT '' AS "64", d1 AS us_postgres FROM TIMESTAMP_TBL;
+SELECT d1 AS us_postgres FROM TIMESTAMP_TBL;
 
 SET DateStyle TO 'US,ISO';
 
-SELECT '' AS "64", d1 AS us_iso FROM TIMESTAMP_TBL;
+SELECT d1 AS us_iso FROM TIMESTAMP_TBL;
 
 SET DateStyle TO 'US,SQL';
 
 SHOW DateStyle;
 
-SELECT '' AS "64", d1 AS us_sql FROM TIMESTAMP_TBL;
+SELECT d1 AS us_sql FROM TIMESTAMP_TBL;
 
 SET DateStyle TO 'European,Postgres';
 
@@ -307,19 +334,19 @@ INSERT INTO TIMESTAMP_TBL VALUES('13/06/1957');
 
 SELECT count(*) as one FROM TIMESTAMP_TBL WHERE d1 = 'Jun 13 1957';
 
-SELECT '' AS "65", d1 AS european_postgres FROM TIMESTAMP_TBL;
+SELECT d1 AS european_postgres FROM TIMESTAMP_TBL;
 
 SET DateStyle TO 'European,ISO';
 
 SHOW DateStyle;
 
-SELECT '' AS "65", d1 AS european_iso FROM TIMESTAMP_TBL;
+SELECT d1 AS european_iso FROM TIMESTAMP_TBL;
 
 SET DateStyle TO 'European,SQL';
 
 SHOW DateStyle;
 
-SELECT '' AS "65", d1 AS european_sql FROM TIMESTAMP_TBL;
+SELECT d1 AS european_sql FROM TIMESTAMP_TBL;
 
 RESET DateStyle;
 
@@ -427,6 +454,17 @@ SELECT to_date('3 4 21 01', 'W MM CC YY');
 SELECT to_date('2458872', 'J');
 
 --
+-- Check handling of BC dates
+--
+
+SELECT to_date('44-02-01 BC','YYYY-MM-DD BC');
+SELECT to_date('-44-02-01','YYYY-MM-DD');
+SELECT to_date('-44-02-01 BC','YYYY-MM-DD BC');
+SELECT to_timestamp('44-02-01 11:12:13 BC','YYYY-MM-DD HH24:MI:SS BC');
+SELECT to_timestamp('-44-02-01 11:12:13','YYYY-MM-DD HH24:MI:SS');
+SELECT to_timestamp('-44-02-01 11:12:13 BC','YYYY-MM-DD HH24:MI:SS BC');
+
+--
 -- Check handling of multiple spaces in format and/or input
 --
 
@@ -511,6 +549,7 @@ SELECT to_date('2015 366', 'YYYY DDD');
 SELECT to_date('2016 365', 'YYYY DDD');  -- ok
 SELECT to_date('2016 366', 'YYYY DDD');  -- ok
 SELECT to_date('2016 367', 'YYYY DDD');
+SELECT to_date('0000-02-01','YYYY-MM-DD');  -- allowed, though it shouldn't be
 
 --
 -- Check behavior with SQL-style fixed-GMT-offset time zone (cf bug #8572)

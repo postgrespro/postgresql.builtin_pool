@@ -3,7 +3,7 @@
  * explain.c
  *	  Explain query execution plans
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994-5, Regents of the University of California
  *
  * IDENTIFICATION
@@ -435,6 +435,22 @@ ExplainOneUtility(Node *utilityStmt, IntoClause *into, ExplainState *es,
 		CreateTableAsStmt *ctas = (CreateTableAsStmt *) utilityStmt;
 		List	   *rewritten;
 
+		/*
+		 * Check if the relation exists or not.  This is done at this stage to
+		 * avoid query planning or execution.
+		 */
+		if (CreateTableAsRelExists(ctas))
+		{
+			if (ctas->objtype == OBJECT_TABLE)
+				ExplainDummyGroup("CREATE TABLE AS", NULL, es);
+			else if (ctas->objtype == OBJECT_MATVIEW)
+				ExplainDummyGroup("CREATE MATERIALIZED VIEW", NULL, es);
+			else
+				elog(ERROR,	"unexpected object type: %d",
+					 (int) ctas->objtype);
+			return;
+		}
+
 		rewritten = QueryRewrite(castNode(Query, copyObject(ctas->query)));
 		Assert(list_length(rewritten) == 1);
 		ExplainOneQuery(linitial_node(Query, rewritten),
@@ -769,27 +785,24 @@ ExplainPrintTriggers(ExplainState *es, QueryDesc *queryDesc)
 {
 	ResultRelInfo *rInfo;
 	bool		show_relname;
-	int			numrels = queryDesc->estate->es_num_result_relations;
-	int			numrootrels = queryDesc->estate->es_num_root_result_relations;
+	List	   *resultrels;
 	List	   *routerels;
 	List	   *targrels;
-	int			nr;
 	ListCell   *l;
 
+	resultrels = queryDesc->estate->es_opened_result_relations;
 	routerels = queryDesc->estate->es_tuple_routing_result_relations;
 	targrels = queryDesc->estate->es_trig_target_relations;
 
 	ExplainOpenGroup("Triggers", "Triggers", false, es);
 
-	show_relname = (numrels > 1 || numrootrels > 0 ||
+	show_relname = (list_length(resultrels) > 1 ||
 					routerels != NIL || targrels != NIL);
-	rInfo = queryDesc->estate->es_result_relations;
-	for (nr = 0; nr < numrels; rInfo++, nr++)
+	foreach(l, resultrels)
+	{
+		rInfo = (ResultRelInfo *) lfirst(l);
 		report_triggers(rInfo, show_relname, es);
-
-	rInfo = queryDesc->estate->es_root_result_relations;
-	for (nr = 0; nr < numrootrels; rInfo++, nr++)
-		report_triggers(rInfo, show_relname, es);
+	}
 
 	foreach(l, routerels)
 	{
@@ -1044,6 +1057,7 @@ ExplainPreScanNode(PlanState *planstate, Bitmapset **rels_used)
 		case T_IndexOnlyScan:
 		case T_BitmapHeapScan:
 		case T_TidScan:
+		case T_TidRangeScan:
 		case T_SubqueryScan:
 		case T_FunctionScan:
 		case T_TableFuncScan:
@@ -1209,6 +1223,9 @@ ExplainNode(PlanState *planstate, List *ancestors,
 			break;
 		case T_TidScan:
 			pname = sname = "Tid Scan";
+			break;
+		case T_TidRangeScan:
+			pname = sname = "Tid Range Scan";
 			break;
 		case T_SubqueryScan:
 			pname = sname = "Subquery Scan";
@@ -1404,6 +1421,7 @@ ExplainNode(PlanState *planstate, List *ancestors,
 		case T_SampleScan:
 		case T_BitmapHeapScan:
 		case T_TidScan:
+		case T_TidRangeScan:
 		case T_SubqueryScan:
 		case T_FunctionScan:
 		case T_TableFuncScan:
@@ -1851,6 +1869,23 @@ ExplainNode(PlanState *planstate, List *ancestors,
 
 				if (list_length(tidquals) > 1)
 					tidquals = list_make1(make_orclause(tidquals));
+				show_scan_qual(tidquals, "TID Cond", planstate, ancestors, es);
+				show_scan_qual(plan->qual, "Filter", planstate, ancestors, es);
+				if (plan->qual)
+					show_instrumentation_count("Rows Removed by Filter", 1,
+											   planstate, es);
+			}
+			break;
+		case T_TidRangeScan:
+			{
+				/*
+				 * The tidrangequals list has AND semantics, so be sure to
+				 * show it as an AND condition.
+				 */
+				List	   *tidquals = ((TidRangeScan *) plan)->tidrangequals;
+
+				if (list_length(tidquals) > 1)
+					tidquals = list_make1(make_andclause(tidquals));
 				show_scan_qual(tidquals, "TID Cond", planstate, ancestors, es);
 				show_scan_qual(plan->qual, "Filter", planstate, ancestors, es);
 				if (plan->qual)
@@ -2771,14 +2806,14 @@ show_incremental_sort_group_info(IncrementalSortGroupInfo *groupInfo,
 						 groupInfo->groupCount);
 		/* plural/singular based on methodNames size */
 		if (list_length(methodNames) > 1)
-			appendStringInfo(es->str, "s: ");
+			appendStringInfoString(es->str, "s: ");
 		else
-			appendStringInfo(es->str, ": ");
+			appendStringInfoString(es->str, ": ");
 		foreach(methodCell, methodNames)
 		{
-			appendStringInfo(es->str, "%s", (char *) methodCell->ptr_value);
+			appendStringInfoString(es->str, (char *) methodCell->ptr_value);
 			if (foreach_current_index(methodCell) < list_length(methodNames) - 1)
-				appendStringInfo(es->str, ", ");
+				appendStringInfoString(es->str, ", ");
 		}
 
 		if (groupInfo->maxMemorySpaceUsed > 0)
@@ -2830,7 +2865,7 @@ show_incremental_sort_group_info(IncrementalSortGroupInfo *groupInfo,
 			ExplainPropertyInteger("Peak Sort Space Used", "kB",
 								   groupInfo->maxMemorySpaceUsed, es);
 
-			ExplainCloseGroup("Sort Spaces", memoryName.data, true, es);
+			ExplainCloseGroup("Sort Space", memoryName.data, true, es);
 		}
 		if (groupInfo->maxDiskSpaceUsed > 0)
 		{
@@ -2847,7 +2882,7 @@ show_incremental_sort_group_info(IncrementalSortGroupInfo *groupInfo,
 			ExplainPropertyInteger("Peak Sort Space Used", "kB",
 								   groupInfo->maxDiskSpaceUsed, es);
 
-			ExplainCloseGroup("Sort Spaces", diskName.data, true, es);
+			ExplainCloseGroup("Sort Space", diskName.data, true, es);
 		}
 
 		ExplainCloseGroup("Incremental Sort Groups", groupName.data, true, es);
@@ -2885,11 +2920,11 @@ show_incremental_sort_info(IncrementalSortState *incrsortstate,
 		if (prefixsortGroupInfo->groupCount > 0)
 		{
 			if (es->format == EXPLAIN_FORMAT_TEXT)
-				appendStringInfo(es->str, "\n");
+				appendStringInfoChar(es->str, '\n');
 			show_incremental_sort_group_info(prefixsortGroupInfo, "Pre-sorted", true, es);
 		}
 		if (es->format == EXPLAIN_FORMAT_TEXT)
-			appendStringInfo(es->str, "\n");
+			appendStringInfoChar(es->str, '\n');
 	}
 
 	if (incrsortstate->shared_info != NULL)
@@ -2928,11 +2963,11 @@ show_incremental_sort_info(IncrementalSortState *incrsortstate,
 			if (prefixsortGroupInfo->groupCount > 0)
 			{
 				if (es->format == EXPLAIN_FORMAT_TEXT)
-					appendStringInfo(es->str, "\n");
+					appendStringInfoChar(es->str, '\n');
 				show_incremental_sort_group_info(prefixsortGroupInfo, "Pre-sorted", true, es);
 			}
 			if (es->format == EXPLAIN_FORMAT_TEXT)
-				appendStringInfo(es->str, "\n");
+				appendStringInfoChar(es->str, '\n');
 
 			if (es->workers_state)
 				ExplainCloseWorker(n, es);
@@ -3545,6 +3580,7 @@ ExplainTargetRel(Plan *plan, Index rti, ExplainState *es)
 		case T_IndexOnlyScan:
 		case T_BitmapHeapScan:
 		case T_TidScan:
+		case T_TidRangeScan:
 		case T_ForeignScan:
 		case T_CustomScan:
 		case T_ModifyTable:
@@ -3681,7 +3717,7 @@ show_modifytable_info(ModifyTableState *mtstate, List *ancestors,
 	/* Should we explicitly label target relations? */
 	labeltargets = (mtstate->mt_nplans > 1 ||
 					(mtstate->mt_nplans == 1 &&
-					 mtstate->resultRelInfo->ri_RangeTableIndex != node->nominalRelation));
+					 mtstate->resultRelInfo[0].ri_RangeTableIndex != node->nominalRelation));
 
 	if (labeltargets)
 		ExplainOpenGroup("Target Tables", "Target Tables", false, es);

@@ -3,12 +3,12 @@
  * pg_inherits.c
  *	  routines to support manipulation of the pg_inherits relation
  *
- * Note: currently, this module only contains inquiry functions; the actual
- * creation and deletion of pg_inherits entries is done in tablecmds.c.
+ * Note: currently, this module mostly contains inquiry functions; actual
+ * creation and deletion of pg_inherits entries is mostly done in tablecmds.c.
  * Perhaps someday that code should be moved here, but it'd have to be
  * disentangled from other stuff such as pg_depend updates.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -171,7 +171,6 @@ find_all_inheritors(Oid parentrelId, LOCKMODE lockmode, List **numparents)
 			   *rel_numparents;
 	ListCell   *l;
 
-	memset(&ctl, 0, sizeof(ctl));
 	ctl.keysize = sizeof(Oid);
 	ctl.entrysize = sizeof(SeenRelsEntry);
 	ctl.hcxt = CurrentMemoryContext;
@@ -278,9 +277,11 @@ has_subclass(Oid relationId)
 }
 
 /*
- * has_superclass - does this relation inherit from another?  The caller
- * should hold a lock on the given relation so that it can't be concurrently
- * added to or removed from an inheritance hierarchy.
+ * has_superclass - does this relation inherit from another?
+ *
+ * Unlike has_subclass, this can be relied on to give an accurate answer.
+ * However, the caller must hold a lock on the given relation so that it
+ * can't be concurrently added to or removed from an inheritance hierarchy.
  */
 bool
 has_superclass(Oid relationId)

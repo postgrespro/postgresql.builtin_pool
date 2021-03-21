@@ -7,7 +7,7 @@
  *	 ExecProcNode, or ExecEndNode on its subnodes and do the appropriate
  *	 processing.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -109,6 +109,7 @@
 #include "executor/nodeSubplan.h"
 #include "executor/nodeSubqueryscan.h"
 #include "executor/nodeTableFuncscan.h"
+#include "executor/nodeTidrangescan.h"
 #include "executor/nodeTidscan.h"
 #include "executor/nodeUnique.h"
 #include "executor/nodeValuesscan.h"
@@ -236,6 +237,11 @@ ExecInitNode(Plan *node, EState *estate, int eflags)
 		case T_TidScan:
 			result = (PlanState *) ExecInitTidScan((TidScan *) node,
 												   estate, eflags);
+			break;
+
+		case T_TidRangeScan:
+			result = (PlanState *) ExecInitTidRangeScan((TidRangeScan *) node,
+														estate, eflags);
 			break;
 
 		case T_SubqueryScan:
@@ -635,6 +641,10 @@ ExecEndNode(PlanState *node)
 
 		case T_TidScanState:
 			ExecEndTidScan((TidScanState *) node);
+			break;
+
+		case T_TidRangeScanState:
+			ExecEndTidRangeScan((TidRangeScanState *) node);
 			break;
 
 		case T_SubqueryScanState:

@@ -8,7 +8,7 @@
  *	  Structs that need to be client-visible are in pqcomm.h.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/libpq/libpq-be.h
@@ -177,8 +177,9 @@ typedef struct Port
 #if defined(ENABLE_GSS) || defined(ENABLE_SSPI)
 
 	/*
-	 * If GSSAPI is supported, store GSSAPI information. Otherwise, store a
-	 * NULL pointer to make sure offsets in the struct remain the same.
+	 * If GSSAPI is supported and used on this connection, store GSSAPI
+	 * information.  Even when GSSAPI is not compiled in, store a NULL pointer
+	 * to keep struct offsets the same (for extension ABI compatibility).
 	 */
 	pg_gssinfo *gss;
 #else
@@ -194,7 +195,7 @@ typedef struct Port
 
 	/*
 	 * OpenSSL structures. (Keep these last so that the locations of other
-	 * fields are the same whether or not you build with OpenSSL.)
+	 * fields are the same whether or not you build with SSL enabled.)
 	 */
 #ifdef USE_OPENSSL
 	SSL		   *ssl;
@@ -266,7 +267,6 @@ extern ssize_t be_tls_write(Port *port, void *ptr, size_t len, int *waitfor);
  * Return information about the SSL connection.
  */
 extern int	be_tls_get_cipher_bits(Port *port);
-extern bool be_tls_get_compression(Port *port);
 extern const char *be_tls_get_version(Port *port);
 extern const char *be_tls_get_cipher(Port *port);
 extern void be_tls_get_peer_subject_name(Port *port, char *ptr, size_t len);

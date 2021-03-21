@@ -3,7 +3,7 @@
  * postinit.c
  *	  postgres initialization utilities
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -28,7 +28,6 @@
 #include "access/xact.h"
 #include "access/xlog.h"
 #include "catalog/catalog.h"
-#include "catalog/indexing.h"
 #include "catalog/namespace.h"
 #include "catalog/pg_authid.h"
 #include "catalog/pg_database.h"
@@ -73,6 +72,7 @@ static void ShutdownPostgres(int code, Datum arg);
 static void StatementTimeoutHandler(void);
 static void LockTimeoutHandler(void);
 static void IdleInTransactionSessionTimeoutHandler(void);
+static void IdleSessionTimeoutHandler(void);
 static bool ThereIsAtLeastOneRole(void);
 static void process_startup_options(Port *port, bool am_superuser);
 static void process_settings(Oid databaseid, Oid roleid);
@@ -246,62 +246,50 @@ PerformAuthentication(Port *port)
 
 	if (Log_connections)
 	{
+		StringInfoData logmsg;
+
+		initStringInfo(&logmsg);
 		if (am_walsender)
-		{
-#ifdef USE_SSL
-			if (port->ssl_in_use)
-				ereport(LOG,
-						(port->application_name != NULL
-						 ? errmsg("replication connection authorized: user=%s application_name=%s SSL enabled (protocol=%s, cipher=%s, bits=%d, compression=%s)",
-								  port->user_name,
-								  port->application_name,
-								  be_tls_get_version(port),
-								  be_tls_get_cipher(port),
-								  be_tls_get_cipher_bits(port),
-								  be_tls_get_compression(port) ? _("on") : _("off"))
-						 : errmsg("replication connection authorized: user=%s SSL enabled (protocol=%s, cipher=%s, bits=%d, compression=%s)",
-								  port->user_name,
-								  be_tls_get_version(port),
-								  be_tls_get_cipher(port),
-								  be_tls_get_cipher_bits(port),
-								  be_tls_get_compression(port) ? _("on") : _("off"))));
-			else
-#endif
-				ereport(LOG,
-						(port->application_name != NULL
-						 ? errmsg("replication connection authorized: user=%s application_name=%s",
-								  port->user_name,
-								  port->application_name)
-						 : errmsg("replication connection authorized: user=%s",
-								  port->user_name)));
-		}
+			appendStringInfo(&logmsg, _("replication connection authorized: user=%s"),
+							 port->user_name);
 		else
-		{
+			appendStringInfo(&logmsg, _("connection authorized: user=%s"),
+							 port->user_name);
+		if (!am_walsender)
+			appendStringInfo(&logmsg, _(" database=%s"), port->database_name);
+
+		if (port->application_name != NULL)
+			appendStringInfo(&logmsg, _(" application_name=%s"),
+							 port->application_name);
+
 #ifdef USE_SSL
-			if (port->ssl_in_use)
-				ereport(LOG,
-						(port->application_name != NULL
-						 ? errmsg("connection authorized: user=%s database=%s application_name=%s SSL enabled (protocol=%s, cipher=%s, bits=%d, compression=%s)",
-								  port->user_name, port->database_name, port->application_name,
-								  be_tls_get_version(port),
-								  be_tls_get_cipher(port),
-								  be_tls_get_cipher_bits(port),
-								  be_tls_get_compression(port) ? _("on") : _("off"))
-						 : errmsg("connection authorized: user=%s database=%s SSL enabled (protocol=%s, cipher=%s, bits=%d, compression=%s)",
-								  port->user_name, port->database_name,
-								  be_tls_get_version(port),
-								  be_tls_get_cipher(port),
-								  be_tls_get_cipher_bits(port),
-								  be_tls_get_compression(port) ? _("on") : _("off"))));
-			else
+		if (port->ssl_in_use)
+			appendStringInfo(&logmsg, _(" SSL enabled (protocol=%s, cipher=%s, bits=%d)"),
+							 be_tls_get_version(port),
+							 be_tls_get_cipher(port),
+							 be_tls_get_cipher_bits(port));
 #endif
-				ereport(LOG,
-						(port->application_name != NULL
-						 ? errmsg("connection authorized: user=%s database=%s application_name=%s",
-								  port->user_name, port->database_name, port->application_name)
-						 : errmsg("connection authorized: user=%s database=%s",
-								  port->user_name, port->database_name)));
+#ifdef ENABLE_GSS
+		if (port->gss)
+		{
+			const char *princ = be_gssapi_get_princ(port);
+
+			if (princ)
+				appendStringInfo(&logmsg,
+								 _(" GSS (authenticated=%s, encrypted=%s, principal=%s)"),
+								 be_gssapi_get_auth(port) ? _("yes") : _("no"),
+								 be_gssapi_get_enc(port) ? _("yes") : _("no"),
+								 princ);
+			else
+				appendStringInfo(&logmsg,
+								 _(" GSS (authenticated=%s, encrypted=%s)"),
+								 be_gssapi_get_auth(port) ? _("yes") : _("no"),
+								 be_gssapi_get_enc(port) ? _("yes") : _("no"));
 		}
+#endif
+
+		ereport(LOG, errmsg_internal("%s", logmsg.data));
+		pfree(logmsg.data);
 	}
 
 	set_ps_display("startup");
@@ -631,6 +619,7 @@ InitPostgres(const char *in_dbname, Oid dboid, const char *username,
 		RegisterTimeout(LOCK_TIMEOUT, LockTimeoutHandler);
 		RegisterTimeout(IDLE_IN_TRANSACTION_SESSION_TIMEOUT,
 						IdleInTransactionSessionTimeoutHandler);
+		RegisterTimeout(IDLE_SESSION_TIMEOUT, IdleSessionTimeoutHandler);
 	}
 
 	/*
@@ -1241,6 +1230,14 @@ static void
 IdleInTransactionSessionTimeoutHandler(void)
 {
 	IdleInTransactionSessionTimeoutPending = true;
+	InterruptPending = true;
+	SetLatch(MyLatch);
+}
+
+static void
+IdleSessionTimeoutHandler(void)
+{
+	IdleSessionTimeoutPending = true;
 	InterruptPending = true;
 	SetLatch(MyLatch);
 }

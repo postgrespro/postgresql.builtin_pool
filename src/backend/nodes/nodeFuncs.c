@@ -3,7 +3,7 @@
  * nodeFuncs.c
  *		Various general-purpose manipulations of Node trees
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -66,15 +66,7 @@ exprType(const Node *expr)
 			type = ((const WindowFunc *) expr)->wintype;
 			break;
 		case T_SubscriptingRef:
-			{
-				const SubscriptingRef *sbsref = (const SubscriptingRef *) expr;
-
-				/* slice and/or store operations yield the container type */
-				if (sbsref->reflowerindexpr || sbsref->refassgnexpr)
-					type = sbsref->refcontainertype;
-				else
-					type = sbsref->refelemtype;
-			}
+			type = ((const SubscriptingRef *) expr)->refrestype;
 			break;
 		case T_FuncExpr:
 			type = ((const FuncExpr *) expr)->funcresulttype;
@@ -286,7 +278,6 @@ exprTypmod(const Node *expr)
 		case T_Param:
 			return ((const Param *) expr)->paramtypmod;
 		case T_SubscriptingRef:
-			/* typmod is the same for container or element */
 			return ((const SubscriptingRef *) expr)->reftypmod;
 		case T_FuncExpr:
 			{
@@ -441,7 +432,7 @@ exprTypmod(const Node *expr)
 				typmod = exprTypmod((Node *) linitial(cexpr->args));
 				if (typmod < 0)
 					return -1;	/* no point in trying harder */
-				for_each_cell(arg, cexpr->args, list_second_cell(cexpr->args))
+				for_each_from(arg, cexpr->args, 1)
 				{
 					Node	   *e = (Node *) lfirst(arg);
 
@@ -469,7 +460,7 @@ exprTypmod(const Node *expr)
 				typmod = exprTypmod((Node *) linitial(mexpr->args));
 				if (typmod < 0)
 					return -1;	/* no point in trying harder */
-				for_each_cell(arg, mexpr->args, list_second_cell(mexpr->args))
+				for_each_from(arg, mexpr->args, 1)
 				{
 					Node	   *e = (Node *) lfirst(arg);
 
@@ -1575,6 +1566,12 @@ exprLocation(const Node *expr)
 		case T_OnConflictClause:
 			loc = ((const OnConflictClause *) expr)->location;
 			break;
+		case T_CTESearchClause:
+			loc = ((const CTESearchClause *) expr)->location;
+			break;
+		case T_CTECycleClause:
+			loc = ((const CTECycleClause *) expr)->location;
+			break;
 		case T_CommonTableExpr:
 			loc = ((const CommonTableExpr *) expr)->location;
 			break;
@@ -1918,6 +1915,7 @@ expression_tree_walker(Node *node,
 		case T_NextValueExpr:
 		case T_RangeTblRef:
 		case T_SortGroupClause:
+		case T_CTESearchClause:
 			/* primitive node types with no expression subnodes */
 			break;
 		case T_WithCheckOption:
@@ -2157,6 +2155,16 @@ expression_tree_walker(Node *node,
 					return true;
 			}
 			break;
+		case T_CTECycleClause:
+			{
+				CTECycleClause *cc = (CTECycleClause *) node;
+
+				if (walker(cc->cycle_mark_value, context))
+					return true;
+				if (walker(cc->cycle_mark_default, context))
+					return true;
+			}
+			break;
 		case T_CommonTableExpr:
 			{
 				CommonTableExpr *cte = (CommonTableExpr *) node;
@@ -2165,7 +2173,13 @@ expression_tree_walker(Node *node,
 				 * Invoke the walker on the CTE's Query node, so it can
 				 * recurse into the sub-query if it wants to.
 				 */
-				return walker(cte->ctequery, context);
+				if (walker(cte->ctequery, context))
+					return true;
+
+				if (walker(cte->search_clause, context))
+					return true;
+				if (walker(cte->cycle_clause, context))
+					return true;
 			}
 			break;
 		case T_List:
@@ -2624,6 +2638,7 @@ expression_tree_mutator(Node *node,
 		case T_NextValueExpr:
 		case T_RangeTblRef:
 		case T_SortGroupClause:
+		case T_CTESearchClause:
 			return (Node *) copyObject(node);
 		case T_WithCheckOption:
 			{
@@ -3028,6 +3043,17 @@ expression_tree_mutator(Node *node,
 				return (Node *) newnode;
 			}
 			break;
+		case T_CTECycleClause:
+			{
+				CTECycleClause *cc = (CTECycleClause *) node;
+				CTECycleClause *newnode;
+
+				FLATCOPY(newnode, cc, CTECycleClause);
+				MUTATE(newnode->cycle_mark_value, cc->cycle_mark_value, Node *);
+				MUTATE(newnode->cycle_mark_default, cc->cycle_mark_default, Node *);
+				return (Node *) newnode;
+			}
+			break;
 		case T_CommonTableExpr:
 			{
 				CommonTableExpr *cte = (CommonTableExpr *) node;
@@ -3040,6 +3066,10 @@ expression_tree_mutator(Node *node,
 				 * recurse into the sub-query if it wants to.
 				 */
 				MUTATE(newnode->ctequery, cte->ctequery, Node *);
+
+				MUTATE(newnode->search_clause, cte->search_clause, CTESearchClause *);
+				MUTATE(newnode->cycle_clause, cte->cycle_clause, CTECycleClause *);
+
 				return (Node *) newnode;
 			}
 			break;
@@ -3678,6 +3708,16 @@ raw_expression_tree_walker(Node *node,
 					return true;
 			}
 			break;
+		case T_PLAssignStmt:
+			{
+				PLAssignStmt *stmt = (PLAssignStmt *) node;
+
+				if (walker(stmt->indirection, context))
+					return true;
+				if (walker(stmt->val, context))
+					return true;
+			}
+			break;
 		case T_A_Expr:
 			{
 				A_Expr	   *expr = (A_Expr *) node;
@@ -3857,6 +3897,8 @@ raw_expression_tree_walker(Node *node,
 
 				if (walker(coldef->typeName, context))
 					return true;
+				if (walker(coldef->compression, context))
+					return true;
 				if (walker(coldef->raw_default, context))
 					return true;
 				if (walker(coldef->collClause, context))
@@ -3912,6 +3954,7 @@ raw_expression_tree_walker(Node *node,
 			}
 			break;
 		case T_CommonTableExpr:
+			/* search_clause and cycle_clause are not interesting here */
 			return walker(((CommonTableExpr *) node)->ctequery, context);
 		default:
 			elog(ERROR, "unrecognized node type: %d",

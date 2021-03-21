@@ -3,7 +3,7 @@
  * parse_relation.c
  *	  parser support routines dealing with relations
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -68,7 +68,7 @@ static int	scanRTEForColumn(ParseState *pstate, RangeTblEntry *rte,
 							 const char *colname, int location,
 							 int fuzzy_rte_penalty,
 							 FuzzyAttrMatchState *fuzzystate);
-static void markRTEForSelectPriv(ParseState *pstate, RangeTblEntry *rte,
+static void markRTEForSelectPriv(ParseState *pstate,
 								 int rtindex, AttrNumber col);
 static void expandRelation(Oid relid, Alias *eref,
 						   int rtindex, int sublevels_up,
@@ -660,8 +660,8 @@ updateFuzzyAttrMatchState(int fuzzy_rte_penalty,
  *	  If found, return an appropriate Var node, else return NULL.
  *	  If the name proves ambiguous within this nsitem, raise error.
  *
- * Side effect: if we find a match, mark the item's RTE as requiring read
- * access for the column.
+ * Side effect: if we find a match, mark the corresponding RTE as requiring
+ * read access for the column.
  */
 Node *
 scanNSItemForColumn(ParseState *pstate, ParseNamespaceItem *nsitem,
@@ -740,7 +740,7 @@ scanNSItemForColumn(ParseState *pstate, ParseNamespaceItem *nsitem,
 	var->location = location;
 
 	/* Require read access to the column */
-	markVarForSelectPriv(pstate, var, rte);
+	markVarForSelectPriv(pstate, var);
 
 	return (Node *) var;
 }
@@ -990,21 +990,15 @@ searchRangeTableForCol(ParseState *pstate, const char *alias, const char *colnam
 
 /*
  * markRTEForSelectPriv
- *	   Mark the specified column of an RTE as requiring SELECT privilege
+ *	   Mark the specified column of the RTE with index rtindex
+ *	   as requiring SELECT privilege
  *
  * col == InvalidAttrNumber means a "whole row" reference
- *
- * External callers should always pass the Var's RTE.  Internally, we
- * allow NULL to be passed for the RTE and then look it up if needed;
- * this takes less code than requiring each internal recursion site
- * to perform a lookup.
  */
 static void
-markRTEForSelectPriv(ParseState *pstate, RangeTblEntry *rte,
-					 int rtindex, AttrNumber col)
+markRTEForSelectPriv(ParseState *pstate, int rtindex, AttrNumber col)
 {
-	if (rte == NULL)
-		rte = rt_fetch(rtindex, pstate->p_rtable);
+	RangeTblEntry *rte = rt_fetch(rtindex, pstate->p_rtable);
 
 	if (rte->rtekind == RTE_RELATION)
 	{
@@ -1036,13 +1030,13 @@ markRTEForSelectPriv(ParseState *pstate, RangeTblEntry *rte,
 			{
 				int			varno = ((RangeTblRef *) j->larg)->rtindex;
 
-				markRTEForSelectPriv(pstate, NULL, varno, InvalidAttrNumber);
+				markRTEForSelectPriv(pstate, varno, InvalidAttrNumber);
 			}
 			else if (IsA(j->larg, JoinExpr))
 			{
 				int			varno = ((JoinExpr *) j->larg)->rtindex;
 
-				markRTEForSelectPriv(pstate, NULL, varno, InvalidAttrNumber);
+				markRTEForSelectPriv(pstate, varno, InvalidAttrNumber);
 			}
 			else
 				elog(ERROR, "unrecognized node type: %d",
@@ -1051,13 +1045,13 @@ markRTEForSelectPriv(ParseState *pstate, RangeTblEntry *rte,
 			{
 				int			varno = ((RangeTblRef *) j->rarg)->rtindex;
 
-				markRTEForSelectPriv(pstate, NULL, varno, InvalidAttrNumber);
+				markRTEForSelectPriv(pstate, varno, InvalidAttrNumber);
 			}
 			else if (IsA(j->rarg, JoinExpr))
 			{
 				int			varno = ((JoinExpr *) j->rarg)->rtindex;
 
-				markRTEForSelectPriv(pstate, NULL, varno, InvalidAttrNumber);
+				markRTEForSelectPriv(pstate, varno, InvalidAttrNumber);
 			}
 			else
 				elog(ERROR, "unrecognized node type: %d",
@@ -1078,10 +1072,11 @@ markRTEForSelectPriv(ParseState *pstate, RangeTblEntry *rte,
 
 /*
  * markVarForSelectPriv
- *	   Mark the RTE referenced by a Var as requiring SELECT privilege
+ *	   Mark the RTE referenced by the Var as requiring SELECT privilege
+ *	   for the Var's column (the Var could be a whole-row Var, too)
  */
 void
-markVarForSelectPriv(ParseState *pstate, Var *var, RangeTblEntry *rte)
+markVarForSelectPriv(ParseState *pstate, Var *var)
 {
 	Index		lv;
 
@@ -1089,7 +1084,7 @@ markVarForSelectPriv(ParseState *pstate, Var *var, RangeTblEntry *rte)
 	/* Find the appropriate pstate if it's an uplevel Var */
 	for (lv = 0; lv < var->varlevelsup; lv++)
 		pstate = pstate->parentParseState;
-	markRTEForSelectPriv(pstate, rte, var->varno, var->varattno);
+	markRTEForSelectPriv(pstate, var->varno, var->varattno);
 }
 
 /*
@@ -1737,16 +1732,46 @@ addRangeTableEntryForFunction(ParseState *pstate,
 
 		/*
 		 * A coldeflist is required if the function returns RECORD and hasn't
-		 * got a predetermined record type, and is prohibited otherwise.
+		 * got a predetermined record type, and is prohibited otherwise.  This
+		 * can be a bit confusing, so we expend some effort on delivering a
+		 * relevant error message.
 		 */
 		if (coldeflist != NIL)
 		{
-			if (functypclass != TYPEFUNC_RECORD)
-				ereport(ERROR,
-						(errcode(ERRCODE_SYNTAX_ERROR),
-						 errmsg("a column definition list is only allowed for functions returning \"record\""),
-						 parser_errposition(pstate,
-											exprLocation((Node *) coldeflist))));
+			switch (functypclass)
+			{
+				case TYPEFUNC_RECORD:
+					/* ok */
+					break;
+				case TYPEFUNC_COMPOSITE:
+				case TYPEFUNC_COMPOSITE_DOMAIN:
+
+					/*
+					 * If the function's raw result type is RECORD, we must
+					 * have resolved it using its OUT parameters.  Otherwise,
+					 * it must have a named composite type.
+					 */
+					if (exprType(funcexpr) == RECORDOID)
+						ereport(ERROR,
+								(errcode(ERRCODE_SYNTAX_ERROR),
+								 errmsg("a column definition list is redundant for a function with OUT parameters"),
+								 parser_errposition(pstate,
+													exprLocation((Node *) coldeflist))));
+					else
+						ereport(ERROR,
+								(errcode(ERRCODE_SYNTAX_ERROR),
+								 errmsg("a column definition list is redundant for a function returning a named composite type"),
+								 parser_errposition(pstate,
+													exprLocation((Node *) coldeflist))));
+					break;
+				default:
+					ereport(ERROR,
+							(errcode(ERRCODE_SYNTAX_ERROR),
+							 errmsg("a column definition list is only allowed for functions returning \"record\""),
+							 parser_errposition(pstate,
+												exprLocation((Node *) coldeflist))));
+					break;
+			}
 		}
 		else
 		{
@@ -2205,6 +2230,8 @@ addRangeTableEntryForCTE(ParseState *pstate,
 	int			numaliases;
 	int			varattno;
 	ListCell   *lc;
+	int			n_dontexpand_columns = 0;
+	ParseNamespaceItem *psi;
 
 	Assert(pstate != NULL);
 
@@ -2237,9 +2264,9 @@ addRangeTableEntryForCTE(ParseState *pstate,
 					 parser_errposition(pstate, rv->location)));
 	}
 
-	rte->coltypes = cte->ctecoltypes;
-	rte->coltypmods = cte->ctecoltypmods;
-	rte->colcollations = cte->ctecolcollations;
+	rte->coltypes = list_copy(cte->ctecoltypes);
+	rte->coltypmods = list_copy(cte->ctecoltypmods);
+	rte->colcollations = list_copy(cte->ctecolcollations);
 
 	rte->alias = alias;
 	if (alias)
@@ -2263,6 +2290,34 @@ addRangeTableEntryForCTE(ParseState *pstate,
 						refname, varattno, numaliases)));
 
 	rte->eref = eref;
+
+	if (cte->search_clause)
+	{
+		rte->eref->colnames = lappend(rte->eref->colnames, makeString(cte->search_clause->search_seq_column));
+		if (cte->search_clause->search_breadth_first)
+			rte->coltypes = lappend_oid(rte->coltypes, RECORDOID);
+		else
+			rte->coltypes = lappend_oid(rte->coltypes, RECORDARRAYOID);
+		rte->coltypmods = lappend_int(rte->coltypmods, -1);
+		rte->colcollations = lappend_oid(rte->colcollations, InvalidOid);
+
+		n_dontexpand_columns += 1;
+	}
+
+	if (cte->cycle_clause)
+	{
+		rte->eref->colnames = lappend(rte->eref->colnames, makeString(cte->cycle_clause->cycle_mark_column));
+		rte->coltypes = lappend_oid(rte->coltypes, cte->cycle_clause->cycle_mark_type);
+		rte->coltypmods = lappend_int(rte->coltypmods, cte->cycle_clause->cycle_mark_typmod);
+		rte->colcollations = lappend_oid(rte->colcollations, cte->cycle_clause->cycle_mark_collation);
+
+		rte->eref->colnames = lappend(rte->eref->colnames, makeString(cte->cycle_clause->cycle_path_column));
+		rte->coltypes = lappend_oid(rte->coltypes, RECORDARRAYOID);
+		rte->coltypmods = lappend_int(rte->coltypmods, -1);
+		rte->colcollations = lappend_oid(rte->colcollations, InvalidOid);
+
+		n_dontexpand_columns += 2;
+	}
 
 	/*
 	 * Set flags and access permissions.
@@ -2291,9 +2346,19 @@ addRangeTableEntryForCTE(ParseState *pstate,
 	 * Build a ParseNamespaceItem, but don't add it to the pstate's namespace
 	 * list --- caller must do that if appropriate.
 	 */
-	return buildNSItemFromLists(rte, list_length(pstate->p_rtable),
+	psi = buildNSItemFromLists(rte, list_length(pstate->p_rtable),
 								rte->coltypes, rte->coltypmods,
 								rte->colcollations);
+
+	/*
+	 * The columns added by search and cycle clauses are not included in star
+	 * expansion in queries contained in the CTE.
+	 */
+	if (rte->ctelevelsup > 0)
+		for (int i = 0; i < n_dontexpand_columns; i++)
+			psi->p_nscolumns[list_length(psi->p_rte->eref->colnames) - 1 - i].p_dontexpand = true;
+
+	return psi;
 }
 
 /*
@@ -2978,7 +3043,11 @@ expandNSItemVars(ParseNamespaceItem *nsitem,
 		const char *colname = strVal(colnameval);
 		ParseNamespaceColumn *nscol = nsitem->p_nscolumns + colindex;
 
-		if (colname[0])
+		if (nscol->p_dontexpand)
+		{
+			/* skip */
+		}
+		else if (colname[0])
 		{
 			Var		   *var;
 
@@ -3031,9 +3100,13 @@ expandNSItemAttrs(ParseState *pstate, ParseNamespaceItem *nsitem,
 	/*
 	 * Require read access to the table.  This is normally redundant with the
 	 * markVarForSelectPriv calls below, but not if the table has zero
-	 * columns.
+	 * columns.  We need not do anything if the nsitem is for a join: its
+	 * component tables will have been marked ACL_SELECT when they were added
+	 * to the rangetable.  (This step changes things only for the target
+	 * relation of UPDATE/DELETE, which cannot be under a join.)
 	 */
-	rte->requiredPerms |= ACL_SELECT;
+	if (rte->rtekind == RTE_RELATION)
+		rte->requiredPerms |= ACL_SELECT;
 
 	forboth(name, names, var, vars)
 	{
@@ -3048,7 +3121,7 @@ expandNSItemAttrs(ParseState *pstate, ParseNamespaceItem *nsitem,
 		te_list = lappend(te_list, te);
 
 		/* Require read access to each column */
-		markVarForSelectPriv(pstate, varnode, rte);
+		markVarForSelectPriv(pstate, varnode);
 	}
 
 	Assert(name == NULL && var == NULL);	/* lists not the same length? */

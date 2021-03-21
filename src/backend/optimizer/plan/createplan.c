@@ -5,7 +5,7 @@
  *	  Planning is complete, we just need to convert the selected
  *	  Path into a Plan.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -129,6 +129,10 @@ static Plan *create_bitmap_subplan(PlannerInfo *root, Path *bitmapqual,
 static void bitmap_subplan_mark_shared(Plan *plan);
 static TidScan *create_tidscan_plan(PlannerInfo *root, TidPath *best_path,
 									List *tlist, List *scan_clauses);
+static TidRangeScan *create_tidrangescan_plan(PlannerInfo *root,
+											  TidRangePath *best_path,
+											  List *tlist,
+											  List *scan_clauses);
 static SubqueryScan *create_subqueryscan_plan(PlannerInfo *root,
 											  SubqueryScanPath *best_path,
 											  List *tlist, List *scan_clauses);
@@ -193,6 +197,8 @@ static BitmapHeapScan *make_bitmap_heapscan(List *qptlist,
 											Index scanrelid);
 static TidScan *make_tidscan(List *qptlist, List *qpqual, Index scanrelid,
 							 List *tidquals);
+static TidRangeScan *make_tidrangescan(List *qptlist, List *qpqual,
+									   Index scanrelid, List *tidrangequals);
 static SubqueryScan *make_subqueryscan(List *qptlist,
 									   List *qpqual,
 									   Index scanrelid,
@@ -384,6 +390,7 @@ create_plan_recurse(PlannerInfo *root, Path *best_path, int flags)
 		case T_IndexOnlyScan:
 		case T_BitmapHeapScan:
 		case T_TidScan:
+		case T_TidRangeScan:
 		case T_SubqueryScan:
 		case T_FunctionScan:
 		case T_TableFuncScan:
@@ -677,6 +684,13 @@ create_scan_plan(PlannerInfo *root, Path *best_path, int flags)
 												(TidPath *) best_path,
 												tlist,
 												scan_clauses);
+			break;
+
+		case T_TidRangeScan:
+			plan = (Plan *) create_tidrangescan_plan(root,
+													 (TidRangePath *) best_path,
+													 tlist,
+													 scan_clauses);
 			break;
 
 		case T_SubqueryScan:
@@ -1227,9 +1241,7 @@ create_append_plan(PlannerInfo *root, AppendPath *best_path, int flags)
 	 * pruning during execution.  Gather information needed by the executor to
 	 * do partition pruning.
 	 */
-	if (enable_partition_pruning &&
-		rel->reloptkind == RELOPT_BASEREL &&
-		best_path->partitioned_rels != NIL)
+	if (enable_partition_pruning)
 	{
 		List	   *prunequal;
 
@@ -1250,7 +1262,6 @@ create_append_plan(PlannerInfo *root, AppendPath *best_path, int flags)
 			partpruneinfo =
 				make_partition_pruneinfo(root, rel,
 										 best_path->subpaths,
-										 best_path->partitioned_rels,
 										 prunequal);
 	}
 
@@ -1394,9 +1405,7 @@ create_merge_append_plan(PlannerInfo *root, MergeAppendPath *best_path,
 	 * pruning during execution.  Gather information needed by the executor to
 	 * do partition pruning.
 	 */
-	if (enable_partition_pruning &&
-		rel->reloptkind == RELOPT_BASEREL &&
-		best_path->partitioned_rels != NIL)
+	if (enable_partition_pruning)
 	{
 		List	   *prunequal;
 
@@ -1416,7 +1425,6 @@ create_merge_append_plan(PlannerInfo *root, MergeAppendPath *best_path,
 		if (prunequal != NIL)
 			partpruneinfo = make_partition_pruneinfo(root, rel,
 													 best_path->subpaths,
-													 best_path->partitioned_rels,
 													 prunequal);
 	}
 
@@ -1795,13 +1803,15 @@ create_gather_merge_plan(PlannerInfo *root, GatherMergePath *best_path)
 										 &gm_plan->nullsFirst);
 
 
-	/* Now, insert a Sort node if subplan isn't sufficiently ordered */
+	/*
+	 * All gather merge paths should have already guaranteed the necessary sort
+	 * order either by adding an explicit sort node or by using presorted input.
+	 * We can't simply add a sort here on additional pathkeys, because we can't
+	 * guarantee the sort would be safe. For example, expressions may be
+	 * volatile or otherwise parallel unsafe.
+	 */
 	if (!pathkeys_contained_in(pathkeys, best_path->subpath->pathkeys))
-		subplan = (Plan *) make_sort(subplan, gm_plan->numCols,
-									 gm_plan->sortColIdx,
-									 gm_plan->sortOperators,
-									 gm_plan->collations,
-									 gm_plan->nullsFirst);
+		elog(ERROR, "gather merge input not sufficiently sorted");
 
 	/* Now insert the subplan under GatherMerge. */
 	gm_plan->plan.lefttree = subplan;
@@ -2261,7 +2271,7 @@ create_groupingsets_plan(PlannerInfo *root, GroupingSetsPath *best_path)
 	{
 		bool		is_first_sort = ((RollupData *) linitial(rollups))->is_hashed;
 
-		for_each_cell(lc, rollups, list_second_cell(rollups))
+		for_each_from(lc, rollups, 1)
 		{
 			RollupData *rollup = lfirst(lc);
 			AttrNumber *new_grpColIdx;
@@ -3434,6 +3444,71 @@ create_tidscan_plan(PlannerInfo *root, TidPath *best_path,
 							 scan_clauses,
 							 scan_relid,
 							 tidquals);
+
+	copy_generic_path_info(&scan_plan->scan.plan, &best_path->path);
+
+	return scan_plan;
+}
+
+/*
+ * create_tidrangescan_plan
+ *	 Returns a tidrangescan plan for the base relation scanned by 'best_path'
+ *	 with restriction clauses 'scan_clauses' and targetlist 'tlist'.
+ */
+static TidRangeScan *
+create_tidrangescan_plan(PlannerInfo *root, TidRangePath *best_path,
+						 List *tlist, List *scan_clauses)
+{
+	TidRangeScan *scan_plan;
+	Index		scan_relid = best_path->path.parent->relid;
+	List	   *tidrangequals = best_path->tidrangequals;
+
+	/* it should be a base rel... */
+	Assert(scan_relid > 0);
+	Assert(best_path->path.parent->rtekind == RTE_RELATION);
+
+	/*
+	 * The qpqual list must contain all restrictions not enforced by the
+	 * tidrangequals list.  tidrangequals has AND semantics, so we can simply
+	 * remove any qual that appears in it.
+	 */
+	{
+		List	   *qpqual = NIL;
+		ListCell   *l;
+
+		foreach(l, scan_clauses)
+		{
+			RestrictInfo *rinfo = lfirst_node(RestrictInfo, l);
+
+			if (rinfo->pseudoconstant)
+				continue;		/* we may drop pseudoconstants here */
+			if (list_member_ptr(tidrangequals, rinfo))
+				continue;		/* simple duplicate */
+			qpqual = lappend(qpqual, rinfo);
+		}
+		scan_clauses = qpqual;
+	}
+
+	/* Sort clauses into best execution order */
+	scan_clauses = order_qual_clauses(root, scan_clauses);
+
+	/* Reduce RestrictInfo lists to bare expressions; ignore pseudoconstants */
+	tidrangequals = extract_actual_clauses(tidrangequals, false);
+	scan_clauses = extract_actual_clauses(scan_clauses, false);
+
+	/* Replace any outer-relation variables with nestloop params */
+	if (best_path->path.param_info)
+	{
+		tidrangequals = (List *)
+			replace_nestloop_params(root, (Node *) tidrangequals);
+		scan_clauses = (List *)
+			replace_nestloop_params(root, (Node *) scan_clauses);
+	}
+
+	scan_plan = make_tidrangescan(tlist,
+								  scan_clauses,
+								  scan_relid,
+								  tidrangequals);
 
 	copy_generic_path_info(&scan_plan->scan.plan, &best_path->path);
 
@@ -5373,6 +5448,25 @@ make_tidscan(List *qptlist,
 	return node;
 }
 
+static TidRangeScan *
+make_tidrangescan(List *qptlist,
+				  List *qpqual,
+				  Index scanrelid,
+				  List *tidrangequals)
+{
+	TidRangeScan *node = makeNode(TidRangeScan);
+	Plan	   *plan = &node->scan.plan;
+
+	plan->targetlist = qptlist;
+	plan->qual = qpqual;
+	plan->lefttree = NULL;
+	plan->righttree = NULL;
+	node->scan.scanrelid = scanrelid;
+	node->tidrangequals = tidrangequals;
+
+	return node;
+}
+
 static SubqueryScan *
 make_subqueryscan(List *qptlist,
 				  List *qpqual,
@@ -5530,7 +5624,11 @@ make_foreignscan(List *qptlist,
 	plan->lefttree = outer_plan;
 	plan->righttree = NULL;
 	node->scan.scanrelid = scanrelid;
+
+	/* these may be overridden by the FDW's PlanDirectModify callback. */
 	node->operation = CMD_SELECT;
+	node->resultRelation = 0;
+
 	/* fs_server will be filled in by create_foreignscan_plan */
 	node->fs_server = InvalidOid;
 	node->fdw_exprs = fdw_exprs;
@@ -5846,6 +5944,9 @@ make_incrementalsort(Plan *lefttree, int numCols, int nPresortedCols,
  *
  * Returns the node which is to be the input to the Sort (either lefttree,
  * or a Result stacked atop lefttree).
+ *
+ * Note: Restrictions on what expressions are safely sortable may also need to
+ * be added to find_em_expr_usable_for_sorting_rel.
  */
 static Plan *
 prepare_sort_from_pathkeys(Plan *lefttree, List *pathkeys,
@@ -6808,8 +6909,6 @@ make_modifytable(PlannerInfo *root,
 	node->rootRelation = rootRelation;
 	node->partColsUpdated = partColsUpdated;
 	node->resultRelations = resultRelations;
-	node->resultRelIndex = -1;	/* will be set correctly in setrefs.c */
-	node->rootResultRelIndex = -1;	/* will be set correctly in setrefs.c */
 	node->plans = subplans;
 	if (!onconflict)
 	{

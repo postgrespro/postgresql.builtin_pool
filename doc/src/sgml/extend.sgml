@@ -289,6 +289,14 @@
        </row>
 
        <row>
+        <entry><type>anymultirange</type></entry>
+        <entry>Simple</entry>
+        <entry>Indicates that a function accepts any multirange data type
+        (see <xref linkend="rangetypes"/>)
+        </entry>
+       </row>
+
+       <row>
         <entry><type>anycompatible</type></entry>
         <entry>Common</entry>
         <entry>Indicates that a function accepts any data type,
@@ -319,6 +327,14 @@
         with automatic promotion of multiple arguments to a common data type
         </entry>
        </row>
+
+       <row>
+        <entry><type>anycompatiblemultirange</type></entry>
+        <entry>Common</entry>
+        <entry>Indicates that a function accepts any multirange data type,
+        with automatic promotion of multiple arguments to a common data type
+        </entry>
+       </row>
       </tbody>
      </tgroup>
     </table>
@@ -346,23 +362,34 @@
      position declared as <type>anyarray</type> can have any array data type,
      but similarly they must all be the same type.  And similarly,
      positions declared as <type>anyrange</type> must all be the same range
-     type.  Furthermore, if there are
+     type.  Likewise for <type>anymultirange</type>.
+    </para>
+
+    <para>
+     Furthermore, if there are
      positions declared <type>anyarray</type> and others declared
      <type>anyelement</type>, the actual array type in the
      <type>anyarray</type> positions must be an array whose elements are
      the same type appearing in the <type>anyelement</type> positions.
-     Similarly, if there are positions declared <type>anyrange</type>
-     and others declared <type>anyelement</type> or <type>anyarray</type>,
-     the actual range type in the <type>anyrange</type> positions must be a
-     range whose subtype is the same type appearing in
-     the <type>anyelement</type> positions and the same as the element type
-     of the <type>anyarray</type> positions.
      <type>anynonarray</type> is treated exactly the same as <type>anyelement</type>,
      but adds the additional constraint that the actual type must not be
      an array type.
      <type>anyenum</type> is treated exactly the same as <type>anyelement</type>,
      but adds the additional constraint that the actual type must
      be an enum type.
+    </para>
+
+    <para>
+     Similarly, if there are positions declared <type>anyrange</type>
+     and others declared <type>anyelement</type> or <type>anyarray</type>,
+     the actual range type in the <type>anyrange</type> positions must be a
+     range whose subtype is the same type appearing in
+     the <type>anyelement</type> positions and the same as the element type
+     of the <type>anyarray</type> positions.
+     If there are positions declared <type>anymultirange</type>,
+     their actual multirange type must contain ranges matching parameters declared
+     <type>anyrange</type> and base elements matching parameters declared
+     <type>anyelement</type> and <type>anyarray</type>.
     </para>
 
     <para>
@@ -420,7 +447,8 @@
      Selection of the common type considers the actual types
      of <type>anycompatible</type> and <type>anycompatiblenonarray</type>
      inputs, the array element types of <type>anycompatiblearray</type>
-     inputs, and the range subtypes of <type>anycompatiblerange</type>
+     inputs, the range subtypes of <type>anycompatiblerange</type> inputs,
+     and the multirange subtypes of <type>anycompatiblemultirange</type>
      inputs.  If <type>anycompatiblenonarray</type> is present then the
      common type is required to be a non-array type.  Once a common type is
      identified, arguments in <type>anycompatible</type>
@@ -431,12 +459,15 @@
 
     <para>
      Since there is no way to select a range type knowing only its subtype,
-     use of <type>anycompatiblerange</type> requires that all arguments
-     declared with that type have the same actual range type, and that that
-     type's subtype agree with the selected common type, so that no casting
-     of the range values is required.  As with <type>anyrange</type>, use
-     of <type>anycompatiblerange</type> as a function result type requires
-     that there be an <type>anycompatiblerange</type> argument.
+     use of <type>anycompatiblerange</type> and/or
+     <type>anycompatiblemultirange</type> requires that all arguments declared
+     with that type have the same actual range and/or multirange type, and that
+     that type's subtype agree with the selected common type, so that no casting
+     of the range values is required.  As with <type>anyrange</type> and
+     <type>anymultirange</type>, use of <type>anycompatiblerange</type> and
+     <type>anymultirange</type> as a function result type requires that there be
+     an <type>anycompatiblerange</type> or <type>anycompatiblemultirange</type>
+     argument.
     </para>
 
     <para>
@@ -504,7 +535,7 @@ RETURNS anycompatible AS ...
     of the extension itself.  If the extension includes C code, there
     will typically also be a shared library file into which the C code
     has been built.  Once you have these files, a simple
-    <xref linkend="sql-createextension"/> command loads the objects into
+    <link linkend="sql-createextension"><command>CREATE EXTENSION</command></link> command loads the objects into
     your database.
    </para>
 
@@ -513,7 +544,7 @@ RETURNS anycompatible AS ...
     <acronym>SQL</acronym> script to load a bunch of <quote>loose</quote> objects
     into your database, is that <productname>PostgreSQL</productname> will then
     understand that the objects of the extension go together.  You can
-    drop all the objects with a single <xref linkend="sql-dropextension"/>
+    drop all the objects with a single <link linkend="sql-dropextension"><command>DROP EXTENSION</command></link>
     command (no need to maintain a separate <quote>uninstall</quote> script).
     Even more useful, <application>pg_dump</application> knows that it should not
     dump the individual member objects of the extension &mdash; it will
@@ -572,7 +603,7 @@ RETURNS anycompatible AS ...
 
    <para>
     The kinds of SQL objects that can be members of an extension are shown in
-    the description of <xref linkend="sql-alterextension"/>.  Notably, objects
+    the description of <link linkend="sql-alterextension"><command>ALTER EXTENSION</command></link>.  Notably, objects
     that are database-cluster-wide, such as databases, roles, and tablespaces,
     cannot be extension members since an extension is only known within one
     database.  (Although an extension script is not prohibited from creating
@@ -605,7 +636,7 @@ RETURNS anycompatible AS ...
    </indexterm>
 
     <para>
-     The <xref linkend="sql-createextension"/> command relies on a control
+     The <command>CREATE EXTENSION</command> command relies on a control
      file for each extension, which must be named the same as the extension
      with a suffix of <literal>.control</literal>, and must be placed in the
      installation's <literal>SHAREDIR/extension</literal> directory.  There
@@ -1373,7 +1404,7 @@ include $(PGXS)
 
     <para>
      Once the files are installed, use the
-     <xref linkend="sql-createextension"/> command to load the objects into
+     <command>CREATE EXTENSION</command> command to load the objects into
      any particular database.
     </para>
    </sect2>

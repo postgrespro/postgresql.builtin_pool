@@ -3,7 +3,7 @@
  *
  *	main source file
  *
- *	Copyright (c) 2010-2020, PostgreSQL Global Development Group
+ *	Copyright (c) 2010-2021, PostgreSQL Global Development Group
  *	src/bin/pg_upgrade/pg_upgrade.c
  */
 
@@ -75,7 +75,6 @@ char	   *output_files[] = {
 int
 main(int argc, char **argv)
 {
-	char	   *analyze_script_file_name = NULL;
 	char	   *deletion_script_file_name = NULL;
 	bool		live_check = false;
 
@@ -176,7 +175,6 @@ main(int argc, char **argv)
 			  new_cluster.pgdata);
 	check_ok();
 
-	create_script_for_cluster_analyze(&analyze_script_file_name);
 	create_script_for_old_cluster_deletion(&deletion_script_file_name);
 
 	issue_warnings_and_set_wal_level();
@@ -186,10 +184,8 @@ main(int argc, char **argv)
 		   "Upgrade Complete\n"
 		   "----------------\n");
 
-	output_completion_banner(analyze_script_file_name,
-							 deletion_script_file_name);
+	output_completion_banner(deletion_script_file_name);
 
-	pg_free(analyze_script_file_name);
 	pg_free(deletion_script_file_name);
 
 	cleanup();
@@ -407,7 +403,7 @@ create_new_objects(void)
 	 * We don't have minmxids for databases or relations in pre-9.3 clusters,
 	 * so set those after we have restored the schema.
 	 */
-	if (GET_MAJOR_VERSION(old_cluster.major_version) < 903)
+	if (GET_MAJOR_VERSION(old_cluster.major_version) <= 902)
 		set_frozenxids(true);
 
 	/* update new_cluster info now that we have objects in the databases */
@@ -466,9 +462,9 @@ copy_xact_xlog_xid(void)
 	 * Copy old commit logs to new data dir. pg_clog has been renamed to
 	 * pg_xact in post-10 clusters.
 	 */
-	copy_subdir_files(GET_MAJOR_VERSION(old_cluster.major_version) < 1000 ?
+	copy_subdir_files(GET_MAJOR_VERSION(old_cluster.major_version) <= 906 ?
 					  "pg_clog" : "pg_xact",
-					  GET_MAJOR_VERSION(new_cluster.major_version) < 1000 ?
+					  GET_MAJOR_VERSION(new_cluster.major_version) <= 906 ?
 					  "pg_clog" : "pg_xact");
 
 	/* set the next transaction id and epoch of the new cluster */

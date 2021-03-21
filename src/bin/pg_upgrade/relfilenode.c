@@ -3,7 +3,7 @@
  *
  *	relfilenode functions
  *
- *	Copyright (c) 2010-2020, PostgreSQL Global Development Group
+ *	Copyright (c) 2010-2021, PostgreSQL Global Development Group
  *	src/bin/pg_upgrade/relfilenode.c
  */
 
@@ -163,16 +163,12 @@ transfer_single_new_db(FileNameMap *maps, int size, char *old_tablespace)
 			/* transfer primary file */
 			transfer_relfile(&maps[mapnum], "", vm_must_add_frozenbit);
 
-			/* fsm/vm files added in PG 8.4 */
-			if (GET_MAJOR_VERSION(old_cluster.major_version) >= 804)
-			{
-				/*
-				 * Copy/link any fsm and vm files, if they exist
-				 */
-				transfer_relfile(&maps[mapnum], "_fsm", vm_must_add_frozenbit);
-				if (vm_crashsafe_match)
-					transfer_relfile(&maps[mapnum], "_vm", vm_must_add_frozenbit);
-			}
+			/*
+			 * Copy/link any fsm and vm files, if they exist
+			 */
+			transfer_relfile(&maps[mapnum], "_fsm", vm_must_add_frozenbit);
+			if (vm_crashsafe_match)
+				transfer_relfile(&maps[mapnum], "_vm", vm_must_add_frozenbit);
 		}
 	}
 }

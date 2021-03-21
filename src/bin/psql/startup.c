@@ -1,7 +1,7 @@
 /*
  * psql - the PostgreSQL interactive terminal
  *
- * Copyright (c) 2000-2020, PostgreSQL Global Development Group
+ * Copyright (c) 2000-2021, PostgreSQL Global Development Group
  *
  * src/bin/psql/startup.c
  */
@@ -145,6 +145,7 @@ main(int argc, char *argv[])
 	pset.progname = get_progname(argv[0]);
 
 	pset.db = NULL;
+	pset.dead_conn = NULL;
 	setDecimalLocale();
 	pset.encoding = PQenv2encoding();
 	pset.queryFout = stdout;
@@ -294,7 +295,7 @@ main(int argc, char *argv[])
 
 	if (PQstatus(pset.db) == CONNECTION_BAD)
 	{
-		pg_log_error("could not connect to server: %s", PQerrorMessage(pset.db));
+		pg_log_error("%s", PQerrorMessage(pset.db));
 		PQfinish(pset.db);
 		exit(EXIT_BADCONN);
 	}
@@ -442,7 +443,10 @@ error:
 	/* clean up */
 	if (pset.logfile)
 		fclose(pset.logfile);
-	PQfinish(pset.db);
+	if (pset.db)
+		PQfinish(pset.db);
+	if (pset.dead_conn)
+		PQfinish(pset.dead_conn);
 	setQFout(NULL);
 
 	return successResult;
@@ -1156,6 +1160,13 @@ show_context_hook(const char *newval)
 }
 
 static bool
+hide_compression_hook(const char *newval)
+{
+	return ParseVariableBool(newval, "HIDE_TOAST_COMPRESSION",
+							 &pset.hide_compression);
+}
+
+static bool
 hide_tableam_hook(const char *newval)
 {
 	return ParseVariableBool(newval, "HIDE_TABLEAM", &pset.hide_tableam);
@@ -1223,6 +1234,9 @@ EstablishVariableSpace(void)
 	SetVariableHooks(pset.vars, "SHOW_CONTEXT",
 					 show_context_substitute_hook,
 					 show_context_hook);
+	SetVariableHooks(pset.vars, "HIDE_TOAST_COMPRESSION",
+					 bool_substitute_hook,
+					 hide_compression_hook);
 	SetVariableHooks(pset.vars, "HIDE_TABLEAM",
 					 bool_substitute_hook,
 					 hide_tableam_hook);

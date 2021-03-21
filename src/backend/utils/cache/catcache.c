@@ -3,7 +3,7 @@
  * catcache.c
  *	  System catalog cache for tuples matching a key.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -1128,7 +1128,7 @@ IndexScanOK(CatCache *cache, ScanKey cur_skey)
 }
 
 /*
- *	SearchCatCacheInternal
+ *	SearchCatCache
  *
  *		This call searches a system cache for a tuple, opening the relation
  *		if necessary (on the first access to a particular cache).
@@ -1497,7 +1497,7 @@ GetCatCacheHashValue(CatCache *cache,
  *		It doesn't make any sense to specify all of the cache's key columns
  *		here: since the key is unique, there could be at most one match, so
  *		you ought to use SearchCatCache() instead.  Hence this function takes
- *		one less Datum argument than SearchCatCache() does.
+ *		one fewer Datum argument than SearchCatCache() does.
  *
  *		The caller must not modify the list object or the pointed-to tuples,
  *		and must call ReleaseCatCacheList() when done with the list.

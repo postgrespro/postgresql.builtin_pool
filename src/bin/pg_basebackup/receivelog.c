@@ -5,7 +5,7 @@
  *
  * Author: Magnus Hagander <magnus@hagander.net>
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *		  src/bin/pg_basebackup/receivelog.c
@@ -560,7 +560,7 @@ ReceiveXlogStream(PGconn *conn, StreamCtl *stream)
 		/* Initiate the replication stream at specified location */
 		snprintf(query, sizeof(query), "START_REPLICATION %s%X/%X TIMELINE %u",
 				 slotcmd,
-				 (uint32) (stream->startpos >> 32), (uint32) stream->startpos,
+				 LSN_FORMAT_ARGS(stream->startpos),
 				 stream->timeline);
 		res = PQexec(conn, query);
 		if (PQresultStatus(res) != PGRES_COPY_BOTH)
@@ -616,8 +616,8 @@ ReceiveXlogStream(PGconn *conn, StreamCtl *stream)
 			if (stream->startpos > stoppos)
 			{
 				pg_log_error("server stopped streaming timeline %u at %X/%X, but reported next timeline %u to begin at %X/%X",
-							 stream->timeline, (uint32) (stoppos >> 32), (uint32) stoppos,
-							 newtimeline, (uint32) (stream->startpos >> 32), (uint32) stream->startpos);
+							 stream->timeline, LSN_FORMAT_ARGS(stoppos),
+							 newtimeline, LSN_FORMAT_ARGS(stream->startpos));
 				goto error;
 			}
 

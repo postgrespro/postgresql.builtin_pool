@@ -11,7 +11,8 @@
  <para>
   It is recommended that most users download the binary distribution for
   Windows, available as a graphical installer package
-  from the <productname>PostgreSQL</productname> website. Building from source
+  from the <productname>PostgreSQL</productname> website at
+  <ulink url="https://www.postgresql.org/download/"></ulink>. Building from source
   is only intended for people developing <productname>PostgreSQL</productname>
   or extensions.
  </para>
@@ -256,7 +257,8 @@ $ENV{MSBFLAGS}="/m";
 
      <note>
        <para>
-       The obsolete <literal>winflex</literal> binaries distributed on the PostgreSQL FTP site
+       The obsolete <literal>winflex</literal> binaries distributed in the
+       downloads section of the PostgreSQL web site
        and referenced in older documentation will fail with <quote>flex: fatal
        internal error, exec failed</quote> on 64-bit Windows hosts. Use Flex from
        MSYS instead.
@@ -493,6 +495,24 @@ $ENV{PERL5LIB}=$ENV{PERL5LIB} . ';c:\IPC-Run-0.94\lib';
      </para></listitem>
     </varlistentry>
    </variablelist>
+  </para>
+
+  <para>
+   The TAP tests run with <command>vcregress</command> support the
+   environment variables <varname>PROVE_TESTS</varname>, that is expanded
+   automatically using the name patterns given, and
+   <varname>PROVE_FLAGS</varname>. These can be set on a Windows terminal,
+   before running <command>vcregress</command>:
+<programlisting>
+set PROVE_FLAGS=--timer --jobs 2
+set PROVE_TESTS=t/020*.pl t/010*.pl
+</programlisting>
+   It is also possible to set up those parameters in
+   <filename>buildenv.pl</filename>:
+<programlisting>
+$ENV{PROVE_FLAGS}='--timer --jobs 2'
+$ENV{PROVE_TESTS}='t/020*.pl t/010*.pl'
+</programlisting>
   </para>
  </sect2>
 

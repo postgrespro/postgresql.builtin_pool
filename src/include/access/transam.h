@@ -4,7 +4,7 @@
  *	  postgres transaction access method support code
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/access/transam.h
@@ -305,7 +305,7 @@ extern void AssertTransactionIdInAllowableRange(TransactionId xid);
  * For callers that just need the XID part of the next transaction ID.
  */
 static inline TransactionId
-ReadNewTransactionId(void)
+ReadNextTransactionId(void)
 {
 	return XidFromFullTransactionId(ReadNextFullTransactionId());
 }

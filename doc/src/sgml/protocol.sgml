@@ -1278,6 +1278,8 @@ SELCT 1/0;<!-- this typo is intentional -->
     <varname>server_encoding</varname>,
     <varname>client_encoding</varname>,
     <varname>application_name</varname>,
+    <varname>default_transaction_read_only</varname>,
+    <varname>in_hot_standby</varname>,
     <varname>is_superuser</varname>,
     <varname>session_authorization</varname>,
     <varname>DateStyle</varname>,
@@ -1290,7 +1292,11 @@ SELCT 1/0;<!-- this typo is intentional -->
     <varname>standard_conforming_strings</varname> was not reported by releases
     before 8.1;
     <varname>IntervalStyle</varname> was not reported by releases before 8.4;
-    <varname>application_name</varname> was not reported by releases before 9.0.)
+    <varname>application_name</varname> was not reported by releases before
+    9.0;
+    <varname>default_transaction_read_only</varname> and
+    <varname>in_hot_standby</varname> were not reported by releases before
+    14.)
     Note that
     <varname>server_version</varname>,
     <varname>server_encoding</varname> and
@@ -1454,6 +1460,10 @@ SELCT 1/0;<!-- this typo is intentional -->
     <acronym>SSL</acronym>-encrypted.  To continue after
     <literal>N</literal>, send the usual StartupMessage and proceed without
     encryption.
+    (Alternatively, it is permissible to issue a GSSENCRequest message
+    after an <literal>N</literal> response to try to
+    use <acronym>GSSAPI</acronym> encryption instead
+    of <acronym>SSL</acronym>.)
    </para>
 
    <para>
@@ -1501,14 +1511,42 @@ SELCT 1/0;<!-- this typo is intentional -->
     is willing or unwilling to perform <acronym>GSSAPI</acronym> encryption,
     respectively.  The frontend might close the connection at this point
     if it is dissatisfied with the response.  To continue after
-    <literal>G</literal>, using the GSSAPI C bindings as discussed in RFC2744
+    <literal>G</literal>, using the GSSAPI C bindings as discussed in
+    <ulink url="https://tools.ietf.org/html/rfc2744">RFC 2744</ulink>
     or equivalent, perform a <acronym>GSSAPI</acronym> initialization by
     calling <function>gss_init_sec_context()</function> in a loop and sending
     the result to the server, starting with an empty input and then with each
     result from the server, until it returns no output.  When sending the
     results of <function>gss_init_sec_context()</function> to the server,
     prepend the length of the message as a four byte integer in network byte
-    order.  If this is successful, then use <function>gss_wrap()</function> to
+    order.
+    To continue after
+    <literal>N</literal>, send the usual StartupMessage and proceed without
+    encryption.
+    (Alternatively, it is permissible to issue an SSLRequest message
+    after an <literal>N</literal> response to try to
+    use <acronym>SSL</acronym> encryption instead
+    of <acronym>GSSAPI</acronym>.)
+   </para>
+
+   <para>
+    The frontend should also be prepared to handle an ErrorMessage
+    response to GSSENCRequest from the server.  This would only occur if
+    the server predates the addition of <acronym>GSSAPI</acronym> encryption
+    support to <productname>PostgreSQL</productname>.  In this case the
+    connection must be closed, but the frontend might choose to open a fresh
+    connection and proceed without requesting <acronym>GSSAPI</acronym>
+    encryption.
+   </para>
+
+   <para>
+    An initial GSSENCRequest can also be used in a connection that is being
+    opened to send a CancelRequest message.
+   </para>
+
+   <para>
+    Once <acronym>GSSAPI</acronym> encryption has been successfully
+    established, use <function>gss_wrap()</function> to
     encrypt the usual StartupMessage and all subsequent data, prepending the
     length of the result from <function>gss_wrap()</function> as a four byte
     integer in network byte order to the actual encrypted payload.  Note that
@@ -1519,26 +1557,7 @@ SELCT 1/0;<!-- this typo is intentional -->
     <function>gss_wrap()</function> calls.  Typical segments are 8kB of
     unencrypted data, resulting in encrypted packets of slightly larger than 8kB
     but well within the 16kB maximum.  The server can be expected to not send
-    encrypted packets of larger than 16kB to the client.  To continue after
-    <literal>N</literal>, send the usual StartupMessage and proceed without
-    encryption.
-   </para>
-
-   <para>
-    The frontend should also be prepared to handle an ErrorMessage
-    response to GSSENCRequest from the server.  This would only occur if
-    the server predates the addition of <acronym>GSSAPI</acronym> encryption
-    support to <productname>PostgreSQL</productname>.  In this case the
-    connection must be closed, but the frontend might choose to open a fresh
-    connection and proceed without requesting <acronym>GSSAPI</acronym>
-    encryption.  Given the length limits specified above, the ErrorMessage can
-    not be confused with a proper response from the server with an appropriate
-    length.
-   </para>
-
-   <para>
-    An initial GSSENCRequest can also be used in a connection that is being
-    opened to send a CancelRequest message.
+    encrypted packets of larger than 16kB to the client.
    </para>
 
    <para>
@@ -1616,7 +1635,8 @@ ErrorMessage.
    The implemented SASL mechanisms at the moment
    are <literal>SCRAM-SHA-256</literal> and its variant with channel
    binding <literal>SCRAM-SHA-256-PLUS</literal>. They are described in
-   detail in RFC 7677 and RFC 5802.
+   detail in <ulink url="https://tools.ietf.org/html/rfc7677">RFC 7677</ulink>
+   and <ulink url="https://tools.ietf.org/html/rfc5802">RFC 5802</ulink>.
   </para>
 
   <para>
@@ -1859,7 +1879,9 @@ The commands accepted in replication mode are:
      <para>
       Requests the server to send over the timeline history file for timeline
       <replaceable class="parameter">tli</replaceable>.  Server replies with a
-      result set of a single row, containing two fields:
+      result set of a single row, containing two fields.  While the fields
+      are labeled as <type>text</type>, they effectively return raw bytes,
+      with no encoding conversion:
      </para>
 
      <para>
@@ -1877,7 +1899,7 @@ The commands accepted in replication mode are:
 
       <varlistentry>
       <term>
-       <literal>content</literal> (<type>bytea</type>)
+       <literal>content</literal> (<type>text</type>)
       </term>
       <listitem>
       <para>
@@ -2045,8 +2067,8 @@ The commands accepted in replication mode are:
       the history of the server, the server will stream all the WAL on that
       timeline starting from the requested start point up to the point where
       the server switched to another timeline. If the client requests
-      streaming at exactly the end of an old timeline, the server responds
-      immediately with CommandComplete without entering COPY mode.
+      streaming at exactly the end of an old timeline, the server skips COPY
+      mode entirely.
      </para>
 
      <para>
@@ -2059,8 +2081,9 @@ The commands accepted in replication mode are:
       the switch position is the end of the WAL that was streamed, but there
       are corner cases where the server can send some WAL from the old
       timeline that it has not itself replayed before promoting. Finally, the
-      server sends CommandComplete message, and is ready to accept a new
-      command.
+      server sends two CommandComplete messages (one that ends the CopyData
+      and the other ends the <literal>START_REPLICATION</literal> itself), and
+      is ready to accept a new command.
      </para>
 
      <para>
@@ -2382,7 +2405,8 @@ The commands accepted in replication mode are:
 
      <para>
       The messages inside the CopyBothResponse messages are of the same format
-      documented for <literal>START_REPLICATION ... PHYSICAL</literal>.
+      documented for <literal>START_REPLICATION ... PHYSICAL</literal>, including
+      two CommandComplete messages.
      </para>
 
      <para>
@@ -2587,7 +2611,7 @@ The commands accepted in replication mode are:
           and sent along with the backup.  The manifest is a list of every
           file present in the backup with the exception of any WAL files that
           may be included. It also stores the size, last modification time, and
-          an optional checksum for each file.
+          optionally a checksum for each file.
           A value of <literal>force-encode</literal> forces all filenames
           to be hex-encoded; otherwise, this type of encoding is performed only
           for files whose names are non-UTF8 octet sequences.
@@ -2603,7 +2627,7 @@ The commands accepted in replication mode are:
         <term><literal>MANIFEST_CHECKSUMS</literal> <replaceable>checksum_algorithm</replaceable></term>
         <listitem>
          <para>
-          Specifies the algorithm that should be applied to each file included
+          Specifies the checksum algorithm that should be applied to each file included
           in the backup manifest. Currently, the available
           algorithms are <literal>NONE</literal>, <literal>CRC32C</literal>,
           <literal>SHA224</literal>, <literal>SHA256</literal>,
@@ -2616,7 +2640,7 @@ The commands accepted in replication mode are:
      </para>
      <para>
       When the backup is started, the server will first send two
-      ordinary result sets, followed by one or more CopyResponse
+      ordinary result sets, followed by one or more CopyOutResponse
       results.
      </para>
      <para>
@@ -2659,15 +2683,15 @@ The commands accepted in replication mode are:
       </variablelist>
      </para>
      <para>
-      After the second regular result set, one or more CopyResponse results
+      After the second regular result set, one or more CopyOutResponse results
       will be sent, one for the main data directory and one for each additional tablespace other
       than <literal>pg_default</literal> and <literal>pg_global</literal>. The data in
-      the CopyResponse results will be a tar format (following the
+      the CopyOutResponse results will be a tar format (following the
       <quote>ustar interchange format</quote> specified in the POSIX 1003.1-2008
       standard) dump of the tablespace contents, except that the two trailing
       blocks of zeroes specified in the standard are omitted.
       After the tar data is complete, and if a backup manifest was requested,
-      another CopyResponse result is sent, containing the manifest data for the
+      another CopyOutResponse result is sent, containing the manifest data for the
       current base backup. In any case, a final ordinary result set will be
       sent, containing the WAL end position of the backup, in the same format as
       the start position.
@@ -2837,7 +2861,7 @@ The commands accepted in replication mode are:
   <para>
    Every sent transaction contains zero or more DML messages (Insert,
    Update, Delete). In case of a cascaded setup it can also contain Origin
-   messages. The origin message indicated that the transaction originated on
+   messages. The origin message indicates that the transaction originated on
    different replication node. Since a replication node in the scope of logical
    replication protocol can be pretty much anything, the only identifier
    is the origin name. It's downstream's responsibility to handle this as
@@ -3236,51 +3260,6 @@ AuthenticationGSS (B)
 
 <varlistentry>
 <term>
-AuthenticationSSPI (B)
-</term>
-<listitem>
-<para>
-
-<variablelist>
-<varlistentry>
-<term>
-        Byte1('R')
-</term>
-<listitem>
-<para>
-                Identifies the message as an authentication request.
-</para>
-</listitem>
-</varlistentry>
-<varlistentry>
-<term>
-        Int32(8)
-</term>
-<listitem>
-<para>
-                Length of message contents in bytes, including self.
-</para>
-</listitem>
-</varlistentry>
-<varlistentry>
-<term>
-        Int32(9)
-</term>
-<listitem>
-<para>
-                Specifies that SSPI authentication is required.
-</para>
-</listitem>
-</varlistentry>
-</variablelist>
-
-</para>
-</listitem>
-</varlistentry>
-
-
-<varlistentry>
-<term>
 AuthenticationGSSContinue (B)
 </term>
 <listitem>
@@ -3324,6 +3303,51 @@ AuthenticationGSSContinue (B)
 <listitem>
 <para>
                 GSSAPI or SSPI authentication data.
+</para>
+</listitem>
+</varlistentry>
+</variablelist>
+
+</para>
+</listitem>
+</varlistentry>
+
+
+<varlistentry>
+<term>
+AuthenticationSSPI (B)
+</term>
+<listitem>
+<para>
+
+<variablelist>
+<varlistentry>
+<term>
+        Byte1('R')
+</term>
+<listitem>
+<para>
+                Identifies the message as an authentication request.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int32(8)
+</term>
+<listitem>
+<para>
+                Length of message contents in bytes, including self.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int32(9)
+</term>
+<listitem>
+<para>
+                Specifies that SSPI authentication is required.
 </para>
 </listitem>
 </varlistentry>
@@ -4858,6 +4882,44 @@ FunctionCallResponse (B)
 
 <varlistentry>
 <term>
+GSSENCRequest (F)
+</term>
+<listitem>
+<para>
+
+<variablelist>
+<varlistentry>
+<term>
+        Int32(8)
+</term>
+<listitem>
+<para>
+                Length of message contents in bytes, including self.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int32(80877104)
+</term>
+<listitem>
+<para>
+                The <acronym>GSSAPI</acronym> Encryption request code.  The value is chosen to contain
+                <literal>1234</literal> in the most significant 16 bits, and <literal>5680</literal> in the
+                least significant 16 bits.  (To avoid confusion, this code
+                must not be the same as any protocol version number.)
+</para>
+</listitem>
+</varlistentry>
+</variablelist>
+
+</para>
+</listitem>
+</varlistentry>
+
+
+<varlistentry>
+<term>
 GSSResponse (F)
 </term>
 <listitem>
@@ -5810,43 +5872,6 @@ SSLRequest (F)
 <para>
                 The <acronym>SSL</acronym> request code.  The value is chosen to contain
                 <literal>1234</literal> in the most significant 16 bits, and <literal>5679</literal> in the
-                least significant 16 bits.  (To avoid confusion, this code
-                must not be the same as any protocol version number.)
-</para>
-</listitem>
-</varlistentry>
-</variablelist>
-
-</para>
-</listitem>
-</varlistentry>
-
-<varlistentry>
-<term>
-GSSENCRequest (F)
-</term>
-<listitem>
-<para>
-
-<variablelist>
-<varlistentry>
-<term>
-        Int32(8)
-</term>
-<listitem>
-<para>
-                Length of message contents in bytes, including self.
-</para>
-</listitem>
-</varlistentry>
-<varlistentry>
-<term>
-        Int32(80877104)
-</term>
-<listitem>
-<para>
-                The <acronym>GSSAPI</acronym> Encryption request code.  The value is chosen to contain
-                <literal>1234</literal> in the most significant 16 bits, and <literal>5680</literal> in the
                 least significant 16 bits.  (To avoid confusion, this code
                 must not be the same as any protocol version number.)
 </para>
@@ -6905,8 +6930,8 @@ Delete
 </term>
 <listitem>
 <para>
-                Identifies the following TupleData message as a old tuple.
-                This field is present if the table in which the delete has
+                Identifies the following TupleData message as an old tuple.
+                This field is present if the table in which the delete
                 happened has REPLICA IDENTITY set to FULL.
 </para>
 </listitem>

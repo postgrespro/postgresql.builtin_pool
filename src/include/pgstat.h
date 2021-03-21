@@ -3,7 +3,7 @@
  *
  *	Definitions for the PostgreSQL statistics collector daemon.
  *
- *	Copyright (c) 2001-2020, PostgreSQL Global Development Group
+ *	Copyright (c) 2001-2021, PostgreSQL Global Development Group
  *
  *	src/include/pgstat.h
  * ----------
@@ -41,6 +41,16 @@ typedef enum TrackFunctionsLevel
 	TRACK_FUNC_ALL
 }			TrackFunctionsLevel;
 
+/* Values to track the cause of session termination */
+typedef enum SessionEndType
+{
+	DISCONNECT_NOT_YET,			/* still active */
+	DISCONNECT_NORMAL,
+	DISCONNECT_CLIENT_EOF,
+	DISCONNECT_FATAL,
+	DISCONNECT_KILLED
+} SessionEndType;
+
 /* ----------
  * The types of backend -> collector messages
  * ----------
@@ -56,18 +66,22 @@ typedef enum StatMsgType
 	PGSTAT_MTYPE_RESETSHAREDCOUNTER,
 	PGSTAT_MTYPE_RESETSINGLECOUNTER,
 	PGSTAT_MTYPE_RESETSLRUCOUNTER,
+	PGSTAT_MTYPE_RESETREPLSLOTCOUNTER,
 	PGSTAT_MTYPE_AUTOVAC_START,
 	PGSTAT_MTYPE_VACUUM,
 	PGSTAT_MTYPE_ANALYZE,
 	PGSTAT_MTYPE_ARCHIVER,
 	PGSTAT_MTYPE_BGWRITER,
+	PGSTAT_MTYPE_WAL,
 	PGSTAT_MTYPE_SLRU,
 	PGSTAT_MTYPE_FUNCSTAT,
 	PGSTAT_MTYPE_FUNCPURGE,
 	PGSTAT_MTYPE_RECOVERYCONFLICT,
 	PGSTAT_MTYPE_TEMPFILE,
 	PGSTAT_MTYPE_DEADLOCK,
-	PGSTAT_MTYPE_CHECKSUMFAILURE
+	PGSTAT_MTYPE_CHECKSUMFAILURE,
+	PGSTAT_MTYPE_REPLSLOT,
+	PGSTAT_MTYPE_CONNECTION,
 } StatMsgType;
 
 /* ----------
@@ -122,7 +136,8 @@ typedef struct PgStat_TableCounts
 typedef enum PgStat_Shared_Reset_Target
 {
 	RESET_ARCHIVER,
-	RESET_BGWRITER
+	RESET_BGWRITER,
+	RESET_WAL
 } PgStat_Shared_Reset_Target;
 
 /* Possible object types for resetting single counters */
@@ -357,6 +372,18 @@ typedef struct PgStat_MsgResetslrucounter
 } PgStat_MsgResetslrucounter;
 
 /* ----------
+ * PgStat_MsgResetreplslotcounter Sent by the backend to tell the collector
+ *								to reset replication slot counter(s)
+ * ----------
+ */
+typedef struct PgStat_MsgResetreplslotcounter
+{
+	PgStat_MsgHdr m_hdr;
+	char		m_slotname[NAMEDATALEN];
+	bool		clearall;
+} PgStat_MsgResetreplslotcounter;
+
+/* ----------
  * PgStat_MsgAutovacStart		Sent by the autovacuum daemon to signal
  *								that a database is going to be processed
  * ----------
@@ -437,6 +464,25 @@ typedef struct PgStat_MsgBgWriter
 } PgStat_MsgBgWriter;
 
 /* ----------
+ * PgStat_MsgWal			Sent by backends and background processes to update WAL statistics.
+ * ----------
+ */
+typedef struct PgStat_MsgWal
+{
+	PgStat_MsgHdr m_hdr;
+	PgStat_Counter m_wal_records;
+	PgStat_Counter m_wal_fpi;
+	uint64		m_wal_bytes;
+	PgStat_Counter m_wal_buffers_full;
+	PgStat_Counter m_wal_write;
+	PgStat_Counter m_wal_sync;
+	PgStat_Counter m_wal_write_time;	/* time spent writing wal records in
+										 * microseconds */
+	PgStat_Counter m_wal_sync_time; /* time spent syncing wal records in
+									 * microseconds */
+} PgStat_MsgWal;
+
+/* ----------
  * PgStat_MsgSLRU			Sent by a backend to update SLRU statistics.
  * ----------
  */
@@ -452,6 +498,25 @@ typedef struct PgStat_MsgSLRU
 	PgStat_Counter m_flush;
 	PgStat_Counter m_truncate;
 } PgStat_MsgSLRU;
+
+/* ----------
+ * PgStat_MsgReplSlot	Sent by a backend or a wal sender to update replication
+ *						slot statistics.
+ * ----------
+ */
+typedef struct PgStat_MsgReplSlot
+{
+	PgStat_MsgHdr m_hdr;
+	char		m_slotname[NAMEDATALEN];
+	bool		m_drop;
+	PgStat_Counter m_spill_txns;
+	PgStat_Counter m_spill_count;
+	PgStat_Counter m_spill_bytes;
+	PgStat_Counter m_stream_txns;
+	PgStat_Counter m_stream_count;
+	PgStat_Counter m_stream_bytes;
+} PgStat_MsgReplSlot;
+
 
 /* ----------
  * PgStat_MsgRecoveryConflict	Sent by the backend upon recovery conflict
@@ -574,6 +639,21 @@ typedef struct PgStat_MsgChecksumFailure
 	TimestampTz m_failure_time;
 } PgStat_MsgChecksumFailure;
 
+/* ----------
+ * PgStat_MsgConn			Sent by the backend to update connection statistics.
+ * ----------
+ */
+typedef struct PgStat_MsgConn
+{
+	PgStat_MsgHdr m_hdr;
+	Oid			m_databaseid;
+	PgStat_Counter m_count;
+	PgStat_Counter m_session_time;
+	PgStat_Counter m_active_time;
+	PgStat_Counter m_idle_in_xact_time;
+	SessionEndType m_disconnect;
+} PgStat_MsgConn;
+
 
 /* ----------
  * PgStat_Msg					Union over all possible messages.
@@ -591,11 +671,13 @@ typedef union PgStat_Msg
 	PgStat_MsgResetsharedcounter msg_resetsharedcounter;
 	PgStat_MsgResetsinglecounter msg_resetsinglecounter;
 	PgStat_MsgResetslrucounter msg_resetslrucounter;
+	PgStat_MsgResetreplslotcounter msg_resetreplslotcounter;
 	PgStat_MsgAutovacStart msg_autovacuum_start;
 	PgStat_MsgVacuum msg_vacuum;
 	PgStat_MsgAnalyze msg_analyze;
 	PgStat_MsgArchiver msg_archiver;
 	PgStat_MsgBgWriter msg_bgwriter;
+	PgStat_MsgWal msg_wal;
 	PgStat_MsgSLRU msg_slru;
 	PgStat_MsgFuncstat msg_funcstat;
 	PgStat_MsgFuncpurge msg_funcpurge;
@@ -603,6 +685,8 @@ typedef union PgStat_Msg
 	PgStat_MsgDeadlock msg_deadlock;
 	PgStat_MsgTempFile msg_tempfile;
 	PgStat_MsgChecksumFailure msg_checksumfailure;
+	PgStat_MsgReplSlot msg_replslot;
+	PgStat_MsgConn msg_conn;
 } PgStat_Msg;
 
 
@@ -614,7 +698,7 @@ typedef union PgStat_Msg
  * ------------------------------------------------------------
  */
 
-#define PGSTAT_FILE_FORMAT_ID	0x01A5BC9D
+#define PGSTAT_FILE_FORMAT_ID	0x01A5BCA1
 
 /* ----------
  * PgStat_StatDBEntry			The collector's data per database
@@ -645,6 +729,13 @@ typedef struct PgStat_StatDBEntry
 	TimestampTz last_checksum_failure;
 	PgStat_Counter n_block_read_time;	/* times in microseconds */
 	PgStat_Counter n_block_write_time;
+	PgStat_Counter n_sessions;
+	PgStat_Counter total_session_time;
+	PgStat_Counter total_active_time;
+	PgStat_Counter total_idle_in_xact_time;
+	PgStat_Counter n_sessions_abandoned;
+	PgStat_Counter n_sessions_fatal;
+	PgStat_Counter n_sessions_killed;
 
 	TimestampTz stat_reset_timestamp;
 	TimestampTz stats_timestamp;	/* time of db stats file update */
@@ -746,6 +837,22 @@ typedef struct PgStat_GlobalStats
 } PgStat_GlobalStats;
 
 /*
+ * WAL statistics kept in the stats collector
+ */
+typedef struct PgStat_WalStats
+{
+	PgStat_Counter wal_records;
+	PgStat_Counter wal_fpi;
+	uint64		wal_bytes;
+	PgStat_Counter wal_buffers_full;
+	PgStat_Counter wal_write;
+	PgStat_Counter wal_sync;
+	PgStat_Counter wal_write_time;
+	PgStat_Counter wal_sync_time;
+	TimestampTz stat_reset_timestamp;
+} PgStat_WalStats;
+
+/*
  * SLRU statistics kept in the stats collector
  */
 typedef struct PgStat_SLRUStats
@@ -760,6 +867,20 @@ typedef struct PgStat_SLRUStats
 	TimestampTz stat_reset_timestamp;
 } PgStat_SLRUStats;
 
+/*
+ * Replication slot statistics kept in the stats collector
+ */
+typedef struct PgStat_ReplSlotStats
+{
+	char		slotname[NAMEDATALEN];
+	PgStat_Counter spill_txns;
+	PgStat_Counter spill_count;
+	PgStat_Counter spill_bytes;
+	PgStat_Counter stream_txns;
+	PgStat_Counter stream_count;
+	PgStat_Counter stream_bytes;
+	TimestampTz stat_reset_timestamp;
+} PgStat_ReplSlotStats;
 
 /* ----------
  * Backend states
@@ -850,6 +971,7 @@ typedef enum
 	WAIT_EVENT_BGWORKER_SHUTDOWN,
 	WAIT_EVENT_BGWORKER_STARTUP,
 	WAIT_EVENT_BTREE_PAGE,
+	WAIT_EVENT_BUFFER_IO,
 	WAIT_EVENT_CHECKPOINT_DONE,
 	WAIT_EVENT_CHECKPOINT_START,
 	WAIT_EVENT_EXECUTE_GATHER,
@@ -887,6 +1009,7 @@ typedef enum
 	WAIT_EVENT_REPLICATION_SLOT_DROP,
 	WAIT_EVENT_SAFE_SNAPSHOT,
 	WAIT_EVENT_SYNC_REP,
+	WAIT_EVENT_WALRCV_EXIT,
 	WAIT_EVENT_XACT_GROUP_UPDATE
 } WaitEventIPC;
 
@@ -1000,7 +1123,8 @@ typedef enum ProgressCommandType
 	PROGRESS_COMMAND_ANALYZE,
 	PROGRESS_COMMAND_CLUSTER,
 	PROGRESS_COMMAND_CREATE_INDEX,
-	PROGRESS_COMMAND_BASEBACKUP
+	PROGRESS_COMMAND_BASEBACKUP,
+	PROGRESS_COMMAND_COPY
 } ProgressCommandType;
 
 #define PGSTAT_NUM_PROGRESS_PARAM	20
@@ -1023,7 +1147,6 @@ typedef struct PgBackendSSLStatus
 {
 	/* Information about SSL connection */
 	int			ssl_bits;
-	bool		ssl_compression;
 	char		ssl_version[NAMEDATALEN];
 	char		ssl_cipher[NAMEDATALEN];
 	char		ssl_client_dn[NAMEDATALEN];
@@ -1266,10 +1389,20 @@ extern char *pgstat_stat_filename;
 extern PgStat_MsgBgWriter BgWriterStats;
 
 /*
+ * WAL statistics counter is updated by backends and background processes
+ */
+extern PgStat_MsgWal WalStats;
+
+/*
  * Updated by pgstat_count_buffer_*_time macros
  */
 extern PgStat_Counter pgStatBlockReadTime;
 extern PgStat_Counter pgStatBlockWriteTime;
+
+/*
+ * Updated by the traffic cop and in errfinish()
+ */
+extern SessionEndType pgStatSessionEndCause;
 
 /* ----------
  * Functions called from postmaster
@@ -1303,6 +1436,7 @@ extern void pgstat_reset_counters(void);
 extern void pgstat_reset_shared_counters(const char *);
 extern void pgstat_reset_single_counter(Oid objectid, PgStat_Single_Reset_Type type);
 extern void pgstat_reset_slru_counter(const char *);
+extern void pgstat_reset_replslot_counter(const char *name);
 
 extern void pgstat_report_autovac(Oid dboid);
 extern void pgstat_report_vacuum(Oid tableoid, bool shared,
@@ -1315,6 +1449,9 @@ extern void pgstat_report_recovery_conflict(int reason);
 extern void pgstat_report_deadlock(void);
 extern void pgstat_report_checksum_failures_in_db(Oid dboid, int failurecount);
 extern void pgstat_report_checksum_failure(void);
+extern void pgstat_report_replslot(const char *slotname, int spilltxns, int spillcount,
+								   int spillbytes, int streamtxns, int streamcount, int streambytes);
+extern void pgstat_report_replslot_drop(const char *slotname);
 
 extern void pgstat_initialize(void);
 extern void pgstat_bestart(void);
@@ -1464,6 +1601,8 @@ extern void pgstat_twophase_postabort(TransactionId xid, uint16 info,
 
 extern void pgstat_send_archiver(const char *xlog, bool failed);
 extern void pgstat_send_bgwriter(void);
+extern void pgstat_report_wal(void);
+extern bool pgstat_send_wal(bool force);
 
 /* ----------
  * Support functions for the SQL-callable functions to
@@ -1478,7 +1617,9 @@ extern PgStat_StatFuncEntry *pgstat_fetch_stat_funcentry(Oid funcid);
 extern int	pgstat_fetch_stat_numbackends(void);
 extern PgStat_ArchiverStats *pgstat_fetch_stat_archiver(void);
 extern PgStat_GlobalStats *pgstat_fetch_global(void);
+extern PgStat_WalStats *pgstat_fetch_stat_wal(void);
 extern PgStat_SLRUStats *pgstat_fetch_slru(void);
+extern PgStat_ReplSlotStats *pgstat_fetch_replslot(int *nslots_p);
 
 extern void pgstat_count_slru_page_zeroed(int slru_idx);
 extern void pgstat_count_slru_page_hit(int slru_idx);

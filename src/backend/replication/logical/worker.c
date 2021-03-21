@@ -2,7 +2,7 @@
  * worker.c
  *	   PostgreSQL logical replication worker (apply)
  *
- * Copyright (c) 2016-2020, PostgreSQL Global Development Group
+ * Copyright (c) 2016-2021, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *	  src/backend/replication/logical/worker.c
@@ -81,8 +81,6 @@
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
 #include "optimizer/optimizer.h"
-#include "parser/analyze.h"
-#include "parser/parse_relation.h"
 #include "pgstat.h"
 #include "postmaster/bgworker.h"
 #include "postmaster/interrupt.h"
@@ -226,6 +224,8 @@ static void maybe_reread_subscription(void);
 /* prototype needed because of stream_commit */
 static void apply_dispatch(StringInfo s);
 
+static void apply_handle_commit_internal(StringInfo s,
+										 LogicalRepCommitData *commit_data);
 static void apply_handle_insert_internal(ResultRelInfo *relinfo,
 										 EState *estate, TupleTableSlot *remoteslot);
 static void apply_handle_update_internal(ResultRelInfo *relinfo,
@@ -306,7 +306,7 @@ ensure_transaction(void)
  * Returns true for streamed transactions, false otherwise (regular mode).
  */
 static bool
-handle_streamed_transaction(const char action, StringInfo s)
+handle_streamed_transaction(LogicalRepMsgType action, StringInfo s)
 {
 	TransactionId xid;
 
@@ -344,7 +344,6 @@ static EState *
 create_estate_for_relation(LogicalRepRelMapEntry *rel)
 {
 	EState	   *estate;
-	ResultRelInfo *resultRelInfo;
 	RangeTblEntry *rte;
 
 	estate = CreateExecutorState();
@@ -355,13 +354,6 @@ create_estate_for_relation(LogicalRepRelMapEntry *rel)
 	rte->relkind = rel->localrel->rd_rel->relkind;
 	rte->rellockmode = AccessShareLock;
 	ExecInitRangeTable(estate, list_make1(rte));
-
-	resultRelInfo = makeNode(ResultRelInfo);
-	InitResultRelInfo(resultRelInfo, rel->localrel, 1, NULL, 0);
-
-	estate->es_result_relations = resultRelInfo;
-	estate->es_num_result_relations = 1;
-	estate->es_result_relation_info = resultRelInfo;
 
 	estate->es_output_cid = GetCurrentCommandId(true);
 
@@ -719,29 +711,7 @@ apply_handle_commit(StringInfo s)
 
 	Assert(commit_data.commit_lsn == remote_final_lsn);
 
-	/* The synchronization worker runs in single transaction. */
-	if (IsTransactionState() && !am_tablesync_worker())
-	{
-		/*
-		 * Update origin state so we can restart streaming from correct
-		 * position in case of crash.
-		 */
-		replorigin_session_origin_lsn = commit_data.end_lsn;
-		replorigin_session_origin_timestamp = commit_data.committime;
-
-		CommitTransactionCommand();
-		pgstat_report_stat(false);
-
-		store_flush_position(commit_data.end_lsn);
-	}
-	else
-	{
-		/* Process any invalidation messages that might have accumulated. */
-		AcceptInvalidationMessages();
-		maybe_reread_subscription();
-	}
-
-	in_remote_transaction = false;
+	apply_handle_commit_internal(s, &commit_data);
 
 	/* Process any tables that are being synchronized in parallel. */
 	process_syncing_tables(commit_data.end_lsn);
@@ -782,8 +752,10 @@ apply_handle_stream_start(StringInfo s)
 
 	/*
 	 * Start a transaction on stream start, this transaction will be committed
-	 * on the stream stop. We need the transaction for handling the buffile,
-	 * used for serializing the streaming data and subxact info.
+	 * on the stream stop unless it is a tablesync worker in which case it
+	 * will be committed after processing all the messages. We need the
+	 * transaction for handling the buffile, used for serializing the
+	 * streaming data and subxact info.
 	 */
 	ensure_transaction();
 
@@ -804,7 +776,7 @@ apply_handle_stream_start(StringInfo s)
 		hash_ctl.entrysize = sizeof(StreamXidHash);
 		hash_ctl.hcxt = ApplyContext;
 		xidhash = hash_create("StreamXidHash", 1024, &hash_ctl,
-							  HASH_ELEM | HASH_CONTEXT);
+							  HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 	}
 
 	/* open the spool file for this transaction */
@@ -912,6 +884,7 @@ apply_handle_stream_abort(StringInfo s)
 		{
 			/* Cleanup the subxact info */
 			cleanup_subxact_info();
+
 			CommitTransactionCommand();
 			return;
 		}
@@ -938,6 +911,7 @@ apply_handle_stream_abort(StringInfo s)
 
 		/* write the updated subxact list */
 		subxact_info_write(MyLogicalRepWorker->subid, xid);
+
 		CommitTransactionCommand();
 	}
 }
@@ -1058,33 +1032,51 @@ apply_handle_stream_commit(StringInfo s)
 
 	BufFileClose(fd);
 
-	/*
-	 * Update origin state so we can restart streaming from correct position
-	 * in case of crash.
-	 */
-	replorigin_session_origin_lsn = commit_data.end_lsn;
-	replorigin_session_origin_timestamp = commit_data.committime;
-
 	pfree(buffer);
 	pfree(s2.data);
-
-	CommitTransactionCommand();
-	pgstat_report_stat(false);
-
-	store_flush_position(commit_data.end_lsn);
 
 	elog(DEBUG1, "replayed %d (all) changes from file \"%s\"",
 		 nchanges, path);
 
-	in_remote_transaction = false;
-
-	/* Process any tables that are being synchronized in parallel. */
-	process_syncing_tables(commit_data.end_lsn);
+	apply_handle_commit_internal(s, &commit_data);
 
 	/* unlink the files with serialized changes and subxact info */
 	stream_cleanup_files(MyLogicalRepWorker->subid, xid);
 
+	/* Process any tables that are being synchronized in parallel. */
+	process_syncing_tables(commit_data.end_lsn);
+
 	pgstat_report_activity(STATE_IDLE, NULL);
+}
+
+/*
+ * Helper function for apply_handle_commit and apply_handle_stream_commit.
+ */
+static void
+apply_handle_commit_internal(StringInfo s, LogicalRepCommitData *commit_data)
+{
+	if (IsTransactionState())
+	{
+		/*
+		 * Update origin state so we can restart streaming from correct
+		 * position in case of crash.
+		 */
+		replorigin_session_origin_lsn = commit_data->end_lsn;
+		replorigin_session_origin_timestamp = commit_data->committime;
+
+		CommitTransactionCommand();
+		pgstat_report_stat(false);
+
+		store_flush_position(commit_data->end_lsn);
+	}
+	else
+	{
+		/* Process any invalidation messages that might have accumulated. */
+		AcceptInvalidationMessages();
+		maybe_reread_subscription();
+	}
+
+	in_remote_transaction = false;
 }
 
 /*
@@ -1100,7 +1092,7 @@ apply_handle_relation(StringInfo s)
 {
 	LogicalRepRelation *rel;
 
-	if (handle_streamed_transaction('R', s))
+	if (handle_streamed_transaction(LOGICAL_REP_MSG_RELATION, s))
 		return;
 
 	rel = logicalrep_read_rel(s);
@@ -1118,7 +1110,7 @@ apply_handle_type(StringInfo s)
 {
 	LogicalRepTyp typ;
 
-	if (handle_streamed_transaction('Y', s))
+	if (handle_streamed_transaction(LOGICAL_REP_MSG_TYPE, s))
 		return;
 
 	logicalrep_read_typ(s, &typ);
@@ -1150,6 +1142,7 @@ GetRelationIdentityOrPK(Relation rel)
 static void
 apply_handle_insert(StringInfo s)
 {
+	ResultRelInfo *resultRelInfo;
 	LogicalRepRelMapEntry *rel;
 	LogicalRepTupleData newtup;
 	LogicalRepRelId relid;
@@ -1157,7 +1150,7 @@ apply_handle_insert(StringInfo s)
 	TupleTableSlot *remoteslot;
 	MemoryContext oldctx;
 
-	if (handle_streamed_transaction('I', s))
+	if (handle_streamed_transaction(LOGICAL_REP_MSG_INSERT, s))
 		return;
 
 	ensure_transaction();
@@ -1179,6 +1172,8 @@ apply_handle_insert(StringInfo s)
 	remoteslot = ExecInitExtraTupleSlot(estate,
 										RelationGetDescr(rel->localrel),
 										&TTSOpsVirtual);
+	resultRelInfo = makeNode(ResultRelInfo);
+	InitResultRelInfo(resultRelInfo, rel->localrel, 1, NULL, 0);
 
 	/* Input functions may need an active snapshot, so get one */
 	PushActiveSnapshot(GetTransactionSnapshot());
@@ -1191,10 +1186,10 @@ apply_handle_insert(StringInfo s)
 
 	/* For a partitioned table, insert the tuple into a partition. */
 	if (rel->localrel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE)
-		apply_handle_tuple_routing(estate->es_result_relation_info, estate,
+		apply_handle_tuple_routing(resultRelInfo, estate,
 								   remoteslot, NULL, rel, CMD_INSERT);
 	else
-		apply_handle_insert_internal(estate->es_result_relation_info, estate,
+		apply_handle_insert_internal(resultRelInfo, estate,
 									 remoteslot);
 
 	PopActiveSnapshot();
@@ -1218,7 +1213,7 @@ apply_handle_insert_internal(ResultRelInfo *relinfo,
 	ExecOpenIndices(relinfo, false);
 
 	/* Do the insert. */
-	ExecSimpleRelationInsert(estate, remoteslot);
+	ExecSimpleRelationInsert(relinfo, estate, remoteslot);
 
 	/* Cleanup. */
 	ExecCloseIndices(relinfo);
@@ -1265,6 +1260,7 @@ check_relation_updatable(LogicalRepRelMapEntry *rel)
 static void
 apply_handle_update(StringInfo s)
 {
+	ResultRelInfo *resultRelInfo;
 	LogicalRepRelMapEntry *rel;
 	LogicalRepRelId relid;
 	EState	   *estate;
@@ -1275,7 +1271,7 @@ apply_handle_update(StringInfo s)
 	RangeTblEntry *target_rte;
 	MemoryContext oldctx;
 
-	if (handle_streamed_transaction('U', s))
+	if (handle_streamed_transaction(LOGICAL_REP_MSG_UPDATE, s))
 		return;
 
 	ensure_transaction();
@@ -1301,9 +1297,12 @@ apply_handle_update(StringInfo s)
 	remoteslot = ExecInitExtraTupleSlot(estate,
 										RelationGetDescr(rel->localrel),
 										&TTSOpsVirtual);
+	resultRelInfo = makeNode(ResultRelInfo);
+	InitResultRelInfo(resultRelInfo, rel->localrel, 1, NULL, 0);
 
 	/*
-	 * Populate updatedCols so that per-column triggers can fire.  This could
+	 * Populate updatedCols so that per-column triggers can fire, and so
+	 * executor can correctly pass down indexUnchanged hint.  This could
 	 * include more columns than were actually changed on the publisher
 	 * because the logical replication protocol doesn't contain that
 	 * information.  But it would for example exclude columns that only exist
@@ -1325,7 +1324,8 @@ apply_handle_update(StringInfo s)
 		}
 	}
 
-	fill_extraUpdatedCols(target_rte, RelationGetDescr(rel->localrel));
+	/* Also populate extraUpdatedCols, in case we have generated columns */
+	fill_extraUpdatedCols(target_rte, rel->localrel);
 
 	PushActiveSnapshot(GetTransactionSnapshot());
 
@@ -1337,10 +1337,10 @@ apply_handle_update(StringInfo s)
 
 	/* For a partitioned table, apply update to correct partition. */
 	if (rel->localrel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE)
-		apply_handle_tuple_routing(estate->es_result_relation_info, estate,
+		apply_handle_tuple_routing(resultRelInfo, estate,
 								   remoteslot, &newtup, rel, CMD_UPDATE);
 	else
-		apply_handle_update_internal(estate->es_result_relation_info, estate,
+		apply_handle_update_internal(resultRelInfo, estate,
 									 remoteslot, &newtup, rel);
 
 	PopActiveSnapshot();
@@ -1392,7 +1392,8 @@ apply_handle_update_internal(ResultRelInfo *relinfo,
 		EvalPlanQualSetSlot(&epqstate, remoteslot);
 
 		/* Do the actual update. */
-		ExecSimpleRelationUpdate(estate, &epqstate, localslot, remoteslot);
+		ExecSimpleRelationUpdate(relinfo, estate, &epqstate, localslot,
+								 remoteslot);
 	}
 	else
 	{
@@ -1420,6 +1421,7 @@ apply_handle_update_internal(ResultRelInfo *relinfo,
 static void
 apply_handle_delete(StringInfo s)
 {
+	ResultRelInfo *resultRelInfo;
 	LogicalRepRelMapEntry *rel;
 	LogicalRepTupleData oldtup;
 	LogicalRepRelId relid;
@@ -1427,7 +1429,7 @@ apply_handle_delete(StringInfo s)
 	TupleTableSlot *remoteslot;
 	MemoryContext oldctx;
 
-	if (handle_streamed_transaction('D', s))
+	if (handle_streamed_transaction(LOGICAL_REP_MSG_DELETE, s))
 		return;
 
 	ensure_transaction();
@@ -1452,6 +1454,8 @@ apply_handle_delete(StringInfo s)
 	remoteslot = ExecInitExtraTupleSlot(estate,
 										RelationGetDescr(rel->localrel),
 										&TTSOpsVirtual);
+	resultRelInfo = makeNode(ResultRelInfo);
+	InitResultRelInfo(resultRelInfo, rel->localrel, 1, NULL, 0);
 
 	PushActiveSnapshot(GetTransactionSnapshot());
 
@@ -1462,10 +1466,10 @@ apply_handle_delete(StringInfo s)
 
 	/* For a partitioned table, apply delete to correct partition. */
 	if (rel->localrel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE)
-		apply_handle_tuple_routing(estate->es_result_relation_info, estate,
+		apply_handle_tuple_routing(resultRelInfo, estate,
 								   remoteslot, NULL, rel, CMD_DELETE);
 	else
-		apply_handle_delete_internal(estate->es_result_relation_info, estate,
+		apply_handle_delete_internal(resultRelInfo, estate,
 									 remoteslot, &rel->remoterel);
 
 	PopActiveSnapshot();
@@ -1504,13 +1508,13 @@ apply_handle_delete_internal(ResultRelInfo *relinfo, EState *estate,
 		EvalPlanQualSetSlot(&epqstate, localslot);
 
 		/* Do the actual delete. */
-		ExecSimpleRelationDelete(estate, &epqstate, localslot);
+		ExecSimpleRelationDelete(relinfo, estate, &epqstate, localslot);
 	}
 	else
 	{
 		/* The tuple to be deleted could not be found. */
 		elog(DEBUG1,
-			 "logical replication could not find row for delete "
+			 "logical replication did not find row for delete "
 			 "in replication target relation \"%s\"",
 			 RelationGetRelationName(localrel));
 	}
@@ -1570,7 +1574,6 @@ apply_handle_tuple_routing(ResultRelInfo *relinfo,
 	ResultRelInfo *partrelinfo;
 	Relation	partrel;
 	TupleTableSlot *remoteslot_part;
-	PartitionRoutingInfo *partinfo;
 	TupleConversionMap *map;
 	MemoryContext oldctx;
 
@@ -1597,11 +1600,10 @@ apply_handle_tuple_routing(ResultRelInfo *relinfo,
 	 * partition's rowtype. Convert if needed or just copy, using a dedicated
 	 * slot to store the tuple in any case.
 	 */
-	partinfo = partrelinfo->ri_PartitionInfo;
-	remoteslot_part = partinfo->pi_PartitionTupleSlot;
+	remoteslot_part = partrelinfo->ri_PartitionTupleSlot;
 	if (remoteslot_part == NULL)
 		remoteslot_part = table_slot_create(partrel, &estate->es_tupleTable);
-	map = partinfo->pi_RootToPartitionMap;
+	map = partrelinfo->ri_RootToPartitionMap;
 	if (map != NULL)
 		remoteslot_part = execute_attr_map_slot(map->attrMap, remoteslot,
 												remoteslot_part);
@@ -1612,7 +1614,6 @@ apply_handle_tuple_routing(ResultRelInfo *relinfo,
 	}
 	MemoryContextSwitchTo(oldctx);
 
-	estate->es_result_relation_info = partrelinfo;
 	switch (operation)
 	{
 		case CMD_INSERT:
@@ -1693,8 +1694,8 @@ apply_handle_tuple_routing(ResultRelInfo *relinfo,
 					ExecOpenIndices(partrelinfo, false);
 
 					EvalPlanQualSetSlot(&epqstate, remoteslot_part);
-					ExecSimpleRelationUpdate(estate, &epqstate, localslot,
-											 remoteslot_part);
+					ExecSimpleRelationUpdate(partrelinfo, estate, &epqstate,
+											 localslot, remoteslot_part);
 					ExecCloseIndices(partrelinfo);
 					EvalPlanQualEnd(&epqstate);
 				}
@@ -1735,7 +1736,6 @@ apply_handle_tuple_routing(ResultRelInfo *relinfo,
 					Assert(partrelinfo_new != partrelinfo);
 
 					/* DELETE old tuple found in the old partition. */
-					estate->es_result_relation_info = partrelinfo;
 					apply_handle_delete_internal(partrelinfo, estate,
 												 localslot,
 												 &relmapentry->remoterel);
@@ -1748,12 +1748,11 @@ apply_handle_tuple_routing(ResultRelInfo *relinfo,
 					 */
 					oldctx = MemoryContextSwitchTo(GetPerTupleMemoryContext(estate));
 					partrel = partrelinfo_new->ri_RelationDesc;
-					partinfo = partrelinfo_new->ri_PartitionInfo;
-					remoteslot_part = partinfo->pi_PartitionTupleSlot;
+					remoteslot_part = partrelinfo_new->ri_PartitionTupleSlot;
 					if (remoteslot_part == NULL)
 						remoteslot_part = table_slot_create(partrel,
 															&estate->es_tupleTable);
-					map = partinfo->pi_RootToPartitionMap;
+					map = partrelinfo_new->ri_RootToPartitionMap;
 					if (map != NULL)
 					{
 						remoteslot_part = execute_attr_map_slot(map->attrMap,
@@ -1767,7 +1766,6 @@ apply_handle_tuple_routing(ResultRelInfo *relinfo,
 						slot_getallattrs(remoteslot);
 					}
 					MemoryContextSwitchTo(oldctx);
-					estate->es_result_relation_info = partrelinfo_new;
 					apply_handle_insert_internal(partrelinfo_new, estate,
 												 remoteslot_part);
 				}
@@ -1800,7 +1798,7 @@ apply_handle_truncate(StringInfo s)
 	List	   *relids_logged = NIL;
 	ListCell   *lc;
 
-	if (handle_streamed_transaction('T', s))
+	if (handle_streamed_transaction(LOGICAL_REP_MSG_TRUNCATE, s))
 		return;
 
 	ensure_transaction();
@@ -1901,67 +1899,66 @@ apply_handle_truncate(StringInfo s)
 static void
 apply_dispatch(StringInfo s)
 {
-	char		action = pq_getmsgbyte(s);
+	LogicalRepMsgType action = pq_getmsgbyte(s);
 
 	switch (action)
 	{
-			/* BEGIN */
-		case 'B':
+		case LOGICAL_REP_MSG_BEGIN:
 			apply_handle_begin(s);
-			break;
-			/* COMMIT */
-		case 'C':
+			return;
+
+		case LOGICAL_REP_MSG_COMMIT:
 			apply_handle_commit(s);
-			break;
-			/* INSERT */
-		case 'I':
+			return;
+
+		case LOGICAL_REP_MSG_INSERT:
 			apply_handle_insert(s);
-			break;
-			/* UPDATE */
-		case 'U':
+			return;
+
+		case LOGICAL_REP_MSG_UPDATE:
 			apply_handle_update(s);
-			break;
-			/* DELETE */
-		case 'D':
+			return;
+
+		case LOGICAL_REP_MSG_DELETE:
 			apply_handle_delete(s);
-			break;
-			/* TRUNCATE */
-		case 'T':
+			return;
+
+		case LOGICAL_REP_MSG_TRUNCATE:
 			apply_handle_truncate(s);
-			break;
-			/* RELATION */
-		case 'R':
+			return;
+
+		case LOGICAL_REP_MSG_RELATION:
 			apply_handle_relation(s);
-			break;
-			/* TYPE */
-		case 'Y':
+			return;
+
+		case LOGICAL_REP_MSG_TYPE:
 			apply_handle_type(s);
-			break;
-			/* ORIGIN */
-		case 'O':
+			return;
+
+		case LOGICAL_REP_MSG_ORIGIN:
 			apply_handle_origin(s);
-			break;
-			/* STREAM START */
-		case 'S':
+			return;
+
+		case LOGICAL_REP_MSG_STREAM_START:
 			apply_handle_stream_start(s);
-			break;
-			/* STREAM END */
-		case 'E':
+			return;
+
+		case LOGICAL_REP_MSG_STREAM_END:
 			apply_handle_stream_stop(s);
-			break;
-			/* STREAM ABORT */
-		case 'A':
+			return;
+
+		case LOGICAL_REP_MSG_STREAM_ABORT:
 			apply_handle_stream_abort(s);
-			break;
-			/* STREAM COMMIT */
-		case 'c':
+			return;
+
+		case LOGICAL_REP_MSG_STREAM_COMMIT:
 			apply_handle_stream_commit(s);
-			break;
-		default:
-			ereport(ERROR,
-					(errcode(ERRCODE_PROTOCOL_VIOLATION),
-					 errmsg("invalid logical replication message type \"%c\"", action)));
+			return;
 	}
+
+	ereport(ERROR,
+			(errcode(ERRCODE_PROTOCOL_VIOLATION),
+			 errmsg("invalid logical replication message type \"%c\"", action)));
 }
 
 /*
@@ -2061,6 +2058,7 @@ LogicalRepApplyLoop(XLogRecPtr last_received)
 {
 	TimestampTz last_recv_timestamp = GetCurrentTimestamp();
 	bool		ping_sent = false;
+	TimeLineID	tli;
 
 	/*
 	 * Init the ApplyMessageContext which we clean up after each replication
@@ -2202,12 +2200,7 @@ LogicalRepApplyLoop(XLogRecPtr last_received)
 
 		/* Check if we need to exit the streaming loop. */
 		if (endofstream)
-		{
-			TimeLineID	tli;
-
-			walrcv_endstreaming(wrconn, &tli);
 			break;
-		}
 
 		/*
 		 * Wait for more data or latch.  If we have unflushed transactions,
@@ -2252,7 +2245,7 @@ LogicalRepApplyLoop(XLogRecPtr last_received)
 			bool		requestReply = false;
 
 			/*
-			 * Check if time since last receive from standby has reached the
+			 * Check if time since last receive from primary has reached the
 			 * configured limit.
 			 */
 			if (wal_receiver_timeout > 0)
@@ -2284,6 +2277,9 @@ LogicalRepApplyLoop(XLogRecPtr last_received)
 			send_feedback(last_received, requestReply, requestReply);
 		}
 	}
+
+	/* All done */
+	walrcv_endstreaming(wrconn, &tli);
 }
 
 /*
@@ -2363,10 +2359,9 @@ send_feedback(XLogRecPtr recvpos, bool force, bool requestReply)
 
 	elog(DEBUG2, "sending feedback (force %d) to recv %X/%X, write %X/%X, flush %X/%X",
 		 force,
-		 (uint32) (recvpos >> 32), (uint32) recvpos,
-		 (uint32) (writepos >> 32), (uint32) writepos,
-		 (uint32) (flushpos >> 32), (uint32) flushpos
-		);
+		 LSN_FORMAT_ARGS(recvpos),
+		 LSN_FORMAT_ARGS(writepos),
+		 LSN_FORMAT_ARGS(flushpos));
 
 	walrcv_send(wrconn, reply_message->data, reply_message->len);
 
@@ -3025,10 +3020,8 @@ ApplyWorkerMain(Datum main_arg)
 		/* This is table synchronization worker, call initial sync. */
 		syncslotname = LogicalRepSyncTableStart(&origin_startpos);
 
-		/* The slot name needs to be allocated in permanent memory context. */
-		oldctx = MemoryContextSwitchTo(ApplyContext);
-		myslotname = pstrdup(syncslotname);
-		MemoryContextSwitchTo(oldctx);
+		/* allocate slot name in long-lived context */
+		myslotname = MemoryContextStrdup(ApplyContext, syncslotname);
 
 		pfree(syncslotname);
 	}
@@ -3072,7 +3065,6 @@ ApplyWorkerMain(Datum main_arg)
 		 * does some initializations on the upstream so let's still call it.
 		 */
 		(void) walrcv_identify_system(wrconn, &startpointTLI);
-
 	}
 
 	/*
@@ -3087,7 +3079,9 @@ ApplyWorkerMain(Datum main_arg)
 	options.logical = true;
 	options.startpoint = origin_startpos;
 	options.slotname = myslotname;
-	options.proto.logical.proto_version = LOGICALREP_PROTO_VERSION_NUM;
+	options.proto.logical.proto_version =
+		walrcv_server_version(wrconn) >= 140000 ?
+		LOGICALREP_PROTO_STREAM_VERSION_NUM : LOGICALREP_PROTO_VERSION_NUM;
 	options.proto.logical.publication_names = MySubscription->publications;
 	options.proto.logical.binary = MySubscription->binary;
 	options.proto.logical.streaming = MySubscription->stream;

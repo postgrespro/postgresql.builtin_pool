@@ -4,7 +4,7 @@
  *	  POSTGRES error reporting/logging definitions.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/utils/elog.h
@@ -40,19 +40,19 @@
 #define WARNING		19			/* Warnings.  NOTICE is for expected messages
 								 * like implicit sequence creation by SERIAL.
 								 * WARNING is for unexpected messages. */
-#define ERROR		20			/* user error - abort transaction; return to
+#define WARNING_CLIENT_ONLY	20	/* Warnings to be sent to client as usual, but
+								 * never to the server log. */
+#define ERROR		21			/* user error - abort transaction; return to
 								 * known state */
 /* Save ERROR value in PGERROR so it can be restored when Win32 includes
  * modify it.  We have to use a constant rather than ERROR because macros
  * are expanded only when referenced outside macros.
  */
 #ifdef WIN32
-#define PGERROR		20
+#define PGERROR		21
 #endif
-#define FATAL		21			/* fatal error - abort process */
-#define PANIC		22			/* take down the other backends with me */
-
- /* #define DEBUG DEBUG1 */	/* Backward compatibility with pre-7.3 */
+#define FATAL		22			/* fatal error - abort process */
+#define PANIC		23			/* take down the other backends with me */
 
 
 /* macros for representing SQLSTATE strings compactly */
@@ -111,6 +111,15 @@
  * ereport_domain() directly, or preferably they can override the TEXTDOMAIN
  * macro.
  *
+ * When __builtin_constant_p is available and elevel >= ERROR we make a call
+ * to errstart_cold() instead of errstart().  This version of the function is
+ * marked with pg_attribute_cold which will coax supporting compilers into
+ * generating code which is more optimized towards non-ERROR cases.  Because
+ * we use __builtin_constant_p() in the condition, when elevel is not a
+ * compile-time constant, or if it is, but it's < ERROR, the compiler has no
+ * need to generate any code for this branch.  It can simply call errstart()
+ * unconditionally.
+ *
  * If elevel >= ERROR, the call will not return; we try to inform the compiler
  * of that via pg_unreachable().  However, no useful optimization effect is
  * obtained unless the compiler sees elevel as a compile-time constant, else
@@ -124,7 +133,9 @@
 #define ereport_domain(elevel, domain, ...)	\
 	do { \
 		pg_prevent_errno_in_scope(); \
-		if (errstart(elevel, domain)) \
+		if (__builtin_constant_p(elevel) && (elevel) >= ERROR ? \
+			errstart_cold(elevel, domain) : \
+			errstart(elevel, domain)) \
 			__VA_ARGS__, errfinish(__FILE__, __LINE__, PG_FUNCNAME_MACRO); \
 		if (__builtin_constant_p(elevel) && (elevel) >= ERROR) \
 			pg_unreachable(); \
@@ -146,7 +157,10 @@
 
 #define TEXTDOMAIN NULL
 
+extern bool message_level_is_interesting(int elevel);
+
 extern bool errstart(int elevel, const char *domain);
+extern pg_attribute_cold bool errstart_cold(int elevel, const char *domain);
 extern void errfinish(const char *filename, int lineno, const char *funcname);
 
 extern int	errcode(int sqlerrcode);
@@ -193,7 +207,6 @@ extern int	errhidecontext(bool hide_ctx);
 
 extern int	errbacktrace(void);
 
-extern int	errfunction(const char *funcname);
 extern int	errposition(int cursorpos);
 
 extern int	internalerrposition(int cursorpos);
@@ -353,7 +366,6 @@ typedef struct ErrorData
 	int			elevel;			/* error level */
 	bool		output_to_server;	/* will report to server log? */
 	bool		output_to_client;	/* will report to client? */
-	bool		show_funcname;	/* true to force funcname inclusion */
 	bool		hide_stmt;		/* true to prevent STATEMENT: inclusion */
 	bool		hide_ctx;		/* true to prevent CONTEXT: inclusion */
 	const char *filename;		/* __FILE__ of ereport() call */

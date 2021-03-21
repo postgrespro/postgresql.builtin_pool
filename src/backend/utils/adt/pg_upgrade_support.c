@@ -5,7 +5,7 @@
  *	to control oid and relfilenode assignment, and do other special
  *	hacks needed for pg_upgrade.
  *
- *	Copyright (c) 2010-2020, PostgreSQL Global Development Group
+ *	Copyright (c) 2010-2021, PostgreSQL Global Development Group
  *	src/backend/utils/adt/pg_upgrade_support.c
  */
 
@@ -13,6 +13,7 @@
 
 #include "catalog/binary_upgrade.h"
 #include "catalog/heap.h"
+#include "catalog/index.h"
 #include "catalog/namespace.h"
 #include "catalog/pg_type.h"
 #include "commands/extension.h"
@@ -47,6 +48,28 @@ binary_upgrade_set_next_array_pg_type_oid(PG_FUNCTION_ARGS)
 
 	CHECK_IS_BINARY_UPGRADE;
 	binary_upgrade_next_array_pg_type_oid = typoid;
+
+	PG_RETURN_VOID();
+}
+
+Datum
+binary_upgrade_set_next_multirange_pg_type_oid(PG_FUNCTION_ARGS)
+{
+	Oid			typoid = PG_GETARG_OID(0);
+
+	CHECK_IS_BINARY_UPGRADE;
+	binary_upgrade_next_mrng_pg_type_oid = typoid;
+
+	PG_RETURN_VOID();
+}
+
+Datum
+binary_upgrade_set_next_multirange_array_pg_type_oid(PG_FUNCTION_ARGS)
+{
+	Oid			typoid = PG_GETARG_OID(0);
+
+	CHECK_IS_BINARY_UPGRADE;
+	binary_upgrade_next_mrng_array_pg_type_oid = typoid;
 
 	PG_RETURN_VOID();
 }

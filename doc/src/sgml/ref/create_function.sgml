@@ -100,6 +100,11 @@ CREATE [ OR REPLACE ] FUNCTION
    To be able to create a function, you must have <literal>USAGE</literal>
    privilege on the argument types and the return type.
   </para>
+
+  <para>
+   Refer to <xref linkend="xfunc"/> for further information on writing
+   functions.
+  </para>
  </refsect1>
 
  <refsect1>
@@ -557,7 +562,7 @@ CREATE [ OR REPLACE ] FUNCTION
        the SQL function. The string <replaceable
        class="parameter">obj_file</replaceable> is the name of the shared
        library file containing the compiled C function, and is interpreted
-       as for the <xref linkend="sql-load"/> command.  The string
+       as for the <link linkend="sql-load"><command>LOAD</command></link> command.  The string
        <replaceable class="parameter">link_symbol</replaceable> is the
        function's link symbol, that is, the name of the function in the C
        language source code.  If the link symbol is omitted, it is assumed to
@@ -578,12 +583,6 @@ CREATE [ OR REPLACE ] FUNCTION
     </varlistentry>
 
    </variablelist>
-
-   <para>
-    Refer to <xref linkend="xfunc"/> for further information on writing
-    functions.
-   </para>
-
  </refsect1>
 
  <refsect1 id="sql-createfunction-overloading">
@@ -661,8 +660,7 @@ CREATE FUNCTION foo(int, int default 42) ...
   <title>Examples</title>
 
   <para>
-   Here are some trivial examples to help you get started.  For more
-   information and examples, see <xref linkend="xfunc"/>.
+   Add two integers using a SQL function:
 <programlisting>
 CREATE FUNCTION add(integer, integer) RETURNS integer
     AS 'select $1 + $2;'

@@ -11,7 +11,7 @@
  *			- Add a pgstat config column to pg_database, so this
  *			  entire thing can be enabled/disabled on a per db basis.
  *
- *	Copyright (c) 2001-2020, PostgreSQL Global Development Group
+ *	Copyright (c) 2001-2021, PostgreSQL Global Development Group
  *
  *	src/backend/postmaster/pgstat.c
  * ----------
@@ -41,6 +41,7 @@
 #include "catalog/pg_database.h"
 #include "catalog/pg_proc.h"
 #include "common/ip.h"
+#include "executor/instrument.h"
 #include "libpq/libpq.h"
 #include "libpq/pqsignal.h"
 #include "mb/pg_wchar.h"
@@ -51,6 +52,7 @@
 #include "postmaster/fork_process.h"
 #include "postmaster/interrupt.h"
 #include "postmaster/postmaster.h"
+#include "replication/slot.h"
 #include "replication/walsender.h"
 #include "storage/backendid.h"
 #include "storage/dsm.h"
@@ -135,11 +137,20 @@ char	   *pgstat_stat_filename = NULL;
 char	   *pgstat_stat_tmpname = NULL;
 
 /*
- * BgWriter global statistics counters (unused in other processes).
- * Stored directly in a stats message structure so it can be sent
- * without needing to copy things around.  We assume this inits to zeroes.
+ * BgWriter and WAL global statistics counters.
+ * Stored directly in a stats message structure so they can be sent
+ * without needing to copy things around.  We assume these init to zeroes.
  */
 PgStat_MsgBgWriter BgWriterStats;
+PgStat_MsgWal WalStats;
+
+/*
+ * WAL usage counters saved from pgWALUsage at the previous call to
+ * pgstat_report_wal(). This is used to calculate how much WAL usage
+ * happens between pgstat_report_wal() calls, by substracting
+ * the previous counters from the current ones.
+ */
+static WalUsage prevWalUsage;
 
 /*
  * List of SLRU names that we keep stats for.  There is no central registry of
@@ -247,6 +258,9 @@ static int	pgStatXactCommit = 0;
 static int	pgStatXactRollback = 0;
 PgStat_Counter pgStatBlockReadTime = 0;
 PgStat_Counter pgStatBlockWriteTime = 0;
+static PgStat_Counter pgStatActiveTime = 0;
+static PgStat_Counter pgStatTransactionIdleTime = 0;
+SessionEndType pgStatSessionEndCause = DISCONNECT_NORMAL;
 
 /* Record that's written to 2PC state file when pgstat state is persisted */
 typedef struct TwoPhasePgStatRecord
@@ -281,7 +295,10 @@ static int	localNumBackends = 0;
  */
 static PgStat_ArchiverStats archiverStats;
 static PgStat_GlobalStats globalStats;
+static PgStat_WalStats walStats;
 static PgStat_SLRUStats slruStats[SLRU_NUM_ELEMENTS];
+static PgStat_ReplSlotStats *replSlotStats;
+static int	nReplSlotStats;
 
 /*
  * List of OIDs of databases we need to write out.  If an entry is InvalidOid,
@@ -322,10 +339,14 @@ static void pgstat_read_current_status(void);
 static bool pgstat_write_statsfile_needed(void);
 static bool pgstat_db_requested(Oid databaseid);
 
+static int	pgstat_replslot_index(const char *name, bool create_it);
+static void pgstat_reset_replslot(int i, TimestampTz ts);
+
 static void pgstat_send_tabstat(PgStat_MsgTabstat *tsmsg);
 static void pgstat_send_funcstats(void);
 static void pgstat_send_slru(void);
 static HTAB *pgstat_collect_oids(Oid catalogid, AttrNumber anum_oid);
+static void pgstat_send_connstats(bool disconnect, TimestampTz last_report);
 
 static PgStat_TableStatus *get_tabstat_entry(Oid rel_id, bool isshared);
 
@@ -348,17 +369,21 @@ static void pgstat_recv_resetcounter(PgStat_MsgResetcounter *msg, int len);
 static void pgstat_recv_resetsharedcounter(PgStat_MsgResetsharedcounter *msg, int len);
 static void pgstat_recv_resetsinglecounter(PgStat_MsgResetsinglecounter *msg, int len);
 static void pgstat_recv_resetslrucounter(PgStat_MsgResetslrucounter *msg, int len);
+static void pgstat_recv_resetreplslotcounter(PgStat_MsgResetreplslotcounter *msg, int len);
 static void pgstat_recv_autovac(PgStat_MsgAutovacStart *msg, int len);
 static void pgstat_recv_vacuum(PgStat_MsgVacuum *msg, int len);
 static void pgstat_recv_analyze(PgStat_MsgAnalyze *msg, int len);
 static void pgstat_recv_archiver(PgStat_MsgArchiver *msg, int len);
 static void pgstat_recv_bgwriter(PgStat_MsgBgWriter *msg, int len);
+static void pgstat_recv_wal(PgStat_MsgWal *msg, int len);
 static void pgstat_recv_slru(PgStat_MsgSLRU *msg, int len);
 static void pgstat_recv_funcstat(PgStat_MsgFuncstat *msg, int len);
 static void pgstat_recv_funcpurge(PgStat_MsgFuncpurge *msg, int len);
 static void pgstat_recv_recoveryconflict(PgStat_MsgRecoveryConflict *msg, int len);
 static void pgstat_recv_deadlock(PgStat_MsgDeadlock *msg, int len);
 static void pgstat_recv_checksum_failure(PgStat_MsgChecksumFailure *msg, int len);
+static void pgstat_recv_connstat(PgStat_MsgConn *msg, int len);
+static void pgstat_recv_replslot(PgStat_MsgReplSlot *msg, int len);
 static void pgstat_recv_tempfile(PgStat_MsgTempFile *msg, int len);
 
 /* ------------------------------------------------------------
@@ -616,7 +641,8 @@ retry2:
 		if (getsockopt(pgStatSock, SOL_SOCKET, SO_RCVBUF,
 					   (char *) &old_rcvbuf, &rcvbufsize) < 0)
 		{
-			elog(LOG, "getsockopt(SO_RCVBUF) failed: %m");
+			ereport(LOG,
+					(errmsg("getsockopt(%s) failed: %m", "SO_RCVBUF")));
 			/* if we can't get existing size, always try to set it */
 			old_rcvbuf = 0;
 		}
@@ -626,7 +652,8 @@ retry2:
 		{
 			if (setsockopt(pgStatSock, SOL_SOCKET, SO_RCVBUF,
 						   (char *) &new_rcvbuf, sizeof(new_rcvbuf)) < 0)
-				elog(LOG, "setsockopt(SO_RCVBUF) failed: %m");
+				ereport(LOG,
+						(errmsg("setsockopt(%s) failed: %m", "SO_RCVBUF")));
 		}
 	}
 
@@ -833,10 +860,14 @@ allow_immediate_pgstat_restart(void)
  *	per-table and function usage statistics to the collector.  Note that this
  *	is called only when not within a transaction, so it is fair to use
  *	transaction stop time as an approximation of current time.
+ *
+ *	"disconnect" is "true" only for the last call before the backend
+ *	exits.  This makes sure that no data is lost and that interrupted
+ *	sessions are reported correctly.
  * ----------
  */
 void
-pgstat_report_stat(bool force)
+pgstat_report_stat(bool disconnect)
 {
 	/* we assume this inits to all zeroes: */
 	static const PgStat_TableCounts all_zeroes;
@@ -851,17 +882,22 @@ pgstat_report_stat(bool force)
 	/* Don't expend a clock check if nothing to do */
 	if ((pgStatTabList == NULL || pgStatTabList->tsa_used == 0) &&
 		pgStatXactCommit == 0 && pgStatXactRollback == 0 &&
-		!have_function_stats)
+		!have_function_stats && !disconnect)
 		return;
 
 	/*
 	 * Don't send a message unless it's been at least PGSTAT_STAT_INTERVAL
-	 * msec since we last sent one, or the caller wants to force stats out.
+	 * msec since we last sent one, or the backend is about to exit.
 	 */
 	now = GetCurrentTransactionStopTimestamp();
-	if (!force &&
+	if (!disconnect &&
 		!TimestampDifferenceExceeds(last_report, now, PGSTAT_STAT_INTERVAL))
 		return;
+
+	/* for backends, send connection statistics */
+	if (MyBackendType == B_BACKEND)
+		pgstat_send_connstats(disconnect, last_report);
+
 	last_report = now;
 
 	/*
@@ -937,6 +973,9 @@ pgstat_report_stat(bool force)
 
 	/* Now, send function statistics */
 	pgstat_send_funcstats();
+
+	/* Send WAL statistics */
+	pgstat_report_wal();
 
 	/* Finally send SLRU statistics */
 	pgstat_send_slru();
@@ -1240,7 +1279,6 @@ pgstat_collect_oids(Oid catalogid, AttrNumber anum_oid)
 	HeapTuple	tup;
 	Snapshot	snapshot;
 
-	memset(&hash_ctl, 0, sizeof(hash_ctl));
 	hash_ctl.keysize = sizeof(Oid);
 	hash_ctl.entrysize = sizeof(Oid);
 	hash_ctl.hcxt = CurrentMemoryContext;
@@ -1328,6 +1366,48 @@ pgstat_drop_relation(Oid relid)
 
 
 /* ----------
+ * pgstat_send_connstats() -
+ *
+ *	Tell the collector about session statistics.
+ *	The parameter "disconnect" will be true when the backend exits.
+ *	"last_report" is the last time we were called (0 if never).
+ * ----------
+ */
+static void
+pgstat_send_connstats(bool disconnect, TimestampTz last_report)
+{
+	PgStat_MsgConn msg;
+	long		secs;
+	int			usecs;
+
+	if (pgStatSock == PGINVALID_SOCKET || !pgstat_track_counts)
+		return;
+
+	pgstat_setheader(&msg.m_hdr, PGSTAT_MTYPE_CONNECTION);
+	msg.m_databaseid = MyDatabaseId;
+
+	/* session time since the last report */
+	TimestampDifference(((last_report == 0) ? MyStartTimestamp : last_report),
+						GetCurrentTimestamp(),
+						&secs, &usecs);
+	msg.m_session_time = secs * 1000000 + usecs;
+
+	msg.m_disconnect = disconnect ? pgStatSessionEndCause : DISCONNECT_NOT_YET;
+
+	msg.m_active_time = pgStatActiveTime;
+	pgStatActiveTime = 0;
+
+	msg.m_idle_in_xact_time = pgStatTransactionIdleTime;
+	pgStatTransactionIdleTime = 0;
+
+	/* report a new session only the first time */
+	msg.m_count = (last_report == 0) ? 1 : 0;
+
+	pgstat_send(&msg, sizeof(PgStat_MsgConn));
+}
+
+
+/* ----------
  * pgstat_reset_counters() -
  *
  *	Tell the statistics collector to reset counters for our database.
@@ -1370,11 +1450,13 @@ pgstat_reset_shared_counters(const char *target)
 		msg.m_resettarget = RESET_ARCHIVER;
 	else if (strcmp(target, "bgwriter") == 0)
 		msg.m_resettarget = RESET_BGWRITER;
+	else if (strcmp(target, "wal") == 0)
+		msg.m_resettarget = RESET_WAL;
 	else
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 				 errmsg("unrecognized reset target: \"%s\"", target),
-				 errhint("Target must be \"archiver\" or \"bgwriter\".")));
+				 errhint("Target must be \"archiver\", \"bgwriter\" or \"wal\".")));
 
 	pgstat_setheader(&msg.m_hdr, PGSTAT_MTYPE_RESETSHAREDCOUNTER);
 	pgstat_send(&msg, sizeof(msg));
@@ -1425,6 +1507,61 @@ pgstat_reset_slru_counter(const char *name)
 
 	pgstat_setheader(&msg.m_hdr, PGSTAT_MTYPE_RESETSLRUCOUNTER);
 	msg.m_index = (name) ? pgstat_slru_index(name) : -1;
+
+	pgstat_send(&msg, sizeof(msg));
+}
+
+/* ----------
+ * pgstat_reset_replslot_counter() -
+ *
+ *	Tell the statistics collector to reset a single replication slot
+ *	counter, or all replication slots counters (when name is null).
+ *
+ *	Permission checking for this function is managed through the normal
+ *	GRANT system.
+ * ----------
+ */
+void
+pgstat_reset_replslot_counter(const char *name)
+{
+	PgStat_MsgResetreplslotcounter msg;
+
+	if (pgStatSock == PGINVALID_SOCKET)
+		return;
+
+	if (name)
+	{
+		ReplicationSlot *slot;
+
+		/*
+		 * Check if the slot exits with the given name. It is possible that by
+		 * the time this message is executed the slot is dropped but at least
+		 * this check will ensure that the given name is for a valid slot.
+		 */
+		LWLockAcquire(ReplicationSlotControlLock, LW_SHARED);
+		slot = SearchNamedReplicationSlot(name);
+		LWLockRelease(ReplicationSlotControlLock);
+
+		if (!slot)
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+					 errmsg("replication slot \"%s\" does not exist",
+							name)));
+
+		/*
+		 * Nothing to do for physical slots as we collect stats only for
+		 * logical slots.
+		 */
+		if (SlotIsPhysical(slot))
+			return;
+
+		strlcpy(msg.m_slotname, name, NAMEDATALEN);
+		msg.clearall = false;
+	}
+	else
+		msg.clearall = true;
+
+	pgstat_setheader(&msg.m_hdr, PGSTAT_MTYPE_RESETREPLSLOTCOUNTER);
 
 	pgstat_send(&msg, sizeof(msg));
 }
@@ -1629,6 +1766,49 @@ pgstat_report_tempfile(size_t filesize)
 	pgstat_send(&msg, sizeof(msg));
 }
 
+/* ----------
+ * pgstat_report_replslot() -
+ *
+ *	Tell the collector about replication slot statistics.
+ * ----------
+ */
+void
+pgstat_report_replslot(const char *slotname, int spilltxns, int spillcount,
+					   int spillbytes, int streamtxns, int streamcount, int streambytes)
+{
+	PgStat_MsgReplSlot msg;
+
+	/*
+	 * Prepare and send the message
+	 */
+	pgstat_setheader(&msg.m_hdr, PGSTAT_MTYPE_REPLSLOT);
+	strlcpy(msg.m_slotname, slotname, NAMEDATALEN);
+	msg.m_drop = false;
+	msg.m_spill_txns = spilltxns;
+	msg.m_spill_count = spillcount;
+	msg.m_spill_bytes = spillbytes;
+	msg.m_stream_txns = streamtxns;
+	msg.m_stream_count = streamcount;
+	msg.m_stream_bytes = streambytes;
+	pgstat_send(&msg, sizeof(PgStat_MsgReplSlot));
+}
+
+/* ----------
+ * pgstat_report_replslot_drop() -
+ *
+ *	Tell the collector about dropping the replication slot.
+ * ----------
+ */
+void
+pgstat_report_replslot_drop(const char *slotname)
+{
+	PgStat_MsgReplSlot msg;
+
+	pgstat_setheader(&msg.m_hdr, PGSTAT_MTYPE_REPLSLOT);
+	strlcpy(msg.m_slotname, slotname, NAMEDATALEN);
+	msg.m_drop = true;
+	pgstat_send(&msg, sizeof(PgStat_MsgReplSlot));
+}
 
 /* ----------
  * pgstat_ping() -
@@ -1690,7 +1870,6 @@ pgstat_init_function_usage(FunctionCallInfo fcinfo,
 		/* First time through - initialize function stat table */
 		HASHCTL		hash_ctl;
 
-		memset(&hash_ctl, 0, sizeof(hash_ctl));
 		hash_ctl.keysize = sizeof(Oid);
 		hash_ctl.entrysize = sizeof(PgStat_BackendFunctionEntry);
 		pgStatFunctions = hash_create("Function stat entries",
@@ -1850,7 +2029,6 @@ get_tabstat_entry(Oid rel_id, bool isshared)
 	{
 		HASHCTL		ctl;
 
-		memset(&ctl, 0, sizeof(ctl));
 		ctl.keysize = sizeof(Oid);
 		ctl.entrysize = sizeof(TabStatHashEntry);
 
@@ -2674,6 +2852,21 @@ pgstat_fetch_global(void)
 	return &globalStats;
 }
 
+/*
+ * ---------
+ * pgstat_fetch_stat_wal() -
+ *
+ *	Support function for the SQL-callable pgstat* functions. Returns
+ *	a pointer to the WAL statistics struct.
+ * ---------
+ */
+PgStat_WalStats *
+pgstat_fetch_stat_wal(void)
+{
+	backend_read_statsfile();
+
+	return &walStats;
+}
 
 /*
  * ---------
@@ -2691,6 +2884,23 @@ pgstat_fetch_slru(void)
 	return slruStats;
 }
 
+/*
+ * ---------
+ * pgstat_fetch_replslot() -
+ *
+ *	Support function for the SQL-callable pgstat* functions. Returns
+ *	a pointer to the replication slot statistics struct and sets the
+ *	number of entries in nslots_p.
+ * ---------
+ */
+PgStat_ReplSlotStats *
+pgstat_fetch_replslot(int *nslots_p)
+{
+	backend_read_statsfile();
+
+	*nslots_p = nReplSlotStats;
+	return replSlotStats;
+}
 
 /* ------------------------------------------------------------
  * Functions for management of the shared-memory PgBackendStatus array
@@ -2734,6 +2944,11 @@ BackendStatusShmemSize(void)
 	/* BackendSslStatusBuffer: */
 	size = add_size(size,
 					mul_size(sizeof(PgBackendSSLStatus), NumBackendStatSlots));
+#endif
+#ifdef ENABLE_GSS
+	/* BackendGssStatusBuffer: */
+	size = add_size(size,
+					mul_size(sizeof(PgBackendGSSStatus), NumBackendStatSlots));
 #endif
 	return size;
 }
@@ -2902,6 +3117,13 @@ pgstat_initialize(void)
 		MyBEEntry = &BackendStatusArray[MaxBackends + MyAuxProcType];
 	}
 
+	/*
+	 * Initialize prevWalUsage with pgWalUsage so that pgstat_report_wal() can
+	 * calculate how much pgWalUsage counters are increased by substracting
+	 * prevWalUsage from pgWalUsage.
+	 */
+	prevWalUsage = pgWalUsage;
+
 	/* Set up a process-exit hook to clean up */
 	on_shmem_exit(pgstat_beshutdown_hook, 0);
 }
@@ -2993,7 +3215,6 @@ pgstat_bestart(void)
 	{
 		lbeentry.st_ssl = true;
 		lsslstatus.ssl_bits = be_tls_get_cipher_bits(MyProcPort);
-		lsslstatus.ssl_compression = be_tls_get_compression(MyProcPort);
 		strlcpy(lsslstatus.ssl_version, be_tls_get_version(MyProcPort), NAMEDATALEN);
 		strlcpy(lsslstatus.ssl_cipher, be_tls_get_cipher(MyProcPort), NAMEDATALEN);
 		be_tls_get_peer_subject_name(MyProcPort, lsslstatus.ssl_client_dn, NAMEDATALEN);
@@ -3011,12 +3232,13 @@ pgstat_bestart(void)
 #ifdef ENABLE_GSS
 	if (MyProcPort && MyProcPort->gss != NULL)
 	{
+		const char *princ = be_gssapi_get_princ(MyProcPort);
+
 		lbeentry.st_gss = true;
 		lgssstatus.gss_auth = be_gssapi_get_auth(MyProcPort);
 		lgssstatus.gss_enc = be_gssapi_get_enc(MyProcPort);
-
-		if (lgssstatus.gss_auth)
-			strlcpy(lgssstatus.gss_princ, be_gssapi_get_princ(MyProcPort), NAMEDATALEN);
+		if (princ)
+			strlcpy(lgssstatus.gss_princ, princ, NAMEDATALEN);
 	}
 	else
 	{
@@ -3180,6 +3402,30 @@ pgstat_report_activity(BackendState state, const char *cmd_str)
 		len = Min(strlen(cmd_str), pgstat_track_activity_query_size - 1);
 	}
 	current_timestamp = GetCurrentTimestamp();
+
+	/*
+	 * If the state has changed from "active" or "idle in transaction",
+	 * calculate the duration.
+	 */
+	if ((beentry->st_state == STATE_RUNNING ||
+		 beentry->st_state == STATE_FASTPATH ||
+		 beentry->st_state == STATE_IDLEINTRANSACTION ||
+		 beentry->st_state == STATE_IDLEINTRANSACTION_ABORTED) &&
+		state != beentry->st_state)
+	{
+		long		secs;
+		int			usecs;
+
+		TimestampDifference(beentry->st_state_start_timestamp,
+							current_timestamp,
+							&secs, &usecs);
+
+		if (beentry->st_state == STATE_RUNNING ||
+			beentry->st_state == STATE_FASTPATH)
+			pgStatActiveTime += secs * 1000000 + usecs;
+		else
+			pgStatTransactionIdleTime += secs * 1000000 + usecs;
+	}
 
 	/*
 	 * Now update the status entry
@@ -3764,6 +4010,9 @@ pgstat_get_wait_ipc(WaitEventIPC w)
 		case WAIT_EVENT_BTREE_PAGE:
 			event_name = "BtreePage";
 			break;
+		case WAIT_EVENT_BUFFER_IO:
+			event_name = "BufferIO";
+			break;
 		case WAIT_EVENT_CHECKPOINT_DONE:
 			event_name = "CheckpointDone";
 			break;
@@ -3874,6 +4123,9 @@ pgstat_get_wait_ipc(WaitEventIPC w)
 			break;
 		case WAIT_EVENT_SYNC_REP:
 			event_name = "SyncRep";
+			break;
+		case WAIT_EVENT_WALRCV_EXIT:
+			event_name = "WalrcvExit";
 			break;
 		case WAIT_EVENT_XACT_GROUP_UPDATE:
 			event_name = "XactGroupUpdate";
@@ -4420,6 +4672,97 @@ pgstat_send_bgwriter(void)
 }
 
 /* ----------
+ * pgstat_report_wal() -
+ *
+ * Calculate how much WAL usage counters are increased and send
+ * WAL statistics to the collector.
+ *
+ * Must be called by processes that generate WAL.
+ * ----------
+ */
+void
+pgstat_report_wal(void)
+{
+	WalUsage	walusage;
+
+	/*
+	 * Calculate how much WAL usage counters are increased by substracting the
+	 * previous counters from the current ones. Fill the results in WAL stats
+	 * message.
+	 */
+	MemSet(&walusage, 0, sizeof(WalUsage));
+	WalUsageAccumDiff(&walusage, &pgWalUsage, &prevWalUsage);
+
+	WalStats.m_wal_records = walusage.wal_records;
+	WalStats.m_wal_fpi = walusage.wal_fpi;
+	WalStats.m_wal_bytes = walusage.wal_bytes;
+
+	/*
+	 * Send WAL stats message to the collector.
+	 */
+	if (!pgstat_send_wal(true))
+		return;
+
+	/*
+	 * Save the current counters for the subsequent calculation of WAL usage.
+	 */
+	prevWalUsage = pgWalUsage;
+}
+
+/* ----------
+ * pgstat_send_wal() -
+ *
+ *	Send WAL statistics to the collector.
+ *
+ * If 'force' is not set, WAL stats message is only sent if enough time has
+ * passed since last one was sent to reach PGSTAT_STAT_INTERVAL.
+ *
+ * Return true if the message is sent, and false otherwise.
+ * ----------
+ */
+bool
+pgstat_send_wal(bool force)
+{
+	/* We assume this initializes to zeroes */
+	static const PgStat_MsgWal all_zeroes;
+	static TimestampTz sendTime = 0;
+
+	/*
+	 * This function can be called even if nothing at all has happened. In
+	 * this case, avoid sending a completely empty message to the stats
+	 * collector.
+	 */
+	if (memcmp(&WalStats, &all_zeroes, sizeof(PgStat_MsgWal)) == 0)
+		return false;
+
+	if (!force)
+	{
+		TimestampTz now = GetCurrentTimestamp();
+
+		/*
+		 * Don't send a message unless it's been at least PGSTAT_STAT_INTERVAL
+		 * msec since we last sent one.
+		 */
+		if (!TimestampDifferenceExceeds(sendTime, now, PGSTAT_STAT_INTERVAL))
+			return false;
+		sendTime = now;
+	}
+
+	/*
+	 * Prepare and send the message
+	 */
+	pgstat_setheader(&WalStats.m_hdr, PGSTAT_MTYPE_WAL);
+	pgstat_send(&WalStats, sizeof(WalStats));
+
+	/*
+	 * Clear out the statistics buffer, so it can be re-used.
+	 */
+	MemSet(&WalStats, 0, sizeof(WalStats));
+
+	return true;
+}
+
+/* ----------
  * pgstat_send_slru() -
  *
  *		Send SLRU statistics to the collector
@@ -4638,6 +4981,11 @@ PgstatCollectorMain(int argc, char *argv[])
 												 len);
 					break;
 
+				case PGSTAT_MTYPE_RESETREPLSLOTCOUNTER:
+					pgstat_recv_resetreplslotcounter(&msg.msg_resetreplslotcounter,
+													 len);
+					break;
+
 				case PGSTAT_MTYPE_AUTOVAC_START:
 					pgstat_recv_autovac(&msg.msg_autovacuum_start, len);
 					break;
@@ -4656,6 +5004,10 @@ PgstatCollectorMain(int argc, char *argv[])
 
 				case PGSTAT_MTYPE_BGWRITER:
 					pgstat_recv_bgwriter(&msg.msg_bgwriter, len);
+					break;
+
+				case PGSTAT_MTYPE_WAL:
+					pgstat_recv_wal(&msg.msg_wal, len);
 					break;
 
 				case PGSTAT_MTYPE_SLRU:
@@ -4686,6 +5038,14 @@ PgstatCollectorMain(int argc, char *argv[])
 				case PGSTAT_MTYPE_CHECKSUMFAILURE:
 					pgstat_recv_checksum_failure(&msg.msg_checksumfailure,
 												 len);
+					break;
+
+				case PGSTAT_MTYPE_REPLSLOT:
+					pgstat_recv_replslot(&msg.msg_replslot, len);
+					break;
+
+				case PGSTAT_MTYPE_CONNECTION:
+					pgstat_recv_connstat(&msg.msg_conn, len);
 					break;
 
 				default:
@@ -4762,11 +5122,17 @@ reset_dbentry_counters(PgStat_StatDBEntry *dbentry)
 	dbentry->last_checksum_failure = 0;
 	dbentry->n_block_read_time = 0;
 	dbentry->n_block_write_time = 0;
+	dbentry->n_sessions = 0;
+	dbentry->total_session_time = 0;
+	dbentry->total_active_time = 0;
+	dbentry->total_idle_in_xact_time = 0;
+	dbentry->n_sessions_abandoned = 0;
+	dbentry->n_sessions_fatal = 0;
+	dbentry->n_sessions_killed = 0;
 
 	dbentry->stat_reset_timestamp = GetCurrentTimestamp();
 	dbentry->stats_timestamp = 0;
 
-	memset(&hash_ctl, 0, sizeof(hash_ctl));
 	hash_ctl.keysize = sizeof(Oid);
 	hash_ctl.entrysize = sizeof(PgStat_StatTabEntry);
 	dbentry->tables = hash_create("Per-database table",
@@ -4887,6 +5253,7 @@ pgstat_write_statsfiles(bool permanent, bool allDbs)
 	const char *tmpfile = permanent ? PGSTAT_STAT_PERMANENT_TMPFILE : pgstat_stat_tmpname;
 	const char *statfile = permanent ? PGSTAT_STAT_PERMANENT_FILENAME : pgstat_stat_filename;
 	int			rc;
+	int			i;
 
 	elog(DEBUG2, "writing stats file \"%s\"", statfile);
 
@@ -4928,6 +5295,12 @@ pgstat_write_statsfiles(bool permanent, bool allDbs)
 	(void) rc;					/* we'll check for error with ferror */
 
 	/*
+	 * Write WAL stats struct
+	 */
+	rc = fwrite(&walStats, sizeof(walStats), 1, fpout);
+	(void) rc;					/* we'll check for error with ferror */
+
+	/*
 	 * Write SLRU stats struct
 	 */
 	rc = fwrite(slruStats, sizeof(slruStats), 1, fpout);
@@ -4957,6 +5330,16 @@ pgstat_write_statsfiles(bool permanent, bool allDbs)
 		 */
 		fputc('D', fpout);
 		rc = fwrite(dbentry, offsetof(PgStat_StatDBEntry, tables), 1, fpout);
+		(void) rc;				/* we'll check for error with ferror */
+	}
+
+	/*
+	 * Write replication slot stats struct
+	 */
+	for (i = 0; i < nReplSlotStats; i++)
+	{
+		fputc('R', fpout);
+		rc = fwrite(&replSlotStats[i], sizeof(PgStat_ReplSlotStats), 1, fpout);
 		(void) rc;				/* we'll check for error with ferror */
 	}
 
@@ -5178,19 +5561,25 @@ pgstat_read_statsfiles(Oid onlydb, bool permanent, bool deep)
 	/*
 	 * Create the DB hashtable
 	 */
-	memset(&hash_ctl, 0, sizeof(hash_ctl));
 	hash_ctl.keysize = sizeof(Oid);
 	hash_ctl.entrysize = sizeof(PgStat_StatDBEntry);
 	hash_ctl.hcxt = pgStatLocalContext;
 	dbhash = hash_create("Databases hash", PGSTAT_DB_HASH_SIZE, &hash_ctl,
 						 HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 
+	/* Allocate the space for replication slot statistics */
+	replSlotStats = MemoryContextAllocZero(pgStatLocalContext,
+										   max_replication_slots
+										   * sizeof(PgStat_ReplSlotStats));
+	nReplSlotStats = 0;
+
 	/*
-	 * Clear out global and archiver statistics so they start from zero in
-	 * case we can't load an existing statsfile.
+	 * Clear out global, archiver, WAL and SLRU statistics so they start from
+	 * zero in case we can't load an existing statsfile.
 	 */
 	memset(&globalStats, 0, sizeof(globalStats));
 	memset(&archiverStats, 0, sizeof(archiverStats));
+	memset(&walStats, 0, sizeof(walStats));
 	memset(&slruStats, 0, sizeof(slruStats));
 
 	/*
@@ -5199,12 +5588,19 @@ pgstat_read_statsfiles(Oid onlydb, bool permanent, bool deep)
 	 */
 	globalStats.stat_reset_timestamp = GetCurrentTimestamp();
 	archiverStats.stat_reset_timestamp = globalStats.stat_reset_timestamp;
+	walStats.stat_reset_timestamp = globalStats.stat_reset_timestamp;
 
 	/*
 	 * Set the same reset timestamp for all SLRU items too.
 	 */
 	for (i = 0; i < SLRU_NUM_ELEMENTS; i++)
 		slruStats[i].stat_reset_timestamp = globalStats.stat_reset_timestamp;
+
+	/*
+	 * Set the same reset timestamp for all replication slots too.
+	 */
+	for (i = 0; i < max_replication_slots; i++)
+		replSlotStats[i].stat_reset_timestamp = globalStats.stat_reset_timestamp;
 
 	/*
 	 * Try to open the stats file. If it doesn't exist, the backends simply
@@ -5265,6 +5661,17 @@ pgstat_read_statsfiles(Oid onlydb, bool permanent, bool deep)
 		ereport(pgStatRunningInCollector ? LOG : WARNING,
 				(errmsg("corrupted statistics file \"%s\"", statfile)));
 		memset(&archiverStats, 0, sizeof(archiverStats));
+		goto done;
+	}
+
+	/*
+	 * Read WAL stats struct
+	 */
+	if (fread(&walStats, 1, sizeof(walStats), fpin) != sizeof(walStats))
+	{
+		ereport(pgStatRunningInCollector ? LOG : WARNING,
+				(errmsg("corrupted statistics file \"%s\"", statfile)));
+		memset(&walStats, 0, sizeof(walStats));
 		goto done;
 	}
 
@@ -5340,7 +5747,6 @@ pgstat_read_statsfiles(Oid onlydb, bool permanent, bool deep)
 						break;
 				}
 
-				memset(&hash_ctl, 0, sizeof(hash_ctl));
 				hash_ctl.keysize = sizeof(Oid);
 				hash_ctl.entrysize = sizeof(PgStat_StatTabEntry);
 				hash_ctl.hcxt = pgStatLocalContext;
@@ -5367,6 +5773,23 @@ pgstat_read_statsfiles(Oid onlydb, bool permanent, bool deep)
 											 dbentry->functions,
 											 permanent);
 
+				break;
+
+				/*
+				 * 'R'	A PgStat_ReplSlotStats struct describing a replication
+				 * slot follows.
+				 */
+			case 'R':
+				if (fread(&replSlotStats[nReplSlotStats], 1, sizeof(PgStat_ReplSlotStats), fpin)
+					!= sizeof(PgStat_ReplSlotStats))
+				{
+					ereport(pgStatRunningInCollector ? LOG : WARNING,
+							(errmsg("corrupted statistics file \"%s\"",
+									statfile)));
+					memset(&replSlotStats[nReplSlotStats], 0, sizeof(PgStat_ReplSlotStats));
+					goto done;
+				}
+				nReplSlotStats++;
 				break;
 
 			case 'E':
@@ -5578,7 +6001,9 @@ pgstat_read_db_statsfile_timestamp(Oid databaseid, bool permanent,
 	PgStat_StatDBEntry dbentry;
 	PgStat_GlobalStats myGlobalStats;
 	PgStat_ArchiverStats myArchiverStats;
+	PgStat_WalStats myWalStats;
 	PgStat_SLRUStats mySLRUStats[SLRU_NUM_ELEMENTS];
+	PgStat_ReplSlotStats myReplSlotStats;
 	FILE	   *fpin;
 	int32		format_id;
 	const char *statfile = permanent ? PGSTAT_STAT_PERMANENT_FILENAME : pgstat_stat_filename;
@@ -5634,6 +6059,17 @@ pgstat_read_db_statsfile_timestamp(Oid databaseid, bool permanent,
 	}
 
 	/*
+	 * Read WAL stats struct
+	 */
+	if (fread(&myWalStats, 1, sizeof(myWalStats), fpin) != sizeof(myWalStats))
+	{
+		ereport(pgStatRunningInCollector ? LOG : WARNING,
+				(errmsg("corrupted statistics file \"%s\"", statfile)));
+		FreeFile(fpin);
+		return false;
+	}
+
+	/*
 	 * Read SLRU stats struct
 	 */
 	if (fread(mySLRUStats, 1, sizeof(mySLRUStats), fpin) != sizeof(mySLRUStats))
@@ -5680,6 +6116,22 @@ pgstat_read_db_statsfile_timestamp(Oid databaseid, bool permanent,
 					goto done;
 				}
 
+				break;
+
+				/*
+				 * 'R'	A PgStat_ReplSlotStats struct describing a replication
+				 * slot follows.
+				 */
+			case 'R':
+				if (fread(&myReplSlotStats, 1, sizeof(PgStat_ReplSlotStats), fpin)
+					!= sizeof(PgStat_ReplSlotStats))
+				{
+					ereport(pgStatRunningInCollector ? LOG : WARNING,
+							(errmsg("corrupted statistics file \"%s\"",
+									statfile)));
+					FreeFile(fpin);
+					return false;
+				}
 				break;
 
 			case 'E':
@@ -5796,8 +6248,9 @@ backend_read_statsfile(void)
 				/* Copy because timestamptz_to_str returns a static buffer */
 				filetime = pstrdup(timestamptz_to_str(file_ts));
 				mytime = pstrdup(timestamptz_to_str(cur_ts));
-				elog(LOG, "stats collector's time %s is later than backend local time %s",
-					 filetime, mytime);
+				ereport(LOG,
+						(errmsg("statistics collector's time %s is later than backend local time %s",
+								filetime, mytime)));
 				pfree(filetime);
 				pfree(mytime);
 			}
@@ -5872,6 +6325,8 @@ pgstat_clear_snapshot(void)
 	pgStatDBHash = NULL;
 	localBackendStatusTable = NULL;
 	localNumBackends = 0;
+	replSlotStats = NULL;
+	nReplSlotStats = 0;
 }
 
 
@@ -5939,9 +6394,9 @@ pgstat_recv_inquiry(PgStat_MsgInquiry *msg, int len)
 			/* Copy because timestamptz_to_str returns a static buffer */
 			writetime = pstrdup(timestamptz_to_str(dbentry->stats_timestamp));
 			mytime = pstrdup(timestamptz_to_str(cur_ts));
-			elog(LOG,
-				 "stats_timestamp %s is later than collector's time %s for database %u",
-				 writetime, mytime, dbentry->databaseid);
+			ereport(LOG,
+					(errmsg("stats_timestamp %s is later than collector's time %s for database %u",
+							writetime, mytime, dbentry->databaseid)));
 			pfree(writetime);
 			pfree(mytime);
 		}
@@ -6213,6 +6668,12 @@ pgstat_recv_resetsharedcounter(PgStat_MsgResetsharedcounter *msg, int len)
 		memset(&archiverStats, 0, sizeof(archiverStats));
 		archiverStats.stat_reset_timestamp = GetCurrentTimestamp();
 	}
+	else if (msg->m_resettarget == RESET_WAL)
+	{
+		/* Reset the WAL statistics for the cluster. */
+		memset(&walStats, 0, sizeof(walStats));
+		walStats.stat_reset_timestamp = GetCurrentTimestamp();
+	}
 
 	/*
 	 * Presumably the sender of this message validated the target, don't
@@ -6270,6 +6731,46 @@ pgstat_recv_resetslrucounter(PgStat_MsgResetslrucounter *msg, int len)
 		}
 	}
 }
+
+/* ----------
+ * pgstat_recv_resetreplslotcounter() -
+ *
+ *	Reset some replication slot statistics of the cluster.
+ * ----------
+ */
+static void
+pgstat_recv_resetreplslotcounter(PgStat_MsgResetreplslotcounter *msg,
+								 int len)
+{
+	int			i;
+	int			idx = -1;
+	TimestampTz ts;
+
+	ts = GetCurrentTimestamp();
+	if (msg->clearall)
+	{
+		for (i = 0; i < nReplSlotStats; i++)
+			pgstat_reset_replslot(i, ts);
+	}
+	else
+	{
+		/* Get the index of replication slot statistics to reset */
+		idx = pgstat_replslot_index(msg->m_slotname, false);
+
+		/*
+		 * Nothing to do if the given slot entry is not found.  This could
+		 * happen when the slot with the given name is removed and the
+		 * corresponding statistics entry is also removed before receiving the
+		 * reset message.
+		 */
+		if (idx < 0)
+			return;
+
+		/* Reset the stats for the requested replication slot */
+		pgstat_reset_replslot(idx, ts);
+	}
+}
+
 
 /* ----------
  * pgstat_recv_autovac() -
@@ -6428,6 +6929,25 @@ pgstat_recv_bgwriter(PgStat_MsgBgWriter *msg, int len)
 }
 
 /* ----------
+ * pgstat_recv_wal() -
+ *
+ *	Process a WAL message.
+ * ----------
+ */
+static void
+pgstat_recv_wal(PgStat_MsgWal *msg, int len)
+{
+	walStats.wal_records += msg->m_wal_records;
+	walStats.wal_fpi += msg->m_wal_fpi;
+	walStats.wal_bytes += msg->m_wal_bytes;
+	walStats.wal_buffers_full += msg->m_wal_buffers_full;
+	walStats.wal_write += msg->m_wal_write;
+	walStats.wal_sync += msg->m_wal_sync;
+	walStats.wal_write_time += msg->m_wal_write_time;
+	walStats.wal_sync_time += msg->m_wal_sync_time;
+}
+
+/* ----------
  * pgstat_recv_slru() -
  *
  *	Process a SLRU message.
@@ -6516,6 +7036,91 @@ pgstat_recv_checksum_failure(PgStat_MsgChecksumFailure *msg, int len)
 
 	dbentry->n_checksum_failures += msg->m_failurecount;
 	dbentry->last_checksum_failure = msg->m_failure_time;
+}
+
+/* ----------
+ * pgstat_recv_replslot() -
+ *
+ *	Process a REPLSLOT message.
+ * ----------
+ */
+static void
+pgstat_recv_replslot(PgStat_MsgReplSlot *msg, int len)
+{
+	int			idx;
+
+	/*
+	 * Get the index of replication slot statistics.  On dropping, we don't
+	 * create the new statistics.
+	 */
+	idx = pgstat_replslot_index(msg->m_slotname, !msg->m_drop);
+
+	/*
+	 * The slot entry is not found or there is no space to accommodate the new
+	 * entry.  This could happen when the message for the creation of a slot
+	 * reached before the drop message even though the actual operations
+	 * happen in reverse order.  In such a case, the next update of the
+	 * statistics for the same slot will create the required entry.
+	 */
+	if (idx < 0)
+		return;
+
+	/* it must be a valid replication slot index */
+	Assert(idx < nReplSlotStats);
+
+	if (msg->m_drop)
+	{
+		/* Remove the replication slot statistics with the given name */
+		if (idx < nReplSlotStats - 1)
+			memcpy(&replSlotStats[idx], &replSlotStats[nReplSlotStats - 1],
+				   sizeof(PgStat_ReplSlotStats));
+		nReplSlotStats--;
+	}
+	else
+	{
+		/* Update the replication slot statistics */
+		replSlotStats[idx].spill_txns += msg->m_spill_txns;
+		replSlotStats[idx].spill_count += msg->m_spill_count;
+		replSlotStats[idx].spill_bytes += msg->m_spill_bytes;
+		replSlotStats[idx].stream_txns += msg->m_stream_txns;
+		replSlotStats[idx].stream_count += msg->m_stream_count;
+		replSlotStats[idx].stream_bytes += msg->m_stream_bytes;
+	}
+}
+
+/* ----------
+ * pgstat_recv_connstat() -
+ *
+ *  Process connection information.
+ * ----------
+ */
+static void
+pgstat_recv_connstat(PgStat_MsgConn *msg, int len)
+{
+	PgStat_StatDBEntry *dbentry;
+
+	dbentry = pgstat_get_db_entry(msg->m_databaseid, true);
+
+	dbentry->n_sessions += msg->m_count;
+	dbentry->total_session_time += msg->m_session_time;
+	dbentry->total_active_time += msg->m_active_time;
+	dbentry->total_idle_in_xact_time += msg->m_idle_in_xact_time;
+	switch (msg->m_disconnect)
+	{
+		case DISCONNECT_NOT_YET:
+		case DISCONNECT_NORMAL:
+			/* we don't collect these */
+			break;
+		case DISCONNECT_CLIENT_EOF:
+			dbentry->n_sessions_abandoned++;
+			break;
+		case DISCONNECT_FATAL:
+			dbentry->n_sessions_fatal++;
+			break;
+		case DISCONNECT_KILLED:
+			dbentry->n_sessions_killed++;
+			break;
+	}
 }
 
 /* ----------
@@ -6698,6 +7303,60 @@ pgstat_clip_activity(const char *raw_activity)
 	activity[cliplen] = '\0';
 
 	return activity;
+}
+
+/* ----------
+ * pgstat_replslot_index
+ *
+ * Return the index of entry of a replication slot with the given name, or
+ * -1 if the slot is not found.
+ *
+ * create_it tells whether to create the new slot entry if it is not found.
+ * ----------
+ */
+static int
+pgstat_replslot_index(const char *name, bool create_it)
+{
+	int			i;
+
+	Assert(nReplSlotStats <= max_replication_slots);
+	for (i = 0; i < nReplSlotStats; i++)
+	{
+		if (strcmp(replSlotStats[i].slotname, name) == 0)
+			return i;			/* found */
+	}
+
+	/*
+	 * The slot is not found.  We don't want to register the new statistics if
+	 * the list is already full or the caller didn't request.
+	 */
+	if (i == max_replication_slots || !create_it)
+		return -1;
+
+	/* Register new slot */
+	memset(&replSlotStats[nReplSlotStats], 0, sizeof(PgStat_ReplSlotStats));
+	strlcpy(replSlotStats[nReplSlotStats].slotname, name, NAMEDATALEN);
+
+	return nReplSlotStats++;
+}
+
+/* ----------
+ * pgstat_reset_replslot
+ *
+ * Reset the replication slot stats at index 'i'.
+ * ----------
+ */
+static void
+pgstat_reset_replslot(int i, TimestampTz ts)
+{
+	/* reset only counters. Don't clear slot name */
+	replSlotStats[i].spill_txns = 0;
+	replSlotStats[i].spill_count = 0;
+	replSlotStats[i].spill_bytes = 0;
+	replSlotStats[i].stream_txns = 0;
+	replSlotStats[i].stream_count = 0;
+	replSlotStats[i].stream_bytes = 0;
+	replSlotStats[i].stat_reset_timestamp = ts;
 }
 
 /*

@@ -4,7 +4,7 @@
  *	  delete & vacuum routines for the postgres GIN
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -189,7 +189,7 @@ ginDeletePage(GinVacuumState *gvs, BlockNumber deleteBlkno, BlockNumber leftBlkn
 	 * address.
 	 */
 	GinPageSetDeleted(page);
-	GinPageSetDeleteXid(page, ReadNewTransactionId());
+	GinPageSetDeleteXid(page, ReadNextTransactionId());
 
 	MarkBufferDirty(pBuffer);
 	MarkBufferDirty(lBuffer);
@@ -231,6 +231,7 @@ ginDeletePage(GinVacuumState *gvs, BlockNumber deleteBlkno, BlockNumber leftBlkn
 
 	END_CRIT_SECTION();
 
+	gvs->result->pages_newly_deleted++;
 	gvs->result->pages_deleted++;
 }
 

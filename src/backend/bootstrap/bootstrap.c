@@ -4,7 +4,7 @@
  *	  routines to support running postgres in 'bootstrap' mode
  *	bootstrap mode is used to create the initial template database
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -21,6 +21,7 @@
 #include "access/heapam.h"
 #include "access/htup_details.h"
 #include "access/tableam.h"
+#include "access/toast_compression.h"
 #include "access/xact.h"
 #include "access/xlog_internal.h"
 #include "bootstrap/bootstrap.h"
@@ -133,7 +134,7 @@ static const struct typinfo TypInfo[] = {
 	F_XIDIN, F_XIDOUT},
 	{"cid", CIDOID, 0, 4, true, TYPALIGN_INT, TYPSTORAGE_PLAIN, InvalidOid,
 	F_CIDIN, F_CIDOUT},
-	{"pg_node_tree", PGNODETREEOID, 0, -1, false, TYPALIGN_INT, TYPSTORAGE_EXTENDED, DEFAULT_COLLATION_OID,
+	{"pg_node_tree", PG_NODE_TREEOID, 0, -1, false, TYPALIGN_INT, TYPSTORAGE_EXTENDED, DEFAULT_COLLATION_OID,
 	F_PG_NODE_TREE_IN, F_PG_NODE_TREE_OUT},
 	{"int2vector", INT2VECTOROID, INT2OID, -1, false, TYPALIGN_INT, TYPSTORAGE_PLAIN, InvalidOid,
 	F_INT2VECTORIN, F_INT2VECTOROUT},
@@ -317,6 +318,9 @@ AuxiliaryProcessMain(int argc, char *argv[])
 		case StartupProcess:
 			MyBackendType = B_STARTUP;
 			break;
+		case ArchiverProcess:
+			MyBackendType = B_ARCHIVER;
+			break;
 		case BgWriterProcess:
 			MyBackendType = B_BG_WRITER;
 			break;
@@ -437,30 +441,29 @@ AuxiliaryProcessMain(int argc, char *argv[])
 			proc_exit(1);		/* should never return */
 
 		case StartupProcess:
-			/* don't set signals, startup process has its own agenda */
 			StartupProcessMain();
-			proc_exit(1);		/* should never return */
+			proc_exit(1);
+
+		case ArchiverProcess:
+			PgArchiverMain();
+			proc_exit(1);
 
 		case BgWriterProcess:
-			/* don't set signals, bgwriter has its own agenda */
 			BackgroundWriterMain();
-			proc_exit(1);		/* should never return */
+			proc_exit(1);
 
 		case CheckpointerProcess:
-			/* don't set signals, checkpointer has its own agenda */
 			CheckpointerMain();
-			proc_exit(1);		/* should never return */
+			proc_exit(1);
 
 		case WalWriterProcess:
-			/* don't set signals, walwriter has its own agenda */
 			InitXLOGAccess();
 			WalWriterMain();
-			proc_exit(1);		/* should never return */
+			proc_exit(1);
 
 		case WalReceiverProcess:
-			/* don't set signals, walreceiver has its own agenda */
 			WalReceiverMain();
-			proc_exit(1);		/* should never return */
+			proc_exit(1);
 
 		default:
 			elog(PANIC, "unrecognized process type: %d", (int) MyAuxProcType);
@@ -731,6 +734,10 @@ DefineAttr(char *name, char *type, int attnum, int nullness)
 	attrtypes[attnum]->attcacheoff = -1;
 	attrtypes[attnum]->atttypmod = -1;
 	attrtypes[attnum]->attislocal = true;
+	if (IsStorageCompressible(attrtypes[attnum]->attstorage))
+		attrtypes[attnum]->attcompression = GetDefaultToastCompression();
+	else
+		attrtypes[attnum]->attcompression = InvalidCompressionMethod;
 
 	if (nullness == BOOTCOL_NULL_FORCE_NOT_NULL)
 	{

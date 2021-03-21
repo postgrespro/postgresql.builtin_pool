@@ -18,14 +18,10 @@
  <para>
   The structures of the catalogs are declared in specially formatted C
   header files in the <filename>src/include/catalog/</filename> directory of
-  the source tree.  In particular, for each catalog there is a header file
+  the source tree.  For each catalog there is a header file
   named after the catalog (e.g., <filename>pg_class.h</filename>
   for <structname>pg_class</structname>), which defines the set of columns
   the catalog has, as well as some other basic properties such as its OID.
-  Other critical files defining the catalog structure
-  include <filename>indexing.h</filename>, which defines the indexes present
-  on all the system catalogs, and <filename>toasting.h</filename>, which
-  defines TOAST tables for catalogs that need one.
  </para>
 
  <para>
@@ -478,10 +474,15 @@
 
     <listitem>
      <para>
-      In such a column, all entries must use the symbolic format except
-      when writing <literal>0</literal> for InvalidOid.  (If the column is
+      In some catalog columns, it's allowed for entries to be zero instead
+      of a valid reference.  If this is allowed, write
+      <literal>BKI_LOOKUP_OPT</literal> instead
+      of <literal>BKI_LOOKUP</literal>.  Then you can
+      write <literal>0</literal> for an entry.  (If the column is
       declared <type>regproc</type>, you can optionally
       write <literal>-</literal> instead of <literal>0</literal>.)
+      Except for this special case, all entries in
+      a <literal>BKI_LOOKUP</literal> column must be symbolic references.
       <filename>genbki.pl</filename> will warn about unrecognized names.
      </para>
     </listitem>
@@ -539,17 +540,6 @@
       expected to be in the <literal>pg_catalog</literal> schema.
      </para>
     </listitem>
-
-    <listitem>
-     <para>
-      In addition to the generic lookup mechanisms, there is a special
-      convention that <literal>PGNSP</literal> is replaced by the OID of
-      the <literal>pg_catalog</literal> schema,
-      and <literal>PGUID</literal> is replaced by the OID of the bootstrap
-      superuser role.  These usages are somewhat historical but so far
-      there hasn't been a need to generalize them.
-     </para>
-    </listitem>
    </itemizedlist>
 
    <para>
@@ -557,6 +547,22 @@
     runs, and puts simple numeric OIDs into the emitted BKI file.  There is
     therefore no need for the bootstrap backend to deal with symbolic
     references.
+   </para>
+
+   <para>
+    It's desirable to mark OID reference columns
+    with <literal>BKI_LOOKUP</literal> or <literal>BKI_LOOKUP_OPT</literal>
+    even if the catalog has no initial data that requires lookup.  This
+    allows <filename>genbki.pl</filename> to record the foreign key
+    relationships that exist in the system catalogs.  That information is
+    used in the regression tests to check for incorrect entries.  See also
+    the macros <literal>DECLARE_FOREIGN_KEY</literal>,
+    <literal>DECLARE_FOREIGN_KEY_OPT</literal>,
+    <literal>DECLARE_ARRAY_FOREIGN_KEY</literal>,
+    and <literal>DECLARE_ARRAY_FOREIGN_KEY_OPT</literal>, which are
+    used to declare foreign key relationships that are too complex
+    for <literal>BKI_LOOKUP</literal> (typically, multi-column foreign
+    keys).
    </para>
   </sect2>
 
@@ -752,8 +758,8 @@ $ perl  rewrite_dat_with_prokind.pl  pg_proc.dat
    next token that syntactically cannot belong to the preceding
    command starts a new one.  (Usually you would put a new command on
    a new line, for clarity.)  Tokens can be certain key words, special
-   characters (parentheses, commas, etc.), numbers, or double-quoted
-   strings.  Everything is case sensitive.
+   characters (parentheses, commas, etc.), identifiers, numbers, or
+   single-quoted strings.  Everything is case sensitive.
   </para>
 
   <para>
@@ -876,7 +882,9 @@ $ perl  rewrite_dat_with_prokind.pl  pg_proc.dat
      <para>
       NULL values can be specified using the special key word
       <literal>_null_</literal>.  Values that do not look like
-      identifiers or digit strings must be double quoted.
+      identifiers or digit strings must be single-quoted.
+      (To include a single quote in a value, write it twice.
+      Escape-string-style backslash escapes are allowed in the string, too.)
      </para>
     </listitem>
    </varlistentry>
@@ -1046,7 +1054,7 @@ $ perl  rewrite_dat_with_prokind.pl  pg_proc.dat
 <programlisting>
 create test_table 420 (oid = oid, cola = int4, colb = text)
 open test_table
-insert ( 421 1 "value1" )
+insert ( 421 1 'value 1' )
 insert ( 422 2 _null_ )
 close test_table
 </programlisting>

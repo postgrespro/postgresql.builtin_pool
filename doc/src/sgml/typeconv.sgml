@@ -40,7 +40,7 @@ has an associated data type which determines its behavior and allowed usage.
 <productname>PostgreSQL</productname> has an extensible type system that is
 more general and flexible than other <acronym>SQL</acronym> implementations.
 Hence, most type conversion behavior in <productname>PostgreSQL</productname>
-is governed by general rules rather than by <foreignphrase>ad hoc</foreignphrase>
+is governed by general rules rather than by ad hoc
 heuristics.  This allows the use of mixed-type expressions even with
 user-defined types.
 </para>
@@ -97,8 +97,8 @@ Operators
 <listitem>
 <para>
 <productname>PostgreSQL</productname> allows expressions with
-prefix and postfix unary (one-argument) operators,
-as well as binary (two-argument) operators.  Like functions, operators can
+prefix (one-argument) operators,
+as well as infix (two-argument) operators.  Like functions, operators can
 be overloaded, so the same problem of selecting the right operator
 exists.
 </para>
@@ -127,8 +127,10 @@ must appear in a single set of columns, the types of the results of each
 <command>SELECT</command> clause must be matched up and converted to a uniform set.
 Similarly, the result expressions of a <literal>CASE</literal> construct must be
 converted to a common type so that the <literal>CASE</literal> expression as a whole
-has a known output type.  The same holds for <literal>ARRAY</literal> constructs,
-and for the <function>GREATEST</function> and <function>LEAST</function> functions.
+has a known output type.  Some other constructs, such
+as <literal>ARRAY[]</literal> and the <function>GREATEST</function>
+and <function>LEAST</function> functions, likewise require determination of a
+common type for several subexpressions.
 </para>
 </listitem>
 </varlistentry>
@@ -266,7 +268,7 @@ create objects.  In such situations, cast arguments to force an exact match.
 <para>
 If one argument of a binary operator invocation is of the <type>unknown</type> type,
 then assume it is the same type as the other argument for this check.
-Invocations involving two <type>unknown</type> inputs, or a unary operator
+Invocations involving two <type>unknown</type> inputs, or a prefix operator
 with an <type>unknown</type> input, will never find a match at this step.
 </para>
 </step>
@@ -1040,9 +1042,11 @@ SQL <literal>UNION</literal> constructs must match up possibly dissimilar
 types to become a single result set.  The resolution algorithm is
 applied separately to each output column of a union query.  The
 <literal>INTERSECT</literal> and <literal>EXCEPT</literal> constructs resolve
-dissimilar types in the same way as <literal>UNION</literal>.  The
+dissimilar types in the same way as <literal>UNION</literal>.
+Some other constructs, including
 <literal>CASE</literal>, <literal>ARRAY</literal>, <literal>VALUES</literal>,
-<function>GREATEST</function> and <function>LEAST</function> constructs use the identical
+and the <function>GREATEST</function> and <function>LEAST</function>
+functions, use the identical
 algorithm to match up their component expressions and select a result
 data type.
 </para>

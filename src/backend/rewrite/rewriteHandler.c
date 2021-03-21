@@ -3,7 +3,7 @@
  * rewriteHandler.c
  *		Primary module of query rewriter.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -30,6 +30,7 @@
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
+#include "optimizer/optimizer.h"
 #include "parser/analyze.h"
 #include "parser/parse_coerce.h"
 #include "parser/parse_relation.h"
@@ -37,6 +38,7 @@
 #include "rewrite/rewriteDefine.h"
 #include "rewrite/rewriteHandler.h"
 #include "rewrite/rewriteManip.h"
+#include "rewrite/rewriteSearchCycle.h"
 #include "rewrite/rowsecurity.h"
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
@@ -68,13 +70,18 @@ static List *rewriteTargetListIU(List *targetList,
 								 CmdType commandType,
 								 OverridingKind override,
 								 Relation target_relation,
-								 int result_rti);
+								 int result_rti,
+								 RangeTblEntry *values_rte,
+								 int values_rte_index,
+								 Bitmapset **unused_values_attrnos);
 static TargetEntry *process_matched_tle(TargetEntry *src_tle,
 										TargetEntry *prior_tle,
 										const char *attrName);
 static Node *get_assignment_input(Node *node);
+static Bitmapset *findDefaultOnlyColumns(RangeTblEntry *rte);
 static bool rewriteValuesRTE(Query *parsetree, RangeTblEntry *rte, int rti,
-							 Relation target_relation, bool force_nulls);
+							 Relation target_relation, bool force_nulls,
+							 Bitmapset *unused_cols);
 static void markQueryForLocking(Query *qry, Node *jtnode,
 								LockClauseStrength strength, LockWaitPolicy waitPolicy,
 								bool pushedDown);
@@ -650,11 +657,7 @@ adjustJoinTreeList(Query *parsetree, bool removert, int rt_index)
 			if (IsA(rtr, RangeTblRef) &&
 				rtr->rtindex == rt_index)
 			{
-				newjointree = list_delete_ptr(newjointree, rtr);
-
-				/*
-				 * foreach is safe because we exit loop after list_delete...
-				 */
+				newjointree = foreach_delete_current(newjointree, l);
 				break;
 			}
 		}
@@ -711,13 +714,25 @@ adjustJoinTreeList(Query *parsetree, bool removert, int rt_index)
  * is incorrect by this light, since child relations might have different
  * column ordering, but the planner will fix things by re-sorting the tlist
  * for each child.)
+ *
+ * If values_rte is non-NULL (i.e., we are doing a multi-row INSERT using
+ * values from a VALUES RTE), we populate *unused_values_attrnos with the
+ * attribute numbers of any unused columns from the VALUES RTE.  This can
+ * happen for identity and generated columns whose targetlist entries are
+ * replaced with generated expressions (if INSERT ... OVERRIDING USER VALUE is
+ * used, or all the values to be inserted are DEFAULT).  This information is
+ * required by rewriteValuesRTE() to handle any DEFAULT items in the unused
+ * columns.  The caller must have initialized *unused_values_attrnos to NULL.
  */
 static List *
 rewriteTargetListIU(List *targetList,
 					CmdType commandType,
 					OverridingKind override,
 					Relation target_relation,
-					int result_rti)
+					int result_rti,
+					RangeTblEntry *values_rte,
+					int values_rte_index,
+					Bitmapset **unused_values_attrnos)
 {
 	TargetEntry **new_tles;
 	List	   *new_tlist = NIL;
@@ -727,6 +742,7 @@ rewriteTargetListIU(List *targetList,
 				next_junk_attrno,
 				numattrs;
 	ListCell   *temp;
+	Bitmapset  *default_only_cols = NULL;
 
 	/*
 	 * We process the normal (non-junk) attributes by scanning the input tlist
@@ -806,43 +822,122 @@ rewriteTargetListIU(List *targetList,
 
 		if (commandType == CMD_INSERT)
 		{
+			int			values_attrno = 0;
+
+			/* Source attribute number for values that come from a VALUES RTE */
+			if (values_rte && new_tle && IsA(new_tle->expr, Var))
+			{
+				Var		   *var = (Var *) new_tle->expr;
+
+				if (var->varno == values_rte_index)
+					values_attrno = var->varattno;
+			}
+
+			/*
+			 * Can only insert DEFAULT into GENERATED ALWAYS identity columns,
+			 * unless either OVERRIDING USER VALUE or OVERRIDING SYSTEM VALUE
+			 * is specified.
+			 */
 			if (att_tup->attidentity == ATTRIBUTE_IDENTITY_ALWAYS && !apply_default)
 			{
 				if (override == OVERRIDING_USER_VALUE)
 					apply_default = true;
 				else if (override != OVERRIDING_SYSTEM_VALUE)
-					ereport(ERROR,
-							(errcode(ERRCODE_GENERATED_ALWAYS),
-							 errmsg("cannot insert into column \"%s\"", NameStr(att_tup->attname)),
-							 errdetail("Column \"%s\" is an identity column defined as GENERATED ALWAYS.",
-									   NameStr(att_tup->attname)),
-							 errhint("Use OVERRIDING SYSTEM VALUE to override.")));
+				{
+					/*
+					 * If this column's values come from a VALUES RTE, test
+					 * whether it contains only SetToDefault items.  Since the
+					 * VALUES list might be quite large, we arrange to only
+					 * scan it once.
+					 */
+					if (values_attrno != 0)
+					{
+						if (default_only_cols == NULL)
+							default_only_cols = findDefaultOnlyColumns(values_rte);
+
+						if (bms_is_member(values_attrno, default_only_cols))
+							apply_default = true;
+					}
+
+					if (!apply_default)
+						ereport(ERROR,
+								(errcode(ERRCODE_GENERATED_ALWAYS),
+								 errmsg("cannot insert a non-DEFAULT value into column \"%s\"",
+										NameStr(att_tup->attname)),
+								 errdetail("Column \"%s\" is an identity column defined as GENERATED ALWAYS.",
+										   NameStr(att_tup->attname)),
+								 errhint("Use OVERRIDING SYSTEM VALUE to override.")));
+				}
 			}
 
-			if (att_tup->attidentity == ATTRIBUTE_IDENTITY_BY_DEFAULT && override == OVERRIDING_USER_VALUE)
+			/*
+			 * Although inserting into a GENERATED BY DEFAULT identity column
+			 * is allowed, apply the default if OVERRIDING USER VALUE is
+			 * specified.
+			 */
+			if (att_tup->attidentity == ATTRIBUTE_IDENTITY_BY_DEFAULT &&
+				override == OVERRIDING_USER_VALUE)
 				apply_default = true;
 
+			/*
+			 * Can only insert DEFAULT into generated columns, regardless of
+			 * any OVERRIDING clauses.
+			 */
 			if (att_tup->attgenerated && !apply_default)
-				ereport(ERROR,
-						(errcode(ERRCODE_SYNTAX_ERROR),
-						 errmsg("cannot insert into column \"%s\"", NameStr(att_tup->attname)),
-						 errdetail("Column \"%s\" is a generated column.",
-								   NameStr(att_tup->attname))));
+			{
+				/*
+				 * If this column's values come from a VALUES RTE, test
+				 * whether it contains only SetToDefault items, as above.
+				 */
+				if (values_attrno != 0)
+				{
+					if (default_only_cols == NULL)
+						default_only_cols = findDefaultOnlyColumns(values_rte);
+
+					if (bms_is_member(values_attrno, default_only_cols))
+						apply_default = true;
+				}
+
+				if (!apply_default)
+					ereport(ERROR,
+							(errcode(ERRCODE_GENERATED_ALWAYS),
+							 errmsg("cannot insert a non-DEFAULT value into column \"%s\"",
+									NameStr(att_tup->attname)),
+							 errdetail("Column \"%s\" is a generated column.",
+									   NameStr(att_tup->attname))));
+			}
+
+			/*
+			 * For an INSERT from a VALUES RTE, return the attribute numbers
+			 * of any VALUES columns that will no longer be used (due to the
+			 * targetlist entry being replaced by a default expression).
+			 */
+			if (values_attrno != 0 && apply_default && unused_values_attrnos)
+				*unused_values_attrnos = bms_add_member(*unused_values_attrnos,
+														values_attrno);
 		}
 
+		/*
+		 * Updates to identity and generated columns follow the same rules as
+		 * above, except that UPDATE doesn't admit OVERRIDING clauses.  Also,
+		 * the source can't be a VALUES RTE, so we needn't consider that.
+		 */
 		if (commandType == CMD_UPDATE)
 		{
-			if (att_tup->attidentity == ATTRIBUTE_IDENTITY_ALWAYS && new_tle && !apply_default)
+			if (att_tup->attidentity == ATTRIBUTE_IDENTITY_ALWAYS &&
+				new_tle && !apply_default)
 				ereport(ERROR,
 						(errcode(ERRCODE_GENERATED_ALWAYS),
-						 errmsg("column \"%s\" can only be updated to DEFAULT", NameStr(att_tup->attname)),
+						 errmsg("column \"%s\" can only be updated to DEFAULT",
+								NameStr(att_tup->attname)),
 						 errdetail("Column \"%s\" is an identity column defined as GENERATED ALWAYS.",
 								   NameStr(att_tup->attname))));
 
 			if (att_tup->attgenerated && new_tle && !apply_default)
 				ereport(ERROR,
-						(errcode(ERRCODE_SYNTAX_ERROR),
-						 errmsg("column \"%s\" can only be updated to DEFAULT", NameStr(att_tup->attname)),
+						(errcode(ERRCODE_GENERATED_ALWAYS),
+						 errmsg("column \"%s\" can only be updated to DEFAULT",
+								NameStr(att_tup->attname)),
 						 errdetail("Column \"%s\" is a generated column.",
 								   NameStr(att_tup->attname))));
 		}
@@ -1222,6 +1317,62 @@ searchForDefault(RangeTblEntry *rte)
 	return false;
 }
 
+
+/*
+ * Search a VALUES RTE for columns that contain only SetToDefault items,
+ * returning a Bitmapset containing the attribute numbers of any such columns.
+ */
+static Bitmapset *
+findDefaultOnlyColumns(RangeTblEntry *rte)
+{
+	Bitmapset  *default_only_cols = NULL;
+	ListCell   *lc;
+
+	foreach(lc, rte->values_lists)
+	{
+		List	   *sublist = (List *) lfirst(lc);
+		ListCell   *lc2;
+		int			i;
+
+		if (default_only_cols == NULL)
+		{
+			/* Populate the initial result bitmap from the first row */
+			i = 0;
+			foreach(lc2, sublist)
+			{
+				Node	   *col = (Node *) lfirst(lc2);
+
+				i++;
+				if (IsA(col, SetToDefault))
+					default_only_cols = bms_add_member(default_only_cols, i);
+			}
+		}
+		else
+		{
+			/* Update the result bitmap from this next row */
+			i = 0;
+			foreach(lc2, sublist)
+			{
+				Node	   *col = (Node *) lfirst(lc2);
+
+				i++;
+				if (!IsA(col, SetToDefault))
+					default_only_cols = bms_del_member(default_only_cols, i);
+			}
+		}
+
+		/*
+		 * If no column in the rows read so far contains only DEFAULT items,
+		 * we are done.
+		 */
+		if (bms_is_empty(default_only_cols))
+			break;
+	}
+
+	return default_only_cols;
+}
+
+
 /*
  * When processing INSERT ... VALUES with a VALUES RTE (ie, multiple VALUES
  * lists), we have to replace any DEFAULT items in the VALUES lists with
@@ -1249,19 +1400,31 @@ searchForDefault(RangeTblEntry *rte)
  * an insert into an auto-updatable view, and the product queries are inserts
  * into a rule-updatable view.
  *
+ * Finally, if a DEFAULT item is found in a column mentioned in unused_cols,
+ * it is explicitly set to NULL.  This happens for columns in the VALUES RTE
+ * whose corresponding targetlist entries have already been replaced with the
+ * relation's default expressions, so that any values in those columns of the
+ * VALUES RTE are no longer used.  This can happen for identity and generated
+ * columns (if INSERT ... OVERRIDING USER VALUE is used, or all the values to
+ * be inserted are DEFAULT).  In principle we could replace all entries in
+ * such a column with NULL, whether DEFAULT or not; but it doesn't seem worth
+ * the trouble.
+ *
  * Note that we may have subscripted or field assignment targetlist entries,
  * as well as more complex expressions from already-replaced DEFAULT items if
  * we have recursed to here for an auto-updatable view. However, it ought to
- * be impossible for such entries to have DEFAULTs assigned to them --- we
- * should only have to replace DEFAULT items for targetlist entries that
- * contain simple Vars referencing the VALUES RTE.
+ * be impossible for such entries to have DEFAULTs assigned to them, except
+ * for unused columns, as described above --- we should only have to replace
+ * DEFAULT items for targetlist entries that contain simple Vars referencing
+ * the VALUES RTE, or which are no longer referred to by the targetlist.
  *
  * Returns true if all DEFAULT items were replaced, and false if some were
  * left untouched.
  */
 static bool
 rewriteValuesRTE(Query *parsetree, RangeTblEntry *rte, int rti,
-				 Relation target_relation, bool force_nulls)
+				 Relation target_relation, bool force_nulls,
+				 Bitmapset *unused_cols)
 {
 	List	   *newValues;
 	ListCell   *lc;
@@ -1285,8 +1448,8 @@ rewriteValuesRTE(Query *parsetree, RangeTblEntry *rte, int rti,
 	 * Scan the targetlist for entries referring to the VALUES RTE, and note
 	 * the target attributes. As noted above, we should only need to do this
 	 * for targetlist entries containing simple Vars --- nothing else in the
-	 * VALUES RTE should contain DEFAULT items, and we complain if such a
-	 * thing does occur.
+	 * VALUES RTE should contain DEFAULT items (except possibly for unused
+	 * columns), and we complain if such a thing does occur.
 	 */
 	numattrs = list_length(linitial(rte->values_lists));
 	attrnos = (int *) palloc0(numattrs * sizeof(int));
@@ -1372,6 +1535,22 @@ rewriteValuesRTE(Query *parsetree, RangeTblEntry *rte, int rti,
 			{
 				Form_pg_attribute att_tup;
 				Node	   *new_expr;
+
+				/*
+				 * If this column isn't used, just replace the DEFAULT with
+				 * NULL (attrno will be 0 in this case because the targetlist
+				 * entry will have been replaced by the default expression).
+				 */
+				if (bms_is_member(i, unused_cols))
+				{
+					SetToDefault *def = (SetToDefault *) col;
+
+					newList = lappend(newList,
+									  makeNullConst(def->typeId,
+													def->typeMod,
+													def->collation));
+					continue;
+				}
 
 				if (attrno == 0)
 					elog(ERROR, "cannot set value in column %d to DEFAULT", i);
@@ -1512,6 +1691,42 @@ rewriteTargetListUD(Query *parsetree, RangeTblEntry *target_rte,
 	}
 }
 
+/*
+ * Record in target_rte->extraUpdatedCols the indexes of any generated columns
+ * that depend on any columns mentioned in target_rte->updatedCols.
+ */
+void
+fill_extraUpdatedCols(RangeTblEntry *target_rte, Relation target_relation)
+{
+	TupleDesc	tupdesc = RelationGetDescr(target_relation);
+	TupleConstr *constr = tupdesc->constr;
+
+	target_rte->extraUpdatedCols = NULL;
+
+	if (constr && constr->has_generated_stored)
+	{
+		for (int i = 0; i < constr->num_defval; i++)
+		{
+			AttrDefault *defval = &constr->defval[i];
+			Node	   *expr;
+			Bitmapset  *attrs_used = NULL;
+
+			/* skip if not generated column */
+			if (!TupleDescAttr(tupdesc, defval->adnum - 1)->attgenerated)
+				continue;
+
+			/* identify columns this generated column depends on */
+			expr = stringToNode(defval->adbin);
+			pull_varattnos(expr, 1, &attrs_used);
+
+			if (bms_overlap(target_rte->updatedCols, attrs_used))
+				target_rte->extraUpdatedCols =
+					bms_add_member(target_rte->extraUpdatedCols,
+								   defval->adnum - FirstLowInvalidHeapAttributeNumber);
+		}
+	}
+}
+
 
 /*
  * matchLocks -
@@ -1643,6 +1858,7 @@ ApplyRetrieveRule(Query *parsetree,
 			rte->selectedCols = NULL;
 			rte->insertedCols = NULL;
 			rte->updatedCols = NULL;
+			rte->extraUpdatedCols = NULL;
 
 			/*
 			 * For the most part, Vars referencing the view should remain as
@@ -1863,6 +2079,23 @@ fireRIRrules(Query *parsetree, List *activeRIRs)
 	int			origResultRelation = parsetree->resultRelation;
 	int			rt_index;
 	ListCell   *lc;
+
+	/*
+	 * Expand SEARCH and CYCLE clauses in CTEs.
+	 *
+	 * This is just a convenient place to do this, since we are already
+	 * looking at each Query.
+	 */
+	foreach(lc, parsetree->cteList)
+	{
+		CommonTableExpr *cte = lfirst_node(CommonTableExpr, lc);
+
+		if (cte->search_clause || cte->cycle_clause)
+		{
+			cte = rewriteSearchAndCycle(cte);
+			lfirst(lc) = cte;
+		}
+	}
 
 	/*
 	 * don't try to convert this into a foreach loop, because rtable list can
@@ -3580,15 +3813,21 @@ RewriteQuery(Query *parsetree, List *rewrite_events)
 
 			if (values_rte)
 			{
+				Bitmapset  *unused_values_attrnos = NULL;
+
 				/* Process the main targetlist ... */
 				parsetree->targetList = rewriteTargetListIU(parsetree->targetList,
 															parsetree->commandType,
 															parsetree->override,
 															rt_entry_relation,
-															parsetree->resultRelation);
+															parsetree->resultRelation,
+															values_rte,
+															values_rte_index,
+															&unused_values_attrnos);
 				/* ... and the VALUES expression lists */
 				if (!rewriteValuesRTE(parsetree, values_rte, values_rte_index,
-									  rt_entry_relation, false))
+									  rt_entry_relation, false,
+									  unused_values_attrnos))
 					defaults_remaining = true;
 			}
 			else
@@ -3599,7 +3838,8 @@ RewriteQuery(Query *parsetree, List *rewrite_events)
 										parsetree->commandType,
 										parsetree->override,
 										rt_entry_relation,
-										parsetree->resultRelation);
+										parsetree->resultRelation,
+										NULL, 0, NULL);
 			}
 
 			if (parsetree->onConflict &&
@@ -3610,7 +3850,8 @@ RewriteQuery(Query *parsetree, List *rewrite_events)
 										CMD_UPDATE,
 										parsetree->override,
 										rt_entry_relation,
-										parsetree->resultRelation);
+										parsetree->resultRelation,
+										NULL, 0, NULL);
 			}
 		}
 		else if (event == CMD_UPDATE)
@@ -3620,7 +3861,11 @@ RewriteQuery(Query *parsetree, List *rewrite_events)
 									parsetree->commandType,
 									parsetree->override,
 									rt_entry_relation,
-									parsetree->resultRelation);
+									parsetree->resultRelation,
+									NULL, 0, NULL);
+
+			/* Also populate extraUpdatedCols (for generated columns) */
+			fill_extraUpdatedCols(rt_entry, rt_entry_relation);
 		}
 		else if (event == CMD_DELETE)
 		{
@@ -3667,7 +3912,8 @@ RewriteQuery(Query *parsetree, List *rewrite_events)
 
 				rewriteValuesRTE(pt, values_rte, values_rte_index,
 								 rt_entry_relation,
-								 true); /* Force remaining defaults to NULL */
+								 true,	/* Force remaining defaults to NULL */
+								 NULL);
 			}
 		}
 

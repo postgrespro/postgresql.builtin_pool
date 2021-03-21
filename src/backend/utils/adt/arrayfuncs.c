@@ -3,7 +3,7 @@
  * arrayfuncs.c
  *	  Support functions for arrays.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -2044,7 +2044,8 @@ array_get_element_expanded(Datum arraydatum,
  * array bound.
  *
  * NOTE: we assume it is OK to scribble on the provided subscript arrays
- * lowerIndx[] and upperIndx[].  These are generally just temporaries.
+ * lowerIndx[] and upperIndx[]; also, these arrays must be of size MAXDIM
+ * even when nSubscripts is less.  These are generally just temporaries.
  */
 Datum
 array_get_slice(Datum arraydatum,
@@ -2581,8 +2582,11 @@ array_set_element_expanded(Datum arraydatum,
 
 	/*
 	 * Copy new element into array's context, if needed (we assume it's
-	 * already detoasted, so no junk should be created).  If we fail further
-	 * down, this memory is leaked, but that's reasonably harmless.
+	 * already detoasted, so no junk should be created).  Doing this before
+	 * we've made any significant changes ensures that our behavior is sane
+	 * even when the source is a reference to some element of this same array.
+	 * If we fail further down, this memory is leaked, but that's reasonably
+	 * harmless.
 	 */
 	if (!eah->typbyval && !isNull)
 	{
@@ -2772,7 +2776,8 @@ array_set_element_expanded(Datum arraydatum,
  * (XXX TODO: allow a corresponding behavior for multidimensional arrays)
  *
  * NOTE: we assume it is OK to scribble on the provided index arrays
- * lowerIndx[] and upperIndx[].  These are generally just temporaries.
+ * lowerIndx[] and upperIndx[]; also, these arrays must be of size MAXDIM
+ * even when nSubscripts is less.  These are generally just temporaries.
  *
  * NOTE: For assignments, we throw an error for silly subscripts etc,
  * rather than returning a NULL or empty array as the fetch operations do.
@@ -4071,7 +4076,7 @@ hash_array_extended(PG_FUNCTION_ARGS)
 	typalign = typentry->typalign;
 
 	InitFunctionCallInfoData(*locfcinfo, &typentry->hash_extended_proc_finfo, 2,
-							 InvalidOid, NULL, NULL);
+							 PG_GET_COLLATION(), NULL, NULL);
 
 	/* Loop over source data */
 	nitems = ArrayGetNItems(ndims, dims);
@@ -6625,4 +6630,47 @@ width_bucket_array_variable(Datum operand,
 	}
 
 	return left;
+}
+
+/*
+ * Trim the last N elements from an array by building an appropriate slice.
+ * Only the first dimension is trimmed.
+ */
+Datum
+trim_array(PG_FUNCTION_ARGS)
+{
+	ArrayType  *v = PG_GETARG_ARRAYTYPE_P(0);
+	int			n = PG_GETARG_INT32(1);
+	int			array_length = ARR_DIMS(v)[0];
+	int16		elmlen;
+	bool		elmbyval;
+	char		elmalign;
+	int			lower[MAXDIM];
+	int			upper[MAXDIM];
+	bool		lowerProvided[MAXDIM];
+	bool		upperProvided[MAXDIM];
+	Datum		result;
+
+	/* Per spec, throw an error if out of bounds */
+	if (n < 0 || n > array_length)
+		ereport(ERROR,
+				(errcode(ERRCODE_ARRAY_ELEMENT_ERROR),
+				 errmsg("number of elements to trim must be between 0 and %d",
+						array_length)));
+
+	/* Set all the bounds as unprovided except the first upper bound */
+	memset(lowerProvided, false, sizeof(lowerProvided));
+	memset(upperProvided, false, sizeof(upperProvided));
+	upper[0] = ARR_LBOUND(v)[0] + array_length - n - 1;
+	upperProvided[0] = true;
+
+	/* Fetch the needed information about the element type */
+	get_typlenbyvalalign(ARR_ELEMTYPE(v), &elmlen, &elmbyval, &elmalign);
+
+	/* Get the slice */
+	result = array_get_slice(PointerGetDatum(v), 1,
+							 upper, lower, upperProvided, lowerProvided,
+							 -1, elmlen, elmbyval, elmalign);
+
+	PG_RETURN_DATUM(result);
 }

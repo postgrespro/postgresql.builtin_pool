@@ -8,7 +8,7 @@
  * or call FUNCAPI-callable functions or macros.
  *
  *
- * Copyright (c) 2002-2020, PostgreSQL Global Development Group
+ * Copyright (c) 2002-2021, PostgreSQL Global Development Group
  *
  * src/include/funcapi.h
  *
@@ -172,7 +172,8 @@ extern int	get_func_arg_info(HeapTuple procTup,
 							  Oid **p_argtypes, char ***p_argnames,
 							  char **p_argmodes);
 
-extern int	get_func_input_arg_names(Datum proargnames, Datum proargmodes,
+extern int	get_func_input_arg_names(char prokind,
+									 Datum proargnames, Datum proargmodes,
 									 char ***arg_names);
 
 extern int	get_func_trftypes(HeapTuple procTup, Oid **p_trftypes);

@@ -3,7 +3,7 @@
  * fd.c
  *	  Virtual file descriptor code.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -72,9 +72,11 @@
 
 #include "postgres.h"
 
+#include <dirent.h>
 #include <sys/file.h>
 #include <sys/param.h>
 #include <sys/stat.h>
+#include <sys/types.h>
 #ifndef WIN32
 #include <sys/mman.h>
 #endif
@@ -92,6 +94,7 @@
 #include "common/file_utils.h"
 #include "miscadmin.h"
 #include "pgstat.h"
+#include "port/pg_iovec.h"
 #include "portability/mem.h"
 #include "storage/fd.h"
 #include "storage/ipc.h"
@@ -156,6 +159,9 @@ int			max_safe_fds = FD_MINFREE;	/* default if not changed */
 
 /* Whether it is safe to continue running after fsync() fails. */
 bool		data_sync_retry = false;
+
+/* How SyncDataDirectory() should do its job. */
+int			recovery_init_sync_method = RECOVERY_INIT_SYNC_METHOD_FSYNC;
 
 /* Debugging.... */
 
@@ -622,6 +628,33 @@ pg_flush_data(int fd, off_t offset, off_t nbytes)
 #endif
 }
 
+/*
+ * Truncate a file to a given length by name.
+ */
+int
+pg_truncate(const char *path, off_t length)
+{
+#ifdef WIN32
+	int			save_errno;
+	int			ret;
+	int			fd;
+
+	fd = OpenTransientFile(path, O_RDWR | PG_BINARY);
+	if (fd >= 0)
+	{
+		ret = ftruncate(fd, 0);
+		save_errno = errno;
+		CloseTransientFile(fd);
+		errno = save_errno;
+	}
+	else
+		ret = -1;
+
+	return ret;
+#else
+	return truncate(path, length);
+#endif
+}
 
 /*
  * fsync_fname -- fsync a file or directory, handling errors properly
@@ -1486,8 +1519,6 @@ PathNameOpenFilePerm(const char *fileName, int fileFlags, mode_t fileMode)
 	DO_DB(elog(LOG, "PathNameOpenFile: success %d",
 			   vfdP->fd));
 
-	Insert(file);
-
 	vfdP->fileName = fnamecopy;
 	/* Saved flags are adjusted to be OK for re-opening file */
 	vfdP->fileFlags = fileFlags & ~(O_CREAT | O_TRUNC | O_EXCL);
@@ -1495,6 +1526,8 @@ PathNameOpenFilePerm(const char *fileName, int fileFlags, mode_t fileMode)
 	vfdP->fileSize = 0;
 	vfdP->fdstate = 0x0;
 	vfdP->resowner = NULL;
+
+	Insert(file);
 
 	return file;
 }
@@ -1887,7 +1920,9 @@ FileClose(File file)
 
 		/* in any case do the unlink */
 		if (unlink(vfdP->fileName))
-			elog(LOG, "could not unlink file \"%s\": %m", vfdP->fileName);
+			ereport(LOG,
+					(errcode_for_file_access(),
+					 errmsg("could not delete file \"%s\": %m", vfdP->fileName)));
 
 		/* and last report the stat results */
 		if (stat_errno == 0)
@@ -1895,7 +1930,9 @@ FileClose(File file)
 		else
 		{
 			errno = stat_errno;
-			elog(LOG, "could not stat file \"%s\": %m", vfdP->fileName);
+			ereport(LOG,
+					(errcode_for_file_access(),
+					 errmsg("could not stat file \"%s\": %m", vfdP->fileName)));
 		}
 	}
 
@@ -2992,11 +3029,13 @@ CleanupTempFiles(bool isCommit, bool isProcExit)
  * remove any leftover files created by OpenTemporaryFile and any leftover
  * temporary relation files created by mdcreate.
  *
- * NOTE: we could, but don't, call this during a post-backend-crash restart
- * cycle.  The argument for not doing it is that someone might want to examine
- * the temp files for debugging purposes.  This does however mean that
- * OpenTemporaryFile had better allow for collision with an existing temp
- * file name.
+ * During post-backend-crash restart cycle, this routine is called when
+ * remove_temp_files_after_crash GUC is enabled. Multiple crashes while
+ * queries are using temp files could result in useless storage usage that can
+ * only be reclaimed by a service restart. The argument against enabling it is
+ * that someone might want to examine the temporary files for debugging
+ * purposes. This does however mean that OpenTemporaryFile had better allow for
+ * collision with an existing temp file name.
  *
  * NOTE: this function and its subroutines generally report syscall failures
  * with ereport(LOG) and keep going.  Removing temp files is not so critical
@@ -3231,9 +3270,31 @@ looks_like_temp_rel_name(const char *name)
 	return true;
 }
 
+#ifdef HAVE_SYNCFS
+static void
+do_syncfs(const char *path)
+{
+	int		fd;
+
+	fd = OpenTransientFile(path, O_RDONLY);
+	if (fd < 0)
+	{
+		ereport(LOG,
+				(errcode_for_file_access(),
+				 errmsg("could not open %s: %m", path)));
+		return;
+	}
+	if (syncfs(fd) < 0)
+		ereport(LOG,
+				(errcode_for_file_access(),
+				 errmsg("could not sync filesystem for \"%s\": %m", path)));
+	CloseTransientFile(fd);
+}
+#endif
 
 /*
- * Issue fsync recursively on PGDATA and all its contents.
+ * Issue fsync recursively on PGDATA and all its contents, or issue syncfs for
+ * all potential filesystem, depending on recovery_init_sync_method setting.
  *
  * We fsync regular files and directories wherever they are, but we
  * follow symlinks only for pg_wal and immediately under pg_tblspc.
@@ -3284,6 +3345,42 @@ SyncDataDirectory(void)
 	if (pgwin32_is_junction("pg_wal"))
 		xlog_is_symlink = true;
 #endif
+
+#ifdef HAVE_SYNCFS
+	if (recovery_init_sync_method == RECOVERY_INIT_SYNC_METHOD_SYNCFS)
+	{
+		DIR		   *dir;
+		struct dirent *de;
+
+		/*
+		 * On Linux, we don't have to open every single file one by one.  We
+		 * can use syncfs() to sync whole filesystems.  We only expect
+		 * filesystem boundaries to exist where we tolerate symlinks, namely
+		 * pg_wal and the tablespaces, so we call syncfs() for each of those
+		 * directories.
+		 */
+
+		/* Sync the top level pgdata directory. */
+		do_syncfs(".");
+		/* If any tablespaces are configured, sync each of those. */
+		dir = AllocateDir("pg_tblspc");
+		while ((de = ReadDirExtended(dir, "pg_tblspc", LOG)))
+		{
+			char		path[MAXPGPATH];
+
+			if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0)
+				continue;
+
+			snprintf(path, MAXPGPATH, "pg_tblspc/%s", de->d_name);
+			do_syncfs(path);
+		}
+		FreeDir(dir);
+		/* If pg_wal is a symlink, process that too. */
+		if (xlog_is_symlink)
+			do_syncfs("pg_wal");
+		return;
+	}
+#endif		/* !HAVE_SYNCFS */
 
 	/*
 	 * If possible, hint to the kernel that we're soon going to fsync the data
@@ -3603,4 +3700,68 @@ int
 data_sync_elevel(int elevel)
 {
 	return data_sync_retry ? elevel : PANIC;
+}
+
+/*
+ * A convenience wrapper for pg_pwritev() that retries on partial write.  If an
+ * error is returned, it is unspecified how much has been written.
+ */
+ssize_t
+pg_pwritev_with_retry(int fd, const struct iovec *iov, int iovcnt, off_t offset)
+{
+	struct iovec iov_copy[PG_IOV_MAX];
+	ssize_t		sum = 0;
+	ssize_t		part;
+
+	/* We'd better have space to make a copy, in case we need to retry. */
+	if (iovcnt > PG_IOV_MAX)
+	{
+		errno = EINVAL;
+		return -1;
+	}
+
+	for (;;)
+	{
+		/* Write as much as we can. */
+		part = pg_pwritev(fd, iov, iovcnt, offset);
+		if (part < 0)
+			return -1;
+
+#ifdef SIMULATE_SHORT_WRITE
+		part = Min(part, 4096);
+#endif
+
+		/* Count our progress. */
+		sum += part;
+		offset += part;
+
+		/* Step over iovecs that are done. */
+		while (iovcnt > 0 && iov->iov_len <= part)
+		{
+			part -= iov->iov_len;
+			++iov;
+			--iovcnt;
+		}
+
+		/* Are they all done? */
+		if (iovcnt == 0)
+		{
+			/* We don't expect the kernel to write more than requested. */
+			Assert(part == 0);
+			break;
+		}
+
+		/*
+		 * Move whatever's left to the front of our mutable copy and adjust
+		 * the leading iovec.
+		 */
+		Assert(iovcnt > 0);
+		memmove(iov_copy, iov, sizeof(*iov) * iovcnt);
+		Assert(iov->iov_len > part);
+		iov_copy[0].iov_base = (char *) iov_copy[0].iov_base + part;
+		iov_copy[0].iov_len -= part;
+		iov = iov_copy;
+	}
+
+	return sum;
 }

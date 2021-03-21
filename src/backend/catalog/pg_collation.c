@@ -3,7 +3,7 @@
  * pg_collation.c
  *	  routines to support manipulation of the pg_collation relation
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -49,7 +49,6 @@ CollationCreate(const char *collname, Oid collnamespace,
 				bool collisdeterministic,
 				int32 collencoding,
 				const char *collcollate, const char *collctype,
-				const char *collversion,
 				bool if_not_exists,
 				bool quiet)
 {
@@ -167,10 +166,6 @@ CollationCreate(const char *collname, Oid collnamespace,
 	values[Anum_pg_collation_collcollate - 1] = NameGetDatum(&name_collate);
 	namestrcpy(&name_ctype, collctype);
 	values[Anum_pg_collation_collctype - 1] = NameGetDatum(&name_ctype);
-	if (collversion)
-		values[Anum_pg_collation_collversion - 1] = CStringGetTextDatum(collversion);
-	else
-		nulls[Anum_pg_collation_collversion - 1] = true;
 
 	tup = heap_form_tuple(tupDesc, values, nulls);
 

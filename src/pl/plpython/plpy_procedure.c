@@ -34,7 +34,6 @@ init_procedure_caches(void)
 {
 	HASHCTL		hash_ctl;
 
-	memset(&hash_ctl, 0, sizeof(hash_ctl));
 	hash_ctl.keysize = sizeof(PLyProcedureKey);
 	hash_ctl.entrysize = sizeof(PLyProcedureEntry);
 	PLy_procedure_cache = hash_create("PL/Python procedures", 32, &hash_ctl,
@@ -220,7 +219,7 @@ PLy_procedure_create(HeapTuple procTup, Oid fn_oid, bool is_trigger)
 				if (rettype == VOIDOID ||
 					rettype == RECORDOID)
 					 /* okay */ ;
-				else if (rettype == TRIGGEROID || rettype == EVTTRIGGEROID)
+				else if (rettype == TRIGGEROID || rettype == EVENT_TRIGGEROID)
 					ereport(ERROR,
 							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 							 errmsg("trigger functions can only be called as triggers")));
@@ -273,7 +272,7 @@ PLy_procedure_create(HeapTuple procTup, Oid fn_oid, bool is_trigger)
 				/* proc->nargs was initialized to 0 above */
 				for (i = 0; i < total; i++)
 				{
-					if (modes[i] != PROARGMODE_OUT &&
+					if ((modes[i] != PROARGMODE_OUT || proc->is_procedure) &&
 						modes[i] != PROARGMODE_TABLE)
 						(proc->nargs)++;
 				}
@@ -289,7 +288,7 @@ PLy_procedure_create(HeapTuple procTup, Oid fn_oid, bool is_trigger)
 				Form_pg_type argTypeStruct;
 
 				if (modes &&
-					(modes[i] == PROARGMODE_OUT ||
+					((modes[i] == PROARGMODE_OUT && !proc->is_procedure) ||
 					 modes[i] == PROARGMODE_TABLE))
 					continue;	/* skip OUT arguments */
 

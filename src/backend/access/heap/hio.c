@@ -3,7 +3,7 @@
  * hio.c
  *	  POSTGRES heap access method input/output code.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -46,6 +46,15 @@ RelationPutHeapTuple(Relation relation,
 	 * token set.
 	 */
 	Assert(!token || HeapTupleHeaderIsSpeculative(tuple->t_data));
+
+	/*
+	 * Do not allow tuples with invalid combinations of hint bits to be placed
+	 * on a page.  This combination is detected as corruption by the
+	 * contrib/amcheck logic, so if you disable this assertion, make
+	 * corresponding changes there.
+	 */
+	Assert(!((tuple->t_data->t_infomask & HEAP_XMAX_COMMITTED) &&
+			 (tuple->t_data->t_infomask & HEAP_XMAX_IS_MULTI)));
 
 	/* Add the tuple to the page */
 	pageHeader = BufferGetPage(buffer);
@@ -385,19 +394,19 @@ RelationGetBufferForTuple(Relation relation, Size len,
 		 * target.
 		 */
 		targetBlock = GetPageWithFreeSpace(relation, len + saveFreeSpace);
+	}
 
-		/*
-		 * If the FSM knows nothing of the rel, try the last page before we
-		 * give up and extend.  This avoids one-tuple-per-page syndrome during
-		 * bootstrapping or in a recently-started system.
-		 */
-		if (targetBlock == InvalidBlockNumber)
-		{
-			BlockNumber nblocks = RelationGetNumberOfBlocks(relation);
+	/*
+	 * If the FSM knows nothing of the rel, try the last page before we
+	 * give up and extend.  This avoids one-tuple-per-page syndrome during
+	 * bootstrapping or in a recently-started system.
+	 */
+	if (targetBlock == InvalidBlockNumber)
+	{
+		BlockNumber nblocks = RelationGetNumberOfBlocks(relation);
 
-			if (nblocks > 0)
-				targetBlock = nblocks - 1;
-		}
+		if (nblocks > 0)
+			targetBlock = nblocks - 1;
 	}
 
 loop:
@@ -422,6 +431,14 @@ loop:
 			buffer = ReadBufferBI(relation, targetBlock, RBM_NORMAL, bistate);
 			if (PageIsAllVisible(BufferGetPage(buffer)))
 				visibilitymap_pin(relation, targetBlock, vmbuffer);
+
+			/*
+			 * If the page is empty, pin vmbuffer to set all_frozen bit later.
+			 */
+			if ((options & HEAP_INSERT_FROZEN) &&
+				(PageGetMaxOffsetNumber(BufferGetPage(buffer)) == 0))
+				visibilitymap_pin(relation, targetBlock, vmbuffer);
+
 			LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
 		}
 		else if (otherBlock == targetBlock)
@@ -607,6 +624,15 @@ loop:
 
 	PageInit(page, BufferGetPageSize(buffer), 0);
 	MarkBufferDirty(buffer);
+
+	/*
+	 * The page is empty, pin vmbuffer to set all_frozen bit.
+	 */
+	if (options & HEAP_INSERT_FROZEN)
+	{
+		Assert(PageGetMaxOffsetNumber(BufferGetPage(buffer)) == 0);
+		visibilitymap_pin(relation, BufferGetBlockNumber(buffer), vmbuffer);
+	}
 
 	/*
 	 * Release the file-extension lock; it's now OK for someone else to extend

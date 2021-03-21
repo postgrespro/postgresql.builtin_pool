@@ -3,7 +3,7 @@
  * parse_clause.c
  *	  handle clauses in parser
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -58,7 +58,6 @@ static int	extractRemainingColumns(ParseNamespaceColumn *src_nscolumns,
 									List **res_colnames, List **res_colvars,
 									ParseNamespaceColumn *res_nscolumns);
 static Node *transformJoinUsingClause(ParseState *pstate,
-									  RangeTblEntry *leftRTE, RangeTblEntry *rightRTE,
 									  List *leftVars, List *rightVars);
 static Node *transformJoinOnClause(ParseState *pstate, JoinExpr *j,
 								   List *namespace);
@@ -302,7 +301,6 @@ extractRemainingColumns(ParseNamespaceColumn *src_nscolumns,
  */
 static Node *
 transformJoinUsingClause(ParseState *pstate,
-						 RangeTblEntry *leftRTE, RangeTblEntry *rightRTE,
 						 List *leftVars, List *rightVars)
 {
 	Node	   *result;
@@ -325,8 +323,8 @@ transformJoinUsingClause(ParseState *pstate,
 		A_Expr	   *e;
 
 		/* Require read access to the join variables */
-		markVarForSelectPriv(pstate, lvar, leftRTE);
-		markVarForSelectPriv(pstate, rvar, rightRTE);
+		markVarForSelectPriv(pstate, lvar);
+		markVarForSelectPriv(pstate, rvar);
 
 		/* Now create the lvar = rvar join condition */
 		e = makeSimpleA_Expr(AEXPR_OP, "=",
@@ -541,10 +539,11 @@ transformRangeFunction(ParseState *pstate, RangeFunction *r)
 				list_length(fc->args) > 1 &&
 				fc->agg_order == NIL &&
 				fc->agg_filter == NULL &&
+				fc->over == NULL &&
 				!fc->agg_star &&
 				!fc->agg_distinct &&
 				!fc->func_variadic &&
-				fc->over == NULL &&
+				fc->funcformat == COERCE_EXPLICIT_CALL &&
 				coldeflist == NIL)
 			{
 				ListCell   *lc;
@@ -558,6 +557,7 @@ transformRangeFunction(ParseState *pstate, RangeFunction *r)
 
 					newfc = makeFuncCall(SystemFuncName("unnest"),
 										 list_make1(arg),
+										 COERCE_EXPLICIT_CALL,
 										 fc->location);
 
 					newfexpr = transformExpr(pstate, (Node *) newfc,
@@ -1409,8 +1409,6 @@ transformFromClauseItem(ParseState *pstate, Node *n,
 			}
 
 			j->quals = transformJoinUsingClause(pstate,
-												l_nsitem->p_rte,
-												r_nsitem->p_rte,
 												l_usingvars,
 												r_usingvars);
 		}
@@ -1568,24 +1566,13 @@ buildMergedJoinVar(ParseState *pstate, JoinType jointype,
 			   *r_node,
 			   *res_node;
 
-	/*
-	 * Choose output type if input types are dissimilar.
-	 */
-	outcoltype = l_colvar->vartype;
-	outcoltypmod = l_colvar->vartypmod;
-	if (outcoltype != r_colvar->vartype)
-	{
-		outcoltype = select_common_type(pstate,
+	outcoltype = select_common_type(pstate,
+									list_make2(l_colvar, r_colvar),
+									"JOIN/USING",
+									NULL);
+	outcoltypmod = select_common_typmod(pstate,
 										list_make2(l_colvar, r_colvar),
-										"JOIN/USING",
-										NULL);
-		outcoltypmod = -1;		/* ie, unknown */
-	}
-	else if (outcoltypmod != r_colvar->vartypmod)
-	{
-		/* same type, but not same typmod */
-		outcoltypmod = -1;		/* ie, unknown */
-	}
+										outcoltype);
 
 	/*
 	 * Insert coercion functions if needed.  Note that a difference in typmod

@@ -318,16 +318,6 @@ key =&gt; NULL
     </tgroup>
   </table>
 
-  <note>
-  <para>
-   Prior to PostgreSQL 8.2, the containment operators <literal>@&gt;</literal>
-   and <literal>&lt;@</literal> were called <literal>@</literal> and <literal>~</literal>,
-   respectively. These names are still available, but are deprecated and will
-   eventually be removed. Notice that the old names are reversed from the
-   convention formerly followed by the core geometric data types!
-   </para>
-  </note>
-
   <table id="hstore-func-table">
    <title><type>hstore</type> Functions</title>
     <tgroup cols="1">
@@ -631,7 +621,7 @@ b
         Does <type>hstore</type> contain key?
        </para>
        <para>
-        <literal>exist('a=&gt;1','a')</literal>
+        <literal>exist('a=&gt;1', 'a')</literal>
         <returnvalue>t</returnvalue>
        </para></entry>
       </row>
@@ -647,7 +637,7 @@ b
         for key?
        </para>
        <para>
-        <literal>defined('a=&gt;NULL','a')</literal>
+        <literal>defined('a=&gt;NULL', 'a')</literal>
         <returnvalue>f</returnvalue>
        </para></entry>
       </row>
@@ -662,7 +652,7 @@ b
         Deletes pair with matching key.
        </para>
        <para>
-        <literal>delete('a=&gt;1,b=&gt;2','b')</literal>
+        <literal>delete('a=&gt;1,b=&gt;2', 'b')</literal>
         <returnvalue>"a"=&gt;"1"</returnvalue>
        </para></entry>
       </row>
@@ -676,7 +666,7 @@ b
         Deletes pairs with matching keys.
        </para>
        <para>
-        <literal>delete('a=&gt;1,b=&gt;2,c=&gt;3',ARRAY['a','b'])</literal>
+        <literal>delete('a=&gt;1,b=&gt;2,c=&gt;3', ARRAY['a','b'])</literal>
         <returnvalue>"c"=&gt;"3"</returnvalue>
        </para></entry>
       </row>
@@ -690,7 +680,7 @@ b
         Deletes pairs matching those in the second argument.
        </para>
        <para>
-        <literal>delete('a=&gt;1,b=&gt;2','a=&gt;4,b=&gt;2'::hstore)</literal>
+        <literal>delete('a=&gt;1,b=&gt;2', 'a=&gt;4,b=&gt;2'::hstore)</literal>
         <returnvalue>"a"=&gt;"1"</returnvalue>
        </para></entry>
       </row>
@@ -713,6 +703,39 @@ b
     </tbody>
    </tgroup>
   </table>
+
+  <para>
+   In addition to these operators and functions, values of
+   the <type>hstore</type> type can be subscripted, allowing them to act
+   like associative arrays.  Only a single subscript of type <type>text</type>
+   can be specified; it is interpreted as a key and the corresponding
+   value is fetched or stored.  For example,
+
+<programlisting>
+CREATE TABLE mytable (h hstore);
+INSERT INTO mytable VALUES ('a=>b, c=>d');
+SELECT h['a'] FROM mytable;
+ h
+---
+ b
+(1 row)
+
+UPDATE mytable SET h['c'] = 'new';
+SELECT h FROM mytable;
+          h
+----------------------
+ "a"=>"b", "c"=>"new"
+(1 row)
+</programlisting>
+
+   A subscripted fetch returns <literal>NULL</literal> if the subscript
+   is <literal>NULL</literal> or that key does not exist in
+   the <type>hstore</type>.  (Thus, a subscripted fetch is not greatly
+   different from the <literal>-&gt;</literal> operator.)
+   A subscripted update fails if the subscript is <literal>NULL</literal>;
+   otherwise, it replaces the value for that key, adding an entry to
+   the <type>hstore</type> if the key does not already exist.
+  </para>
  </sect2>
 
  <sect2>
@@ -767,7 +790,16 @@ CREATE INDEX hidx ON testhstore USING HASH (h);
   <para>
    Add a key, or update an existing key with a new value:
 <programlisting>
+UPDATE tab SET h['c'] = '3';
+</programlisting>
+   Another way to do the same thing is:
+<programlisting>
 UPDATE tab SET h = h || hstore('c', '3');
+</programlisting>
+   If multiple keys are to be added or changed in one operation,
+   the concatenation approach is more efficient than subscripting:
+<programlisting>
+UPDATE tab SET h = h || hstore(array['q', 'w'], array['11', '12']);
 </programlisting>
   </para>
 
@@ -841,7 +873,7 @@ SELECT * FROM each('aaa=&gt;bq, b=&gt;NULL, ""=&gt;1');
   <para>
    Using a table:
 <programlisting>
-SELECT (each(h)).key, (each(h)).value INTO stat FROM testhstore;
+CREATE TABLE stat AS SELECT (each(h)).key, (each(h)).value FROM testhstore;
 </programlisting>
   </para>
 

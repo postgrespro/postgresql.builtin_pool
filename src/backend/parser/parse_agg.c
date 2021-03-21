@@ -3,7 +3,7 @@
  * parse_agg.c
  *	  handle aggregates and window functions in parser
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -545,6 +545,10 @@ check_agglevels_and_constraints(ParseState *pstate, Node *expr)
 
 			break;
 
+		case EXPR_KIND_CYCLE_MARK:
+			errkind = true;
+			break;
+
 			/*
 			 * There is intentionally no default: case here, so that the
 			 * compiler will warn if we add a new ParseExprKind without
@@ -933,6 +937,9 @@ transformWindowFuncCall(ParseState *pstate, WindowFunc *wfunc,
 		case EXPR_KIND_GENERATED_COLUMN:
 			err = _("window functions are not allowed in column generation expressions");
 			break;
+		case EXPR_KIND_CYCLE_MARK:
+			errkind = true;
+			break;
 
 			/*
 			 * There is intentionally no default: case here, so that the
@@ -1064,7 +1071,7 @@ parseCheckAggregates(ParseState *pstate, Query *qry)
 		 * The limit of 4096 is arbitrary and exists simply to avoid resource
 		 * issues from pathological constructs.
 		 */
-		List	   *gsets = expand_grouping_sets(qry->groupingSets, 4096);
+		List	   *gsets = expand_grouping_sets(qry->groupingSets, qry->groupDistinct, 4096);
 
 		if (!gsets)
 			ereport(ERROR,
@@ -1083,7 +1090,7 @@ parseCheckAggregates(ParseState *pstate, Query *qry)
 
 		if (gset_common)
 		{
-			for_each_cell(l, gsets, list_second_cell(gsets))
+			for_each_from(l, gsets, 1)
 			{
 				gset_common = list_intersection_int(gset_common, lfirst(l));
 				if (!gset_common)
@@ -1728,6 +1735,33 @@ cmp_list_len_asc(const ListCell *a, const ListCell *b)
 	return (la > lb) ? 1 : (la == lb) ? 0 : -1;
 }
 
+/* list_sort comparator to sort sub-lists by length and contents */
+static int
+cmp_list_len_contents_asc(const ListCell *a, const ListCell *b)
+{
+	int		res = cmp_list_len_asc(a, b);
+
+	if (res == 0)
+	{
+		List		   *la = (List *) lfirst(a);
+		List		   *lb = (List *) lfirst(b);
+		ListCell	   *lca;
+		ListCell	   *lcb;
+
+		forboth(lca, la, lcb, lb)
+		{
+			int		va = lfirst_int(lca);
+			int		vb = lfirst_int(lcb);
+			if (va > vb)
+				return 1;
+			if (va < vb)
+				return -1;
+		}
+	}
+
+	return res;
+}
+
 /*
  * Expand a groupingSets clause to a flat list of grouping sets.
  * The returned list is sorted by length, shortest sets first.
@@ -1736,7 +1770,7 @@ cmp_list_len_asc(const ListCell *a, const ListCell *b)
  * some consistency checks.
  */
 List *
-expand_grouping_sets(List *groupingSets, int limit)
+expand_grouping_sets(List *groupingSets, bool groupDistinct, int limit)
 {
 	List	   *expanded_groups = NIL;
 	List	   *result = NIL;
@@ -1774,7 +1808,7 @@ expand_grouping_sets(List *groupingSets, int limit)
 		result = lappend(result, list_union_int(NIL, (List *) lfirst(lc)));
 	}
 
-	for_each_cell(lc, expanded_groups, list_second_cell(expanded_groups))
+	for_each_from(lc, expanded_groups, 1)
 	{
 		List	   *p = lfirst(lc);
 		List	   *new_result = NIL;
@@ -1794,8 +1828,31 @@ expand_grouping_sets(List *groupingSets, int limit)
 		result = new_result;
 	}
 
-	/* Now sort the lists by length */
-	list_sort(result, cmp_list_len_asc);
+	/* Now sort the lists by length and deduplicate if necessary */
+	if (!groupDistinct || list_length(result) < 2)
+		list_sort(result, cmp_list_len_asc);
+	else
+	{
+		ListCell   *cell;
+		List	   *prev;
+
+		/* Sort each groupset individually */
+		foreach(cell, result)
+			list_sort(lfirst(cell), list_int_cmp);
+
+		/* Now sort the list of groupsets by length and contents */
+		list_sort(result, cmp_list_len_contents_asc);
+
+		/* Finally, remove duplicates */
+		prev = linitial_node(List, result);
+		for_each_from(cell, result, 1)
+		{
+			if (equal(lfirst(cell), prev))
+				result = foreach_delete_current(result, cell);
+			else
+				prev = lfirst(cell);
+		}
+	}
 
 	return result;
 }

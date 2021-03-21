@@ -44,7 +44,7 @@
  * if the old one gets invalidated.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -533,7 +533,7 @@ ReleaseGenericPlan(CachedPlanSource *plansource)
 
 		Assert(plan->magic == CACHEDPLAN_MAGIC);
 		plansource->gplan = NULL;
-		ReleaseCachedPlan(plan, false);
+		ReleaseCachedPlan(plan, NULL);
 	}
 }
 
@@ -897,7 +897,7 @@ BuildCachedPlan(CachedPlanSource *plansource, List *qlist,
 	 * rejected a generic plan, it's possible to reach here with is_valid
 	 * false due to an invalidation while making the generic plan.  In theory
 	 * the invalidation must be a false positive, perhaps a consequence of an
-	 * sinval reset event or the CLOBBER_CACHE_ALWAYS debug code.  But for
+	 * sinval reset event or the debug_invalidate_system_caches_always code.  But for
 	 * safety, let's treat it as real and redo the RevalidateCachedQuery call.
 	 */
 	if (!plansource->is_valid)
@@ -1130,16 +1130,16 @@ cached_plan_cost(CachedPlan *plan, bool include_planner)
  * execution.
  *
  * On return, the refcount of the plan has been incremented; a later
- * ReleaseCachedPlan() call is expected.  The refcount has been reported
- * to the CurrentResourceOwner if useResOwner is true (note that that must
- * only be true if it's a "saved" CachedPlanSource).
+ * ReleaseCachedPlan() call is expected.  If "owner" is not NULL then
+ * the refcount has been reported to that ResourceOwner (note that this
+ * is only supported for "saved" CachedPlanSources).
  *
  * Note: if any replanning activity is required, the caller's memory context
  * is used for that work.
  */
 CachedPlan *
 GetCachedPlan(CachedPlanSource *plansource, ParamListInfo boundParams,
-			  bool useResOwner, QueryEnvironment *queryEnv)
+			  ResourceOwner owner, QueryEnvironment *queryEnv)
 {
 	CachedPlan *plan = NULL;
 	List	   *qlist;
@@ -1149,7 +1149,7 @@ GetCachedPlan(CachedPlanSource *plansource, ParamListInfo boundParams,
 	Assert(plansource->magic == CACHEDPLANSOURCE_MAGIC);
 	Assert(plansource->is_complete);
 	/* This seems worth a real test, though */
-	if (useResOwner && !plansource->is_saved)
+	if (owner && !plansource->is_saved)
 		elog(ERROR, "cannot apply ResourceOwner to non-saved cached plan");
 
 	/* Make sure the querytree list is valid and we have parse-time locks */
@@ -1228,11 +1228,11 @@ GetCachedPlan(CachedPlanSource *plansource, ParamListInfo boundParams,
 	Assert(plan != NULL);
 
 	/* Flag the plan as in use by caller */
-	if (useResOwner)
-		ResourceOwnerEnlargePlanCacheRefs(CurrentResourceOwner);
+	if (owner)
+		ResourceOwnerEnlargePlanCacheRefs(owner);
 	plan->refcount++;
-	if (useResOwner)
-		ResourceOwnerRememberPlanCacheRef(CurrentResourceOwner, plan);
+	if (owner)
+		ResourceOwnerRememberPlanCacheRef(owner, plan);
 
 	/*
 	 * Saved plans should be under CacheMemoryContext so they will not go away
@@ -1253,21 +1253,21 @@ GetCachedPlan(CachedPlanSource *plansource, ParamListInfo boundParams,
  * ReleaseCachedPlan: release active use of a cached plan.
  *
  * This decrements the reference count, and frees the plan if the count
- * has thereby gone to zero.  If useResOwner is true, it is assumed that
- * the reference count is managed by the CurrentResourceOwner.
+ * has thereby gone to zero.  If "owner" is not NULL, it is assumed that
+ * the reference count is managed by that ResourceOwner.
  *
- * Note: useResOwner = false is used for releasing references that are in
+ * Note: owner == NULL is used for releasing references that are in
  * persistent data structures, such as the parent CachedPlanSource or a
  * Portal.  Transient references should be protected by a resource owner.
  */
 void
-ReleaseCachedPlan(CachedPlan *plan, bool useResOwner)
+ReleaseCachedPlan(CachedPlan *plan, ResourceOwner owner)
 {
 	Assert(plan->magic == CACHEDPLAN_MAGIC);
-	if (useResOwner)
+	if (owner)
 	{
 		Assert(plan->is_saved);
-		ResourceOwnerForgetPlanCacheRef(CurrentResourceOwner, plan);
+		ResourceOwnerForgetPlanCacheRef(owner, plan);
 	}
 	Assert(plan->refcount > 0);
 	plan->refcount--;
@@ -1735,6 +1735,23 @@ QueryListGetPrimaryStmt(List *stmts)
 	return NULL;
 }
 
+static void
+AcquireExecutorLocksOnPartitions(List *partitionOids, int lockmode,
+								 bool acquire)
+{
+	ListCell   *lc;
+
+	foreach(lc, partitionOids)
+	{
+		Oid			partOid = lfirst_oid(lc);
+
+		if (acquire)
+			LockRelationOid(partOid, lockmode);
+		else
+			UnlockRelationOid(partOid, lockmode);
+	}
+}
+
 /*
  * AcquireExecutorLocks: acquire locks needed for execution of a cached plan;
  * or release them if acquire is false.
@@ -1748,6 +1765,8 @@ AcquireExecutorLocks(List *stmt_list, bool acquire)
 	{
 		PlannedStmt *plannedstmt = lfirst_node(PlannedStmt, lc1);
 		ListCell   *lc2;
+		Index		rti,
+					resultRelation = 0;
 
 		if (plannedstmt->commandType == CMD_UTILITY)
 		{
@@ -1765,6 +1784,9 @@ AcquireExecutorLocks(List *stmt_list, bool acquire)
 			continue;
 		}
 
+		rti = 1;
+		if (plannedstmt->resultRelations)
+			resultRelation = linitial_int(plannedstmt->resultRelations);
 		foreach(lc2, plannedstmt->rtable)
 		{
 			RangeTblEntry *rte = (RangeTblEntry *) lfirst(lc2);
@@ -1782,6 +1804,14 @@ AcquireExecutorLocks(List *stmt_list, bool acquire)
 				LockRelationOid(rte->relid, rte->rellockmode);
 			else
 				UnlockRelationOid(rte->relid, rte->rellockmode);
+
+			/* Lock partitions ahead of modifying them in parallel mode. */
+			if (rti == resultRelation &&
+				plannedstmt->partitionOids != NIL)
+				AcquireExecutorLocksOnPartitions(plannedstmt->partitionOids,
+												 rte->rellockmode, acquire);
+
+			rti++;
 		}
 	}
 }
@@ -1990,7 +2020,8 @@ PlanCacheRelCallback(Datum arg, Oid relid)
 				if (plannedstmt->commandType == CMD_UTILITY)
 					continue;	/* Ignore utility statements */
 				if ((relid == InvalidOid) ? plannedstmt->relationOids != NIL :
-					list_member_oid(plannedstmt->relationOids, relid))
+					(list_member_oid(plannedstmt->relationOids, relid) ||
+					 list_member_oid(plannedstmt->partitionOids, relid)))
 				{
 					/* Invalidate the generic plan only */
 					plansource->gplan->is_valid = false;

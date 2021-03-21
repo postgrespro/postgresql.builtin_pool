@@ -396,6 +396,21 @@ SELECT SUBSTRING('1234567890' FROM 4 FOR 3) = '456' AS "456";
  t
 (1 row)
 
+-- test overflow cases
+SELECT SUBSTRING('string' FROM 2 FOR 2147483646) AS "tring";
+ tring 
+-------
+ tring
+(1 row)
+
+SELECT SUBSTRING('string' FROM -10 FOR 2147483646) AS "string";
+ string 
+--------
+ string
+(1 row)
+
+SELECT SUBSTRING('string' FROM -10 FOR -2147483646) AS "error";
+ERROR:  negative substring length not allowed
 -- T581 regular expression substring (with SQL's bizarre regexp syntax)
 SELECT SUBSTRING('abcdefg' SIMILAR 'a#"(b_d)#"%' ESCAPE '#') AS "bcd";
  bcd 
@@ -1020,6 +1035,30 @@ SELECT 'indio' NOT LIKE 'in_o' AS "true";
  t
 (1 row)
 
+SELECT 'abc'::name LIKE '_b_' AS "true";
+ true 
+------
+ t
+(1 row)
+
+SELECT 'abc'::name NOT LIKE '_b_' AS "false";
+ false 
+-------
+ f
+(1 row)
+
+SELECT 'abc'::bytea LIKE '_b_'::bytea AS "true";
+ true 
+------
+ t
+(1 row)
+
+SELECT 'abc'::bytea NOT LIKE '_b_'::bytea AS "false";
+ false 
+-------
+ f
+(1 row)
+
 -- unused escape character
 SELECT 'hawkeye' LIKE 'h%' ESCAPE '#' AS "true";
  true 
@@ -1143,6 +1182,18 @@ SELECT 'i_dio' NOT LIKE 'i$_d%o' ESCAPE '$' AS "false";
  f
 (1 row)
 
+SELECT 'a_c'::bytea LIKE 'a$__'::bytea ESCAPE '$'::bytea AS "true";
+ true 
+------
+ t
+(1 row)
+
+SELECT 'a_c'::bytea NOT LIKE 'a$__'::bytea ESCAPE '$'::bytea AS "false";
+ false 
+-------
+ f
+(1 row)
+
 -- escape character same as pattern character
 SELECT 'maca' LIKE 'm%aca' ESCAPE '%' AS "true";
  true 
@@ -1251,6 +1302,18 @@ SELECT 'Hawkeye' ILIKE 'h%' AS "true";
 (1 row)
 
 SELECT 'Hawkeye' NOT ILIKE 'h%' AS "false";
+ false 
+-------
+ f
+(1 row)
+
+SELECT 'ABC'::name ILIKE '_b_' AS "true";
+ true 
+------
+ t
+(1 row)
+
+SELECT 'ABC'::name NOT ILIKE '_b_' AS "false";
  false 
 -------
  f
@@ -1552,8 +1615,56 @@ SELECT replace('yabadoo', 'bad', '') AS "yaoo";
 --
 -- test split_part
 --
+select split_part('','@',1) AS "empty string";
+ empty string 
+--------------
+ 
+(1 row)
+
+select split_part('','@',-1) AS "empty string";
+ empty string 
+--------------
+ 
+(1 row)
+
+select split_part('joeuser@mydatabase','',1) AS "joeuser@mydatabase";
+ joeuser@mydatabase 
+--------------------
+ joeuser@mydatabase
+(1 row)
+
+select split_part('joeuser@mydatabase','',2) AS "empty string";
+ empty string 
+--------------
+ 
+(1 row)
+
+select split_part('joeuser@mydatabase','',-1) AS "joeuser@mydatabase";
+ joeuser@mydatabase 
+--------------------
+ joeuser@mydatabase
+(1 row)
+
+select split_part('joeuser@mydatabase','',-2) AS "empty string";
+ empty string 
+--------------
+ 
+(1 row)
+
 select split_part('joeuser@mydatabase','@',0) AS "an error";
-ERROR:  field position must be greater than zero
+ERROR:  field position must not be zero
+select split_part('joeuser@mydatabase','@@',1) AS "joeuser@mydatabase";
+ joeuser@mydatabase 
+--------------------
+ joeuser@mydatabase
+(1 row)
+
+select split_part('joeuser@mydatabase','@@',2) AS "empty string";
+ empty string 
+--------------
+ 
+(1 row)
+
 select split_part('joeuser@mydatabase','@',1) AS "joeuser";
  joeuser 
 ---------
@@ -1576,6 +1687,30 @@ select split_part('@joeuser@mydatabase@','@',2) AS "joeuser";
  joeuser 
 ---------
  joeuser
+(1 row)
+
+select split_part('joeuser@mydatabase','@',-1) AS "mydatabase";
+ mydatabase 
+------------
+ mydatabase
+(1 row)
+
+select split_part('joeuser@mydatabase','@',-2) AS "joeuser";
+ joeuser 
+---------
+ joeuser
+(1 row)
+
+select split_part('joeuser@mydatabase','@',-3) AS "empty string";
+ empty string 
+--------------
+ 
+(1 row)
+
+select split_part('@joeuser@mydatabase@','@',-2) AS "mydatabase";
+ mydatabase 
+------------
+ mydatabase
 (1 row)
 
 --
@@ -2012,10 +2147,48 @@ SELECT repeat('Pg', -4);
  
 (1 row)
 
+SELECT SUBSTRING('1234567890'::bytea FROM 3) "34567890";
+ 34567890 
+----------
+ 34567890
+(1 row)
+
+SELECT SUBSTRING('1234567890'::bytea FROM 4 FOR 3) AS "456";
+ 456 
+-----
+ 456
+(1 row)
+
+SELECT SUBSTRING('string'::bytea FROM 2 FOR 2147483646) AS "tring";
+ tring 
+-------
+ tring
+(1 row)
+
+SELECT SUBSTRING('string'::bytea FROM -10 FOR 2147483646) AS "string";
+ string 
+--------
+ string
+(1 row)
+
+SELECT SUBSTRING('string'::bytea FROM -10 FOR -2147483646) AS "error";
+ERROR:  negative substring length not allowed
 SELECT trim(E'\\000'::bytea from E'\\000Tom\\000'::bytea);
  btrim 
 -------
  Tom
+(1 row)
+
+SELECT trim(leading E'\\000'::bytea from E'\\000Tom\\000'::bytea);
+  ltrim  
+---------
+ Tom\000
+(1 row)
+
+SELECT trim(trailing E'\\000'::bytea from E'\\000Tom\\000'::bytea);
+  rtrim  
+---------
+ \000Tom
 (1 row)
 
 SELECT btrim(E'\\000trim\\000'::bytea, E'\\000'::bytea);

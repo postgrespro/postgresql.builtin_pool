@@ -3,7 +3,7 @@
  * connection.c
  *		  Connection management functions for postgres_fdw
  *
- * Portions Copyright (c) 2012-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 2012-2021, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *		  contrib/postgres_fdw/connection.c
@@ -16,12 +16,14 @@
 #include "access/xact.h"
 #include "catalog/pg_user_mapping.h"
 #include "commands/defrem.h"
+#include "funcapi.h"
 #include "mb/pg_wchar.h"
 #include "miscadmin.h"
 #include "pgstat.h"
 #include "postgres_fdw.h"
 #include "storage/fd.h"
 #include "storage/latch.h"
+#include "utils/builtins.h"
 #include "utils/datetime.h"
 #include "utils/hsearch.h"
 #include "utils/inval.h"
@@ -57,6 +59,7 @@ typedef struct ConnCacheEntry
 	bool		have_error;		/* have any subxacts aborted in this xact? */
 	bool		changing_xact_state;	/* xact state change in process */
 	bool		invalidated;	/* true if reconnect is pending */
+	Oid			serverid;		/* foreign server OID used to get server name */
 	uint32		server_hashvalue;	/* hash value of foreign server OID */
 	uint32		mapping_hashvalue;	/* hash value of user mapping OID */
 } ConnCacheEntry;
@@ -73,7 +76,15 @@ static unsigned int prep_stmt_number = 0;
 /* tracks whether any work is needed in callback functions */
 static bool xact_got_connection = false;
 
+/*
+ * SQL functions
+ */
+PG_FUNCTION_INFO_V1(postgres_fdw_get_connections);
+PG_FUNCTION_INFO_V1(postgres_fdw_disconnect);
+PG_FUNCTION_INFO_V1(postgres_fdw_disconnect_all);
+
 /* prototypes of private functions */
+static void make_new_connection(ConnCacheEntry *entry, UserMapping *user);
 static PGconn *connect_pg_server(ForeignServer *server, UserMapping *user);
 static void disconnect_pg_server(ConnCacheEntry *entry);
 static void check_conn_params(const char **keywords, const char **values, UserMapping *user);
@@ -93,6 +104,7 @@ static bool pgfdw_exec_cleanup_query(PGconn *conn, const char *query,
 static bool pgfdw_get_cleanup_result(PGconn *conn, TimestampTz endtime,
 									 PGresult **result);
 static bool UserMappingPasswordRequired(UserMapping *user);
+static bool disconnect_cached_connections(Oid serverid);
 
 /*
  * Get a PGconn which can be used to execute queries on the remote PostgreSQL
@@ -108,22 +120,21 @@ PGconn *
 GetConnection(UserMapping *user, bool will_prep_stmt)
 {
 	bool		found;
+	bool		retry = false;
 	ConnCacheEntry *entry;
 	ConnCacheKey key;
+	MemoryContext ccxt = CurrentMemoryContext;
 
 	/* First time through, initialize connection cache hashtable */
 	if (ConnectionHash == NULL)
 	{
 		HASHCTL		ctl;
 
-		MemSet(&ctl, 0, sizeof(ctl));
 		ctl.keysize = sizeof(ConnCacheKey);
 		ctl.entrysize = sizeof(ConnCacheEntry);
-		/* allocate ConnectionHash in the cache context */
-		ctl.hcxt = CacheMemoryContext;
 		ConnectionHash = hash_create("postgres_fdw connections", 8,
 									 &ctl,
-									 HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+									 HASH_ELEM | HASH_BLOBS);
 
 		/*
 		 * Register some callback functions that manage connection cleanup.
@@ -171,49 +182,121 @@ GetConnection(UserMapping *user, bool will_prep_stmt)
 	}
 
 	/*
-	 * We don't check the health of cached connection here, because it would
-	 * require some overhead.  Broken connection will be detected when the
-	 * connection is actually used.
-	 */
-
-	/*
 	 * If cache entry doesn't have a connection, we have to establish a new
 	 * connection.  (If connect_pg_server throws an error, the cache entry
 	 * will remain in a valid empty state, ie conn == NULL.)
 	 */
 	if (entry->conn == NULL)
-	{
-		ForeignServer *server = GetForeignServer(user->serverid);
-
-		/* Reset all transient state fields, to be sure all are clean */
-		entry->xact_depth = 0;
-		entry->have_prep_stmt = false;
-		entry->have_error = false;
-		entry->changing_xact_state = false;
-		entry->invalidated = false;
-		entry->server_hashvalue =
-			GetSysCacheHashValue1(FOREIGNSERVEROID,
-								  ObjectIdGetDatum(server->serverid));
-		entry->mapping_hashvalue =
-			GetSysCacheHashValue1(USERMAPPINGOID,
-								  ObjectIdGetDatum(user->umid));
-
-		/* Now try to make the connection */
-		entry->conn = connect_pg_server(server, user);
-
-		elog(DEBUG3, "new postgres_fdw connection %p for server \"%s\" (user mapping oid %u, userid %u)",
-			 entry->conn, server->servername, user->umid, user->userid);
-	}
+		make_new_connection(entry, user);
 
 	/*
-	 * Start a new transaction or subtransaction if needed.
+	 * We check the health of the cached connection here when starting a new
+	 * remote transaction. If a broken connection is detected, we try to
+	 * reestablish a new connection later.
 	 */
-	begin_remote_xact(entry);
+	PG_TRY();
+	{
+		/* Start a new transaction or subtransaction if needed. */
+		begin_remote_xact(entry);
+	}
+	PG_CATCH();
+	{
+		MemoryContext ecxt = MemoryContextSwitchTo(ccxt);
+		ErrorData  *errdata = CopyErrorData();
+
+		/*
+		 * If connection failure is reported when starting a new remote
+		 * transaction (not subtransaction), new connection will be
+		 * reestablished later.
+		 *
+		 * After a broken connection is detected in libpq, any error other
+		 * than connection failure (e.g., out-of-memory) can be thrown
+		 * somewhere between return from libpq and the expected ereport() call
+		 * in pgfdw_report_error(). In this case, since PQstatus() indicates
+		 * CONNECTION_BAD, checking only PQstatus() causes the false detection
+		 * of connection failure. To avoid this, we also verify that the
+		 * error's sqlstate is ERRCODE_CONNECTION_FAILURE. Note that also
+		 * checking only the sqlstate can cause another false detection
+		 * because pgfdw_report_error() may report ERRCODE_CONNECTION_FAILURE
+		 * for any libpq-originated error condition.
+		 */
+		if (errdata->sqlerrcode != ERRCODE_CONNECTION_FAILURE ||
+			PQstatus(entry->conn) != CONNECTION_BAD ||
+			entry->xact_depth > 0)
+		{
+			MemoryContextSwitchTo(ecxt);
+			PG_RE_THROW();
+		}
+
+		/* Clean up the error state */
+		FlushErrorState();
+		FreeErrorData(errdata);
+		errdata = NULL;
+
+		retry = true;
+	}
+	PG_END_TRY();
+
+	/*
+	 * If a broken connection is detected, disconnect it, reestablish a new
+	 * connection and retry a new remote transaction. If connection failure is
+	 * reported again, we give up getting a connection.
+	 */
+	if (retry)
+	{
+		Assert(entry->xact_depth == 0);
+
+		ereport(DEBUG3,
+				(errmsg_internal("could not start remote transaction on connection %p",
+								 entry->conn)),
+				errdetail_internal("%s", pchomp(PQerrorMessage(entry->conn))));
+
+		elog(DEBUG3, "closing connection %p to reestablish a new one",
+			 entry->conn);
+		disconnect_pg_server(entry);
+
+		if (entry->conn == NULL)
+			make_new_connection(entry, user);
+
+		begin_remote_xact(entry);
+	}
 
 	/* Remember if caller will prepare statements */
 	entry->have_prep_stmt |= will_prep_stmt;
 
 	return entry->conn;
+}
+
+/*
+ * Reset all transient state fields in the cached connection entry and
+ * establish new connection to the remote server.
+ */
+static void
+make_new_connection(ConnCacheEntry *entry, UserMapping *user)
+{
+	ForeignServer *server = GetForeignServer(user->serverid);
+
+	Assert(entry->conn == NULL);
+
+	/* Reset all transient state fields, to be sure all are clean */
+	entry->xact_depth = 0;
+	entry->have_prep_stmt = false;
+	entry->have_error = false;
+	entry->changing_xact_state = false;
+	entry->invalidated = false;
+	entry->serverid = server->serverid;
+	entry->server_hashvalue =
+		GetSysCacheHashValue1(FOREIGNSERVEROID,
+							  ObjectIdGetDatum(server->serverid));
+	entry->mapping_hashvalue =
+		GetSysCacheHashValue1(USERMAPPINGOID,
+							  ObjectIdGetDatum(user->umid));
+
+	/* Now try to make the connection */
+	entry->conn = connect_pg_server(server, user);
+
+	elog(DEBUG3, "new postgres_fdw connection %p for server \"%s\" (user mapping oid %u, userid %u)",
+		 entry->conn, server->servername, user->umid, user->userid);
 }
 
 /*
@@ -703,6 +786,10 @@ pgfdw_report_error(int elevel, PGresult *res, PGconn *conn,
 
 /*
  * pgfdw_xact_callback --- cleanup at main-transaction end.
+ *
+ * This runs just late enough that it must not enter user-defined code
+ * locally.  (Entering such code on the remote side is fine.  Its remote
+ * COMMIT TRANSACTION may run deferred triggers.)
  */
 static void
 pgfdw_xact_callback(XactEvent event, void *arg)
@@ -865,12 +952,14 @@ pgfdw_xact_callback(XactEvent event, void *arg)
 		entry->xact_depth = 0;
 
 		/*
-		 * If the connection isn't in a good idle state, discard it to
-		 * recover. Next GetConnection will open a new connection.
+		 * If the connection isn't in a good idle state or it is marked as
+		 * invalid, then discard it to recover. Next GetConnection will open a
+		 * new connection.
 		 */
 		if (PQstatus(entry->conn) != CONNECTION_OK ||
 			PQtransactionStatus(entry->conn) != PQTRANS_IDLE ||
-			entry->changing_xact_state)
+			entry->changing_xact_state ||
+			entry->invalidated)
 		{
 			elog(DEBUG3, "discarding connection %p", entry->conn);
 			disconnect_pg_server(entry);
@@ -994,9 +1083,12 @@ pgfdw_subxact_callback(SubXactEvent event, SubTransactionId mySubid,
  * Connection invalidation callback function
  *
  * After a change to a pg_foreign_server or pg_user_mapping catalog entry,
- * mark connections depending on that entry as needing to be remade.
- * We can't immediately destroy them, since they might be in the midst of
- * a transaction, but we'll remake them at the next opportunity.
+ * close connections depending on that entry immediately if current transaction
+ * has not used those connections yet. Otherwise, mark those connections as
+ * invalid and then make pgfdw_xact_callback() close them at the end of current
+ * transaction, since they cannot be closed in the midst of the transaction
+ * using them. Closed connections will be remade at the next opportunity if
+ * necessary.
  *
  * Although most cache invalidation callbacks blow away all the related stuff
  * regardless of the given hashvalue, connections are expensive enough that
@@ -1027,7 +1119,21 @@ pgfdw_inval_callback(Datum arg, int cacheid, uint32 hashvalue)
 			 entry->server_hashvalue == hashvalue) ||
 			(cacheid == USERMAPPINGOID &&
 			 entry->mapping_hashvalue == hashvalue))
-			entry->invalidated = true;
+		{
+			/*
+			 * Close the connection immediately if it's not used yet in this
+			 * transaction. Otherwise mark it as invalid so that
+			 * pgfdw_xact_callback() can close it at the end of this
+			 * transaction.
+			 */
+			if (entry->xact_depth == 0)
+			{
+				elog(DEBUG3, "discarding connection %p", entry->conn);
+				disconnect_pg_server(entry);
+			}
+			else
+				entry->invalidated = true;
+		}
 	}
 }
 
@@ -1044,8 +1150,6 @@ pgfdw_inval_callback(Datum arg, int cacheid, uint32 hashvalue)
 static void
 pgfdw_reject_incomplete_xact_state_change(ConnCacheEntry *entry)
 {
-	HeapTuple	tup;
-	Form_pg_user_mapping umform;
 	ForeignServer *server;
 
 	/* nothing to do for inactive entries and entries of sane state */
@@ -1056,13 +1160,7 @@ pgfdw_reject_incomplete_xact_state_change(ConnCacheEntry *entry)
 	disconnect_pg_server(entry);
 
 	/* find server name to be shown in the message below */
-	tup = SearchSysCache1(USERMAPPINGOID,
-						  ObjectIdGetDatum(entry->key));
-	if (!HeapTupleIsValid(tup))
-		elog(ERROR, "cache lookup failed for user mapping %u", entry->key);
-	umform = (Form_pg_user_mapping) GETSTRUCT(tup);
-	server = GetForeignServer(umform->umserver);
-	ReleaseSysCache(tup);
+	server = GetForeignServer(entry->serverid);
 
 	ereport(ERROR,
 			(errcode(ERRCODE_CONNECTION_EXCEPTION),
@@ -1193,20 +1291,15 @@ pgfdw_get_cleanup_result(PGconn *conn, TimestampTz endtime, PGresult **result)
 			{
 				int			wc;
 				TimestampTz now = GetCurrentTimestamp();
-				long		secs;
-				int			microsecs;
 				long		cur_timeout;
 
 				/* If timeout has expired, give up, else get sleep time. */
-				if (now >= endtime)
+				cur_timeout = TimestampDifferenceMilliseconds(now, endtime);
+				if (cur_timeout <= 0)
 				{
 					timed_out = true;
 					goto exit;
 				}
-				TimestampDifference(now, endtime, &secs, &microsecs);
-
-				/* To protect against clock skew, limit sleep to one minute. */
-				cur_timeout = Min(60000, secs * USECS_PER_SEC + microsecs);
 
 				/* Sleep until there's something to do */
 				wc = WaitLatchOrSocket(MyLatch,
@@ -1251,4 +1344,258 @@ exit:	;
 	else
 		*result = last_res;
 	return timed_out;
+}
+
+/*
+ * List active foreign server connections.
+ *
+ * This function takes no input parameter and returns setof record made of
+ * following values:
+ * - server_name - server name of active connection. In case the foreign server
+ *   is dropped but still the connection is active, then the server name will
+ *   be NULL in output.
+ * - valid - true/false representing whether the connection is valid or not.
+ * 	 Note that the connections can get invalidated in pgfdw_inval_callback.
+ *
+ * No records are returned when there are no cached connections at all.
+ */
+Datum
+postgres_fdw_get_connections(PG_FUNCTION_ARGS)
+{
+#define POSTGRES_FDW_GET_CONNECTIONS_COLS	2
+	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
+	TupleDesc	tupdesc;
+	Tuplestorestate *tupstore;
+	MemoryContext per_query_ctx;
+	MemoryContext oldcontext;
+	HASH_SEQ_STATUS scan;
+	ConnCacheEntry *entry;
+
+	/* check to see if caller supports us returning a tuplestore */
+	if (rsinfo == NULL || !IsA(rsinfo, ReturnSetInfo))
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("set-valued function called in context that cannot accept a set")));
+	if (!(rsinfo->allowedModes & SFRM_Materialize))
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("materialize mode required, but it is not allowed in this context")));
+
+	/* Build a tuple descriptor for our result type */
+	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
+		elog(ERROR, "return type must be a row type");
+
+	/* Build tuplestore to hold the result rows */
+	per_query_ctx = rsinfo->econtext->ecxt_per_query_memory;
+	oldcontext = MemoryContextSwitchTo(per_query_ctx);
+
+	tupstore = tuplestore_begin_heap(true, false, work_mem);
+	rsinfo->returnMode = SFRM_Materialize;
+	rsinfo->setResult = tupstore;
+	rsinfo->setDesc = tupdesc;
+
+	MemoryContextSwitchTo(oldcontext);
+
+	/* If cache doesn't exist, we return no records */
+	if (!ConnectionHash)
+	{
+		/* clean up and return the tuplestore */
+		tuplestore_donestoring(tupstore);
+
+		PG_RETURN_VOID();
+	}
+
+	hash_seq_init(&scan, ConnectionHash);
+	while ((entry = (ConnCacheEntry *) hash_seq_search(&scan)))
+	{
+		ForeignServer *server;
+		Datum		values[POSTGRES_FDW_GET_CONNECTIONS_COLS];
+		bool		nulls[POSTGRES_FDW_GET_CONNECTIONS_COLS];
+
+		/* We only look for open remote connections */
+		if (!entry->conn)
+			continue;
+
+		server = GetForeignServerExtended(entry->serverid, FSV_MISSING_OK);
+
+		MemSet(values, 0, sizeof(values));
+		MemSet(nulls, 0, sizeof(nulls));
+
+		/*
+		 * The foreign server may have been dropped in current explicit
+		 * transaction. It is not possible to drop the server from another
+		 * session when the connection associated with it is in use in the
+		 * current transaction, if tried so, the drop query in another session
+		 * blocks until the current transaction finishes.
+		 *
+		 * Even though the server is dropped in the current transaction, the
+		 * cache can still have associated active connection entry, say we
+		 * call such connections dangling. Since we can not fetch the server
+		 * name from system catalogs for dangling connections, instead we show
+		 * NULL value for server name in output.
+		 *
+		 * We could have done better by storing the server name in the cache
+		 * entry instead of server oid so that it could be used in the output.
+		 * But the server name in each cache entry requires 64 bytes of
+		 * memory, which is huge, when there are many cached connections and
+		 * the use case i.e. dropping the foreign server within the explicit
+		 * current transaction seems rare. So, we chose to show NULL value for
+		 * server name in output.
+		 *
+		 * Such dangling connections get closed either in next use or at the
+		 * end of current explicit transaction in pgfdw_xact_callback.
+		 */
+		if (!server)
+		{
+			/*
+			 * If the server has been dropped in the current explicit
+			 * transaction, then this entry would have been invalidated in
+			 * pgfdw_inval_callback at the end of drop server command. Note
+			 * that this connection would not have been closed in
+			 * pgfdw_inval_callback because it is still being used in the
+			 * current explicit transaction. So, assert that here.
+			 */
+			Assert(entry->conn && entry->xact_depth > 0 && entry->invalidated);
+
+			/* Show null, if no server name was found */
+			nulls[0] = true;
+		}
+		else
+			values[0] = CStringGetTextDatum(server->servername);
+
+		values[1] = BoolGetDatum(!entry->invalidated);
+
+		tuplestore_putvalues(tupstore, tupdesc, values, nulls);
+	}
+
+	/* clean up and return the tuplestore */
+	tuplestore_donestoring(tupstore);
+
+	PG_RETURN_VOID();
+}
+
+/*
+ * Disconnect the specified cached connections.
+ *
+ * This function discards the open connections that are established by
+ * postgres_fdw from the local session to the foreign server with
+ * the given name. Note that there can be multiple connections to
+ * the given server using different user mappings. If the connections
+ * are used in the current local transaction, they are not disconnected
+ * and warning messages are reported. This function returns true
+ * if it disconnects at least one connection, otherwise false. If no
+ * foreign server with the given name is found, an error is reported.
+ */
+Datum
+postgres_fdw_disconnect(PG_FUNCTION_ARGS)
+{
+	ForeignServer *server;
+	char	   *servername;
+
+	servername = text_to_cstring(PG_GETARG_TEXT_PP(0));
+	server = GetForeignServerByName(servername, false);
+
+	PG_RETURN_BOOL(disconnect_cached_connections(server->serverid));
+}
+
+/*
+ * Disconnect all the cached connections.
+ *
+ * This function discards all the open connections that are established by
+ * postgres_fdw from the local session to the foreign servers.
+ * If the connections are used in the current local transaction, they are
+ * not disconnected and warning messages are reported. This function
+ * returns true if it disconnects at least one connection, otherwise false.
+ */
+Datum
+postgres_fdw_disconnect_all(PG_FUNCTION_ARGS)
+{
+	PG_RETURN_BOOL(disconnect_cached_connections(InvalidOid));
+}
+
+/*
+ * Workhorse to disconnect cached connections.
+ *
+ * This function scans all the connection cache entries and disconnects
+ * the open connections whose foreign server OID matches with
+ * the specified one. If InvalidOid is specified, it disconnects all
+ * the cached connections.
+ *
+ * This function emits a warning for each connection that's used in
+ * the current transaction and doesn't close it. It returns true if
+ * it disconnects at least one connection, otherwise false.
+ *
+ * Note that this function disconnects even the connections that are
+ * established by other users in the same local session using different
+ * user mappings. This leads even non-superuser to be able to close
+ * the connections established by superusers in the same local session.
+ *
+ * XXX As of now we don't see any security risk doing this. But we should
+ * set some restrictions on that, for example, prevent non-superuser
+ * from closing the connections established by superusers even
+ * in the same session?
+ */
+static bool
+disconnect_cached_connections(Oid serverid)
+{
+	HASH_SEQ_STATUS scan;
+	ConnCacheEntry *entry;
+	bool		all = !OidIsValid(serverid);
+	bool		result = false;
+
+	/*
+	 * Connection cache hashtable has not been initialized yet in this
+	 * session, so return false.
+	 */
+	if (!ConnectionHash)
+		return false;
+
+	hash_seq_init(&scan, ConnectionHash);
+	while ((entry = (ConnCacheEntry *) hash_seq_search(&scan)))
+	{
+		/* Ignore cache entry if no open connection right now. */
+		if (!entry->conn)
+			continue;
+
+		if (all || entry->serverid == serverid)
+		{
+			/*
+			 * Emit a warning because the connection to close is used in the
+			 * current transaction and cannot be disconnected right now.
+			 */
+			if (entry->xact_depth > 0)
+			{
+				ForeignServer *server;
+
+				server = GetForeignServerExtended(entry->serverid,
+												  FSV_MISSING_OK);
+
+				if (!server)
+				{
+					/*
+					 * If the foreign server was dropped while its connection
+					 * was used in the current transaction, the connection
+					 * must have been marked as invalid by
+					 * pgfdw_inval_callback at the end of DROP SERVER command.
+					 */
+					Assert(entry->invalidated);
+
+					ereport(WARNING,
+							(errmsg("cannot close dropped server connection because it is still in use")));
+				}
+				else
+					ereport(WARNING,
+							(errmsg("cannot close connection for server \"%s\" because it is still in use",
+									server->servername)));
+			}
+			else
+			{
+				elog(DEBUG3, "discarding connection %p", entry->conn);
+				disconnect_pg_server(entry);
+				result = true;
+			}
+		}
+	}
+
+	return result;
 }

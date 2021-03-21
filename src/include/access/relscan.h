@@ -4,7 +4,7 @@
  *	  POSTGRES relation scan descriptor definitions.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/access/relscan.h
@@ -35,6 +35,10 @@ typedef struct TableScanDescData
 	struct SnapshotData *rs_snapshot;	/* snapshot to see */
 	int			rs_nkeys;		/* number of scan keys */
 	struct ScanKeyData *rs_key; /* array of scan key descriptors */
+
+	/* Range of ItemPointers for table_scan_getnextslot_tidrange() to scan. */
+	ItemPointerData rs_mintid;
+	ItemPointerData rs_maxtid;
 
 	/*
 	 * Information about type and behaviour of the scan, a bitmask of members

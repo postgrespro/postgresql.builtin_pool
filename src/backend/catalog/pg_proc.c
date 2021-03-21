@@ -3,7 +3,7 @@
  * pg_proc.c
  *	  routines to support manipulation of the pg_proc relation
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -249,6 +249,9 @@ ProcedureCreate(const char *procedureName,
 						elog(ERROR, "variadic parameter must be last");
 					break;
 				case PROARGMODE_OUT:
+					if (OidIsValid(variadicType) && prokind == PROKIND_PROCEDURE)
+						elog(ERROR, "variadic parameter must be last");
+					break;
 				case PROARGMODE_TABLE:
 					/* okay */
 					break;
@@ -462,10 +465,12 @@ ProcedureCreate(const char *procedureName,
 			if (isnull)
 				proargmodes = PointerGetDatum(NULL);	/* just to be sure */
 
-			n_old_arg_names = get_func_input_arg_names(proargnames,
+			n_old_arg_names = get_func_input_arg_names(prokind,
+													   proargnames,
 													   proargmodes,
 													   &old_arg_names);
-			n_new_arg_names = get_func_input_arg_names(parameterNames,
+			n_new_arg_names = get_func_input_arg_names(prokind,
+													   parameterNames,
 													   parameterModes,
 													   &new_arg_names);
 			for (j = 0; j < n_old_arg_names; j++)
@@ -908,8 +913,8 @@ fmgr_sql_validator(PG_FUNCTION_ARGS)
 																  (ParserSetupHook) sql_fn_parser_setup,
 																  pinfo,
 																  NULL);
-				querytree_list = list_concat(querytree_list,
-											 querytree_sublist);
+				querytree_list = lappend(querytree_list,
+										 querytree_sublist);
 			}
 
 			check_sql_fn_statements(querytree_list);

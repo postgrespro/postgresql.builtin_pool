@@ -177,8 +177,8 @@ pg_dump -h <replaceable>host1</replaceable> <replaceable>dbname</replaceable> | 
    </important>
 
    <para>
-    After restoring a backup, it is wise to run <xref
-    linkend="sql-analyze"/> on each
+    After restoring a backup, it is wise to run <link
+    linkend="sql-analyze"><command>ANALYZE</command></link> on each
     database so the query optimizer has useful statistics;
     see <xref linkend="vacuum-for-statistics"/>
     and <xref linkend="autovacuum"/> for more information.
@@ -637,6 +637,15 @@ test ! -f /mnt/server/archivedir/00000001000000A900000065 &amp;&amp; cp pg_wal/0
     successfully archived, and will remove or recycle it.  However, a nonzero
     status tells <productname>PostgreSQL</productname> that the file was not archived;
     it will try again periodically until it succeeds.
+   </para>
+
+   <para>
+    When the archive command is terminated by a signal (other than
+    <systemitem>SIGTERM</systemitem> that is used as part of a server
+    shutdown) or an error by the shell with an exit status greater than
+    125 (such as command not found), the archiver process aborts and gets
+    restarted by the postmaster. In such cases, the failure is
+    not reported in <xref linkend="pg-stat-archiver-view"/>.
    </para>
 
    <para>
@@ -1437,12 +1446,13 @@ restore_command = 'cp /mnt/server/archivedir/%f %p'
    </para>
 
    <para>
-    The default behavior of recovery is to recover along the same timeline
-    that was current when the base backup was taken.  If you wish to recover
-    into some child timeline (that is, you want to return to some state that
-    was itself generated after a recovery attempt), you need to specify the
-    target timeline ID in <xref linkend="guc-recovery-target-timeline"/>. You cannot recover into
-    timelines that branched off earlier than the base backup.
+    The default behavior of recovery is to recover to the latest timeline found
+    in the archive. If you wish to recover to the timeline that was current
+    when the base backup was taken or into a specific child timeline (that
+    is, you want to return to some state that was itself generated after a
+    recovery attempt), you need to specify <literal>current</literal> or the
+    target timeline ID in <xref linkend="guc-recovery-target-timeline"/>. You
+    cannot recover into timelines that branched off earlier than the base backup.
    </para>
   </sect2>
 
@@ -1519,11 +1529,11 @@ tar -rf /var/lib/pgsql/backup.tar /var/lib/pgsql/archive/
       If archive storage size is a concern, you can use
       <application>gzip</application> to compress the archive files:
 <programlisting>
-archive_command = 'gzip &lt; %p &gt; /var/lib/pgsql/archive/%f'
+archive_command = 'gzip &lt; %p &gt; /mnt/server/archivedir/%f.gz'
 </programlisting>
       You will then need to use <application>gunzip</application> during recovery:
 <programlisting>
-restore_command = 'gunzip &lt; /mnt/server/archivedir/%f &gt; %p'
+restore_command = 'gunzip &lt; /mnt/server/archivedir/%f.gz &gt; %p'
 </programlisting>
      </para>
     </sect3>
@@ -1594,7 +1604,7 @@ archive_command = 'local_backup_script.sh "%p" "%f"'
   <itemizedlist>
    <listitem>
     <para>
-     If a <xref linkend="sql-createdatabase"/>
+     If a <link linkend="sql-createdatabase"><command>CREATE DATABASE</command></link>
      command is executed while a base backup is being taken, and then
      the template database that the <command>CREATE DATABASE</command> copied
      is modified while the base backup is still in progress, it is
@@ -1607,7 +1617,7 @@ archive_command = 'local_backup_script.sh "%p" "%f"'
 
    <listitem>
     <para>
-     <xref linkend="sql-createtablespace"/>
+     <link linkend="sql-createtablespace"><command>CREATE TABLESPACE</command></link>
      commands are WAL-logged with the literal absolute path, and will
      therefore be replayed as tablespace creations with the same
      absolute path.  This might be undesirable if the log is being

@@ -25,6 +25,7 @@ begin
 end;
 $$;
 -- Verify failures
+CREATE TABLE ext_stats_test (x int, y int, z int);
 CREATE STATISTICS tst;
 ERROR:  syntax error at or near ";"
 LINE 1: CREATE STATISTICS tst;
@@ -39,16 +40,17 @@ LINE 1: CREATE STATISTICS tst FROM sometab;
                               ^
 CREATE STATISTICS tst ON a, b FROM nonexistent;
 ERROR:  relation "nonexistent" does not exist
-CREATE STATISTICS tst ON a, b FROM pg_class;
+CREATE STATISTICS tst ON a, b FROM ext_stats_test;
 ERROR:  column "a" does not exist
-CREATE STATISTICS tst ON relname, relname, relnatts FROM pg_class;
+CREATE STATISTICS tst ON x, x, y FROM ext_stats_test;
 ERROR:  duplicate column name in statistics definition
-CREATE STATISTICS tst ON relnatts + relpages FROM pg_class;
+CREATE STATISTICS tst ON x + y FROM ext_stats_test;
 ERROR:  only simple column references are allowed in CREATE STATISTICS
-CREATE STATISTICS tst ON (relpages, reltuples) FROM pg_class;
+CREATE STATISTICS tst ON (x, y) FROM ext_stats_test;
 ERROR:  only simple column references are allowed in CREATE STATISTICS
-CREATE STATISTICS tst (unrecognized) ON relname, relnatts FROM pg_class;
+CREATE STATISTICS tst (unrecognized) ON x, y FROM ext_stats_test;
 ERROR:  unrecognized statistics kind "unrecognized"
+DROP TABLE ext_stats_test;
 -- Ensure stats are dropped sanely, and test IF NOT EXISTS while at it
 CREATE TABLE ab1 (a INTEGER, b INTEGER, c INTEGER);
 CREATE STATISTICS IF NOT EXISTS ab1_a_b_stats ON a, b FROM ab1;
@@ -1113,6 +1115,12 @@ SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists WHERE a = 1 OR b = '
        200 |    200
 (1 row)
 
+SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists WHERE a = 1 OR b = ''1'' OR c = 1 OR d IS NOT NULL');
+ estimated | actual 
+-----------+--------
+       200 |    200
+(1 row)
+
 SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists WHERE a IN (1, 2, 51, 52) AND b IN ( ''1'', ''2'')');
  estimated | actual 
 -----------+--------
@@ -1171,13 +1179,6 @@ SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists WHERE a < ALL (ARRAY
  estimated | actual 
 -----------+--------
        100 |    100
-(1 row)
-
--- we can't use the statistic for OR clauses that are not fully covered (missing 'd' attribute)
-SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists WHERE a = 1 OR b = ''1'' OR c = 1 OR d IS NOT NULL');
- estimated | actual 
------------+--------
-       343 |    200
 (1 row)
 
 -- check change of unrelated column type does not reset the MCV statistics
@@ -1477,6 +1478,134 @@ SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists_bool WHERE NOT a AND
          1 |      0
 (1 row)
 
+-- mcv covering just a small fraction of data
+CREATE TABLE mcv_lists_partial (
+    a INT,
+    b INT,
+    c INT
+);
+-- 10 frequent groups, each with 100 elements
+INSERT INTO mcv_lists_partial (a, b, c)
+     SELECT
+         mod(i,10),
+         mod(i,10),
+         mod(i,10)
+     FROM generate_series(0,999) s(i);
+-- 100 groups that will make it to the MCV list (includes the 10 frequent ones)
+INSERT INTO mcv_lists_partial (a, b, c)
+     SELECT
+         i,
+         i,
+         i
+     FROM generate_series(0,99) s(i);
+-- 4000 groups in total, most of which won't make it (just a single item)
+INSERT INTO mcv_lists_partial (a, b, c)
+     SELECT
+         i,
+         i,
+         i
+     FROM generate_series(0,3999) s(i);
+ANALYZE mcv_lists_partial;
+SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists_partial WHERE a = 0 AND b = 0 AND c = 0');
+ estimated | actual 
+-----------+--------
+         1 |    102
+(1 row)
+
+SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists_partial WHERE a = 0 OR b = 0 OR c = 0');
+ estimated | actual 
+-----------+--------
+       300 |    102
+(1 row)
+
+SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists_partial WHERE a = 10 AND b = 10 AND c = 10');
+ estimated | actual 
+-----------+--------
+         1 |      2
+(1 row)
+
+SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists_partial WHERE a = 10 OR b = 10 OR c = 10');
+ estimated | actual 
+-----------+--------
+         6 |      2
+(1 row)
+
+SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists_partial WHERE a = 0 AND b = 0 AND c = 10');
+ estimated | actual 
+-----------+--------
+         1 |      0
+(1 row)
+
+SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists_partial WHERE a = 0 OR b = 0 OR c = 10');
+ estimated | actual 
+-----------+--------
+       204 |    104
+(1 row)
+
+SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists_partial WHERE (a = 0 AND b = 0 AND c = 0) OR (a = 1 AND b = 1 AND c = 1) OR (a = 2 AND b = 2 AND c = 2)');
+ estimated | actual 
+-----------+--------
+         1 |    306
+(1 row)
+
+SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists_partial WHERE (a = 0 AND b = 0) OR (a = 0 AND c = 0) OR (b = 0 AND c = 0)');
+ estimated | actual 
+-----------+--------
+         6 |    102
+(1 row)
+
+CREATE STATISTICS mcv_lists_partial_stats (mcv) ON a, b, c
+  FROM mcv_lists_partial;
+ANALYZE mcv_lists_partial;
+SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists_partial WHERE a = 0 AND b = 0 AND c = 0');
+ estimated | actual 
+-----------+--------
+       102 |    102
+(1 row)
+
+SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists_partial WHERE a = 0 OR b = 0 OR c = 0');
+ estimated | actual 
+-----------+--------
+        96 |    102
+(1 row)
+
+SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists_partial WHERE a = 10 AND b = 10 AND c = 10');
+ estimated | actual 
+-----------+--------
+         2 |      2
+(1 row)
+
+SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists_partial WHERE a = 10 OR b = 10 OR c = 10');
+ estimated | actual 
+-----------+--------
+         2 |      2
+(1 row)
+
+SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists_partial WHERE a = 0 AND b = 0 AND c = 10');
+ estimated | actual 
+-----------+--------
+         1 |      0
+(1 row)
+
+SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists_partial WHERE a = 0 OR b = 0 OR c = 10');
+ estimated | actual 
+-----------+--------
+       102 |    104
+(1 row)
+
+SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists_partial WHERE (a = 0 AND b = 0 AND c = 0) OR (a = 1 AND b = 1 AND c = 1) OR (a = 2 AND b = 2 AND c = 2)');
+ estimated | actual 
+-----------+--------
+       306 |    306
+(1 row)
+
+SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists_partial WHERE (a = 0 AND b = 0) OR (a = 0 AND c = 0) OR (b = 0 AND c = 0)');
+ estimated | actual 
+-----------+--------
+       108 |    102
+(1 row)
+
+DROP TABLE mcv_lists_partial;
 -- check the ability to use multiple MCV lists
 CREATE TABLE mcv_lists_multi (
 	a INTEGER,
@@ -1506,10 +1635,34 @@ SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists_multi WHERE c = 0 AN
        102 |    714
 (1 row)
 
+SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists_multi WHERE b = 0 AND c = 0');
+ estimated | actual 
+-----------+--------
+       143 |    142
+(1 row)
+
+SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists_multi WHERE b = 0 OR c = 0');
+ estimated | actual 
+-----------+--------
+      1571 |   1572
+(1 row)
+
 SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists_multi WHERE a = 0 AND b = 0 AND c = 0 AND d = 0');
  estimated | actual 
 -----------+--------
          4 |    142
+(1 row)
+
+SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists_multi WHERE (a = 0 AND b = 0) OR (c = 0 AND d = 0)');
+ estimated | actual 
+-----------+--------
+       298 |   1572
+(1 row)
+
+SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists_multi WHERE a = 0 OR b = 0 OR c = 0 OR d = 0');
+ estimated | actual 
+-----------+--------
+      2649 |   1572
 (1 row)
 
 -- create separate MCV statistics
@@ -1528,10 +1681,34 @@ SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists_multi WHERE c = 0 AN
        714 |    714
 (1 row)
 
+SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists_multi WHERE b = 0 AND c = 0');
+ estimated | actual 
+-----------+--------
+       143 |    142
+(1 row)
+
+SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists_multi WHERE b = 0 OR c = 0');
+ estimated | actual 
+-----------+--------
+      1571 |   1572
+(1 row)
+
 SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists_multi WHERE a = 0 AND b = 0 AND c = 0 AND d = 0');
  estimated | actual 
 -----------+--------
        143 |    142
+(1 row)
+
+SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists_multi WHERE (a = 0 AND b = 0) OR (c = 0 AND d = 0)');
+ estimated | actual 
+-----------+--------
+      1571 |   1572
+(1 row)
+
+SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists_multi WHERE a = 0 OR b = 0 OR c = 0 OR d = 0');
+ estimated | actual 
+-----------+--------
+      1571 |   1572
 (1 row)
 
 DROP TABLE mcv_lists_multi;
@@ -1550,6 +1727,122 @@ INSERT INTO tststats.priv_test_tbl
 CREATE STATISTICS tststats.priv_test_stats (mcv) ON a, b
   FROM tststats.priv_test_tbl;
 ANALYZE tststats.priv_test_tbl;
+-- Check printing info about extended statistics by \dX
+create table stts_t1 (a int, b int);
+create statistics stts_1 (ndistinct) on a, b from stts_t1;
+create statistics stts_2 (ndistinct, dependencies) on a, b from stts_t1;
+create statistics stts_3 (ndistinct, dependencies, mcv) on a, b from stts_t1;
+create table stts_t2 (a int, b int, c int);
+create statistics stts_4 on b, c from stts_t2;
+create table stts_t3 (col1 int, col2 int, col3 int);
+create statistics stts_hoge on col1, col2, col3 from stts_t3;
+create schema stts_s1;
+create schema stts_s2;
+create statistics stts_s1.stts_foo on col1, col2 from stts_t3;
+create statistics stts_s2.stts_yama (dependencies, mcv) on col1, col3 from stts_t3;
+insert into stts_t1 select i,i from generate_series(1,100) i;
+analyze stts_t1;
+\dX
+                                          List of extended statistics
+  Schema  |          Name          |              Definition              | Ndistinct | Dependencies |   MCV   
+----------+------------------------+--------------------------------------+-----------+--------------+---------
+ public   | func_deps_stat         | a, b, c FROM functional_dependencies |           | defined      | 
+ public   | mcv_lists_arrays_stats | a, b, c FROM mcv_lists_arrays        |           |              | defined
+ public   | mcv_lists_bool_stats   | a, b, c FROM mcv_lists_bool          |           |              | defined
+ public   | mcv_lists_stats        | a, b, d FROM mcv_lists               |           |              | defined
+ public   | stts_1                 | a, b FROM stts_t1                    | defined   |              | 
+ public   | stts_2                 | a, b FROM stts_t1                    | defined   | defined      | 
+ public   | stts_3                 | a, b FROM stts_t1                    | defined   | defined      | defined
+ public   | stts_4                 | b, c FROM stts_t2                    | defined   | defined      | defined
+ public   | stts_hoge              | col1, col2, col3 FROM stts_t3        | defined   | defined      | defined
+ stts_s1  | stts_foo               | col1, col2 FROM stts_t3              | defined   | defined      | defined
+ stts_s2  | stts_yama              | col1, col3 FROM stts_t3              |           | defined      | defined
+ tststats | priv_test_stats        | a, b FROM tststats.priv_test_tbl     |           |              | defined
+(12 rows)
+
+\dX stts_?
+                       List of extended statistics
+ Schema |  Name  |    Definition     | Ndistinct | Dependencies |   MCV   
+--------+--------+-------------------+-----------+--------------+---------
+ public | stts_1 | a, b FROM stts_t1 | defined   |              | 
+ public | stts_2 | a, b FROM stts_t1 | defined   | defined      | 
+ public | stts_3 | a, b FROM stts_t1 | defined   | defined      | defined
+ public | stts_4 | b, c FROM stts_t2 | defined   | defined      | defined
+(4 rows)
+
+\dX *stts_hoge
+                               List of extended statistics
+ Schema |   Name    |          Definition           | Ndistinct | Dependencies |   MCV   
+--------+-----------+-------------------------------+-----------+--------------+---------
+ public | stts_hoge | col1, col2, col3 FROM stts_t3 | defined   | defined      | defined
+(1 row)
+
+\dX+
+                                          List of extended statistics
+  Schema  |          Name          |              Definition              | Ndistinct | Dependencies |   MCV   
+----------+------------------------+--------------------------------------+-----------+--------------+---------
+ public   | func_deps_stat         | a, b, c FROM functional_dependencies |           | defined      | 
+ public   | mcv_lists_arrays_stats | a, b, c FROM mcv_lists_arrays        |           |              | defined
+ public   | mcv_lists_bool_stats   | a, b, c FROM mcv_lists_bool          |           |              | defined
+ public   | mcv_lists_stats        | a, b, d FROM mcv_lists               |           |              | defined
+ public   | stts_1                 | a, b FROM stts_t1                    | defined   |              | 
+ public   | stts_2                 | a, b FROM stts_t1                    | defined   | defined      | 
+ public   | stts_3                 | a, b FROM stts_t1                    | defined   | defined      | defined
+ public   | stts_4                 | b, c FROM stts_t2                    | defined   | defined      | defined
+ public   | stts_hoge              | col1, col2, col3 FROM stts_t3        | defined   | defined      | defined
+ stts_s1  | stts_foo               | col1, col2 FROM stts_t3              | defined   | defined      | defined
+ stts_s2  | stts_yama              | col1, col3 FROM stts_t3              |           | defined      | defined
+ tststats | priv_test_stats        | a, b FROM tststats.priv_test_tbl     |           |              | defined
+(12 rows)
+
+\dX+ stts_?
+                       List of extended statistics
+ Schema |  Name  |    Definition     | Ndistinct | Dependencies |   MCV   
+--------+--------+-------------------+-----------+--------------+---------
+ public | stts_1 | a, b FROM stts_t1 | defined   |              | 
+ public | stts_2 | a, b FROM stts_t1 | defined   | defined      | 
+ public | stts_3 | a, b FROM stts_t1 | defined   | defined      | defined
+ public | stts_4 | b, c FROM stts_t2 | defined   | defined      | defined
+(4 rows)
+
+\dX+ *stts_hoge
+                               List of extended statistics
+ Schema |   Name    |          Definition           | Ndistinct | Dependencies |   MCV   
+--------+-----------+-------------------------------+-----------+--------------+---------
+ public | stts_hoge | col1, col2, col3 FROM stts_t3 | defined   | defined      | defined
+(1 row)
+
+\dX+ stts_s2.stts_yama
+                            List of extended statistics
+ Schema  |   Name    |       Definition        | Ndistinct | Dependencies |   MCV   
+---------+-----------+-------------------------+-----------+--------------+---------
+ stts_s2 | stts_yama | col1, col3 FROM stts_t3 |           | defined      | defined
+(1 row)
+
+create role regress_stats_ext nosuperuser;
+set role regress_stats_ext;
+\dX
+                                          List of extended statistics
+  Schema  |          Name          |              Definition              | Ndistinct | Dependencies |   MCV   
+----------+------------------------+--------------------------------------+-----------+--------------+---------
+ public   | func_deps_stat         | a, b, c FROM functional_dependencies |           | defined      | 
+ public   | mcv_lists_arrays_stats | a, b, c FROM mcv_lists_arrays        |           |              | defined
+ public   | mcv_lists_bool_stats   | a, b, c FROM mcv_lists_bool          |           |              | defined
+ public   | mcv_lists_stats        | a, b, d FROM mcv_lists               |           |              | defined
+ public   | stts_1                 | a, b FROM stts_t1                    | defined   |              | 
+ public   | stts_2                 | a, b FROM stts_t1                    | defined   | defined      | 
+ public   | stts_3                 | a, b FROM stts_t1                    | defined   | defined      | defined
+ public   | stts_4                 | b, c FROM stts_t2                    | defined   | defined      | defined
+ public   | stts_hoge              | col1, col2, col3 FROM stts_t3        | defined   | defined      | defined
+ stts_s1  | stts_foo               | col1, col2 FROM stts_t3              | defined   | defined      | defined
+ stts_s2  | stts_yama              | col1, col3 FROM stts_t3              |           | defined      | defined
+ tststats | priv_test_stats        | a, b FROM tststats.priv_test_tbl     |           |              | defined
+(12 rows)
+
+reset role;
+drop table stts_t1, stts_t2, stts_t3;
+drop schema stts_s1, stts_s2 cascade;
+drop user regress_stats_ext;
 -- User with no access
 CREATE USER regress_stats_user1;
 GRANT USAGE ON SCHEMA tststats TO regress_stats_user1;

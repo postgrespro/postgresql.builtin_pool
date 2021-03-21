@@ -73,14 +73,12 @@ but there may be reasons to do them at other times as well.
   to lower numbers, using renumber_oids.pl (see notes in bki.sgml)
 
 * Update config.guess and config.sub
-  (from http://savannah.gnu.org/projects/config)
+  (from https://savannah.gnu.org/projects/config)
 
 * Update inet/cidr data types with newest Bind patches
 
 * Update Unicode data: Edit UNICODE_VERSION and CLDR_VERSION in
   src/Makefile.global.in, run make update-unicode, and commit.
-
-* Update the oidjoins regression test (see src/tools/findoidjoins/).
 
 
 Starting a New Development Cycle

@@ -304,19 +304,20 @@ drop table lp, coll_pruning, rlp, mc3p, mc2p, boolpart, boolrangep, rp, coll_pru
 -- part_part_test_int4_ops and part_test_text_ops in insert.sql.
 --
 
-create table hp (a int, b text) partition by hash (a part_test_int4_ops, b part_test_text_ops);
+create table hp (a int, b text, c int)
+  partition by hash (a part_test_int4_ops, b part_test_text_ops);
 create table hp0 partition of hp for values with (modulus 4, remainder 0);
 create table hp3 partition of hp for values with (modulus 4, remainder 3);
 create table hp1 partition of hp for values with (modulus 4, remainder 1);
 create table hp2 partition of hp for values with (modulus 4, remainder 2);
 
-insert into hp values (null, null);
-insert into hp values (1, null);
-insert into hp values (1, 'xxx');
-insert into hp values (null, 'xxx');
-insert into hp values (2, 'xxx');
-insert into hp values (1, 'abcde');
-select tableoid::regclass, * from hp order by 1;
+insert into hp values (null, null, 0);
+insert into hp values (1, null, 1);
+insert into hp values (1, 'xxx', 2);
+insert into hp values (null, 'xxx', 3);
+insert into hp values (2, 'xxx', 4);
+insert into hp values (1, 'abcde', 5);
+select tableoid::regclass, * from hp order by c;
 
 -- partial keys won't prune, nor would non-equality conditions
 explain (costs off) select * from hp where a = 1;
@@ -336,6 +337,16 @@ explain (costs off) select * from hp where a is null and b = 'xxx';
 explain (costs off) select * from hp where a = 2 and b = 'xxx';
 explain (costs off) select * from hp where a = 1 and b = 'abcde';
 explain (costs off) select * from hp where (a = 1 and b = 'abcde') or (a = 2 and b = 'xxx') or (a is null and b is null);
+
+-- test pruning when not all the partitions exist
+drop table hp1;
+drop table hp3;
+explain (costs off) select * from hp where a = 1 and b = 'abcde';
+explain (costs off) select * from hp where a = 1 and b = 'abcde' and
+  (c = 2 or c = 3);
+drop table hp2;
+explain (costs off) select * from hp where a = 1 and b = 'abcde' and
+  (c = 2 or c = 3);
 
 drop table hp;
 
@@ -1050,6 +1061,54 @@ reset constraint_exclusion;
 reset enable_partition_pruning;
 
 drop table listp;
+
+-- Ensure run-time pruning works correctly for nested Append nodes
+set parallel_setup_cost to 0;
+set parallel_tuple_cost to 0;
+
+create table listp (a int) partition by list(a);
+create table listp_12 partition of listp for values in(1,2) partition by list(a);
+create table listp_12_1 partition of listp_12 for values in(1);
+create table listp_12_2 partition of listp_12 for values in(2);
+
+-- Force the 2nd subnode of the Append to be non-parallel.  This results in
+-- a nested Append node because the mixed parallel / non-parallel paths cannot
+-- be pulled into the top-level Append.
+alter table listp_12_1 set (parallel_workers = 0);
+
+-- Ensure that listp_12_2 is not scanned.  (The nested Append is not seen in
+-- the plan as it's pulled in setref.c due to having just a single subnode).
+select explain_parallel_append('select * from listp where a = (select 1);');
+
+-- Like the above but throw some more complexity at the planner by adding
+-- a UNION ALL.  We expect both sides of the union not to scan the
+-- non-required partitions.
+select explain_parallel_append(
+'select * from listp where a = (select 1)
+  union all
+select * from listp where a = (select 2);');
+
+drop table listp;
+reset parallel_tuple_cost;
+reset parallel_setup_cost;
+
+-- Test case for run-time pruning with a nested Merge Append
+set enable_sort to 0;
+create table rangep (a int, b int) partition by range (a);
+create table rangep_0_to_100 partition of rangep for values from (0) to (100) partition by list (b);
+-- We need 3 sub-partitions. 1 to validate pruning worked and another two
+-- because a single remaining partition would be pulled up to the main Append.
+create table rangep_0_to_100_1 partition of rangep_0_to_100 for values in(1);
+create table rangep_0_to_100_2 partition of rangep_0_to_100 for values in(2);
+create table rangep_0_to_100_3 partition of rangep_0_to_100 for values in(3);
+create table rangep_100_to_200 partition of rangep for values from (100) to (200);
+create index on rangep (a);
+
+-- Ensure run-time pruning works on the nested Merge Append
+explain (analyze on, costs off, timing off, summary off)
+select * from rangep where b IN((select 1),(select 2)) order by a;
+reset enable_sort;
+drop table rangep;
 
 --
 -- Check that gen_prune_steps_from_opexps() works well for various cases of

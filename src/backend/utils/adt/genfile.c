@@ -4,7 +4,7 @@
  *		Functions for direct access to files
  *
  *
- * Copyright (c) 2004-2020, PostgreSQL Global Development Group
+ * Copyright (c) 2004-2021, PostgreSQL Global Development Group
  *
  * Author: Andreas Pflug <pgadmin@pse-consulting.de>
  *
@@ -251,7 +251,7 @@ pg_read_file(PG_FUNCTION_ARGS)
 				 errmsg("must be superuser to read files with adminpack 1.0"),
 		/* translator: %s is a SQL function name */
 				 errhint("Consider using %s, which is part of core, instead.",
-						 "pg_file_read()")));
+						 "pg_read_file()")));
 
 	/* handle optional arguments */
 	if (PG_NARGS() >= 3)

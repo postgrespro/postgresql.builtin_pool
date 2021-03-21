@@ -4,7 +4,7 @@
  *	   Replication slot management.
  *
  *
- * Copyright (c) 2012-2020, PostgreSQL Global Development Group
+ * Copyright (c) 2012-2021, PostgreSQL Global Development Group
  *
  *
  * IDENTIFICATION
@@ -99,7 +99,6 @@ ReplicationSlot *MyReplicationSlot = NULL;
 int			max_replication_slots = 0;	/* the maximum number of replication
 										 * slots */
 
-static ReplicationSlot *SearchNamedReplicationSlot(const char *name);
 static int ReplicationSlotAcquireInternal(ReplicationSlot *slot,
 										  const char *name, SlotAcquireBehavior behavior);
 static void ReplicationSlotDropAcquired(void);
@@ -217,10 +216,17 @@ ReplicationSlotValidateName(const char *name, int elevel)
  * name: Name of the slot
  * db_specific: logical decoding is db specific; if the slot is going to
  *	   be used for that pass true, otherwise false.
+ * two_phase: Allows decoding of prepared transactions. We allow this option
+ *     to be enabled only at the slot creation time. If we allow this option
+ *     to be changed during decoding then it is quite possible that we skip
+ *     prepare first time because this option was not enabled. Now next time
+ *     during getting changes, if the two_phase  option is enabled it can skip
+ *     prepare because by that time start decoding point has been moved. So the
+ *     user will only get commit prepared.
  */
 void
 ReplicationSlotCreate(const char *name, bool db_specific,
-					  ReplicationSlotPersistency persistency)
+					  ReplicationSlotPersistency persistency, bool two_phase)
 {
 	ReplicationSlot *slot = NULL;
 	int			i;
@@ -278,6 +284,7 @@ ReplicationSlotCreate(const char *name, bool db_specific,
 	namestrcpy(&slot->data.name, name);
 	slot->data.database = db_specific ? MyDatabaseId : InvalidOid;
 	slot->data.persistency = persistency;
+	slot->data.two_phase = two_phase;
 
 	/* and then data only present in shared memory */
 	slot->just_dirtied = false;
@@ -315,6 +322,15 @@ ReplicationSlotCreate(const char *name, bool db_specific,
 	LWLockRelease(ReplicationSlotControlLock);
 
 	/*
+	 * Create statistics entry for the new logical slot. We don't collect any
+	 * stats for physical slots, so no need to create an entry for the same.
+	 * See ReplicationSlotDropPtr for why we need to do this before releasing
+	 * ReplicationSlotAllocationLock.
+	 */
+	if (SlotIsLogical(slot))
+		pgstat_report_replslot(NameStr(slot->data.name), 0, 0, 0, 0, 0, 0);
+
+	/*
 	 * Now that the slot has been marked as in_use and active, it's safe to
 	 * let somebody else try to allocate a slot.
 	 */
@@ -331,7 +347,7 @@ ReplicationSlotCreate(const char *name, bool db_specific,
  *
  * The caller must hold ReplicationSlotControlLock in shared mode.
  */
-static ReplicationSlot *
+ReplicationSlot *
 SearchNamedReplicationSlot(const char *name)
 {
 	int			i;
@@ -519,9 +535,9 @@ ReplicationSlotRelease(void)
 	MyReplicationSlot = NULL;
 
 	/* might not have been set when we've been a plain slot */
-	LWLockAcquire(ProcArrayLock, LW_EXCLUSIVE);
-	MyProc->vacuumFlags &= ~PROC_IN_LOGICAL_DECODING;
-	ProcGlobal->vacuumFlags[MyProc->pgxactoff] = MyProc->vacuumFlags;
+	LWLockAcquire(ProcArrayLock, LW_SHARED);
+	MyProc->statusFlags &= ~PROC_IN_LOGICAL_DECODING;
+	ProcGlobal->statusFlags[MyProc->pgxactoff] = MyProc->statusFlags;
 	LWLockRelease(ProcArrayLock);
 }
 
@@ -682,6 +698,19 @@ ReplicationSlotDropPtr(ReplicationSlot *slot)
 	if (!rmtree(tmppath, true))
 		ereport(WARNING,
 				(errmsg("could not remove directory \"%s\"", tmppath)));
+
+	/*
+	 * Send a message to drop the replication slot to the stats collector.
+	 * Since there is no guarantee of the order of message transfer on a UDP
+	 * connection, it's possible that a message for creating a new slot
+	 * reaches before a message for removing the old slot. We send the drop
+	 * and create messages while holding ReplicationSlotAllocationLock to
+	 * reduce that possibility. If the messages reached in reverse, we would
+	 * lose one statistics update message. But the next update message will
+	 * create the statistics for the replication slot.
+	 */
+	if (SlotIsLogical(slot))
+		pgstat_report_replslot_drop(NameStr(slot->data.name));
 
 	/*
 	 * We release this at the very end, so that nobody starts trying to create
@@ -1221,8 +1250,7 @@ restart:
 		ereport(LOG,
 				(errmsg("invalidating slot \"%s\" because its restart_lsn %X/%X exceeds max_slot_wal_keep_size",
 						NameStr(slotname),
-						(uint32) (restart_lsn >> 32),
-						(uint32) restart_lsn)));
+						LSN_FORMAT_ARGS(restart_lsn))));
 
 		SpinLockAcquire(&s->mutex);
 		s->data.invalidated_at = s->data.restart_lsn;

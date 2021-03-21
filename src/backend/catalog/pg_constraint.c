@@ -3,7 +3,7 @@
  * pg_constraint.c
  *	  routines to support manipulation of the pg_constraint relation
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -362,7 +362,7 @@ CreateConstraintEntry(const char *constraintName,
 		 */
 		recordDependencyOnSingleRelExpr(&conobject, conExpr, relId,
 										DEPENDENCY_NORMAL,
-										DEPENDENCY_NORMAL, false);
+										DEPENDENCY_NORMAL, false, true);
 	}
 
 	/* Post creation hook for new constraint */

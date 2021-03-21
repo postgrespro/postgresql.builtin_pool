@@ -3,7 +3,7 @@
  * clauses.c
  *	  routines to manipulate qualification clauses
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -19,19 +19,25 @@
 
 #include "postgres.h"
 
+#include "access/genam.h"
 #include "access/htup_details.h"
+#include "access/table.h"
+#include "access/xact.h"
 #include "catalog/pg_aggregate.h"
 #include "catalog/pg_class.h"
+#include "catalog/pg_constraint.h"
 #include "catalog/pg_language.h"
 #include "catalog/pg_operator.h"
 #include "catalog/pg_proc.h"
 #include "catalog/pg_type.h"
+#include "commands/trigger.h"
 #include "executor/executor.h"
 #include "executor/functions.h"
 #include "funcapi.h"
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
+#include "nodes/subscripting.h"
 #include "nodes/supportnodes.h"
 #include "optimizer/clauses.h"
 #include "optimizer/cost.h"
@@ -42,6 +48,8 @@
 #include "parser/parse_agg.h"
 #include "parser/parse_coerce.h"
 #include "parser/parse_func.h"
+#include "parser/parsetree.h"
+#include "partitioning/partdesc.h"
 #include "rewrite/rewriteManip.h"
 #include "tcop/tcopprot.h"
 #include "utils/acl.h"
@@ -50,16 +58,10 @@
 #include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
+#include "utils/partcache.h"
+#include "utils/rel.h"
 #include "utils/syscache.h"
 #include "utils/typcache.h"
-
-
-typedef struct
-{
-	PlannerInfo *root;
-	AggSplit	aggsplit;
-	AggClauseCosts *costs;
-} get_agg_clause_costs_context;
 
 typedef struct
 {
@@ -95,11 +97,12 @@ typedef struct
 	char		max_hazard;		/* worst proparallel hazard found so far */
 	char		max_interesting;	/* worst proparallel hazard of interest */
 	List	   *safe_param_ids; /* PARAM_EXEC Param IDs to treat as safe */
+	RangeTblEntry *target_rte;	/* query's target relation if any */
+	CmdType		command_type;	/* query's command type */
+	PlannerGlobal *planner_global;	/* global info for planner invocation */
 } max_parallel_hazard_context;
 
 static bool contain_agg_clause_walker(Node *node, void *context);
-static bool get_agg_clause_costs_walker(Node *node,
-										get_agg_clause_costs_context *context);
 static bool find_window_functions_walker(Node *node, WindowFuncLists *lists);
 static bool contain_subplans_walker(Node *node, void *context);
 static bool contain_mutable_functions_walker(Node *node, void *context);
@@ -107,6 +110,20 @@ static bool contain_volatile_functions_walker(Node *node, void *context);
 static bool contain_volatile_functions_not_nextval_walker(Node *node, void *context);
 static bool max_parallel_hazard_walker(Node *node,
 									   max_parallel_hazard_context *context);
+static bool target_rel_max_parallel_hazard(max_parallel_hazard_context *context);
+static bool target_rel_max_parallel_hazard_recurse(Relation relation,
+												   CmdType command_type,
+												   max_parallel_hazard_context *context);
+static bool target_rel_trigger_max_parallel_hazard(Relation rel,
+												   max_parallel_hazard_context *context);
+static bool target_rel_index_max_parallel_hazard(Relation rel,
+												 max_parallel_hazard_context *context);
+static bool target_rel_domain_max_parallel_hazard(Oid typid,
+												  max_parallel_hazard_context *context);
+static bool target_rel_partitions_max_parallel_hazard(Relation rel,
+													  max_parallel_hazard_context *context);
+static bool target_rel_chk_constr_max_parallel_hazard(Relation rel,
+													  max_parallel_hazard_context *context);
 static bool contain_nonstrict_functions_walker(Node *node, void *context);
 static bool contain_exec_param_walker(Node *node, List *param_ids);
 static bool contain_context_dependent_node(Node *clause);
@@ -199,284 +216,6 @@ contain_agg_clause_walker(Node *node, void *context)
 	Assert(!IsA(node, SubLink));
 	return expression_tree_walker(node, contain_agg_clause_walker, context);
 }
-
-/*
- * get_agg_clause_costs
- *	  Recursively find the Aggref nodes in an expression tree, and
- *	  accumulate cost information about them.
- *
- * 'aggsplit' tells us the expected partial-aggregation mode, which affects
- * the cost estimates.
- *
- * NOTE that the counts/costs are ADDED to those already in *costs ... so
- * the caller is responsible for zeroing the struct initially.
- *
- * We count the nodes, estimate their execution costs, and estimate the total
- * space needed for their transition state values if all are evaluated in
- * parallel (as would be done in a HashAgg plan).  Also, we check whether
- * partial aggregation is feasible.  See AggClauseCosts for the exact set
- * of statistics collected.
- *
- * In addition, we mark Aggref nodes with the correct aggtranstype, so
- * that that doesn't need to be done repeatedly.  (That makes this function's
- * name a bit of a misnomer.)
- *
- * This does not descend into subqueries, and so should be used only after
- * reduction of sublinks to subplans, or in contexts where it's known there
- * are no subqueries.  There mustn't be outer-aggregate references either.
- */
-void
-get_agg_clause_costs(PlannerInfo *root, Node *clause, AggSplit aggsplit,
-					 AggClauseCosts *costs)
-{
-	get_agg_clause_costs_context context;
-
-	context.root = root;
-	context.aggsplit = aggsplit;
-	context.costs = costs;
-	(void) get_agg_clause_costs_walker(clause, &context);
-}
-
-static bool
-get_agg_clause_costs_walker(Node *node, get_agg_clause_costs_context *context)
-{
-	if (node == NULL)
-		return false;
-	if (IsA(node, Aggref))
-	{
-		Aggref	   *aggref = (Aggref *) node;
-		AggClauseCosts *costs = context->costs;
-		HeapTuple	aggTuple;
-		Form_pg_aggregate aggform;
-		Oid			aggtransfn;
-		Oid			aggfinalfn;
-		Oid			aggcombinefn;
-		Oid			aggserialfn;
-		Oid			aggdeserialfn;
-		Oid			aggtranstype;
-		int32		aggtransspace;
-		QualCost	argcosts;
-
-		Assert(aggref->agglevelsup == 0);
-
-		/*
-		 * Fetch info about aggregate from pg_aggregate.  Note it's correct to
-		 * ignore the moving-aggregate variant, since what we're concerned
-		 * with here is aggregates not window functions.
-		 */
-		aggTuple = SearchSysCache1(AGGFNOID,
-								   ObjectIdGetDatum(aggref->aggfnoid));
-		if (!HeapTupleIsValid(aggTuple))
-			elog(ERROR, "cache lookup failed for aggregate %u",
-				 aggref->aggfnoid);
-		aggform = (Form_pg_aggregate) GETSTRUCT(aggTuple);
-		aggtransfn = aggform->aggtransfn;
-		aggfinalfn = aggform->aggfinalfn;
-		aggcombinefn = aggform->aggcombinefn;
-		aggserialfn = aggform->aggserialfn;
-		aggdeserialfn = aggform->aggdeserialfn;
-		aggtranstype = aggform->aggtranstype;
-		aggtransspace = aggform->aggtransspace;
-		ReleaseSysCache(aggTuple);
-
-		/*
-		 * Resolve the possibly-polymorphic aggregate transition type, unless
-		 * already done in a previous pass over the expression.
-		 */
-		if (OidIsValid(aggref->aggtranstype))
-			aggtranstype = aggref->aggtranstype;
-		else
-		{
-			Oid			inputTypes[FUNC_MAX_ARGS];
-			int			numArguments;
-
-			/* extract argument types (ignoring any ORDER BY expressions) */
-			numArguments = get_aggregate_argtypes(aggref, inputTypes);
-
-			/* resolve actual type of transition state, if polymorphic */
-			aggtranstype = resolve_aggregate_transtype(aggref->aggfnoid,
-													   aggtranstype,
-													   inputTypes,
-													   numArguments);
-			aggref->aggtranstype = aggtranstype;
-		}
-
-		/*
-		 * Count it, and check for cases requiring ordered input.  Note that
-		 * ordered-set aggs always have nonempty aggorder.  Any ordered-input
-		 * case also defeats partial aggregation.
-		 */
-		costs->numAggs++;
-		if (aggref->aggorder != NIL || aggref->aggdistinct != NIL)
-		{
-			costs->numOrderedAggs++;
-			costs->hasNonPartial = true;
-		}
-
-		/*
-		 * Check whether partial aggregation is feasible, unless we already
-		 * found out that we can't do it.
-		 */
-		if (!costs->hasNonPartial)
-		{
-			/*
-			 * If there is no combine function, then partial aggregation is
-			 * not possible.
-			 */
-			if (!OidIsValid(aggcombinefn))
-				costs->hasNonPartial = true;
-
-			/*
-			 * If we have any aggs with transtype INTERNAL then we must check
-			 * whether they have serialization/deserialization functions; if
-			 * not, we can't serialize partial-aggregation results.
-			 */
-			else if (aggtranstype == INTERNALOID &&
-					 (!OidIsValid(aggserialfn) || !OidIsValid(aggdeserialfn)))
-				costs->hasNonSerial = true;
-		}
-
-		/*
-		 * Add the appropriate component function execution costs to
-		 * appropriate totals.
-		 */
-		if (DO_AGGSPLIT_COMBINE(context->aggsplit))
-		{
-			/* charge for combining previously aggregated states */
-			add_function_cost(context->root, aggcombinefn, NULL,
-							  &costs->transCost);
-		}
-		else
-			add_function_cost(context->root, aggtransfn, NULL,
-							  &costs->transCost);
-		if (DO_AGGSPLIT_DESERIALIZE(context->aggsplit) &&
-			OidIsValid(aggdeserialfn))
-			add_function_cost(context->root, aggdeserialfn, NULL,
-							  &costs->transCost);
-		if (DO_AGGSPLIT_SERIALIZE(context->aggsplit) &&
-			OidIsValid(aggserialfn))
-			add_function_cost(context->root, aggserialfn, NULL,
-							  &costs->finalCost);
-		if (!DO_AGGSPLIT_SKIPFINAL(context->aggsplit) &&
-			OidIsValid(aggfinalfn))
-			add_function_cost(context->root, aggfinalfn, NULL,
-							  &costs->finalCost);
-
-		/*
-		 * These costs are incurred only by the initial aggregate node, so we
-		 * mustn't include them again at upper levels.
-		 */
-		if (!DO_AGGSPLIT_COMBINE(context->aggsplit))
-		{
-			/* add the input expressions' cost to per-input-row costs */
-			cost_qual_eval_node(&argcosts, (Node *) aggref->args, context->root);
-			costs->transCost.startup += argcosts.startup;
-			costs->transCost.per_tuple += argcosts.per_tuple;
-
-			/*
-			 * Add any filter's cost to per-input-row costs.
-			 *
-			 * XXX Ideally we should reduce input expression costs according
-			 * to filter selectivity, but it's not clear it's worth the
-			 * trouble.
-			 */
-			if (aggref->aggfilter)
-			{
-				cost_qual_eval_node(&argcosts, (Node *) aggref->aggfilter,
-									context->root);
-				costs->transCost.startup += argcosts.startup;
-				costs->transCost.per_tuple += argcosts.per_tuple;
-			}
-		}
-
-		/*
-		 * If there are direct arguments, treat their evaluation cost like the
-		 * cost of the finalfn.
-		 */
-		if (aggref->aggdirectargs)
-		{
-			cost_qual_eval_node(&argcosts, (Node *) aggref->aggdirectargs,
-								context->root);
-			costs->finalCost.startup += argcosts.startup;
-			costs->finalCost.per_tuple += argcosts.per_tuple;
-		}
-
-		/*
-		 * If the transition type is pass-by-value then it doesn't add
-		 * anything to the required size of the hashtable.  If it is
-		 * pass-by-reference then we have to add the estimated size of the
-		 * value itself, plus palloc overhead.
-		 */
-		if (!get_typbyval(aggtranstype))
-		{
-			int32		avgwidth;
-
-			/* Use average width if aggregate definition gave one */
-			if (aggtransspace > 0)
-				avgwidth = aggtransspace;
-			else if (aggtransfn == F_ARRAY_APPEND)
-			{
-				/*
-				 * If the transition function is array_append(), it'll use an
-				 * expanded array as transvalue, which will occupy at least
-				 * ALLOCSET_SMALL_INITSIZE and possibly more.  Use that as the
-				 * estimate for lack of a better idea.
-				 */
-				avgwidth = ALLOCSET_SMALL_INITSIZE;
-			}
-			else
-			{
-				/*
-				 * If transition state is of same type as first aggregated
-				 * input, assume it's the same typmod (same width) as well.
-				 * This works for cases like MAX/MIN and is probably somewhat
-				 * reasonable otherwise.
-				 */
-				int32		aggtranstypmod = -1;
-
-				if (aggref->args)
-				{
-					TargetEntry *tle = (TargetEntry *) linitial(aggref->args);
-
-					if (aggtranstype == exprType((Node *) tle->expr))
-						aggtranstypmod = exprTypmod((Node *) tle->expr);
-				}
-
-				avgwidth = get_typavgwidth(aggtranstype, aggtranstypmod);
-			}
-
-			avgwidth = MAXALIGN(avgwidth);
-			costs->transitionSpace += avgwidth + 2 * sizeof(void *);
-		}
-		else if (aggtranstype == INTERNALOID)
-		{
-			/*
-			 * INTERNAL transition type is a special case: although INTERNAL
-			 * is pass-by-value, it's almost certainly being used as a pointer
-			 * to some large data structure.  The aggregate definition can
-			 * provide an estimate of the size.  If it doesn't, then we assume
-			 * ALLOCSET_DEFAULT_INITSIZE, which is a good guess if the data is
-			 * being kept in a private memory context, as is done by
-			 * array_agg() for instance.
-			 */
-			if (aggtransspace > 0)
-				costs->transitionSpace += aggtransspace;
-			else
-				costs->transitionSpace += ALLOCSET_DEFAULT_INITSIZE;
-		}
-
-		/*
-		 * We assume that the parser checked that there are no aggregates (of
-		 * this level anyway) in the aggregated arguments, direct arguments,
-		 * or filter clause.  Hence, we need not recurse into any of them.
-		 */
-		return false;
-	}
-	Assert(!IsA(node, SubLink));
-	return expression_tree_walker(node, get_agg_clause_costs_walker,
-								  (void *) context);
-}
-
 
 /*****************************************************************************
  *		Window-function clause manipulation
@@ -779,7 +518,7 @@ contain_volatile_functions_not_nextval(Node *clause)
 static bool
 contain_volatile_functions_not_nextval_checker(Oid func_id, void *context)
 {
-	return (func_id != F_NEXTVAL_OID &&
+	return (func_id != F_NEXTVAL &&
 			func_volatile(func_id) == PROVOLATILE_VOLATILE);
 }
 
@@ -832,14 +571,19 @@ contain_volatile_functions_not_nextval_walker(Node *node, void *context)
  * later, in the common case where everything is SAFE.
  */
 char
-max_parallel_hazard(Query *parse)
+max_parallel_hazard(Query *parse, PlannerGlobal *glob)
 {
 	max_parallel_hazard_context context;
 
 	context.max_hazard = PROPARALLEL_SAFE;
 	context.max_interesting = PROPARALLEL_UNSAFE;
 	context.safe_param_ids = NIL;
+	context.target_rte = parse->resultRelation > 0 ?
+		rt_fetch(parse->resultRelation, parse->rtable) : NULL;
+	context.command_type = parse->commandType;
+	context.planner_global = glob;
 	(void) max_parallel_hazard_walker((Node *) parse, &context);
+
 	return context.max_hazard;
 }
 
@@ -870,6 +614,10 @@ is_parallel_safe(PlannerInfo *root, Node *node)
 	context.max_hazard = PROPARALLEL_SAFE;
 	context.max_interesting = PROPARALLEL_RESTRICTED;
 	context.safe_param_ids = NIL;
+	/* We don't need to evaluate target relation's parallel-safety here. */
+	context.target_rte = NULL;
+	context.command_type = CMD_UNKNOWN;
+	context.planner_global = NULL;
 
 	/*
 	 * The params that refer to the same or parent query level are considered
@@ -942,14 +690,20 @@ max_parallel_hazard_walker(Node *node, max_parallel_hazard_context *context)
 	 * opclass support functions are generally parallel-safe.  XmlExpr is a
 	 * bit more dubious but we can probably get away with it.  We err on the
 	 * side of caution by treating CoerceToDomain as parallel-restricted.
-	 * (Note: in principle that's wrong because a domain constraint could
-	 * contain a parallel-unsafe function; but useful constraints probably
-	 * never would have such, and assuming they do would cripple use of
-	 * parallel query in the presence of domain types.)  SQLValueFunction
-	 * should be safe in all cases.  NextValueExpr is parallel-unsafe.
+	 * However, for table modification statements, we check the parallel
+	 * safety of domain constraints as that could contain a parallel-unsafe
+	 * function, and executing that in parallel mode will lead to error.
+	 * SQLValueFunction should be safe in all cases.  NextValueExpr is
+	 * parallel-unsafe.
 	 */
 	if (IsA(node, CoerceToDomain))
 	{
+		if (context->target_rte != NULL)
+		{
+			if (target_rel_domain_max_parallel_hazard(((CoerceToDomain *) node)->resulttype, context))
+				return true;
+		}
+
 		if (max_parallel_hazard_test(PROPARALLEL_RESTRICTED, context))
 			return true;
 	}
@@ -972,6 +726,27 @@ max_parallel_hazard_walker(Node *node, max_parallel_hazard_context *context)
 	{
 		if (max_parallel_hazard_test(PROPARALLEL_RESTRICTED, context))
 			return true;
+	}
+
+	/*
+	 * ModifyingCTE expressions are treated as parallel-unsafe.
+	 *
+	 * XXX Normally, if the Query has a modifying CTE, the hasModifyingCTE
+	 * flag is set in the Query tree, and the query will be regarded as
+	 * parallel-usafe. However, in some cases, a re-written query with a
+	 * modifying CTE does not have that flag set, due to a bug in the query
+	 * rewriter.
+	 */
+	else if (IsA(node, CommonTableExpr))
+	{
+		CommonTableExpr *cte = (CommonTableExpr *) node;
+		Query	   *ctequery = castNode(Query, cte->ctequery);
+
+		if (ctequery->commandType != CMD_SELECT)
+		{
+			context->max_hazard = PROPARALLEL_UNSAFE;
+			return true;
+		}
 	}
 
 	/*
@@ -1044,6 +819,19 @@ max_parallel_hazard_walker(Node *node, max_parallel_hazard_context *context)
 		}
 		return false;			/* nothing to recurse to */
 	}
+	else if (IsA(node, RangeTblEntry))
+	{
+		RangeTblEntry *rte = (RangeTblEntry *) node;
+
+		/* Nothing interesting to check for SELECTs */
+		if (context->target_rte == NULL)
+			return false;
+
+		if (rte == context->target_rte)
+			return target_rel_max_parallel_hazard(context);
+
+		return false;
+	}
 
 	/*
 	 * When we're first invoked on a completely unplanned tree, we must
@@ -1064,7 +852,9 @@ max_parallel_hazard_walker(Node *node, max_parallel_hazard_context *context)
 		/* Recurse into subselects */
 		return query_tree_walker(query,
 								 max_parallel_hazard_walker,
-								 context, 0);
+								 context,
+								 context->target_rte != NULL ?
+								 QTW_EXAMINE_RTES_BEFORE : 0);
 	}
 
 	/* Recurse to check arguments */
@@ -1073,6 +863,486 @@ max_parallel_hazard_walker(Node *node, max_parallel_hazard_context *context)
 								  context);
 }
 
+/*
+ * target_rel_max_parallel_hazard
+ *
+ * Determines the maximum parallel-mode hazard level for modification
+ * of a specified relation.
+ */
+static bool
+target_rel_max_parallel_hazard(max_parallel_hazard_context *context)
+{
+	bool		max_hazard_found;
+
+	Relation	targetRel;
+
+	/*
+	 * The target table is already locked by the caller (this is done in the
+	 * parse/analyze phase), and remains locked until end-of-transaction.
+	 */
+	targetRel = table_open(context->target_rte->relid, NoLock);
+	max_hazard_found = target_rel_max_parallel_hazard_recurse(targetRel,
+															  context->command_type,
+															  context);
+	table_close(targetRel, NoLock);
+
+	return max_hazard_found;
+}
+
+static bool
+target_rel_max_parallel_hazard_recurse(Relation rel,
+									   CmdType command_type,
+									   max_parallel_hazard_context *context)
+{
+	/* Currently only CMD_INSERT is supported */
+	Assert(command_type == CMD_INSERT);
+
+	/*
+	 * We can't support table modification in a parallel worker if it's a
+	 * foreign table/partition (no FDW API for supporting parallel access) or
+	 * a temporary table.
+	 */
+	if (rel->rd_rel->relkind == RELKIND_FOREIGN_TABLE ||
+		RelationUsesLocalBuffers(rel))
+	{
+		if (max_parallel_hazard_test(PROPARALLEL_RESTRICTED, context))
+			return true;
+	}
+
+	/*
+	 * If a partitioned table, check that each partition is safe for
+	 * modification in parallel-mode.
+	 */
+	if (target_rel_partitions_max_parallel_hazard(rel, context))
+		return true;
+
+	/*
+	 * If there are any index expressions or index predicate, check that they
+	 * are parallel-mode safe.
+	 */
+	if (target_rel_index_max_parallel_hazard(rel, context))
+		return true;
+
+	/*
+	 * If any triggers exist, check that they are parallel-safe.
+	 */
+	if (target_rel_trigger_max_parallel_hazard(rel, context))
+		return true;
+
+	/*
+	 * Column default expressions are only applicable to INSERT and UPDATE.
+	 * For columns in the target-list, these are already being checked for
+	 * parallel-safety in the max_parallel_hazard() scan of the query tree in
+	 * standard_planner(), so there's no need to do it here. Note that even
+	 * though column defaults may be specified separately for each partition
+	 * in a partitioned table, a partition's default value is not applied when
+	 * inserting a tuple through a partitioned table.
+	 */
+
+	/*
+	 * CHECK constraints are only applicable to INSERT and UPDATE. If any
+	 * CHECK constraints exist, determine if they are parallel-safe.
+	 */
+	if (target_rel_chk_constr_max_parallel_hazard(rel, context))
+		return true;
+
+	return false;
+}
+
+/*
+ * target_rel_trigger_max_parallel_hazard
+ *
+ * Finds the maximum parallel-mode hazard level for the specified relation's
+ * trigger data.
+ */
+static bool
+target_rel_trigger_max_parallel_hazard(Relation rel,
+									   max_parallel_hazard_context *context)
+{
+	int			i;
+
+	if (rel->trigdesc == NULL)
+		return false;
+
+	/*
+	 * Care is needed here to avoid using the same relcache TriggerDesc field
+	 * across other cache accesses, because relcache doesn't guarantee that it
+	 * won't move.
+	 */
+	for (i = 0; i < rel->trigdesc->numtriggers; i++)
+	{
+		Oid			tgfoid = rel->trigdesc->triggers[i].tgfoid;
+
+		if (max_parallel_hazard_test(func_parallel(tgfoid), context))
+			return true;
+	}
+
+	return false;
+}
+
+/*
+ * target_rel_index_max_parallel_hazard
+ *
+ * Finds the maximum parallel-mode hazard level for any existing index
+ * expressions or index predicate of a specified relation.
+ */
+static bool
+target_rel_index_max_parallel_hazard(Relation rel,
+									 max_parallel_hazard_context *context)
+{
+	List	   *index_oid_list;
+	ListCell   *lc;
+	bool		found_max_hazard = false;
+	LOCKMODE	lockmode = AccessShareLock;
+
+	index_oid_list = RelationGetIndexList(rel);
+	foreach(lc, index_oid_list)
+	{
+		Relation	index_rel;
+		Form_pg_index indexStruct;
+		List	   *ii_Expressions;
+		List	   *ii_Predicate;
+		Oid			index_oid = lfirst_oid(lc);
+
+		index_rel = index_open(index_oid, lockmode);
+
+		indexStruct = index_rel->rd_index;
+		ii_Expressions = RelationGetIndexExpressions(index_rel);
+
+		if (ii_Expressions != NIL)
+		{
+			int			i;
+			ListCell   *index_expr_item = list_head(ii_Expressions);
+
+			for (i = 0; i < indexStruct->indnatts; i++)
+			{
+				int			keycol = indexStruct->indkey.values[i];
+
+				if (keycol == 0)
+				{
+					/* Found an index expression */
+
+					Node	   *index_expr;
+
+					Assert(index_expr_item != NULL);
+					if (index_expr_item == NULL)	/* shouldn't happen */
+					{
+						elog(WARNING, "too few entries in indexprs list");
+						context->max_hazard = PROPARALLEL_UNSAFE;
+						found_max_hazard = true;
+						break;
+					}
+
+					index_expr = (Node *) lfirst(index_expr_item);
+
+					if (max_parallel_hazard_walker(index_expr, context))
+					{
+						found_max_hazard = true;
+						break;
+					}
+
+					index_expr_item = lnext(ii_Expressions, index_expr_item);
+				}
+			}
+		}
+
+		if (!found_max_hazard)
+		{
+			ii_Predicate = RelationGetIndexPredicate(index_rel);
+			if (ii_Predicate != NIL)
+			{
+				if (max_parallel_hazard_walker((Node *) ii_Predicate, context))
+					found_max_hazard = true;
+			}
+		}
+
+		/*
+		 * XXX We don't need to retain lock on index as index expressions
+		 * can't be changed later.
+		 */
+		index_close(index_rel, lockmode);
+	}
+	list_free(index_oid_list);
+
+	return found_max_hazard;
+}
+
+/*
+ * target_rel_domain_max_parallel_hazard
+ *
+ * Finds the maximum parallel-mode hazard level for the specified DOMAIN type.
+ * Only any CHECK expressions are examined for parallel-safety.
+ */
+static bool
+target_rel_domain_max_parallel_hazard(Oid typid, max_parallel_hazard_context *context)
+{
+	Relation	con_rel;
+	ScanKeyData key[1];
+	SysScanDesc scan;
+	HeapTuple	tup;
+	bool		found_max_hazard = false;
+
+	LOCKMODE	lockmode = AccessShareLock;
+
+	con_rel = table_open(ConstraintRelationId, lockmode);
+
+	ScanKeyInit(&key[0],
+				Anum_pg_constraint_contypid, BTEqualStrategyNumber,
+				F_OIDEQ, ObjectIdGetDatum(typid));
+	scan = systable_beginscan(con_rel, ConstraintTypidIndexId, true,
+							  NULL, 1, key);
+
+	while (HeapTupleIsValid((tup = systable_getnext(scan))))
+	{
+		Form_pg_constraint con = (Form_pg_constraint) GETSTRUCT(tup);
+
+		if (con->contype == CONSTRAINT_CHECK)
+		{
+			char	   *conbin;
+			Datum		val;
+			bool		isnull;
+			Expr	   *check_expr;
+
+			val = SysCacheGetAttr(CONSTROID, tup,
+								  Anum_pg_constraint_conbin, &isnull);
+			Assert(!isnull);
+			if (isnull)
+			{
+				/*
+				 * This shouldn't ever happen, but if it does, log a WARNING
+				 * and return UNSAFE, rather than erroring out.
+				 */
+				elog(WARNING, "null conbin for constraint %u", con->oid);
+				context->max_hazard = PROPARALLEL_UNSAFE;
+				found_max_hazard = true;
+				break;
+			}
+			conbin = TextDatumGetCString(val);
+			check_expr = stringToNode(conbin);
+			pfree(conbin);
+			if (max_parallel_hazard_walker((Node *) check_expr, context))
+			{
+				found_max_hazard = true;
+				break;
+			}
+		}
+	}
+
+	systable_endscan(scan);
+	table_close(con_rel, lockmode);
+	return found_max_hazard;
+}
+
+/*
+ * target_rel_partitions_max_parallel_hazard
+ *
+ * Finds the maximum parallel-mode hazard level for any partitions of a
+ * of a specified relation.
+ */
+static bool
+target_rel_partitions_max_parallel_hazard(Relation rel,
+										  max_parallel_hazard_context *context)
+{
+	int			i;
+	PartitionDesc pdesc;
+	PartitionKey pkey;
+	ListCell   *partexprs_item;
+	int			partnatts;
+	List	   *partexprs;
+	PlannerGlobal *glob;
+
+
+	if (rel->rd_rel->relkind != RELKIND_PARTITIONED_TABLE)
+		return false;
+
+	pkey = RelationGetPartitionKey(rel);
+
+	partnatts = get_partition_natts(pkey);
+	partexprs = get_partition_exprs(pkey);
+
+	partexprs_item = list_head(partexprs);
+	for (i = 0; i < partnatts; i++)
+	{
+		/* Check parallel-safety of partition key support functions */
+		if (OidIsValid(pkey->partsupfunc[i].fn_oid))
+		{
+			if (max_parallel_hazard_test(func_parallel(pkey->partsupfunc[i].fn_oid), context))
+				return true;
+		}
+
+		/* Check parallel-safety of any expressions in the partition key */
+		if (get_partition_col_attnum(pkey, i) == 0)
+		{
+			Node	   *check_expr = (Node *) lfirst(partexprs_item);
+
+			if (max_parallel_hazard_walker(check_expr, context))
+				return true;
+
+			partexprs_item = lnext(partexprs, partexprs_item);
+		}
+	}
+
+	/* Recursively check each partition ... */
+
+	/* Create the PartitionDirectory infrastructure if we didn't already */
+	glob = context->planner_global;
+	if (glob->partition_directory == NULL)
+		glob->partition_directory =
+			CreatePartitionDirectory(CurrentMemoryContext);
+
+	pdesc = PartitionDirectoryLookup(glob->partition_directory, rel);
+
+	for (i = 0; i < pdesc->nparts; i++)
+	{
+		bool		max_hazard_found;
+		Relation	part_rel;
+
+		/*
+		 * The partition needs to be locked, and remain locked until
+		 * end-of-transaction to ensure its parallel-safety state is not
+		 * hereafter altered.
+		 */
+		part_rel = table_open(pdesc->oids[i], context->target_rte->rellockmode);
+		max_hazard_found = target_rel_max_parallel_hazard_recurse(part_rel,
+																  context->command_type,
+																  context);
+		table_close(part_rel, NoLock);
+
+		/*
+		 * Remember partitionOids to record the partition as a potential plan
+		 * dependency.
+		 */
+		glob->partitionOids = lappend_oid(glob->partitionOids, pdesc->oids[i]);
+
+		if (max_hazard_found)
+			return true;
+	}
+
+	return false;
+}
+
+/*
+ * target_rel_chk_constr_max_parallel_hazard
+ *
+ * Finds the maximum parallel-mode hazard level for any CHECK expressions or
+ * CHECK constraints related to the specified relation.
+ */
+static bool
+target_rel_chk_constr_max_parallel_hazard(Relation rel,
+										  max_parallel_hazard_context *context)
+{
+	TupleDesc	tupdesc;
+
+	tupdesc = RelationGetDescr(rel);
+
+	/*
+	 * Determine if there are any CHECK constraints which are not
+	 * parallel-safe.
+	 */
+	if (tupdesc->constr != NULL && tupdesc->constr->num_check > 0)
+	{
+		int			i;
+
+		ConstrCheck *check = tupdesc->constr->check;
+
+		for (i = 0; i < tupdesc->constr->num_check; i++)
+		{
+			Expr	   *check_expr = stringToNode(check->ccbin);
+
+			if (max_parallel_hazard_walker((Node *) check_expr, context))
+				return true;
+		}
+	}
+
+	return false;
+}
+
+/*
+ * is_parallel_allowed_for_modify
+ *
+ * Check at a high-level if parallel mode is able to be used for the specified
+ * table-modification statement. Currently, we support only Inserts.
+ *
+ * It's not possible in the following cases:
+ *
+ *  1) enable_parallel_insert is off
+ *  2) INSERT...ON CONFLICT...DO UPDATE
+ *  3) INSERT without SELECT
+ *  4) the reloption parallel_insert_enabled is set to off
+ *
+ * (Note: we don't do in-depth parallel-safety checks here, we do only the
+ * cheaper tests that can quickly exclude obvious cases for which
+ * parallelism isn't supported, to avoid having to do further parallel-safety
+ * checks for these)
+ */
+bool
+is_parallel_allowed_for_modify(Query *parse)
+{
+	bool		hasSubQuery;
+	bool		parallel_enabled;
+	RangeTblEntry *rte;
+	ListCell   *lc;
+	Relation	rel;
+
+	if (!IsModifySupportedInParallelMode(parse->commandType))
+		return false;
+
+	if (!enable_parallel_insert)
+		return false;
+
+	/*
+	 * UPDATE is not currently supported in parallel-mode, so prohibit
+	 * INSERT...ON CONFLICT...DO UPDATE...
+	 *
+	 * In order to support update, even if only in the leader, some further
+	 * work would need to be done. A mechanism would be needed for sharing
+	 * combo-cids between leader and workers during parallel-mode, since for
+	 * example, the leader might generate a combo-cid and it needs to be
+	 * propagated to the workers.
+	 */
+	if (parse->commandType == CMD_INSERT &&
+		parse->onConflict != NULL &&
+		parse->onConflict->action == ONCONFLICT_UPDATE)
+		return false;
+
+	/*
+	 * If there is no underlying SELECT, a parallel insert operation is not
+	 * desirable.
+	 */
+	hasSubQuery = false;
+	foreach(lc, parse->rtable)
+	{
+		rte = lfirst_node(RangeTblEntry, lc);
+		if (rte->rtekind == RTE_SUBQUERY)
+		{
+			hasSubQuery = true;
+			break;
+		}
+	}
+
+	if (!hasSubQuery)
+		return false;
+
+	/*
+	 * Check if parallel_insert_enabled is enabled for the target table, if
+	 * not, skip the safety checks.
+	 *
+	 * (Note: if the target table is partitioned, the parallel_insert_enabled
+	 * option setting of the partitions are ignored).
+	 */
+	rte = rt_fetch(parse->resultRelation, parse->rtable);
+
+	/*
+	 * The target table is already locked by the caller (this is done in the
+	 * parse/analyze phase), and remains locked until end-of-transaction.
+	 */
+	rel = table_open(rte->relid, NoLock);
+
+	parallel_enabled = RelationGetParallelInsert(rel, true);
+	table_close(rel, NoLock);
+
+	return parallel_enabled;
+}
 
 /*****************************************************************************
  *		Check clauses for nonstrict functions
@@ -1127,13 +1397,16 @@ contain_nonstrict_functions_walker(Node *node, void *context)
 	}
 	if (IsA(node, SubscriptingRef))
 	{
-		/*
-		 * subscripting assignment is nonstrict, but subscripting itself is
-		 * strict
-		 */
-		if (((SubscriptingRef *) node)->refassgnexpr != NULL)
-			return true;
+		SubscriptingRef *sbsref = (SubscriptingRef *) node;
+		const SubscriptRoutines *sbsroutines;
 
+		/* Subscripting assignment is always presumed nonstrict */
+		if (sbsref->refassgnexpr != NULL)
+			return true;
+		/* Otherwise we must look up the subscripting support methods */
+		sbsroutines = getSubscriptingRoutines(sbsref->refcontainertype, NULL);
+		if (!(sbsroutines && sbsroutines->fetch_strict))
+			return true;
 		/* else fall through to check args */
 	}
 	if (IsA(node, DistinctExpr))
@@ -1409,7 +1682,6 @@ contain_leaked_vars_walker(Node *node, void *context)
 		case T_ScalarArrayOpExpr:
 		case T_CoerceViaIO:
 		case T_ArrayCoerceExpr:
-		case T_SubscriptingRef:
 
 			/*
 			 * If node contains a leaky function call, and there's any Var
@@ -1419,6 +1691,26 @@ contain_leaked_vars_walker(Node *node, void *context)
 										context) &&
 				contain_var_clause(node))
 				return true;
+			break;
+
+		case T_SubscriptingRef:
+			{
+				SubscriptingRef *sbsref = (SubscriptingRef *) node;
+				const SubscriptRoutines *sbsroutines;
+
+				/* Consult the subscripting support method info */
+				sbsroutines = getSubscriptingRoutines(sbsref->refcontainertype,
+													  NULL);
+				if (!sbsroutines ||
+					!(sbsref->refassgnexpr != NULL ?
+					  sbsroutines->store_leakproof :
+					  sbsroutines->fetch_leakproof))
+				{
+					/* Node is leaky, so reject if it contains Vars */
+					if (contain_var_clause(node))
+						return true;
+				}
+			}
 			break;
 
 		case T_RowCompareExpr:
@@ -2162,9 +2454,9 @@ is_pseudo_constant_clause_relids(Node *clause, Relids relids)
  * Returns the number of different relations referenced in 'clause'.
  */
 int
-NumRelids(Node *clause)
+NumRelids(PlannerInfo *root, Node *clause)
 {
-	Relids		varnos = pull_varnos(clause);
+	Relids		varnos = pull_varnos(root, clause);
 	int			result = bms_num_members(varnos);
 
 	bms_free(varnos);
@@ -3131,6 +3423,11 @@ eval_const_expressions_mutator(Node *node,
 				 * known to be immutable, and for which we need no smarts
 				 * beyond "simplify if all inputs are constants".
 				 *
+				 * Treating SubscriptingRef this way assumes that subscripting
+				 * fetch and assignment are both immutable.  This constrains
+				 * type-specific subscripting implementations; maybe we should
+				 * relax it someday.
+				 *
 				 * Treating MinMaxExpr this way amounts to assuming that the
 				 * btree comparison function it calls is immutable; see the
 				 * reasoning in contain_mutable_functions_walker.
@@ -3394,10 +3691,10 @@ eval_const_expressions_mutator(Node *node,
 			{
 				/*
 				 * This case could be folded into the generic handling used
-				 * for SubscriptingRef etc.  But because the simplification
-				 * logic is so trivial, applying evaluate_expr() to perform it
-				 * would be a heavy overhead.  BooleanTest is probably common
-				 * enough to justify keeping this bespoke implementation.
+				 * for ArrayExpr etc.  But because the simplification logic is
+				 * so trivial, applying evaluate_expr() to perform it would be
+				 * a heavy overhead.  BooleanTest is probably common enough to
+				 * justify keeping this bespoke implementation.
 				 */
 				BooleanTest *btest = (BooleanTest *) node;
 				BooleanTest *newbtest;
@@ -4065,9 +4362,9 @@ reorder_function_arguments(List *args, HeapTuple func_tuple)
 	int			i;
 
 	Assert(nargsprovided <= pronargs);
-	if (pronargs > FUNC_MAX_ARGS)
+	if (pronargs < 0 || pronargs > FUNC_MAX_ARGS)
 		elog(ERROR, "too many function arguments");
-	MemSet(argarray, 0, pronargs * sizeof(Node *));
+	memset(argarray, 0, pronargs * sizeof(Node *));
 
 	/* Deconstruct the argument list into an array indexed by argnumber */
 	i = 0;
@@ -4522,7 +4819,8 @@ inline_function(Oid funcid, Oid result_type, Oid result_collid,
 	 * needed; that's probably not important, but let's be careful.
 	 */
 	querytree_list = list_make1(querytree);
-	if (check_sql_fn_retval(querytree_list, result_type, rettupdesc,
+	if (check_sql_fn_retval(list_make1(querytree_list),
+							result_type, rettupdesc,
 							false, NULL))
 		goto fail;				/* reject whole-tuple-result cases */
 
@@ -5040,7 +5338,7 @@ inline_set_returning_function(PlannerInfo *root, RangeTblEntry *rte)
 	 * shows it's returning a whole tuple result; otherwise what it's
 	 * returning is a single composite column which is not what we need.
 	 */
-	if (!check_sql_fn_retval(querytree_list,
+	if (!check_sql_fn_retval(list_make1(querytree_list),
 							 fexpr->funcresulttype, rettupdesc,
 							 true, NULL) &&
 		(functypclass == TYPEFUNC_COMPOSITE ||
@@ -5052,7 +5350,7 @@ inline_set_returning_function(PlannerInfo *root, RangeTblEntry *rte)
 	 * check_sql_fn_retval might've inserted a projection step, but that's
 	 * fine; just make sure we use the upper Query.
 	 */
-	querytree = linitial(querytree_list);
+	querytree = linitial_node(Query, querytree_list);
 
 	/*
 	 * Looks good --- substitute parameters into the query.

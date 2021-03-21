@@ -189,7 +189,7 @@ shared_buffers = 128MB
      <filename>postgresql.auto.conf</filename><indexterm><primary>postgresql.auto.conf</primary></indexterm>,
      which has the same format as <filename>postgresql.conf</filename> but
      is intended to be edited automatically, not manually.  This file holds
-     settings provided through the <xref linkend="sql-altersystem"/> command.
+     settings provided through the <link linkend="sql-altersystem"><command>ALTER SYSTEM</command></link> command.
      This file is read whenever <filename>postgresql.conf</filename> is,
      and its settings take effect in the same way.  Settings
      in <filename>postgresql.auto.conf</filename> override those
@@ -221,7 +221,7 @@ shared_buffers = 128MB
      <para>
       <productname>PostgreSQL</productname> provides three SQL
       commands to establish configuration defaults.
-      The already-mentioned <xref linkend="sql-altersystem"/> command
+      The already-mentioned <command>ALTER SYSTEM</command> command
       provides a SQL-accessible means of changing global defaults; it is
       functionally equivalent to editing <filename>postgresql.conf</filename>.
       In addition, there are two commands that allow setting of defaults
@@ -231,14 +231,14 @@ shared_buffers = 128MB
      <itemizedlist>
      <listitem>
       <para>
-       The <xref linkend="sql-alterdatabase"/> command allows global
+       The <link linkend="sql-alterdatabase"><command>ALTER DATABASE</command></link> command allows global
        settings to be overridden on a per-database basis.
       </para>
      </listitem>
 
      <listitem>
       <para>
-       The <xref linkend="sql-alterrole"/> command allows both global and
+       The <link linkend="sql-alterrole"><command>ALTER ROLE</command></link> command allows both global and
        per-database settings to be overridden with user-specific values.
       </para>
      </listitem>
@@ -262,19 +262,21 @@ shared_buffers = 128MB
     <itemizedlist>
      <listitem>
      <para>
-      The <xref linkend="sql-show"/> command allows inspection of the
-      current value of all parameters.  The corresponding function is
-      <function>current_setting(setting_name text)</function>.
+      The <link linkend="sql-show"><command>SHOW</command></link> command allows inspection of the
+      current value of any parameter.  The corresponding SQL function is
+      <function>current_setting(setting_name text)</function>
+      (see <xref linkend="functions-admin-set"/>).
      </para>
      </listitem>
 
      <listitem>
       <para>
-       The <xref linkend="sql-set"/> command allows modification of the
+       The <link linkend="sql-set"><command>SET</command></link> command allows modification of the
        current value of those parameters that can be set locally to a
        session; it has no effect on other sessions.
-       The corresponding function is
-       <function>set_config(setting_name, new_value, is_local)</function>.
+       The corresponding SQL function is
+       <function>set_config(setting_name, new_value, is_local)</function>
+       (see <xref linkend="functions-admin-set"/>).
       </para>
      </listitem>
     </itemizedlist>
@@ -296,7 +298,7 @@ shared_buffers = 128MB
 
      <listitem>
       <para>
-       Using <xref linkend="sql-update"/> on this view, specifically
+       Using <command>UPDATE</command> on this view, specifically
        updating the <structname>setting</structname> column, is the equivalent
        of issuing <command>SET</command> commands.  For example, the equivalent of
 <programlisting>
@@ -912,6 +914,21 @@ include_dir 'conf.d'
         An empty value
         specifies not listening on any Unix-domain sockets, in which case
         only TCP/IP sockets can be used to connect to the server.
+       </para>
+
+       <para>
+        A value that starts with <literal>@</literal> specifies that a
+        Unix-domain socket in the abstract namespace should be created
+        (currently supported on Linux and Windows).  In that case, this value
+        does not specify a <quote>directory</quote> but a prefix from which
+        the actual socket name is computed in the same manner as for the
+        file-system namespace.  While the abstract socket name prefix can be
+        chosen freely, since it is not a file-system location, the convention
+        is to nonetheless use file-system-like values such as
+        <literal>@/tmp</literal>.
+       </para>
+
+       <para>
         The default value is normally
         <filename>/tmp</filename>, but that can be changed at build time.
         On Windows, the default is empty, which means no Unix-domain socket is
@@ -926,6 +943,7 @@ include_dir 'conf.d'
         named <literal>.s.PGSQL.<replaceable>nnnn</replaceable>.lock</literal> will be
         created in each of the <varname>unix_socket_directories</varname> directories.
         Neither file should ever be removed manually.
+        For sockets in the abstract namespace, no lock file is created.
        </para>
       </listitem>
      </varlistentry>
@@ -950,7 +968,8 @@ include_dir 'conf.d'
 
        <para>
         This parameter is not supported on Windows.  Any setting will be
-        ignored.
+        ignored.  Also, sockets in the abstract namespace have no file owner,
+        so this setting is also ignored in that case.
        </para>
       </listitem>
      </varlistentry>
@@ -996,6 +1015,11 @@ include_dir 'conf.d'
         10, that ignore socket permissions entirely.  There, one can achieve a
         similar effect by pointing <varname>unix_socket_directories</varname> to a
         directory having search permission limited to the desired audience.
+       </para>
+
+       <para>
+        Sockets in the abstract namespace have no file permissions, so this
+        setting is also ignored in that case.
        </para>
       </listitem>
      </varlistentry>
@@ -1198,10 +1222,16 @@ include_dir 'conf.d'
       </term>
       <listitem>
        <para>
-        Sets the location of the Kerberos server key file. See
-        <xref linkend="gssapi-auth"/>
-        for details. This parameter can only be set in the
+        Sets the location of the server's Kerberos key file.  The default is
+        <filename>FILE:/usr/local/pgsql/etc/krb5.keytab</filename>
+        (where the directory part is whatever was specified
+        as <varname>sysconfdir</varname> at build time; use
+        <literal>pg_config --sysconfdir</literal> to determine that).
+        If this parameter is set to an empty string, it is ignored and a
+        system-dependent default is used.
+        This parameter can only be set in the
         <filename>postgresql.conf</filename> file or on the server command line.
+        See <xref linkend="gssapi-auth"/> for more information.
        </para>
       </listitem>
      </varlistentry>
@@ -1349,7 +1379,41 @@ include_dir 'conf.d'
         Relative paths are relative to the data directory.
         This parameter can only be set in the <filename>postgresql.conf</filename>
         file or on the server command line.
-        The default is empty, meaning no CRL file is loaded.
+        The default is empty, meaning no CRL file is loaded (unless
+        <xref linkend="guc-ssl-crl-dir"/> is set).
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-ssl-crl-dir" xreflabel="ssl_crl_dir">
+      <term><varname>ssl_crl_dir</varname> (<type>string</type>)
+      <indexterm>
+       <primary><varname>ssl_crl_dir</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        Specifies the name of the directory containing the SSL server
+        certificate revocation list (CRL).  Relative paths are relative to the
+        data directory.  This parameter can only be set in
+        the <filename>postgresql.conf</filename> file or on the server command
+        line.  The default is empty, meaning no CRLs are used (unless
+        <xref linkend="guc-ssl-crl-file"/> is set).
+       </para>
+
+       <para>
+        The directory needs to be prepared with the OpenSSL command
+        <literal>openssl rehash</literal> or <literal>c_rehash</literal>.  See
+        its documentation for details.
+       </para>
+
+       <para>
+        When using this setting, CRLs in the specified directory are loaded
+        on-demand at connection time.  New CRLs can be added to the directory
+        and will be used immediately.  This is unlike <xref
+        linkend="guc-ssl-crl-file"/>, which causes the CRL in the file to be
+        loaded at server start time or when the configuration is reloaded.
+        Both settings can be used together.
        </para>
       </listitem>
      </varlistentry>
@@ -1726,14 +1790,14 @@ include_dir 'conf.d'
 
        <para>
         Huge pages are known as large pages on Windows.  To use them, you need to
-        assign the user right Lock Pages in Memory to the Windows user account
+        assign the user right <quote>Lock pages in memory</quote> to the Windows user account
         that runs <productname>PostgreSQL</productname>.
         You can use Windows Group Policy tool (gpedit.msc) to assign the user right
-        Lock Pages in Memory.
+        <quote>Lock pages in memory</quote>.
         To start the database server on the command prompt as a standalone process,
         not as a Windows service, the command prompt must be run as an administrator or
         User Access Control (UAC) must be disabled. When the UAC is enabled, the normal
-        command prompt revokes the user right Lock Pages in Memory when started.
+        command prompt revokes the user right <quote>Lock pages in memory</quote> when started.
        </para>
 
        <para>
@@ -2080,13 +2144,13 @@ include_dir 'conf.d'
       <listitem>
        <para>
         Specifies the amount of memory that should be allocated at server
-        startup time for use by parallel queries.  When this memory region is
+        startup for use by parallel queries.  When this memory region is
         insufficient or exhausted by concurrent queries, new parallel queries
         try to allocate extra shared memory temporarily from the operating
         system using the method configured with
         <varname>dynamic_shared_memory_type</varname>, which may be slower due
         to memory management overheads.  Memory that is allocated at startup
-        time with <varname>min_dynamic_shared_memory</varname> is affected by
+        with <varname>min_dynamic_shared_memory</varname> is affected by
         the <varname>huge_pages</varname> setting on operating systems where
         that is supported, and may be more likely to benefit from larger pages
         on operating systems where that is managed automatically.
@@ -2251,7 +2315,7 @@ include_dir 'conf.d'
          The estimated cost for vacuuming a buffer that has to be read from
          disk.  This represents the effort to lock the buffer pool,
          lookup the shared hash table, read the desired block in from
-         the disk and scan its content. The default value is 10.
+         the disk and scan its content. The default value is 2.
         </para>
        </listitem>
       </varlistentry>
@@ -2309,8 +2373,11 @@ include_dir 'conf.d'
       There is a separate server
       process called the <firstterm>background writer</firstterm>, whose function
       is to issue writes of <quote>dirty</quote> (new or modified) shared
-      buffers.  It writes shared buffers so server processes handling
-      user queries seldom or never need to wait for a write to occur.
+      buffers.  When the number of clean shared buffers appears to be
+      insufficient, the background writer writes some dirty buffers to the
+      file system and marks them as clean.  This reduces the likelihood
+      that server processes handling user queries will be unable to find
+      clean buffers and have to write dirty buffers themselves.
       However, the background writer does cause a net overall
       increase in I/O load, because while a repeatedly-dirtied page might
       otherwise be written only once per checkpoint interval, the
@@ -2530,7 +2597,7 @@ include_dir 'conf.d'
         <para>
          When changing this value, consider also adjusting
          <xref linkend="guc-max-parallel-workers"/>,
-         <xref linkend="guc-max-parallel-workers-maintenance"/>, and
+         <xref linkend="guc-max-parallel-maintenance-workers"/>, and
          <xref linkend="guc-max-parallel-workers-per-gather"/>.
         </para>
        </listitem>
@@ -2578,7 +2645,7 @@ include_dir 'conf.d'
        </listitem>
       </varlistentry>
 
-      <varlistentry id="guc-max-parallel-workers-maintenance" xreflabel="max_parallel_maintenance_workers">
+      <varlistentry id="guc-max-parallel-maintenance-workers" xreflabel="max_parallel_maintenance_workers">
        <term><varname>max_parallel_maintenance_workers</varname> (<type>integer</type>)
        <indexterm>
         <primary><varname>max_parallel_maintenance_workers</varname> configuration parameter</primary>
@@ -2627,7 +2694,7 @@ include_dir 'conf.d'
          Sets the maximum number of workers that the system can support for
          parallel operations.  The default value is 8.  When increasing or
          decreasing this value, consider also adjusting
-         <xref linkend="guc-max-parallel-workers-maintenance"/> and
+         <xref linkend="guc-max-parallel-maintenance-workers"/> and
          <xref linkend="guc-max-parallel-workers-per-gather"/>.
          Also, note that a setting for this value which is higher than
          <xref linkend="guc-max-worker-processes"/> will have no effect,
@@ -2866,14 +2933,26 @@ include_dir 'conf.d'
       </term>
       <listitem>
        <para>
-        Specifies whether transaction commit will wait for WAL records
-        to be written to disk before the command returns a <quote>success</quote>
-        indication to the client.  Valid values are <literal>on</literal>,
-        <literal>remote_apply</literal>, <literal>remote_write</literal>, <literal>local</literal>,
-        and <literal>off</literal>.  The default, and safe, setting
-        is <literal>on</literal>.  When <literal>off</literal>, there can be a delay between
-        when success is reported to the client and when the transaction is
-        really guaranteed to be safe against a server crash.  (The maximum
+        Specifies how much WAL processing must complete before
+        the database server returns a <quote>success</quote>
+        indication to the client.  Valid values are
+        <literal>remote_apply</literal>, <literal>on</literal>
+        (the default), <literal>remote_write</literal>,
+        <literal>local</literal>, and <literal>off</literal>.
+       </para>
+
+       <para>
+        If <varname>synchronous_standby_names</varname> is empty,
+        the only meaningful settings are <literal>on</literal> and
+        <literal>off</literal>;  <literal>remote_apply</literal>,
+        <literal>remote_write</literal> and <literal>local</literal>
+        all provide the same local synchronization level
+        as <literal>on</literal>.  The local behavior of all
+        non-<literal>off</literal> modes is to wait for local flush of WAL
+        to disk.  In <literal>off</literal> mode, there is no waiting,
+        so there can be a delay between when success is reported to the
+        client and when the transaction is later guaranteed to be safe
+        against a server crash.  (The maximum
         delay is three times <xref linkend="guc-wal-writer-delay"/>.)  Unlike
         <xref linkend="guc-fsync"/>, setting this parameter to <literal>off</literal>
         does not create any risk of database inconsistency: an operating
@@ -2885,38 +2964,40 @@ include_dir 'conf.d'
         exact certainty about the durability of a transaction.  For more
         discussion see <xref linkend="wal-async-commit"/>.
        </para>
+
        <para>
-        If <xref linkend="guc-synchronous-standby-names"/> is non-empty, this
-        parameter also controls whether or not transaction commits will wait
-        for their WAL records to be replicated to the standby server(s).
-        When set to <literal>on</literal>, commits will wait until replies
+        If <xref linkend="guc-synchronous-standby-names"/> is non-empty,
+        <varname>synchronous_commit</varname> also controls whether
+        transaction commits will wait for their WAL records to be
+        processed on the standby server(s).
+       </para>
+
+       <para>
+        When set to <literal>remote_apply</literal>, commits will wait
+        until replies from the current synchronous standby(s) indicate they
+        have received the commit record of the transaction and applied
+        it, so that it has become visible to queries on the standby(s),
+        and also written to durable storage on the standbys.  This will
+        cause much larger commit delays than previous settings since
+        it waits for WAL replay.  When set to <literal>on</literal>,
+        commits wait until replies
         from the current synchronous standby(s) indicate they have received
-        the commit record of the transaction and flushed it to disk.  This
+        the commit record of the transaction and flushed it to durable storage.  This
         ensures the transaction will not be lost unless both the primary and
         all synchronous standbys suffer corruption of their database storage.
-        When set to <literal>remote_apply</literal>, commits will wait until replies
-        from the current synchronous standby(s) indicate they have received the
-        commit record of the transaction and applied it, so that it has become
-        visible to queries on the standby(s).
         When set to <literal>remote_write</literal>, commits will wait until replies
         from the current synchronous standby(s) indicate they have
-        received the commit record of the transaction and written it out to
-        their operating system. This setting is sufficient to
-        ensure data preservation even if a standby instance of
-        <productname>PostgreSQL</productname> were to crash, but not if the standby
-        suffers an operating-system-level crash, since the data has not
+        received the commit record of the transaction and written it to
+        their file systems. This setting ensures data preservation if a standby instance of
+        <productname>PostgreSQL</productname> crashes, but not if the standby
+        suffers an operating-system-level crash because the data has not
         necessarily reached durable storage on the standby.
-        Finally, the setting <literal>local</literal> causes commits to wait for
-        local flush to disk, but not for replication.  This is not usually
+        The setting <literal>local</literal> causes commits to wait for
+        local flush to disk, but not for replication.  This is usually not
         desirable when synchronous replication is in use, but is provided for
         completeness.
        </para>
-       <para>
-        If <varname>synchronous_standby_names</varname> is empty, the settings
-        <literal>on</literal>, <literal>remote_apply</literal>, <literal>remote_write</literal>
-        and <literal>local</literal> all provide the same synchronization level:
-        transaction commits only wait for local flush to disk.
-       </para>
+
        <para>
         This parameter can be changed at any time; the behavior for any
         one transaction is determined by the setting in effect when it
@@ -2926,6 +3007,76 @@ include_dir 'conf.d'
         asynchronously when the default is the opposite, issue <command>SET
         LOCAL synchronous_commit TO OFF</command> within the transaction.
        </para>
+
+       <para>
+        <xref linkend="synchronous-commit-matrix"/> summarizes the
+        capabilities of the <varname>synchronous_commit</varname> settings.
+       </para>
+
+       <table id="synchronous-commit-matrix">
+        <title>synchronous_commit Modes</title>
+        <tgroup cols="5">
+         <colspec colname="col1" colwidth="1.5*"/>
+         <colspec colname="col2" colwidth="1*"/>
+         <colspec colname="col3" colwidth="1*"/>
+         <colspec colname="col4" colwidth="1*"/>
+         <colspec colname="col5" colwidth="1*"/>
+         <thead>
+          <row>
+           <entry>synchronous_commit setting</entry>
+           <entry>local durable commit</entry>
+           <entry>standby durable commit after PG crash</entry>
+           <entry>standby durable commit after OS crash</entry>
+           <entry>standby query consistency</entry>
+          </row>
+         </thead>
+
+         <tbody>
+
+          <row>
+           <entry>remote_apply</entry>
+           <entry align="center">&bull;</entry>
+           <entry align="center">&bull;</entry>
+           <entry align="center">&bull;</entry>
+           <entry align="center">&bull;</entry>
+          </row>
+
+          <row>
+           <entry>on</entry>
+           <entry align="center">&bull;</entry>
+           <entry align="center">&bull;</entry>
+           <entry align="center">&bull;</entry>
+           <entry align="center"></entry>
+          </row>
+
+          <row>
+           <entry>remote_write</entry>
+           <entry align="center">&bull;</entry>
+           <entry align="center">&bull;</entry>
+           <entry align="center"></entry>
+           <entry align="center"></entry>
+          </row>
+
+          <row>
+           <entry>local</entry>
+           <entry align="center">&bull;</entry>
+           <entry align="center"></entry>
+           <entry align="center"></entry>
+           <entry align="center"></entry>
+          </row>
+
+          <row>
+           <entry>off</entry>
+           <entry align="center"></entry>
+           <entry align="center"></entry>
+           <entry align="center"></entry>
+           <entry align="center"></entry>
+          </row>
+
+         </tbody>
+        </tgroup>
+       </table>
+
       </listitem>
      </varlistentry>
 
@@ -2974,7 +3125,7 @@ include_dir 'conf.d'
         Not all of these choices are available on all platforms.
         The default is the first method in the above list that is supported
         by the platform, except that <literal>fdatasync</literal> is the default on
-        Linux.  The default is not necessarily ideal; it might be
+        Linux and FreeBSD.  The default is not necessarily ideal; it might be
         necessary to change this setting or other aspects of your system
         configuration in order to create a crash-safe configuration or
         achieve optimal performance.
@@ -3621,7 +3772,8 @@ restore_command = 'copy "C:\\server\\archivedir\\%f" "%p"'  # Windows
        </para>
 
        <para>
-        This parameter can only be set at server start.
+        This parameter can only be set in the <filename>postgresql.conf</filename>
+        file or on the server command line.
        </para>
       </listitem>
      </varlistentry>
@@ -3976,7 +4128,7 @@ restore_command = 'copy "C:\\server\\archivedir\\%f" "%p"'  # Windows
         servers or streaming base backup clients (i.e., the maximum number of
         simultaneously running WAL sender processes). The default is
         <literal>10</literal>.  The value <literal>0</literal> means
-        replication is disabled.  Abrupt streaming client disconnection might
+        replication is disabled.  Abrupt disconnection of a streaming client might
         leave an orphaned connection slot behind until a timeout is reached,
         so this parameter should be set slightly higher than the maximum
         number of expected clients so disconnected clients can immediately
@@ -4011,6 +4163,17 @@ restore_command = 'copy "C:\\server\\archivedir\\%f" "%p"'  # Windows
          Also, <varname>wal_level</varname> must be set
          to <literal>replica</literal> or higher to allow replication slots to
          be used.
+        </para>
+
+        <para>
+         On the subscriber side, specifies how many replication origins (see
+         <xref linkend="replication-origins"/>) can be tracked simultaneously,
+         effectively limiting how many logical replication subscriptions can
+         be created on the server. Setting it a lower value than the current
+         number of tracked replication origins (reflected in
+         <link linkend="view-pg-replication-origin-status">pg_replication_origin_status</link>,
+         not <link linkend="catalog-pg-replication-origin">pg_replication_origin</link>)
+         will prevent the server from starting.
         </para>
        </listitem>
       </varlistentry>
@@ -4065,9 +4228,9 @@ restore_command = 'copy "C:\\server\\archivedir\\%f" "%p"'  # Windows
         slots</link> are allowed to retain in the <filename>pg_wal</filename>
         directory at checkpoint time.
         If <varname>max_slot_wal_keep_size</varname> is -1 (the default),
-        replication slots retain unlimited amount of WAL files.  If
-        restart_lsn of a replication slot gets behind more than that megabytes
-        from the current LSN, the standby using the slot may no longer be able
+        replication slots may retain an unlimited amount of WAL files.  Otherwise, if
+        restart_lsn of a replication slot falls behind the current LSN by more
+        than the given size, the standby using the slot may no longer be able
         to continue replication due to removal of required WAL files. You
         can see the WAL availability of replication slots
         in <link linkend="view-pg-replication-slots">pg_replication_slots</link>.
@@ -4514,15 +4677,16 @@ ANY <replaceable class="parameter">num_sync</replaceable> ( <replaceable class="
        view.  The standby will report
        the last write-ahead log location it has written, the last position it
        has flushed to disk, and the last position it has applied.
-       This parameter's
-       value is the maximum amount of time between reports.  Updates are
-       sent each time the write or flush positions change, or at least as
-       often as specified by this parameter.  Thus, the apply position may
-       lag slightly behind the true position.
+       This parameter's value is the maximum amount of time between reports.
+       Updates are sent each time the write or flush positions change, or as
+       often as specified by this parameter if set to a non-zero value.
+       There are additional cases where updates are sent while ignoring this
+       parameter; for example, when processing of the existing WAL completes
+       or when <varname>synchronous_commit</varname> is set to
+       <literal>remote_apply</literal>.
+       Thus, the apply position may lag slightly behind the true position.
        If this value is specified without units, it is taken as seconds.
-       The default value is 10 seconds.
-       Setting this parameter to zero disables status updates completely.
-       This parameter can only be set in
+       The default value is 10 seconds. This parameter can only be set in
        the <filename>postgresql.conf</filename> file or on the server
        command line.
       </para>
@@ -4771,7 +4935,7 @@ ANY <replaceable class="parameter">num_sync</replaceable> ( <replaceable class="
        Better ways to improve the quality of the
        plans chosen by the optimizer include adjusting the planner cost
        constants (see <xref linkend="runtime-config-query-constants"/>),
-       running <xref linkend="sql-analyze"/> manually, increasing
+       running <link linkend="sql-analyze"><command>ANALYZE</command></link> manually, increasing
        the value of the <xref
        linkend="guc-default-statistics-target"/> configuration parameter,
        and increasing the amount of statistics collected for
@@ -5067,6 +5231,29 @@ ANY <replaceable class="parameter">num_sync</replaceable> ( <replaceable class="
        <para>
         Enables or disables the query planner's use of <acronym>TID</acronym>
         scan plan types. The default is <literal>on</literal>.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-enable-parallel-insert" xreflabel="enable_parallel_insert">
+      <term><varname>enable_parallel_insert</varname> (<type>boolean</type>)
+      <indexterm>
+       <primary><varname>enable_parallel_insert</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        Enables or disables the query planner's use of parallel plans for
+        <command>INSERT</command> commands. The default is <literal>on</literal>.
+        When enabled, the planner performs additional parallel-safety checks
+        on the target table's attributes and indexes, in order to determine
+        if it's safe to use a parallel plan for <command>INSERT</command>. In
+        cases such as when the target table has a large number of partitions,
+        and particularly also when that table uses something parallel-unsafe
+        that prevents parallelism, the overhead of these checks may become
+        prohibitively high. To address this potential overhead in these cases,
+        this option can be used to disable the use of parallel plans for
+        <command>INSERT</command>.
        </para>
       </listitem>
      </varlistentry>
@@ -5726,10 +5913,7 @@ SELECT * FROM parent WHERE key = 2400;
       <term>
        <varname>parallel_leader_participation</varname> (<type>boolean</type>)
        <indexterm>
-        <primary>
-         <varname>parallel_leader_participation</varname> configuration
-         parameter
-        </primary>
+        <primary><varname>parallel_leader_participation</varname> configuration parameter</primary>
        </indexterm>
       </term>
       <listitem>
@@ -7002,6 +7186,28 @@ log_line_prefix = '%m [%p] %q%u@%d/%a '
       </listitem>
      </varlistentry>
 
+     <varlistentry id="guc-log-recovery-conflict-waits" xreflabel="log_recovery_conflict_waits">
+      <term><varname>log_recovery_conflict_waits</varname> (<type>boolean</type>)
+      <indexterm>
+       <primary><varname>log_recovery_conflict_waits</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        Controls whether a log message is produced when the startup process
+        waits longer than <varname>deadlock_timeout</varname>
+        for recovery conflicts.  This is useful in determining if recovery
+        conflicts prevent the recovery from applying WAL.
+       </para>
+
+       <para>
+        The default is <literal>off</literal>.  This parameter can only be set
+        in the <filename>postgresql.conf</filename> file or on the server
+        command line.
+       </para>
+      </listitem>
+     </varlistentry>
+
      <varlistentry id="guc-log-parameter-max-length" xreflabel="log_parameter_max_length">
       <term><varname>log_parameter_max_length</varname> (<type>integer</type>)
       <indexterm>
@@ -7010,9 +7216,9 @@ log_line_prefix = '%m [%p] %q%u@%d/%a '
       </term>
       <listitem>
        <para>
-        If greater than zero, each bind parameter value reported in
-        non-error statement-logging messages is trimmed to this many bytes.
-        Zero disables logging bind parameters with statements.
+        If greater than zero, each bind parameter value logged with a
+        non-error statement-logging message is trimmed to this many bytes.
+        Zero disables logging of bind parameters for non-error statement logs.
         <literal>-1</literal> (the default) allows bind parameters to be
         logged in full.
         If this value is specified without units, it is taken as bytes.
@@ -7430,15 +7636,38 @@ COPY postgres_log FROM '/full/path/to/logfile.csv' WITH csv;
       <listitem>
        <para>
         Enables timing of database I/O calls.  This parameter is off by
-        default, because it will repeatedly query the operating system for
+        default, as it will repeatedly query the operating system for
         the current time, which may cause significant overhead on some
         platforms.  You can use the <xref linkend="pgtesttiming"/> tool to
         measure the overhead of timing on your system.
         I/O timing information is
         displayed in <link linkend="monitoring-pg-stat-database-view">
         <structname>pg_stat_database</structname></link>, in the output of
-        <xref linkend="sql-explain"/> when the <literal>BUFFERS</literal> option is
-        used, and by <xref linkend="pgstatstatements"/>.  Only superusers can
+        <xref linkend="sql-explain"/> when the <literal>BUFFERS</literal> option
+        is used, by autovacuum for auto-vacuums and auto-analyzes, when
+        <xref linkend="guc-log-autovacuum-min-duration"/> is set and by
+        <xref linkend="pgstatstatements"/>.  Only superusers can change this
+        setting.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-track-wal-io-timing" xreflabel="track_wal_io_timing">
+      <term><varname>track_wal_io_timing</varname> (<type>boolean</type>)
+      <indexterm>
+       <primary><varname>track_wal_io_timing</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        Enables timing of WAL I/O calls. This parameter is off by default,
+        as it will repeatedly query the operating system for the current time,
+        which may cause significant overhead on some platforms.
+        You can use the <application>pg_test_timing</application> tool to
+        measure the overhead of timing on your system.
+        I/O timing information is
+        displayed in <link linkend="monitoring-pg-stat-wal-view">
+        <structname>pg_stat_wal</structname></link>.  Only superusers can
         change this setting.
        </para>
       </listitem>
@@ -8258,7 +8487,7 @@ COPY postgres_log FROM '/full/path/to/logfile.csv' WITH csv;
         set it to <literal>replica</literal> when they are applying replicated
         changes.  The effect of that will be that triggers and rules (that
         have not been altered from their default configuration) will not fire
-        on the replica.  See the <xref linkend="sql-altertable"/> clauses
+        on the replica.  See the <link linkend="sql-altertable"><command>ALTER TABLE</command></link> clauses
         <literal>ENABLE TRIGGER</literal> and <literal>ENABLE RULE</literal>
         for more information.
        </para>
@@ -8360,15 +8589,52 @@ COPY postgres_log FROM '/full/path/to/logfile.csv' WITH csv;
       </term>
       <listitem>
        <para>
-       Terminate any session with an open transaction that has been idle for
-       longer than the specified amount of time. This allows any
-       locks held by that session to be released and the connection slot to be reused;
-       it also allows tuples visible only to this transaction to be vacuumed.  See
-       <xref linkend="routine-vacuuming"/> for more details about this.
+        Terminate any session that has been idle (that is, waiting for a
+        client query) within an open transaction for longer than the
+        specified amount of time.
+        If this value is specified without units, it is taken as milliseconds.
+        A value of zero (the default) disables the timeout.
        </para>
+
        <para>
-       If this value is specified without units, it is taken as milliseconds.
-       A value of zero (the default) disables the timeout.
+        This option can be used to ensure that idle sessions do not hold
+        locks for an unreasonable amount of time.  Even when no significant
+        locks are held, an open transaction prevents vacuuming away
+        recently-dead tuples that may be visible only to this transaction;
+        so remaining idle for a long time can contribute to table bloat.
+        See <xref linkend="routine-vacuuming"/> for more details.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-idle-session-timeout" xreflabel="idle_session_timeout">
+      <term><varname>idle_session_timeout</varname> (<type>integer</type>)
+      <indexterm>
+       <primary><varname>idle_session_timeout</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        Terminate any session that has been idle (that is, waiting for a
+        client query), but not within an open transaction, for longer than
+        the specified amount of time.
+        If this value is specified without units, it is taken as milliseconds.
+        A value of zero (the default) disables the timeout.
+       </para>
+
+       <para>
+        Unlike the case with an open transaction, an idle session without a
+        transaction imposes no large costs on the server, so there is less
+        need to enable this timeout
+        than <varname>idle_in_transaction_session_timeout</varname>.
+       </para>
+
+       <para>
+        Be wary of enforcing this timeout on connections made through
+        connection-pooling software or other middleware, as such a layer
+        may not react well to unexpected connection closure.  It may be
+        helpful to enable this timeout only for interactive sessions,
+        perhaps by applying it only to particular users.
        </para>
       </listitem>
      </varlistentry>
@@ -8387,10 +8653,10 @@ COPY postgres_log FROM '/full/path/to/logfile.csv' WITH csv;
         a regular <command>VACUUM</command> in that it visits every page that might
         contain unfrozen XIDs or MXIDs, not just those that might contain dead
         tuples.  The default is 150 million transactions.  Although users can
-        set this value anywhere from zero to two billions, <command>VACUUM</command>
+        set this value anywhere from zero to two billion, <command>VACUUM</command>
         will silently limit the effective value to 95% of
         <xref linkend="guc-autovacuum-freeze-max-age"/>, so that a
-        periodical manual <command>VACUUM</command> has a chance to run before an
+        periodic manual <command>VACUUM</command> has a chance to run before an
         anti-wraparound autovacuum is launched for the table. For more
         information see
         <xref linkend="vacuum-for-wraparound"/>.
@@ -8434,10 +8700,10 @@ COPY postgres_log FROM '/full/path/to/logfile.csv' WITH csv;
         a regular <command>VACUUM</command> in that it visits every page that might
         contain unfrozen XIDs or MXIDs, not just those that might contain dead
         tuples.  The default is 150 million multixacts.
-        Although users can set this value anywhere from zero to two billions,
+        Although users can set this value anywhere from zero to two billion,
         <command>VACUUM</command> will silently limit the effective value to 95% of
         <xref linkend="guc-autovacuum-multixact-freeze-max-age"/>, so that a
-        periodical manual <command>VACUUM</command> has a chance to run before an
+        periodic manual <command>VACUUM</command> has a chance to run before an
         anti-wraparound is launched for the table.
         For more information see <xref linkend="vacuum-for-multixact-wraparound"/>.
        </para>
@@ -8463,47 +8729,6 @@ COPY postgres_log FROM '/full/path/to/logfile.csv' WITH csv;
         autovacuums.
         For more information see <xref linkend="vacuum-for-multixact-wraparound"/>.
        </para>
-      </listitem>
-     </varlistentry>
-
-     <varlistentry id="guc-vacuum-cleanup-index-scale-factor" xreflabel="vacuum_cleanup_index_scale_factor">
-      <term><varname>vacuum_cleanup_index_scale_factor</varname> (<type>floating point</type>)
-      <indexterm>
-       <primary><varname>vacuum_cleanup_index_scale_factor</varname></primary>
-       <secondary>configuration parameter</secondary>
-      </indexterm>
-      </term>
-      <listitem>
-       <para>
-        Specifies the fraction of the total number of heap tuples counted in
-        the previous statistics collection that can be inserted without
-        incurring an index scan at the <command>VACUUM</command> cleanup stage.
-        This setting currently applies to B-tree indexes only.
-       </para>
-
-       <para>
-        If no tuples were deleted from the heap, B-tree indexes are still
-        scanned at the <command>VACUUM</command> cleanup stage when at least one
-        of the following conditions is met: the index statistics are stale, or
-        the index contains deleted pages that can be recycled during cleanup.
-        Index statistics are considered to be stale if the number of newly
-        inserted tuples exceeds the <varname>vacuum_cleanup_index_scale_factor</varname>
-        fraction of the total number of heap tuples detected by the previous
-        statistics collection. The total number of heap tuples is stored in
-        the index meta-page. Note that the meta-page does not include this data
-        until <command>VACUUM</command> finds no dead tuples, so B-tree index
-        scan at the cleanup stage can only be skipped if the second and
-        subsequent <command>VACUUM</command> cycles detect no dead tuples.
-       </para>
-
-       <para>
-        The value can range from <literal>0</literal> to
-        <literal>10000000000</literal>.
-        When <varname>vacuum_cleanup_index_scale_factor</varname> is set to
-        <literal>0</literal>, index scans are never skipped during
-        <command>VACUUM</command> cleanup. The default value is <literal>0.1</literal>.
-       </para>
-
       </listitem>
      </varlistentry>
 
@@ -8944,7 +9169,7 @@ SET XML OPTION { DOCUMENT | CONTENT };
         This variable specifies one or more shared libraries that are to be
         preloaded at connection start.
         It contains a comma-separated list of library names, where each name
-        is interpreted as for the <xref linkend="sql-load"/> command.
+        is interpreted as for the <link linkend="sql-load"><command>LOAD</command></link> command.
         Whitespace between entries is ignored; surround a library name with
         double quotes if you need to include whitespace or commas in the name.
         The parameter value only takes effect at the start of the connection.
@@ -8995,7 +9220,7 @@ SET XML OPTION { DOCUMENT | CONTENT };
         This variable specifies one or more shared libraries that are to be
         preloaded at connection start.
         It contains a comma-separated list of library names, where each name
-        is interpreted as for the <xref linkend="sql-load"/> command.
+        is interpreted as for the <link linkend="sql-load"><command>LOAD</command></link> command.
         Whitespace between entries is ignored; surround a library name with
         double quotes if you need to include whitespace or commas in the name.
         The parameter value only takes effect at the start of the connection.
@@ -9037,7 +9262,7 @@ SET XML OPTION { DOCUMENT | CONTENT };
         This variable specifies one or more shared libraries to be preloaded at
         server start.
         It contains a comma-separated list of library names, where each name
-        is interpreted as for the <xref linkend="sql-load"/> command.
+        is interpreted as for the <link linkend="sql-load"><command>LOAD</command></link> command.
         Whitespace between entries is ignored; surround a library name with
         double quotes if you need to include whitespace or commas in the name.
         This parameter can only be set at server start.  If a specified
@@ -9445,29 +9670,6 @@ dynamic_library_path = 'C:\tools\postgresql;H:\my_project\lib;$libdir'
       </listitem>
      </varlistentry>
 
-     <varlistentry id="guc-operator-precedence-warning" xreflabel="operator_precedence_warning">
-      <term><varname>operator_precedence_warning</varname> (<type>boolean</type>)
-      <indexterm>
-       <primary><varname>operator_precedence_warning</varname> configuration parameter</primary>
-      </indexterm>
-      </term>
-      <listitem>
-       <para>
-        When on, the parser will emit a warning for any construct that might
-        have changed meanings since <productname>PostgreSQL</productname> 9.4 as a result
-        of changes in operator precedence.  This is useful for auditing
-        applications to see if precedence changes have broken anything; but it
-        is not meant to be kept turned on in production, since it will warn
-        about some perfectly valid, standard-compliant SQL code.
-        The default is <literal>off</literal>.
-       </para>
-
-       <para>
-        See <xref linkend="sql-precedence"/> for more information.
-       </para>
-      </listitem>
-     </varlistentry>
-
     <varlistentry id="guc-quote-all-identifiers" xreflabel="quote-all-identifiers">
       <term><varname>quote_all_identifiers</varname> (<type>boolean</type>)
       <indexterm>
@@ -9632,6 +9834,23 @@ dynamic_library_path = 'C:\tools\postgresql;H:\my_project\lib;$libdir'
       </listitem>
      </varlistentry>
 
+     <varlistentry id="guc-remove-temp-files-after-crash" xreflabel="remove_temp_files_after_crash">
+      <term><varname>remove_temp_files_after_crash</varname> (<type>boolean</type>)
+      <indexterm>
+       <primary><varname>remove_temp_files_after_crash</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        When set to <literal>on</literal>, which is the default,
+        <productname>PostgreSQL</productname> will automatically remove
+        temporary files after a backend crash. If disabled, the files will be
+        retained and may be used for debugging, for example. Repeated crashes 
+        may however result in accumulation of useless files.
+       </para>
+      </listitem>
+     </varlistentry>
+
      <varlistentry id="guc-data-sync-retry" xreflabel="data_sync_retry">
       <term><varname>data_sync_retry</varname> (<type>boolean</type>)
       <indexterm>
@@ -9665,6 +9884,41 @@ dynamic_library_path = 'C:\tools\postgresql;H:\my_project\lib;$libdir'
       </listitem>
      </varlistentry>
 
+     <varlistentry id="guc-recovery-init-sync-method" xreflabel="recovery_init_sync_method">
+      <term><varname>recovery_init_sync_method</varname> (<type>enum</type>)
+       <indexterm>
+        <primary><varname>recovery_init_sync_method</varname> configuration parameter</primary>
+       </indexterm>
+      </term>
+      <listitem>
+       <para>
+        When set to <literal>fsync</literal>, which is the default,
+        <productname>PostgreSQL</productname> will recursively open and
+        synchronize all files in the data directory before crash recovery
+        begins.  The search for files will follow symbolic links for the WAL
+        directory and each configured tablespace (but not any other symbolic
+        links).  This is intended to make sure that all WAL and data files are
+        durably stored on disk before replaying changes.  This applies whenever
+        starting a database cluster that did not shut down cleanly, including
+        copies created with <application>pg_basebackup</application>.
+       </para>
+       <para>
+        On Linux, <literal>syncfs</literal> may be used instead, to ask the
+        operating system to synchronize the whole file systems that contain the
+        data directory, the WAL files and each tablespace (but not any other
+        file systems that may be reachable through symbolic links).  This may
+        be a lot faster than the <literal>fsync</literal> setting, because it
+        doesn't need to open each file one by one.  On the other hand, it may
+        be slower if a file system is shared by other applications that
+        modify a lot of files, since those files will also be written to disk.
+        Furthermore, on versions of Linux before 5.8, I/O errors encountered
+        while writing data to disk may not be reported to
+        <productname>PostgreSQL</productname>, and relevant error messages may
+        appear only in kernel logs.
+       </para>
+      </listitem>
+     </varlistentry>
+
     </variablelist>
 
    </sect1>
@@ -9673,13 +9927,14 @@ dynamic_library_path = 'C:\tools\postgresql;H:\my_project\lib;$libdir'
     <title>Preset Options</title>
 
     <para>
-     The following <quote>parameters</quote> are read-only, and are determined
-     when <productname>PostgreSQL</productname> is compiled or when it is
-     installed. As such, they have been excluded from the sample
+     The following <quote>parameters</quote> are read-only.
+     As such, they have been excluded from the sample
      <filename>postgresql.conf</filename> file.  These options report
      various aspects of <productname>PostgreSQL</productname> behavior
      that might be of interest to certain applications, particularly
      administrative front-ends.
+     Most of them are determined when <productname>PostgreSQL</productname>
+     is compiled or when it is installed.
     </para>
 
     <variablelist>
@@ -9724,10 +9979,11 @@ dynamic_library_path = 'C:\tools\postgresql;H:\my_project\lib;$libdir'
       </term>
       <listitem>
        <para>
-        On Unix systems this parameter reports the permissions of the data
-        directory defined by (<xref linkend="guc-data-directory"/>) at startup.
+        On Unix systems this parameter reports the permissions the data
+        directory (defined by <xref linkend="guc-data-directory"/>)
+        had at server startup.
         (On Microsoft Windows this parameter will always display
-        <literal>0700</literal>). See
+        <literal>0700</literal>.) See
         <xref linkend="app-initdb-allow-group-access"/> for more information.
        </para>
       </listitem>
@@ -9764,6 +10020,23 @@ dynamic_library_path = 'C:\tools\postgresql;H:\my_project\lib;$libdir'
         Reports whether <productname>PostgreSQL</productname> was built with support for
         64-bit-integer dates and times.  As of <productname>PostgreSQL</productname> 10,
         this is always <literal>on</literal>.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-in-hot-standby" xreflabel="in_hot_standby">
+      <term><varname>in_hot_standby</varname> (<type>boolean</type>)
+      <indexterm>
+       <primary><varname>in_hot_standby</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        Reports whether the server is currently in hot standby mode.  When
+        this is <literal>on</literal>, all transactions are forced to be
+        read-only.  Within a session, this can change only if the server is
+        promoted to be primary.  See <xref linkend="hot-standby"/> for more
+        information.
        </para>
       </listitem>
      </varlistentry>
@@ -10043,6 +10316,43 @@ dynamic_library_path = 'C:\tools\postgresql;H:\my_project\lib;$libdir'
       </listitem>
      </varlistentry>
 
+     <varlistentry id="guc-debug-invalidate-system-caches-always" xreflabel="debug_invalidate_system_caches_always">
+      <term><varname>debug_invalidate_system_caches_always</varname> (<type>integer</type>)
+      <indexterm>
+       <primary><varname>debug_invalidate_system_caches_always</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        When set to 1, each cache lookup for a system catalog entry is
+        invalidated at the first possible opportunity, irrespective of whether
+        anything that would render it invalid really occurred.  Caching of
+        system catalogs is effectively disabled as a result, so the server
+        will run extremely slowly.  Higher values run the cache invalidation
+        recursively, which is even slower and useful only useful for testing
+        in very specific scenarios.
+       </para>
+
+       <para>
+        This option can be very helpful when trying to trigger
+        hard-to-reproduce bugs involving concurrency and catalog changes but
+        is otherwise rarely needed.  See the source code files
+        <filename>inval.c</filename> and
+        <filename>pg_config_manual.h</filename> for details.
+       </para>
+
+       <para>
+        This setting is supported but off by default (0) when
+        <symbol>CLOBBER_CACHE_ENABLED</symbol> is defined at compile time
+        (which happens automatically when using the
+        <literal>configure</literal> option
+        <option>--enable-cassert</option>).  In production builds, its value
+        will always be <literal>0</literal> and attempts to set it to another
+        value will raise an error.
+       </para>
+      </listitem>
+     </varlistentry>
+
      <varlistentry id="guc-ignore-system-indexes" xreflabel="ignore_system_indexes">
       <term><varname>ignore_system_indexes</varname> (<type>boolean</type>)
       <indexterm>
@@ -10247,8 +10557,8 @@ LOG:  CleanUpLock: deleting: lock(0xb7acd844) id(24688,24696,0,0,0,1)
       </term>
       <listitem>
        <para>
-        If set, do not trace locks for tables below this OID. (use to avoid
-        output on system tables)
+        If set, do not trace locks for tables below this OID (used to avoid
+        output on system tables).
        </para>
        <para>
         This parameter is only available if the <symbol>LOCK_DEBUG</symbol>

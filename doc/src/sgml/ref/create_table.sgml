@@ -22,7 +22,7 @@ PostgreSQL documentation
  <refsynopsisdiv>
 <synopsis>
 CREATE [ [ GLOBAL | LOCAL ] { TEMPORARY | TEMP } | UNLOGGED ] TABLE [ IF NOT EXISTS ] <replaceable class="parameter">table_name</replaceable> ( [
-  { <replaceable class="parameter">column_name</replaceable> <replaceable class="parameter">data_type</replaceable> [ COLLATE <replaceable>collation</replaceable> ] [ <replaceable class="parameter">column_constraint</replaceable> [ ... ] ]
+  { <replaceable class="parameter">column_name</replaceable> <replaceable class="parameter">data_type</replaceable> [ COLLATE <replaceable>collation</replaceable> ] [ COMPRESSION <replaceable>compression_method</replaceable> ] [ <replaceable class="parameter">column_constraint</replaceable> [ ... ] ]
     | <replaceable>table_constraint</replaceable>
     | LIKE <replaceable>source_table</replaceable> [ <replaceable>like_option</replaceable> ... ] }
     [, ... ]
@@ -171,8 +171,9 @@ WITH ( MODULUS <replaceable class="parameter">numeric_literal</replaceable>, REM
       If specified, the table is created as a temporary table.
       Temporary tables are automatically dropped at the end of a
       session, or optionally at the end of the current transaction
-      (see <literal>ON COMMIT</literal> below).  Existing permanent
-      tables with the same name are not visible to the current session
+      (see <literal>ON COMMIT</literal> below).  The default
+      search_path includes the temporary schema first and so identically
+      named existing permanent tables are not chosen for new plans
       while the temporary table exists, unless they are referenced
       with schema-qualified names. Any indexes created on a temporary
       table are automatically temporary as well.
@@ -283,6 +284,26 @@ WITH ( MODULUS <replaceable class="parameter">numeric_literal</replaceable>, REM
       The <literal>COLLATE</literal> clause assigns a collation to
       the column (which must be of a collatable data type).
       If not specified, the column data type's default collation is used.
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term><literal>COMPRESSION <replaceable class="parameter">compression_method</replaceable></literal></term>
+    <listitem>
+     <para>
+      The <literal>COMPRESSION</literal> clause sets the compression method
+      for a column.  Compression is supported only for variable-width data
+      types, and is used only for columns whose storage type is main or
+      extended. (See <xref linkend="sql-altertable"/> for information on
+      column storage types.) Setting this property for a partitioned table
+      has no direct effect, because such tables have no storage of their own,
+      but the configured value is inherited by newly-created partitions.
+      The supported compression methods are <literal>pglz</literal> and
+      <literal>lz4</literal>.  <literal>lz4</literal> is available only if
+      <literal>--with-lz4</literal> was used when building
+      <productname>PostgreSQL</productname>. The default
+      is <literal>pglz</literal>.
      </para>
     </listitem>
    </varlistentry>
@@ -605,6 +626,17 @@ WITH ( MODULUS <replaceable class="parameter">numeric_literal</replaceable>, REM
        </varlistentry>
 
        <varlistentry>
+        <term><literal>INCLUDING COMPRESSION</literal></term>
+        <listitem>
+         <para>
+          Compression method of the columns will be copied.  The default
+          behavior is to exclude compression methods, resulting in columns
+          having the default compression method.
+         </para>
+        </listitem>
+       </varlistentry>
+
+       <varlistentry>
         <term><literal>INCLUDING CONSTRAINTS</literal></term>
         <listitem>
          <para>
@@ -839,6 +871,7 @@ WITH ( MODULUS <replaceable class="parameter">numeric_literal</replaceable>, REM
       column</firstterm>.  It will have an implicit sequence attached to it
       and the column in new rows will automatically have values from the
       sequence assigned to it.
+      Such a column is implicitly <literal>NOT NULL</literal>.
      </para>
 
      <para>
@@ -877,15 +910,17 @@ WITH ( MODULUS <replaceable class="parameter">numeric_literal</replaceable>, REM
    <varlistentry>
     <term><literal>UNIQUE</literal> (column constraint)</term>
     <term><literal>UNIQUE ( <replaceable class="parameter">column_name</replaceable> [, ... ] )</literal>
-    <optional> INCLUDE ( <replaceable class="parameter">column_name</replaceable> [, ...]) </optional> (table constraint)</term>
+    <optional> <literal>INCLUDE ( <replaceable class="parameter">column_name</replaceable> [, ...])</literal> </optional> (table constraint)</term>
 
     <listitem>
      <para>
       The <literal>UNIQUE</literal> constraint specifies that a
       group of one or more columns of a table can contain
-      only unique values. The behavior of the unique table constraint
-      is the same as that for column constraints, with the additional
-      capability to span multiple columns.
+      only unique values. The behavior of a unique table constraint
+      is the same as that of a unique column constraint, with the
+      additional capability to span multiple columns.  The constraint
+      therefore enforces that any two rows must differ in at least one
+      of these columns.
      </para>
 
      <para>
@@ -894,10 +929,10 @@ WITH ( MODULUS <replaceable class="parameter">numeric_literal</replaceable>, REM
      </para>
 
      <para>
-      Each unique table constraint must name a set of columns that is
+      Each unique constraint should name a set of columns that is
       different from the set of columns named by any other unique or
-      primary key constraint defined for the table.  (Otherwise it
-      would just be the same constraint listed twice.)
+      primary key constraint defined for the table.  (Otherwise, redundant
+      unique constraints will be discarded.)
      </para>
 
      <para>
@@ -910,10 +945,15 @@ WITH ( MODULUS <replaceable class="parameter">numeric_literal</replaceable>, REM
      <para>
       Adding a unique constraint will automatically create a unique btree
       index on the column or group of columns used in the constraint.
-      The optional clause <literal>INCLUDE</literal> adds to that index
-      one or more columns on which the uniqueness is not enforced.
-      Note that although the constraint is not enforced on the included columns,
-      it still depends on them.  Consequently, some operations on these columns
+     </para>
+
+     <para>
+      The optional <literal>INCLUDE</literal> clause adds to that index
+      one or more columns that are simply <quote>payload</quote>: uniqueness
+      is not enforced on them, and the index cannot be searched on the basis
+      of those columns.  However they can be retrieved by an index-only scan.
+      Note that although the constraint is not enforced on included columns,
+      it still depends on them.  Consequently, some operations on such columns
       (e.g., <literal>DROP COLUMN</literal>) can cause cascaded constraint and
       index deletion.
      </para>
@@ -923,7 +963,7 @@ WITH ( MODULUS <replaceable class="parameter">numeric_literal</replaceable>, REM
    <varlistentry>
     <term><literal>PRIMARY KEY</literal> (column constraint)</term>
     <term><literal>PRIMARY KEY ( <replaceable class="parameter">column_name</replaceable> [, ... ] )</literal>
-    <optional> INCLUDE ( <replaceable class="parameter">column_name</replaceable> [, ...]) </optional> (table constraint)</term>
+    <optional> <literal>INCLUDE ( <replaceable class="parameter">column_name</replaceable> [, ...])</literal> </optional> (table constraint)</term>
     <listitem>
      <para>
       The <literal>PRIMARY KEY</literal> constraint specifies that a column or
@@ -941,27 +981,34 @@ WITH ( MODULUS <replaceable class="parameter">numeric_literal</replaceable>, REM
 
      <para>
       <literal>PRIMARY KEY</literal> enforces the same data constraints as
-      a combination of <literal>UNIQUE</literal> and <literal>NOT NULL</literal>, but
+      a combination of <literal>UNIQUE</literal> and <literal>NOT
+      NULL</literal>.  However,
       identifying a set of columns as the primary key also provides metadata
       about the design of the schema, since a primary key implies that other
       tables can rely on this set of columns as a unique identifier for rows.
      </para>
 
      <para>
-      <literal>PRIMARY KEY</literal> constraints share the restrictions that
-      <literal>UNIQUE</literal> constraints have when placed on partitioned
-      tables.
+      When placed on a partitioned table, <literal>PRIMARY KEY</literal>
+      constraints share the restrictions previously described
+      for <literal>UNIQUE</literal> constraints.
      </para>
 
      <para>
       Adding a <literal>PRIMARY KEY</literal> constraint will automatically
       create a unique btree index on the column or group of columns used in the
-      constraint.  The optional <literal>INCLUDE</literal> clause allows a list
-      of columns to be specified which will be included in the non-key portion
-      of the index.  Although uniqueness is not enforced on the included columns,
-      the constraint still depends on them. Consequently, some operations on the
-      included columns (e.g., <literal>DROP COLUMN</literal>) can cause cascaded
-      constraint and index deletion.
+      constraint.
+     </para>
+
+     <para>
+      The optional <literal>INCLUDE</literal> clause adds to that index
+      one or more columns that are simply <quote>payload</quote>: uniqueness
+      is not enforced on them, and the index cannot be searched on the basis
+      of those columns.  However they can be retrieved by an index-only scan.
+      Note that although the constraint is not enforced on included columns,
+      it still depends on them.  Consequently, some operations on such columns
+      (e.g., <literal>DROP COLUMN</literal>) can cause cascaded constraint and
+      index deletion.
      </para>
     </listitem>
    </varlistentry>
@@ -1152,7 +1199,7 @@ WITH ( MODULUS <replaceable class="parameter">numeric_literal</replaceable>, REM
       constraint that is not deferrable will be checked immediately
       after every command.  Checking of constraints that are
       deferrable can be postponed until the end of the transaction
-      (using the <xref linkend="sql-set-constraints"/> command).
+      (using the <link linkend="sql-set-constraints"><command>SET CONSTRAINTS</command></link> command).
       <literal>NOT DEFERRABLE</literal> is the default.
       Currently, only <literal>UNIQUE</literal>, <literal>PRIMARY KEY</literal>,
       <literal>EXCLUDE</literal>, and
@@ -1176,7 +1223,7 @@ WITH ( MODULUS <replaceable class="parameter">numeric_literal</replaceable>, REM
       statement. This is the default.  If the constraint is
       <literal>INITIALLY DEFERRED</literal>, it is checked only at the
       end of the transaction.  The constraint check time can be
-      altered with the <xref linkend="sql-set-constraints"/> command.
+      altered with the <link linkend="sql-set-constraints"><command>SET CONSTRAINTS</command></link> command.
      </para>
     </listitem>
    </varlistentry>
@@ -1244,8 +1291,8 @@ WITH ( MODULUS <replaceable class="parameter">numeric_literal</replaceable>, REM
         <listitem>
          <para>
           All rows in the temporary table will be deleted at the end
-          of each transaction block.  Essentially, an automatic <xref
-          linkend="sql-truncate"/> is done
+          of each transaction block.  Essentially, an automatic <link
+          linkend="sql-truncate"><command>TRUNCATE</command></link> is done
           at each commit.  When used on a partitioned table, this
           is not cascaded to its partitions.
          </para>
@@ -1322,8 +1369,9 @@ WITH ( MODULUS <replaceable class="parameter">numeric_literal</replaceable>, REM
     If a table parameter value is set and the
     equivalent <literal>toast.</literal> parameter is not, the TOAST table
     will use the table's parameter value.
-    Specifying these parameters for partitioned tables is not supported,
-    but you may specify them for individual leaf partitions.
+    These parameters, with the exception of
+    <literal>parallel_insert_enabled</literal>, are not supported on partitioned
+    tables, but may be specified for individual leaf partitions.
    </para>
 
    <variablelist>
@@ -1359,10 +1407,11 @@ WITH ( MODULUS <replaceable class="parameter">numeric_literal</replaceable>, REM
     <listitem>
      <para>
       The toast_tuple_target specifies the minimum tuple length required before
-      we try to move long column values into TOAST tables, and is also the
-      target length we try to reduce the length below once toasting begins.
-      This only affects columns marked as either External or Extended
-      and applies only to new tuples; there is no effect on existing rows.
+      we try to compress and/or move long column values into TOAST tables, and
+      is also the target length we try to reduce the length below once toasting
+      begins. This affects columns marked as External (for move),
+      Main (for compression), or Extended (for both) and applies only to new
+      tuples. There is no effect on existing rows.
       By default this parameter is set to allow at least 4 tuples per block,
       which with the default block size will be 2040 bytes. Valid values are
       between 128 bytes and the (block size - header), by default 8160 bytes.
@@ -1388,6 +1437,32 @@ WITH ( MODULUS <replaceable class="parameter">numeric_literal</replaceable>, REM
       on the relation size.  The actual number of workers chosen by the planner
       or by utility statements that use parallel scans may be less, for example
       due to the setting of <xref linkend="guc-max-worker-processes"/>.
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="reloption-parallel-insert-enabled" xreflabel="parallel_insert_enabled">
+    <term><literal>parallel_insert_enabled</literal> (<type>boolean</type>)
+     <indexterm>
+     <primary><varname>parallel_insert_enabled</varname> storage parameter</primary>
+    </indexterm>
+    </term>
+    <listitem>
+     <para>
+      Enables or disables the query planner's use of parallel insert for
+      this table. When enabled (and provided that
+      <xref linkend="guc-enable-parallel-insert"/> is also <literal>true</literal>),
+      the planner performs additional parallel-safety checks on the table's
+      attributes and indexes, in order to determine if it's safe to use a
+      parallel plan for <command>INSERT</command>. The default is
+      <literal>true</literal>. In cases such as when the table has a large
+      number of partitions, and particularly also when that table uses a
+      parallel-unsafe feature that prevents parallelism, the overhead of these
+      checks may become prohibitively high. To address this potential overhead
+      in these cases, this option can be used to disable the use of parallel
+      insert for this table. Note that if the target table of the parallel
+      insert is partitioned, the <literal>parallel_insert_enabled</literal>
+      option values of the partitions are ignored.
      </para>
     </listitem>
    </varlistentry>
@@ -1430,7 +1505,7 @@ WITH ( MODULUS <replaceable class="parameter">numeric_literal</replaceable>, REM
       Disabling index cleanup can speed up <command>VACUUM</command> very
       significantly, but may also lead to severely bloated indexes if table
       modifications are frequent.  The <literal>INDEX_CLEANUP</literal>
-      parameter of <xref linkend="sql-vacuum"/>, if specified, overrides
+      parameter of <link linkend="sql-vacuum"><command>VACUUM</command></link>, if specified, overrides
       the value of this option.
      </para>
     </listitem>
@@ -1451,7 +1526,7 @@ WITH ( MODULUS <replaceable class="parameter">numeric_literal</replaceable>, REM
       the truncated pages is returned to the operating system.
       Note that the truncation requires <literal>ACCESS EXCLUSIVE</literal>
       lock on the table. The <literal>TRUNCATE</literal> parameter
-      of <xref linkend="sql-vacuum"/>, if specified, overrides the value
+      of <link linkend="sql-vacuum"><command>VACUUM</command></link>, if specified, overrides the value
       of this option.
      </para>
     </listitem>

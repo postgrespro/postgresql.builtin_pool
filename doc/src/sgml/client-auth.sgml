@@ -198,14 +198,6 @@ hostnogssenc  <replaceable>database</replaceable>  <replaceable>user</replaceabl
        the <literal>hostgssenc</literal> record is ignored except for logging
        a warning that it cannot match any connections.
       </para>
-
-      <para>
-        Note that the only supported
-        <link linkend="auth-methods">authentication methods</link> for use
-        with <acronym>GSSAPI</acronym> encryption
-        are <literal>gss</literal>, <literal>reject</literal>,
-        and <literal>trust</literal>.
-      </para>
      </listitem>
     </varlistentry>
 
@@ -237,8 +229,10 @@ hostnogssenc  <replaceable>database</replaceable>  <replaceable>user</replaceabl
        members of the role, directly or indirectly, and not just by
        virtue of being a superuser.
        The value <literal>replication</literal> specifies that the record
-       matches if a physical replication connection is requested (note that
-       replication connections do not specify any particular database).
+       matches if a physical replication connection is requested, however, it
+       doesn't match with logical replication connections. Note that physical
+       replication connections do not specify any particular database whereas
+       logical replication connections do specify it.
        Otherwise, this is the name of
        a specific <productname>PostgreSQL</productname> database.
        Multiple database names can be supplied by separating them with
@@ -948,7 +942,8 @@ omicron         bryanh                  guest1
     <listitem>
      <para>
       <link linkend="auth-ident">Ident authentication</link>, which
-      relies on an <quote>Identification Protocol</quote> (RFC 1413)
+      relies on an <quote>Identification Protocol</quote>
+      (<ulink url="https://tools.ietf.org/html/rfc1413">RFC 1413</ulink>)
       service on the client's machine.  (On local Unix-socket connections,
       this is treated as peer authentication.)
      </para>
@@ -1198,15 +1193,15 @@ omicron         bryanh                  guest1
 
    <para>
     <productname>GSSAPI</productname> is an industry-standard protocol
-    for secure authentication defined in RFC 2743.
-
+    for secure authentication defined in
+    <ulink url="https://tools.ietf.org/html/rfc2743">RFC 2743</ulink>.
     <productname>PostgreSQL</productname>
-    supports <productname>GSSAPI</productname> for use as either an encrypted,
-    authenticated layer, or for authentication only.
+    supports <productname>GSSAPI</productname> for authentication,
+    communications encryption, or both.
     <productname>GSSAPI</productname> provides automatic authentication
     (single sign-on) for systems that support it. The authentication itself is
     secure.  If <productname>GSSAPI</productname> encryption
-    (see <literal>hostgssenc</literal>) or <acronym>SSL</acronym> encryption are
+    or <acronym>SSL</acronym> encryption is
     used, the data sent along the database connection will be encrypted;
     otherwise, it will not.
    </para>
@@ -1218,37 +1213,46 @@ omicron         bryanh                  guest1
 
    <para>
     When <productname>GSSAPI</productname> uses
-    <productname>Kerberos</productname>, it uses a standard principal
-    in the format
+    <productname>Kerberos</productname>, it uses a standard service
+    principal (authentication identity) name in the format
     <literal><replaceable>servicename</replaceable>/<replaceable>hostname</replaceable>@<replaceable>realm</replaceable></literal>.
-    The PostgreSQL server will accept any principal that is included in the keytab used by
-    the server, but care needs to be taken to specify the correct principal details when
-    making the connection from the client using the <literal>krbsrvname</literal> connection parameter. (See
-    also <xref linkend="libpq-paramkeywords"/>.) The installation default can be
-    changed from the default <literal>postgres</literal> at build time using
-    <literal>./configure --with-krb-srvnam=</literal><replaceable>whatever</replaceable>.
-    In most environments,
-    this parameter never needs to be changed.
-    Some Kerberos implementations might require a different service name,
-    such as Microsoft Active Directory which requires the service name
-    to be in upper case (<literal>POSTGRES</literal>).
-   </para>
-   <para>
-    <replaceable>hostname</replaceable> is the fully qualified host name of the
-    server machine. The service principal's realm is the preferred realm
-    of the server machine.
+    The principal name used by a particular installation is not encoded in
+    the <productname>PostgreSQL</productname> server in any way; rather it
+    is specified in the <firstterm>keytab</firstterm> file that the server
+    reads to determine its identity.  If multiple principals are listed in
+    the keytab file, the server will accept any one of them.
+    The server's realm name is the preferred realm specified in the Kerberos
+    configuration file(s) accessible to the server.
    </para>
 
    <para>
-    Client principals can be mapped to different <productname>PostgreSQL</productname>
-    database user names with <filename>pg_ident.conf</filename>.  For example,
+    When connecting, the client must know the principal name of the server
+    it intends to connect to.  The <replaceable>servicename</replaceable>
+    part of the principal is ordinarily <literal>postgres</literal>,
+    but another value can be selected via <application>libpq</application>'s
+    <xref linkend="libpq-connect-krbsrvname"/> connection parameter.
+    The <replaceable>hostname</replaceable> part is the fully qualified
+    host name that <application>libpq</application> is told to connect to.
+    The realm name is the preferred realm specified in the Kerberos
+    configuration file(s) accessible to the client.
+   </para>
+
+   <para>
+    The client will also have a principal name for its own identity
+    (and it must have a valid ticket for this principal).  To
+    use <productname>GSSAPI</productname> for authentication, the client
+    principal must be associated with
+    a <productname>PostgreSQL</productname> database user name.
+    The <filename>pg_ident.conf</filename> configuration file can be used
+    to map principals to user names; for example,
     <literal>pgusername@realm</literal> could be mapped to just <literal>pgusername</literal>.
     Alternatively, you can use the full <literal>username@realm</literal> principal as
     the role name in <productname>PostgreSQL</productname> without any mapping.
    </para>
 
    <para>
-    <productname>PostgreSQL</productname> also supports a parameter to strip the realm from
+    <productname>PostgreSQL</productname> also supports mapping
+    client principals to user names by just stripping the realm from
     the principal.  This method is supported for backwards compatibility and is
     strongly discouraged as it is then impossible to distinguish different users
     with the same user name but coming from different realms.  To enable this,
@@ -1262,39 +1266,30 @@ omicron         bryanh                  guest1
    </para>
 
    <para>
-    Make sure that your server keytab file is readable (and preferably
-    only readable, not writable) by the <productname>PostgreSQL</productname>
-    server account.  (See also <xref linkend="postgres-user"/>.) The location
-    of the key file is specified by the <xref
-    linkend="guc-krb-server-keyfile"/> configuration
-    parameter. The default is
-    <filename>/usr/local/pgsql/etc/krb5.keytab</filename> (or whatever
-    directory was specified as <varname>sysconfdir</varname> at build time).
+    The location of the server's keytab file is specified by the <xref
+    linkend="guc-krb-server-keyfile"/> configuration parameter.
     For security reasons, it is recommended to use a separate keytab
     just for the <productname>PostgreSQL</productname> server rather
-    than opening up permissions on the system keytab file.
+    than allowing the server to read the system keytab file.
+    Make sure that your server keytab file is readable (and preferably
+    only readable, not writable) by the <productname>PostgreSQL</productname>
+    server account.  (See also <xref linkend="postgres-user"/>.)
    </para>
+
    <para>
-    The keytab file is generated by the Kerberos software; see the
-    Kerberos documentation for details. The following example is
-   for MIT-compatible Kerberos 5 implementations:
+    The keytab file is generated using the Kerberos software; see the
+    Kerberos documentation for details. The following example shows
+    doing this using the <application>kadmin</application> tool of
+    MIT-compatible Kerberos 5 implementations:
 <screen>
-<prompt>kadmin% </prompt><userinput>ank -randkey postgres/server.my.domain.org</userinput>
+<prompt>kadmin% </prompt><userinput>addprinc -randkey postgres/server.my.domain.org</userinput>
 <prompt>kadmin% </prompt><userinput>ktadd -k krb5.keytab postgres/server.my.domain.org</userinput>
 </screen>
    </para>
 
    <para>
-    When connecting to the database make sure you have a ticket for a
-    principal matching the requested database user name. For example, for
-    database user name <literal>fred</literal>, principal
-    <literal>fred@EXAMPLE.COM</literal> would be able to connect. To also allow
-    principal <literal>fred/users.example.com@EXAMPLE.COM</literal>, use a user name
-    map, as described in <xref linkend="auth-username-maps"/>.
-   </para>
-
-   <para>
-    The following configuration options are supported for <productname>GSSAPI</productname>:
+    The following authentication options are supported for
+    the <productname>GSSAPI</productname> authentication method:
     <variablelist>
      <varlistentry>
       <term><literal>include_realm</literal></term>
@@ -1317,7 +1312,7 @@ omicron         bryanh                  guest1
       <term><literal>map</literal></term>
       <listitem>
        <para>
-        Allows for mapping between system and database user names. See
+        Allows mapping from client principals to database user names. See
         <xref linkend="auth-username-maps"/> for details.  For a GSSAPI/Kerberos
         principal, such as <literal>username@EXAMPLE.COM</literal> (or, less
         commonly, <literal>username/hostbased@EXAMPLE.COM</literal>), the
@@ -1343,6 +1338,15 @@ omicron         bryanh                  guest1
       </listitem>
      </varlistentry>
     </variablelist>
+   </para>
+
+   <para>
+    In addition to these settings, which can be different for
+    different <filename>pg_hba.conf</filename> entries, there is the
+    server-wide <xref linkend="guc-krb-caseins-users"/> configuration
+    parameter.  If that is set to true, client principals are matched to
+    user map entries case-insensitively.  <literal>krb_realm</literal>, if
+    set, is also matched case-insensitively.
    </para>
   </sect1>
 
@@ -1503,7 +1507,8 @@ omicron         bryanh                  guest1
 
    <para>
     The <quote>Identification Protocol</quote> is described in
-    RFC 1413. Virtually every Unix-like
+    <ulink url="https://tools.ietf.org/html/rfc1413">RFC 1413</ulink>.
+    Virtually every Unix-like
     operating system ships with an ident server that listens on TCP
     port 113 by default. The basic functionality of an ident server
     is to answer questions like <quote>What user initiated the
@@ -1671,8 +1676,8 @@ omicron         bryanh                  guest1
        <para>
         Set to 1 to make the connection between PostgreSQL and the LDAP server
         use TLS encryption.  This uses the <literal>StartTLS</literal>
-        operation per RFC 4513.  See also the <literal>ldapscheme</literal>
-        option for an alternative.
+        operation per <ulink url="https://tools.ietf.org/html/rfc4513">RFC 4513</ulink>.
+        See also the <literal>ldapscheme</literal> option for an alternative.
        </para>
       </listitem>
      </varlistentry>
@@ -1766,7 +1771,8 @@ omicron         bryanh                  guest1
        <term><literal>ldapurl</literal></term>
        <listitem>
         <para>
-         An RFC 4516 LDAP URL.  This is an alternative way to write some of the
+         An <ulink url="https://tools.ietf.org/html/rfc4516">RFC 4516</ulink>
+         LDAP URL.  This is an alternative way to write some of the
          other LDAP options in a more compact and standard form.  The format is
 <synopsis>
 ldap[s]://<replaceable>host</replaceable>[:<replaceable>port</replaceable>]/<replaceable>basedn</replaceable>[?[<replaceable>attribute</replaceable>][?[<replaceable>scope</replaceable>][?[<replaceable>filter</replaceable>]]]]
@@ -1827,7 +1833,8 @@ ldap[s]://<replaceable>host</replaceable>[:<replaceable>port</replaceable>]/<rep
      If <productname>PostgreSQL</productname> was compiled with
      <productname>OpenLDAP</productname> as the LDAP client library, the
      <literal>ldapserver</literal> setting may be omitted.  In that case, a
-     list of host names and ports is looked up via RFC 2782 DNS SRV records.
+     list of host names and ports is looked up via
+     <ulink url="https://tools.ietf.org/html/rfc2782">RFC 2782</ulink> DNS SRV records.
      The name <literal>_ldap._tcp.DOMAIN</literal> is looked up, where
      <literal>DOMAIN</literal> is extracted from <literal>ldapbasedn</literal>.
    </para>
@@ -2044,13 +2051,10 @@ host ... radius radiusservers="server1,server2" radiussecrets="""secret one"",""
    </para>
 
    <para>
-    In a <filename>pg_hba.conf</filename> record specifying certificate
-    authentication, the authentication option <literal>clientcert</literal> is
-    assumed to be <literal>verify-ca</literal> or <literal>verify-full</literal>,
-    and it cannot be turned off since a client certificate is necessary for this
-    method. What the <literal>cert</literal> method adds to the basic
-    <literal>clientcert</literal> certificate validity test is a check that the
-    <literal>cn</literal> attribute matches the database user name.
+    It is redundant to use the <literal>clientcert</literal> option with
+    <literal>cert</literal> authentication because <literal>cert</literal>
+    authentication is effectively <literal>trust</literal> authentication
+    with <literal>clientcert=verify-full</literal>.
    </para>
   </sect1>
 

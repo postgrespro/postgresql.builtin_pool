@@ -20,6 +20,7 @@ test: uuid
 test: enum
 test: money
 test: rangetypes
+test: multirangetypes
 test: pg_lsn
 test: regproc
 test: strings
@@ -44,7 +45,6 @@ test: tstypes
 test: geometry
 test: horology
 test: regex
-test: oidjoins
 test: type_sanity
 test: opr_sanity
 test: misc_sanity
@@ -83,6 +83,7 @@ test: roleattributes
 test: create_am
 test: hash_func
 test: errors
+test: infinite_recurse
 test: sanity_check
 test: select_into
 test: select_distinct
@@ -137,6 +138,7 @@ test: sysviews
 test: tsrf
 test: tid
 test: tidscan
+test: tidrangescan
 test: collate.icu.utf8
 test: rules
 test: psql
@@ -146,6 +148,7 @@ test: stats_ext
 test: collate.linux.utf8
 test: select_parallel
 test: write_parallel
+test: insert_parallel
 test: publication
 test: subscription
 test: select_views
@@ -198,6 +201,8 @@ test: partition_aggregate
 test: partition_info
 test: tuplesort
 test: explain
+test: compression
 test: event_trigger
+test: oidjoins
 test: fast_default
 test: stats

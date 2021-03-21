@@ -27,7 +27,7 @@ ALTER SUBSCRIPTION <replaceable class="parameter">name</replaceable> REFRESH PUB
 ALTER SUBSCRIPTION <replaceable class="parameter">name</replaceable> ENABLE
 ALTER SUBSCRIPTION <replaceable class="parameter">name</replaceable> DISABLE
 ALTER SUBSCRIPTION <replaceable class="parameter">name</replaceable> SET ( <replaceable class="parameter">subscription_parameter</replaceable> [= <replaceable class="parameter">value</replaceable>] [, ... ] )
-ALTER SUBSCRIPTION <replaceable class="parameter">name</replaceable> OWNER TO { <replaceable>new_owner</replaceable> | CURRENT_USER | SESSION_USER }
+ALTER SUBSCRIPTION <replaceable class="parameter">name</replaceable> OWNER TO { <replaceable>new_owner</replaceable> | CURRENT_ROLE | CURRENT_USER | SESSION_USER }
 ALTER SUBSCRIPTION <replaceable class="parameter">name</replaceable> RENAME TO <replaceable>new_name</replaceable>
 </synopsis>
  </refsynopsisdiv>
@@ -47,6 +47,24 @@ ALTER SUBSCRIPTION <replaceable class="parameter">name</replaceable> RENAME TO <
    new owning role. The new owner has to be a superuser.
    (Currently, all subscription owners must be superusers, so the owner checks
    will be bypassed in practice.  But this might change in the future.)
+  </para>
+  
+  <para>
+   When refreshing a publication we remove the relations that are no longer
+   part of the publication and we also remove the tablesync slots if there are
+   any. It is necessary to remove tablesync slots so that the resources
+   allocated for the subscription on the remote host are released. If due to
+   network breakdown or some other error, <productname>PostgreSQL</productname>
+   is unable to remove the slots, an ERROR will be reported. To proceed in this
+   situation, the user either needs to retry the operation or disassociate the
+   slot from the subscription and drop the subscription as explained in
+   <xref linkend="sql-dropsubscription"/>.
+  </para>
+
+  <para>
+   Commands <command>ALTER SUBSCRIPTION ... REFRESH PUBLICATION</command> and
+   <command>ALTER SUBSCRIPTION ... SET PUBLICATION ...</command> with refresh
+   option as true cannot be executed inside a transaction block.
   </para>
  </refsect1>
 

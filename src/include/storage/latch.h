@@ -90,7 +90,7 @@
  * efficient than using WaitLatch or WaitLatchOrSocket.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/storage/latch.h
@@ -110,6 +110,7 @@
 typedef struct Latch
 {
 	sig_atomic_t is_set;
+	sig_atomic_t maybe_sleeping;
 	bool		is_shared;
 	int			owner_pid;
 #ifdef WIN32
@@ -167,6 +168,7 @@ extern void OwnLatch(Latch *latch);
 extern void DisownLatch(Latch *latch);
 extern void SetLatch(Latch *latch);
 extern void ResetLatch(Latch *latch);
+extern void ShutdownLatchSupport(void);
 
 extern WaitEventSet *CreateWaitEventSet(MemoryContext context, int nevents);
 extern void FreeWaitEventSet(WaitEventSet *set);
@@ -184,15 +186,5 @@ extern int	WaitLatchOrSocket(Latch *latch, int wakeEvents,
 extern void InitializeLatchWaitSet(void);
 
 extern void DeleteWaitEventFromSet(WaitEventSet *set, int event_pos);
-
-/*
- * Unix implementation uses SIGUSR1 for inter-process signaling.
- * Win32 doesn't need this.
- */
-#ifndef WIN32
-extern void latch_sigusr1_handler(void);
-#else
-#define latch_sigusr1_handler()  ((void) 0)
-#endif
 
 #endif							/* LATCH_H */

@@ -18,12 +18,16 @@ OBJS = \
 
 all: isolationtester$(X) pg_isolation_regress$(X)
 
-# Though we don't install these binaries, build them during installation
-# (including temp-install).  Otherwise, "make -j check-world" and "make -j
-# installcheck-world" would spawn multiple, concurrent builds in this
-# directory.  Later builds would overwrite files while earlier builds are
-# reading them, causing occasional failures.
-install: | all
+install: all installdirs
+	$(INSTALL_PROGRAM) pg_isolation_regress$(X) '$(DESTDIR)$(pgxsdir)/$(subdir)/pg_isolation_regress$(X)'
+	$(INSTALL_PROGRAM) isolationtester$(X) '$(DESTDIR)$(pgxsdir)/$(subdir)/isolationtester$(X)'
+
+installdirs:
+	$(MKDIR_P) '$(DESTDIR)$(pgxsdir)/$(subdir)'
+
+uninstall:
+	rm -f '$(DESTDIR)$(pgxsdir)/$(subdir)/pg_isolation_regress$(X)'
+	rm -f '$(DESTDIR)$(pgxsdir)/$(subdir)/isolationtester$(X)'
 
 submake-regress:
 	$(MAKE) -C $(top_builddir)/src/test/regress pg_regress.o
@@ -58,12 +62,11 @@ installcheck: all
 check: all
 	$(pg_isolation_regress_check) --schedule=$(srcdir)/isolation_schedule
 
-# Versions of the check tests that include the prepared-transactions test
-# It only makes sense to run these if set up to use prepared transactions,
-# via TEMP_CONFIG for the check case, or via the postgresql.conf for the
-# installcheck case.
+# Non-default tests.  It only makes sense to run these if set up to use
+# prepared transactions, via TEMP_CONFIG for the check case, or via the
+# postgresql.conf for the installcheck case.
 installcheck-prepared-txns: all temp-install
-	$(pg_isolation_regress_installcheck) --schedule=$(srcdir)/isolation_schedule prepared-transactions
+	$(pg_isolation_regress_installcheck) --schedule=$(srcdir)/isolation_schedule prepared-transactions prepared-transactions-cic
 
 check-prepared-txns: all temp-install
-	$(pg_isolation_regress_check) --schedule=$(srcdir)/isolation_schedule prepared-transactions
+	$(pg_isolation_regress_check) --schedule=$(srcdir)/isolation_schedule prepared-transactions prepared-transactions-cic

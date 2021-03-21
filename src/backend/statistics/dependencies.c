@@ -3,7 +3,7 @@
  * dependencies.c
  *	  POSTGRES functional dependencies
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -1073,8 +1073,8 @@ clauselist_apply_dependencies(PlannerInfo *root, List *clauses,
 			}
 		}
 
-		simple_sel = clauselist_selectivity_simple(root, attr_clauses, varRelid,
-												   jointype, sjinfo, NULL);
+		simple_sel = clauselist_selectivity_ext(root, attr_clauses, varRelid,
+												jointype, sjinfo, false);
 		attr_sel[attidx++] = simple_sel;
 	}
 
@@ -1305,7 +1305,7 @@ dependencies_clauselist_selectivity(PlannerInfo *root,
 
 	/*
 	 * Work out which dependencies we can apply, starting with the
-	 * widest/stongest ones, and proceeding to smaller/weaker ones.
+	 * widest/strongest ones, and proceeding to smaller/weaker ones.
 	 */
 	dependencies = (MVDependency **) palloc(sizeof(MVDependency *) *
 											total_ndeps);

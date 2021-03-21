@@ -1,7 +1,7 @@
 /*
  * psql - the PostgreSQL interactive terminal
  *
- * Copyright (c) 2000-2020, PostgreSQL Global Development Group
+ * Copyright (c) 2000-2021, PostgreSQL Global Development Group
  *
  * src/bin/psql/help.c
  */
@@ -134,10 +134,7 @@ usage(unsigned short int pager)
 	fprintf(output, _("  -p, --port=PORT          database server port (default: \"%s\")\n"),
 			env ? env : DEF_PGPORT_STR);
 	/* Display default user */
-	env = getenv("PGUSER");
-	if (!env)
-		env = user;
-	fprintf(output, _("  -U, --username=USERNAME  database user name (default: \"%s\")\n"), env);
+	fprintf(output, _("  -U, --username=USERNAME  database user name (default: \"%s\")\n"), user);
 	fprintf(output, _("  -w, --no-password        never prompt for password\n"));
 	fprintf(output, _("  -W, --password           force password prompt (should happen automatically)\n"));
 
@@ -267,6 +264,7 @@ slashUsage(unsigned short int pager)
 	fprintf(output, _("  \\du[S+] [PATTERN]      list roles\n"));
 	fprintf(output, _("  \\dv[S+] [PATTERN]      list views\n"));
 	fprintf(output, _("  \\dx[+]  [PATTERN]      list extensions\n"));
+	fprintf(output, _("  \\dX     [PATTERN]      list extended statistics\n"));
 	fprintf(output, _("  \\dy     [PATTERN]      list event triggers\n"));
 	fprintf(output, _("  \\l[+]   [PATTERN]      list databases\n"));
 	fprintf(output, _("  \\sf[+]  FUNCNAME       show a function's definition\n"));
@@ -374,6 +372,8 @@ helpVariables(unsigned short int pager)
 					  "    true if last query failed, else false\n"));
 	fprintf(output, _("  FETCH_COUNT\n"
 					  "    the number of result rows to fetch and display at a time (0 = unlimited)\n"));
+	fprintf(output, _("  HIDE_TOAST_COMPRESSION\n"
+					  "    if set, compression methods are not displayed\n"));
 	fprintf(output, _("  HIDE_TABLEAM\n"
 					  "    if set, table access methods are not displayed\n"));
 	fprintf(output, _("  HISTCONTROL\n"
@@ -534,6 +534,7 @@ helpSQL(const char *topic, unsigned short int pager)
 		int			i;
 		int			j;
 
+		/* Find screen width to determine how many columns will fit */
 #ifdef TIOCGWINSZ
 		struct winsize screen_size;
 
@@ -571,56 +572,63 @@ helpSQL(const char *topic, unsigned short int pager)
 	else
 	{
 		int			i,
-					j,
-					x = 0;
-		bool		help_found = false;
+					pass;
 		FILE	   *output = NULL;
 		size_t		len,
-					wordlen;
-		int			nl_count = 0;
+					wordlen,
+					j;
+		int			nl_count;
 
 		/*
+		 * len is the amount of the input to compare to the help topic names.
 		 * We first try exact match, then first + second words, then first
 		 * word only.
 		 */
 		len = strlen(topic);
 
-		for (x = 1; x <= 3; x++)
+		for (pass = 1; pass <= 3; pass++)
 		{
-			if (x > 1)			/* Nothing on first pass - try the opening
+			if (pass > 1)		/* Nothing on first pass - try the opening
 								 * word(s) */
 			{
 				wordlen = j = 1;
-				while (topic[j] != ' ' && j++ < len)
+				while (j < len && topic[j++] != ' ')
 					wordlen++;
-				if (x == 2)
+				if (pass == 2 && j < len)
 				{
-					j++;
-					while (topic[j] != ' ' && j++ <= len)
+					wordlen++;
+					while (j < len && topic[j++] != ' ')
 						wordlen++;
 				}
-				if (wordlen >= len) /* Don't try again if the same word */
+				if (wordlen >= len)
 				{
-					if (!output)
-						output = PageOutput(nl_count, pager ? &(pset.popt.topt) : NULL);
-					break;
+					/* Failed to shorten input, so try next pass if any */
+					continue;
 				}
 				len = wordlen;
 			}
 
-			/* Count newlines for pager */
+			/*
+			 * Count newlines for pager.  This logic must agree with what the
+			 * following loop will do!
+			 */
+			nl_count = 0;
 			for (i = 0; QL_HELP[i].cmd; i++)
 			{
 				if (pg_strncasecmp(topic, QL_HELP[i].cmd, len) == 0 ||
 					strcmp(topic, "*") == 0)
 				{
-					nl_count += 5 + QL_HELP[i].nl_count;
+					/* magic constant here must match format below! */
+					nl_count += 7 + QL_HELP[i].nl_count;
 
 					/* If we have an exact match, exit.  Fixes \h SELECT */
 					if (pg_strcasecmp(topic, QL_HELP[i].cmd) == 0)
 						break;
 				}
 			}
+			/* If no matches, don't open the output yet */
+			if (nl_count == 0)
+				continue;
 
 			if (!output)
 				output = PageOutput(nl_count, pager ? &(pset.popt.topt) : NULL);
@@ -635,10 +643,10 @@ helpSQL(const char *topic, unsigned short int pager)
 
 					initPQExpBuffer(&buffer);
 					QL_HELP[i].syntaxfunc(&buffer);
-					help_found = true;
 					url = psprintf("https://www.postgresql.org/docs/%s/%s.html",
 								   strstr(PG_VERSION, "devel") ? "devel" : PG_MAJORVERSION,
 								   QL_HELP[i].docbook_id);
+					/* # of newlines in format must match constant above! */
 					fprintf(output, _("Command:     %s\n"
 									  "Description: %s\n"
 									  "Syntax:\n%s\n\n"
@@ -648,17 +656,24 @@ helpSQL(const char *topic, unsigned short int pager)
 							buffer.data,
 							url);
 					free(url);
+					termPQExpBuffer(&buffer);
+
 					/* If we have an exact match, exit.  Fixes \h SELECT */
 					if (pg_strcasecmp(topic, QL_HELP[i].cmd) == 0)
 						break;
 				}
 			}
-			if (help_found)		/* Don't keep trying if we got a match */
-				break;
+			break;
 		}
 
-		if (!help_found)
-			fprintf(output, _("No help available for \"%s\".\nTry \\h with no arguments to see available help.\n"), topic);
+		/* If we never found anything, report that */
+		if (!output)
+		{
+			output = PageOutput(2, pager ? &(pset.popt.topt) : NULL);
+			fprintf(output, _("No help available for \"%s\".\n"
+							  "Try \\h with no arguments to see available help.\n"),
+					topic);
+		}
 
 		ClosePager(output);
 	}
@@ -671,7 +686,7 @@ print_copyright(void)
 {
 	puts("PostgreSQL Database Management System\n"
 		 "(formerly known as Postgres, then as Postgres95)\n\n"
-		 "Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group\n\n"
+		 "Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group\n\n"
 		 "Portions Copyright (c) 1994, The Regents of the University of California\n\n"
 		 "Permission to use, copy, modify, and distribute this software and its\n"
 		 "documentation for any purpose, without fee, and without a written agreement\n"

@@ -3,7 +3,7 @@
  * walreceiver.h
  *	  Exports from replication/walreceiverfuncs.c.
  *
- * Portions Copyright (c) 2010-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 2010-2021, PostgreSQL Global Development Group
  *
  * src/include/replication/walreceiver.h
  *
@@ -19,6 +19,7 @@
 #include "port/atomics.h"
 #include "replication/logicalproto.h"
 #include "replication/walsender.h"
+#include "storage/condition_variable.h"
 #include "storage/latch.h"
 #include "storage/spin.h"
 #include "utils/tuplestore.h"
@@ -62,6 +63,7 @@ typedef struct
 	 */
 	pid_t		pid;
 	WalRcvState walRcvState;
+	ConditionVariable walRcvStoppedCV;
 	pg_time_t	startTime;
 
 	/*
@@ -210,6 +212,7 @@ typedef enum
 typedef struct WalRcvExecResult
 {
 	WalRcvExecStatus status;
+	int			sqlstate;
 	char	   *err;
 	Tuplestorestate *tuplestore;
 	TupleDesc	tupledesc;

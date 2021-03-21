@@ -131,6 +131,11 @@ SELECT SUBSTRING('1234567890' FROM 3) = '34567890' AS "34567890";
 
 SELECT SUBSTRING('1234567890' FROM 4 FOR 3) = '456' AS "456";
 
+-- test overflow cases
+SELECT SUBSTRING('string' FROM 2 FOR 2147483646) AS "tring";
+SELECT SUBSTRING('string' FROM -10 FOR 2147483646) AS "string";
+SELECT SUBSTRING('string' FROM -10 FOR -2147483646) AS "error";
+
 -- T581 regular expression substring (with SQL's bizarre regexp syntax)
 SELECT SUBSTRING('abcdefg' SIMILAR 'a#"(b_d)#"%' ESCAPE '#') AS "bcd";
 -- obsolete SQL99 syntax
@@ -295,6 +300,12 @@ SELECT 'indio' NOT LIKE 'in__o' AS "false";
 SELECT 'indio' LIKE 'in_o' AS "false";
 SELECT 'indio' NOT LIKE 'in_o' AS "true";
 
+SELECT 'abc'::name LIKE '_b_' AS "true";
+SELECT 'abc'::name NOT LIKE '_b_' AS "false";
+
+SELECT 'abc'::bytea LIKE '_b_'::bytea AS "true";
+SELECT 'abc'::bytea NOT LIKE '_b_'::bytea AS "false";
+
 -- unused escape character
 SELECT 'hawkeye' LIKE 'h%' ESCAPE '#' AS "true";
 SELECT 'hawkeye' NOT LIKE 'h%' ESCAPE '#' AS "false";
@@ -327,6 +338,9 @@ SELECT 'i_dio' NOT LIKE 'i$_nd_o' ESCAPE '$' AS "true";
 
 SELECT 'i_dio' LIKE 'i$_d%o' ESCAPE '$' AS "true";
 SELECT 'i_dio' NOT LIKE 'i$_d%o' ESCAPE '$' AS "false";
+
+SELECT 'a_c'::bytea LIKE 'a$__'::bytea ESCAPE '$'::bytea AS "true";
+SELECT 'a_c'::bytea NOT LIKE 'a$__'::bytea ESCAPE '$'::bytea AS "false";
 
 -- escape character same as pattern character
 SELECT 'maca' LIKE 'm%aca' ESCAPE '%' AS "true";
@@ -361,6 +375,9 @@ SELECT 'hawkeye' NOT ILIKE 'H%Eye' AS "false";
 
 SELECT 'Hawkeye' ILIKE 'h%' AS "true";
 SELECT 'Hawkeye' NOT ILIKE 'h%' AS "false";
+
+SELECT 'ABC'::name ILIKE '_b_' AS "true";
+SELECT 'ABC'::name NOT ILIKE '_b_' AS "false";
 
 --
 -- test %/_ combination cases, cf bugs #4821 and #5478
@@ -533,7 +550,23 @@ SELECT replace('yabadoo', 'bad', '') AS "yaoo";
 --
 -- test split_part
 --
+select split_part('','@',1) AS "empty string";
+
+select split_part('','@',-1) AS "empty string";
+
+select split_part('joeuser@mydatabase','',1) AS "joeuser@mydatabase";
+
+select split_part('joeuser@mydatabase','',2) AS "empty string";
+
+select split_part('joeuser@mydatabase','',-1) AS "joeuser@mydatabase";
+
+select split_part('joeuser@mydatabase','',-2) AS "empty string";
+
 select split_part('joeuser@mydatabase','@',0) AS "an error";
+
+select split_part('joeuser@mydatabase','@@',1) AS "joeuser@mydatabase";
+
+select split_part('joeuser@mydatabase','@@',2) AS "empty string";
 
 select split_part('joeuser@mydatabase','@',1) AS "joeuser";
 
@@ -542,6 +575,14 @@ select split_part('joeuser@mydatabase','@',2) AS "mydatabase";
 select split_part('joeuser@mydatabase','@',3) AS "empty string";
 
 select split_part('@joeuser@mydatabase@','@',2) AS "joeuser";
+
+select split_part('joeuser@mydatabase','@',-1) AS "mydatabase";
+
+select split_part('joeuser@mydatabase','@',-2) AS "joeuser";
+
+select split_part('joeuser@mydatabase','@',-3) AS "empty string";
+
+select split_part('@joeuser@mydatabase@','@',-2) AS "mydatabase";
 
 --
 -- test to_hex
@@ -686,7 +727,15 @@ SELECT chr(0);
 SELECT repeat('Pg', 4);
 SELECT repeat('Pg', -4);
 
+SELECT SUBSTRING('1234567890'::bytea FROM 3) "34567890";
+SELECT SUBSTRING('1234567890'::bytea FROM 4 FOR 3) AS "456";
+SELECT SUBSTRING('string'::bytea FROM 2 FOR 2147483646) AS "tring";
+SELECT SUBSTRING('string'::bytea FROM -10 FOR 2147483646) AS "string";
+SELECT SUBSTRING('string'::bytea FROM -10 FOR -2147483646) AS "error";
+
 SELECT trim(E'\\000'::bytea from E'\\000Tom\\000'::bytea);
+SELECT trim(leading E'\\000'::bytea from E'\\000Tom\\000'::bytea);
+SELECT trim(trailing E'\\000'::bytea from E'\\000Tom\\000'::bytea);
 SELECT btrim(E'\\000trim\\000'::bytea, E'\\000'::bytea);
 SELECT btrim(''::bytea, E'\\000'::bytea);
 SELECT btrim(E'\\000trim\\000'::bytea, ''::bytea);

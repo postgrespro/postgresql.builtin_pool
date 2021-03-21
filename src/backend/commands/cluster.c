@@ -6,7 +6,7 @@
  * There is hardly anything left of Paul Brown's original implementation...
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994-5, Regents of the University of California
  *
  *
@@ -35,6 +35,7 @@
 #include "catalog/pg_am.h"
 #include "catalog/toasting.h"
 #include "commands/cluster.h"
+#include "commands/defrem.h"
 #include "commands/progress.h"
 #include "commands/tablecmds.h"
 #include "commands/vacuum.h"
@@ -67,13 +68,10 @@ typedef struct
 } RelToCluster;
 
 
-static void rebuild_relation(Relation OldHeap, Oid indexOid,
-							 bool isTopLevel, bool verbose);
+static void rebuild_relation(Relation OldHeap, Oid indexOid, bool verbose);
 static void copy_table_data(Oid OIDNewHeap, Oid OIDOldHeap, Oid OIDOldIndex,
-							bool isTopLevel, bool verbose,
-							bool *pSwapToastByContent,
-							TransactionId *pFreezeXid,
-							MultiXactId *pCutoffMulti);
+							bool verbose, bool *pSwapToastByContent,
+							TransactionId *pFreezeXid, MultiXactId *pCutoffMulti);
 static List *get_tables_to_cluster(MemoryContext cluster_context);
 
 
@@ -102,8 +100,29 @@ static List *get_tables_to_cluster(MemoryContext cluster_context);
  *---------------------------------------------------------------------------
  */
 void
-cluster(ClusterStmt *stmt, bool isTopLevel)
+cluster(ParseState *pstate, ClusterStmt *stmt, bool isTopLevel)
 {
+	ListCell   *lc;
+	ClusterParams params = {0};
+	bool		verbose = false;
+
+	/* Parse option list */
+	foreach(lc, stmt->params)
+	{
+		DefElem    *opt = (DefElem *) lfirst(lc);
+
+		if (strcmp(opt->defname, "verbose") == 0)
+			verbose = defGetBoolean(opt);
+		else
+			ereport(ERROR,
+					(errcode(ERRCODE_SYNTAX_ERROR),
+					 errmsg("unrecognized CLUSTER option \"%s\"",
+							opt->defname),
+					 parser_errposition(pstate, opt->location)));
+	}
+
+	params.options = (verbose ? CLUOPT_VERBOSE : 0);
+
 	if (stmt->relation != NULL)
 	{
 		/* This is the single-relation case. */
@@ -173,7 +192,7 @@ cluster(ClusterStmt *stmt, bool isTopLevel)
 		table_close(rel, NoLock);
 
 		/* Do the job. */
-		cluster_rel(tableOid, indexOid, stmt->options, isTopLevel);
+		cluster_rel(tableOid, indexOid, &params);
 	}
 	else
 	{
@@ -215,15 +234,16 @@ cluster(ClusterStmt *stmt, bool isTopLevel)
 		foreach(rv, rvs)
 		{
 			RelToCluster *rvtc = (RelToCluster *) lfirst(rv);
+			ClusterParams cluster_params = params;
 
 			/* Start a new transaction for each relation. */
 			StartTransactionCommand();
 			/* functions in indexes may want a snapshot set */
 			PushActiveSnapshot(GetTransactionSnapshot());
 			/* Do the job. */
+			cluster_params.options |= CLUOPT_RECHECK;
 			cluster_rel(rvtc->tableOid, rvtc->indexOid,
-						stmt->options | CLUOPT_RECHECK,
-						isTopLevel);
+						&cluster_params);
 			PopActiveSnapshot();
 			CommitTransactionCommand();
 		}
@@ -254,11 +274,11 @@ cluster(ClusterStmt *stmt, bool isTopLevel)
  * and error messages should refer to the operation as VACUUM not CLUSTER.
  */
 void
-cluster_rel(Oid tableOid, Oid indexOid, int options, bool isTopLevel)
+cluster_rel(Oid tableOid, Oid indexOid, ClusterParams *params)
 {
 	Relation	OldHeap;
-	bool		verbose = ((options & CLUOPT_VERBOSE) != 0);
-	bool		recheck = ((options & CLUOPT_RECHECK) != 0);
+	bool		verbose = ((params->options & CLUOPT_VERBOSE) != 0);
+	bool		recheck = ((params->options & CLUOPT_RECHECK) != 0);
 
 	/* Check for user-requested abort. */
 	CHECK_FOR_INTERRUPTS();
@@ -404,7 +424,7 @@ cluster_rel(Oid tableOid, Oid indexOid, int options, bool isTopLevel)
 	TransferPredicateLocksToHeapRelation(OldHeap);
 
 	/* rebuild_relation does all the dirty work */
-	rebuild_relation(OldHeap, indexOid, isTopLevel, verbose);
+	rebuild_relation(OldHeap, indexOid, verbose);
 
 	/* NB: rebuild_relation does table_close() on OldHeap */
 
@@ -549,12 +569,11 @@ mark_index_clustered(Relation rel, Oid indexOid, bool is_internal)
  *
  * OldHeap: table to rebuild --- must be opened and exclusive-locked!
  * indexOid: index to cluster by, or InvalidOid to rewrite in physical order.
- * isTopLevel: should be passed down from ProcessUtility.
  *
  * NB: this routine closes OldHeap at the right time; caller should not.
  */
 static void
-rebuild_relation(Relation OldHeap, Oid indexOid, bool isTopLevel, bool verbose)
+rebuild_relation(Relation OldHeap, Oid indexOid, bool verbose)
 {
 	Oid			tableOid = RelationGetRelid(OldHeap);
 	Oid			tableSpace = OldHeap->rd_rel->reltablespace;
@@ -582,7 +601,7 @@ rebuild_relation(Relation OldHeap, Oid indexOid, bool isTopLevel, bool verbose)
 							   AccessExclusiveLock);
 
 	/* Copy the heap data into the new table in the desired order */
-	copy_table_data(OIDNewHeap, tableOid, indexOid, isTopLevel, verbose,
+	copy_table_data(OIDNewHeap, tableOid, indexOid, verbose,
 					&swap_toast_by_content, &frozenXid, &cutoffMulti);
 
 	/*
@@ -733,8 +752,7 @@ make_new_heap(Oid OIDOldHeap, Oid NewTableSpace, char relpersistence,
  * *pCutoffMulti receives the MultiXactId used as a cutoff point.
  */
 static void
-copy_table_data(Oid OIDNewHeap, Oid OIDOldHeap, Oid OIDOldIndex,
-				bool isTopLevel, bool verbose,
+copy_table_data(Oid OIDNewHeap, Oid OIDOldHeap, Oid OIDOldIndex, bool verbose,
 				bool *pSwapToastByContent, TransactionId *pFreezeXid,
 				MultiXactId *pCutoffMulti)
 {
@@ -832,7 +850,7 @@ copy_table_data(Oid OIDNewHeap, Oid OIDOldHeap, Oid OIDOldIndex,
 	 * Since we're going to rewrite the whole table anyway, there's no reason
 	 * not to be aggressive about this.
 	 */
-	vacuum_set_xid_limits(OldHeap, 0, 0, 0, 0, isTopLevel,
+	vacuum_set_xid_limits(OldHeap, 0, 0, 0, 0,
 						  &OldestXmin, &FreezeXid, NULL, &MultiXactCutoff,
 						  NULL);
 
@@ -1339,6 +1357,7 @@ finish_heap_swap(Oid OIDOldHeap, Oid OIDNewHeap,
 	ObjectAddress object;
 	Oid			mapped_tables[4];
 	int			reindex_flags;
+	ReindexParams reindex_params = {0};
 	int			i;
 
 	/* Report that we are now swapping relation files */
@@ -1396,7 +1415,7 @@ finish_heap_swap(Oid OIDOldHeap, Oid OIDNewHeap,
 	pgstat_progress_update_param(PROGRESS_CLUSTER_PHASE,
 								 PROGRESS_CLUSTER_PHASE_REBUILD_INDEX);
 
-	reindex_relation(OIDOldHeap, reindex_flags, 0);
+	reindex_relation(OIDOldHeap, reindex_flags, &reindex_params);
 
 	/* Report that we are now doing clean up */
 	pgstat_progress_update_param(PROGRESS_CLUSTER_PHASE,

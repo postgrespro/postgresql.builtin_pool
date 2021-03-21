@@ -2,7 +2,7 @@
  *
  *	  Utility functions for conversion procs.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -653,7 +653,7 @@ LocalToUtf(const unsigned char *iso, int len,
 			continue;
 		}
 
-		l = pg_encoding_verifymb(encoding, (const char *) iso, len);
+		l = pg_encoding_verifymbchar(encoding, (const char *) iso, len);
 		if (l < 0)
 			break;
 

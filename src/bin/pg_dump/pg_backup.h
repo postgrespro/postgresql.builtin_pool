@@ -58,6 +58,20 @@ typedef enum _teSection
 	SECTION_POST_DATA			/* stuff to be processed after data */
 } teSection;
 
+/* Parameters needed by ConnectDatabase; same for dump and restore */
+typedef struct _connParams
+{
+	/* These fields record the actual command line parameters */
+	char	   *dbname;			/* this may be a connstring! */
+	char	   *pgport;
+	char	   *pghost;
+	char	   *username;
+	trivalue	promptPassword;
+	/* If not NULL, this overrides the dbname obtained from command line */
+	/* (but *only* the DB name, not anything else in the connstring) */
+	char	   *override_dbname;
+} ConnParams;
+
 typedef struct _restoreOptions
 {
 	int			createDB;		/* Issue commands to create the database */
@@ -107,12 +121,9 @@ typedef struct _restoreOptions
 	SimpleStringList tableNames;
 
 	int			useDB;
-	char	   *dbname;			/* subject to expand_dbname */
-	char	   *pgport;
-	char	   *pghost;
-	char	   *username;
+	ConnParams	cparams;		/* parameters to use if useDB */
+
 	int			noDataForFailedTables;
-	trivalue	promptPassword;
 	int			exit_on_error;
 	int			compression;
 	int			suppressDumpWarnings;	/* Suppress output of WARNING entries
@@ -127,10 +138,7 @@ typedef struct _restoreOptions
 
 typedef struct _dumpOptions
 {
-	const char *dbname;			/* subject to expand_dbname */
-	const char *pghost;
-	const char *pgport;
-	const char *username;
+	ConnParams	cparams;
 
 	int			binary_upgrade;
 
@@ -151,6 +159,7 @@ typedef struct _dumpOptions
 	int			no_publications;
 	int			no_subscriptions;
 	int			no_synchronized_snapshots;
+	int			no_toast_compression;
 	int			no_unlogged_table_data;
 	int			serializable_deferrable;
 	int			disable_triggers;
@@ -171,6 +180,7 @@ typedef struct _dumpOptions
 
 	int			sequence_data;	/* dump sequence data even in schema-only mode */
 	int			do_nothing;
+	int			coll_unknown;
 } DumpOptions;
 
 /*
@@ -199,6 +209,8 @@ typedef struct Archive
 
 	/* other important stuff */
 	char	   *searchpath;		/* search_path to set during restore */
+	char	   *default_toast_compression;	/* default TOAST compression to
+											 * set during restore */
 	char	   *use_role;		/* Issue SET ROLE to this */
 
 	/* error handling */
@@ -239,7 +251,7 @@ typedef int DumpId;
  * Function pointer prototypes for assorted callback methods.
  */
 
-typedef int (*DataDumperPtr) (Archive *AH, void *userArg);
+typedef int (*DataDumperPtr) (Archive *AH, const void *userArg);
 
 typedef void (*SetupWorkerPtrType) (Archive *AH);
 
@@ -247,12 +259,9 @@ typedef void (*SetupWorkerPtrType) (Archive *AH);
  * Main archiver interface.
  */
 
-extern void ConnectDatabase(Archive *AH,
-							const char *dbname,
-							const char *pghost,
-							const char *pgport,
-							const char *username,
-							trivalue prompt_password);
+extern void ConnectDatabase(Archive *AHX,
+							const ConnParams *cparams,
+							bool isReconnect);
 extern void DisconnectDatabase(Archive *AHX);
 extern PGconn *GetConnection(Archive *AHX);
 

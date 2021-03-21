@@ -4,7 +4,7 @@
  *
  * src/include/utils/pg_locale.h
  *
- * Copyright (c) 2002-2020, PostgreSQL Global Development Group
+ * Copyright (c) 2002-2021, PostgreSQL Global Development Group
  *
  *-----------------------------------------------------------------------
  */
@@ -103,7 +103,7 @@ typedef struct pg_locale_struct *pg_locale_t;
 
 extern pg_locale_t pg_newlocale_from_collation(Oid collid);
 
-extern char *get_collation_actual_version(char collprovider, const char *collcollate);
+extern char *get_collation_version_for_oid(Oid collid, bool missing_ok);
 
 #ifdef USE_ICU
 extern int32_t icu_to_uchar(UChar **buff_uchar, const char *buff, size_t nbytes);

@@ -8,7 +8,7 @@
  *
  * This code is released under the terms of the PostgreSQL License.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/test/regress/pg_regress.c
@@ -506,24 +506,22 @@ convert_sourcefiles_in(const char *source_subdir, const char *dest_dir, const ch
 
 	snprintf(testtablespace, MAXPGPATH, "%s/testtablespace", outputdir);
 
-#ifdef WIN32
-
 	/*
-	 * On Windows only, clean out the test tablespace dir, or create it if it
-	 * doesn't exist so as it is possible to run the regression tests as a
-	 * Windows administrative user account with the restricted token obtained
-	 * when starting pg_regress.  On other platforms we expect the Makefile to
-	 * take care of that.
+	 * Clean out the test tablespace dir, or create it if it doesn't exist. On
+	 * Windows, doing this cleanup here makes possible to run the regression
+	 * tests as a Windows administrative user account with the restricted
+	 * token obtained when starting pg_regress.
 	 */
 	if (directory_exists(testtablespace))
+	{
 		if (!rmtree(testtablespace, true))
 		{
 			fprintf(stderr, _("\n%s: could not remove test tablespace \"%s\"\n"),
 					progname, testtablespace);
 			exit(2);
 		}
+	}
 	make_directory(testtablespace);
-#endif
 
 	/* finally loop on each file and do the replacement */
 	for (name = names; *name; name++)
@@ -566,7 +564,7 @@ convert_sourcefiles_in(const char *source_subdir, const char *dest_dir, const ch
 
 		initStringInfo(&line);
 
-		while (pg_get_line_append(infile, &line))
+		while (pg_get_line_buf(infile, &line))
 		{
 			replace_string(&line, "@abs_srcdir@", inputdir);
 			replace_string(&line, "@abs_builddir@", outputdir);
@@ -574,7 +572,6 @@ convert_sourcefiles_in(const char *source_subdir, const char *dest_dir, const ch
 			replace_string(&line, "@libdir@", dlpath);
 			replace_string(&line, "@DLSUFFIX@", DLSUFFIX);
 			fputs(line.data, outfile);
-			resetStringInfo(&line);
 		}
 
 		pfree(line.data);
@@ -726,28 +723,16 @@ get_expectfile(const char *testname, const char *file)
 }
 
 /*
- * Handy subroutine for setting an environment variable "var" to "val"
- */
-static void
-doputenv(const char *var, const char *val)
-{
-	char	   *s;
-
-	s = psprintf("%s=%s", var, val);
-	putenv(s);
-}
-
-/*
  * Prepare environment variables for running regression tests
  */
 static void
 initialize_environment(void)
 {
 	/*
-	 * Set default application_name.  (The test_function may choose to
+	 * Set default application_name.  (The test_start_function may choose to
 	 * override this, but if it doesn't, we have something useful in place.)
 	 */
-	putenv("PGAPPNAME=pg_regress");
+	setenv("PGAPPNAME", "pg_regress", 1);
 
 	if (nolocale)
 	{
@@ -770,7 +755,7 @@ initialize_environment(void)
 		 * variables unset; see PostmasterMain().
 		 */
 #if defined(WIN32) || defined(__CYGWIN__) || defined(__darwin__)
-		putenv("LANG=C");
+		setenv("LANG", "C", 1);
 #endif
 	}
 
@@ -782,21 +767,21 @@ initialize_environment(void)
 	 */
 	unsetenv("LANGUAGE");
 	unsetenv("LC_ALL");
-	putenv("LC_MESSAGES=C");
+	setenv("LC_MESSAGES", "C", 1);
 
 	/*
 	 * Set encoding as requested
 	 */
 	if (encoding)
-		doputenv("PGCLIENTENCODING", encoding);
+		setenv("PGCLIENTENCODING", encoding, 1);
 	else
 		unsetenv("PGCLIENTENCODING");
 
 	/*
 	 * Set timezone and datestyle for datetime-related tests
 	 */
-	putenv("PGTZ=PST8PDT");
-	putenv("PGDATESTYLE=Postgres, MDY");
+	setenv("PGTZ", "PST8PDT", 1);
+	setenv("PGDATESTYLE", "Postgres, MDY", 1);
 
 	/*
 	 * Likewise set intervalstyle to ensure consistent results.  This is a bit
@@ -810,9 +795,10 @@ initialize_environment(void)
 
 		if (!old_pgoptions)
 			old_pgoptions = "";
-		new_pgoptions = psprintf("PGOPTIONS=%s %s",
+		new_pgoptions = psprintf("%s %s",
 								 old_pgoptions, my_pgoptions);
-		putenv(new_pgoptions);
+		setenv("PGOPTIONS", new_pgoptions, 1);
+		free(new_pgoptions);
 	}
 
 	if (temp_instance)
@@ -833,17 +819,17 @@ initialize_environment(void)
 		unsetenv("PGDATA");
 #ifdef HAVE_UNIX_SOCKETS
 		if (hostname != NULL)
-			doputenv("PGHOST", hostname);
+			setenv("PGHOST", hostname, 1);
 		else
 		{
 			sockdir = getenv("PG_REGRESS_SOCK_DIR");
 			if (!sockdir)
 				sockdir = make_temp_sockdir();
-			doputenv("PGHOST", sockdir);
+			setenv("PGHOST", sockdir, 1);
 		}
 #else
 		Assert(hostname != NULL);
-		doputenv("PGHOST", hostname);
+		setenv("PGHOST", hostname, 1);
 #endif
 		unsetenv("PGHOSTADDR");
 		if (port != -1)
@@ -851,7 +837,7 @@ initialize_environment(void)
 			char		s[16];
 
 			sprintf(s, "%d", port);
-			doputenv("PGPORT", s);
+			setenv("PGPORT", s, 1);
 		}
 	}
 	else
@@ -865,7 +851,7 @@ initialize_environment(void)
 		 */
 		if (hostname != NULL)
 		{
-			doputenv("PGHOST", hostname);
+			setenv("PGHOST", hostname, 1);
 			unsetenv("PGHOSTADDR");
 		}
 		if (port != -1)
@@ -873,10 +859,10 @@ initialize_environment(void)
 			char		s[16];
 
 			sprintf(s, "%d", port);
-			doputenv("PGPORT", s);
+			setenv("PGPORT", s, 1);
 		}
 		if (user != NULL)
-			doputenv("PGUSER", user);
+			setenv("PGUSER", user, 1);
 
 		/*
 		 * However, we *don't* honor PGDATABASE, since we certainly don't wish
@@ -1628,7 +1614,8 @@ log_child_failure(int exitstatus)
  * Run all the tests specified in one schedule file
  */
 static void
-run_schedule(const char *schedule, test_function tfunc)
+run_schedule(const char *schedule, test_start_function startfunc,
+			 postprocess_result_function postfunc)
 {
 #define MAX_PARALLEL_TESTS 100
 	char	   *tests[MAX_PARALLEL_TESTS];
@@ -1742,7 +1729,7 @@ run_schedule(const char *schedule, test_function tfunc)
 		if (num_tests == 1)
 		{
 			status(_("test %-28s ... "), tests[0]);
-			pids[0] = (tfunc) (tests[0], &resultfiles[0], &expectfiles[0], &tags[0]);
+			pids[0] = (startfunc) (tests[0], &resultfiles[0], &expectfiles[0], &tags[0]);
 			INSTR_TIME_SET_CURRENT(starttimes[0]);
 			wait_for_tests(pids, statuses, stoptimes, NULL, 1);
 			/* status line is finished below */
@@ -1768,7 +1755,7 @@ run_schedule(const char *schedule, test_function tfunc)
 								   tests + oldest, i - oldest);
 					oldest = i;
 				}
-				pids[i] = (tfunc) (tests[i], &resultfiles[i], &expectfiles[i], &tags[i]);
+				pids[i] = (startfunc) (tests[i], &resultfiles[i], &expectfiles[i], &tags[i]);
 				INSTR_TIME_SET_CURRENT(starttimes[i]);
 			}
 			wait_for_tests(pids + oldest, statuses + oldest,
@@ -1781,7 +1768,7 @@ run_schedule(const char *schedule, test_function tfunc)
 			status(_("parallel group (%d tests): "), num_tests);
 			for (i = 0; i < num_tests; i++)
 			{
-				pids[i] = (tfunc) (tests[i], &resultfiles[i], &expectfiles[i], &tags[i]);
+				pids[i] = (startfunc) (tests[i], &resultfiles[i], &expectfiles[i], &tags[i]);
 				INSTR_TIME_SET_CURRENT(starttimes[i]);
 			}
 			wait_for_tests(pids, statuses, stoptimes, tests, num_tests);
@@ -1813,6 +1800,8 @@ run_schedule(const char *schedule, test_function tfunc)
 			{
 				bool		newdiff;
 
+				if (postfunc)
+					(*postfunc) (rl->str);
 				newdiff = results_differ(tests[i], rl->str, el->str);
 				if (newdiff && tl)
 				{
@@ -1879,7 +1868,8 @@ run_schedule(const char *schedule, test_function tfunc)
  * Run a single test
  */
 static void
-run_single_test(const char *test, test_function tfunc)
+run_single_test(const char *test, test_start_function startfunc,
+				postprocess_result_function postfunc)
 {
 	PID_TYPE	pid;
 	instr_time	starttime;
@@ -1894,7 +1884,7 @@ run_single_test(const char *test, test_function tfunc)
 	bool		differ = false;
 
 	status(_("test %-28s ... "), test);
-	pid = (tfunc) (test, &resultfiles, &expectfiles, &tags);
+	pid = (startfunc) (test, &resultfiles, &expectfiles, &tags);
 	INSTR_TIME_SET_CURRENT(starttime);
 	wait_for_tests(&pid, &exit_status, &stoptime, NULL, 1);
 
@@ -1912,6 +1902,8 @@ run_single_test(const char *test, test_function tfunc)
 	{
 		bool		newdiff;
 
+		if (postfunc)
+			(*postfunc) (rl->str);
 		newdiff = results_differ(test, rl->str, el->str);
 		if (newdiff && tl)
 		{
@@ -2095,7 +2087,10 @@ help(void)
 }
 
 int
-regression_main(int argc, char *argv[], init_function ifunc, test_function tfunc)
+regression_main(int argc, char *argv[],
+				init_function ifunc,
+				test_start_function startfunc,
+				postprocess_result_function postfunc)
 {
 	static struct option long_options[] = {
 		{"help", no_argument, NULL, 'h'},
@@ -2432,7 +2427,7 @@ regression_main(int argc, char *argv[], init_function ifunc, test_function tfunc
 				fprintf(stderr, _("port %d apparently in use, trying %d\n"), port, port + 1);
 				port++;
 				sprintf(s, "%d", port);
-				doputenv("PGPORT", s);
+				setenv("PGPORT", s, 1);
 			}
 			else
 				break;
@@ -2566,12 +2561,12 @@ regression_main(int argc, char *argv[], init_function ifunc, test_function tfunc
 
 	for (sl = schedulelist; sl != NULL; sl = sl->next)
 	{
-		run_schedule(sl->str, tfunc);
+		run_schedule(sl->str, startfunc, postfunc);
 	}
 
 	for (sl = extra_tests; sl != NULL; sl = sl->next)
 	{
-		run_single_test(sl->str, tfunc);
+		run_single_test(sl->str, startfunc, postfunc);
 	}
 
 	/*

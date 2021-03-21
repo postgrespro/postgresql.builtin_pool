@@ -13,9 +13,9 @@ use lib $FindBin::RealBin;
 
 use SSLServer;
 
-if ($ENV{with_openssl} ne 'yes')
+if ($ENV{with_ssl} ne 'openssl')
 {
-	plan skip_all => 'SSL not supported by this build';
+	plan skip_all => 'OpenSSL not supported by this build';
 }
 
 # This is the hostname used to connect to the server.
@@ -78,7 +78,7 @@ else
 	test_connect_fails(
 		$common_connstr,
 		"user=ssltestuser channel_binding=require",
-		qr/could not connect to server: channel binding is required, but server did not offer an authentication method that supports channel binding/,
+		qr/channel binding is required, but server did not offer an authentication method that supports channel binding/,
 		"SCRAM with SSL and channel_binding=require");
 }
 

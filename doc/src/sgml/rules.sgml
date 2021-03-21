@@ -769,7 +769,7 @@ SELECT t1.a, t2.b, t1.ctid FROM t1, t2 WHERE t1.a = t2.a;
 </para>
 
 <para>
-    The benefit of implementing views with the rule system is,
+    The benefit of implementing views with the rule system is
     that the planner has all
     the information about which tables have to be scanned plus the
     relationships between these tables plus the restrictive
@@ -781,7 +781,7 @@ SELECT t1.a, t2.b, t1.ctid FROM t1, t2 WHERE t1.a = t2.a;
     the best path to execute the query, and the more information
     the planner has, the better this decision can be. And
     the rule system as implemented in <productname>PostgreSQL</productname>
-    ensures, that this is all information available about the query
+    ensures that this is all information available about the query
     up to that point.
 </para>
 </sect2>
@@ -797,6 +797,10 @@ SELECT t1.a, t2.b, t1.ctid FROM t1, t2 WHERE t1.a = t2.a;
     relation points at a subquery range-table entry, which will not
     work.  There are several ways in which <productname>PostgreSQL</productname>
     can support the appearance of updating a view, however.
+    In order of user-experienced complexity those are: automatically substitute
+    in the underlying table for the view, execute a user-defined trigger,
+    or rewrite the query per a user-defined rule.
+    These options are discussed below.
 </para>
 
 <para>
@@ -812,7 +816,8 @@ SELECT t1.a, t2.b, t1.ctid FROM t1, t2 WHERE t1.a = t2.a;
 
 <para>
     Alternatively, the operation may be handled by a user-provided
-    <literal>INSTEAD OF</literal> trigger on the view.
+    <literal>INSTEAD OF</literal> trigger on the view
+    (see <xref linkend="sql-createtrigger"/>).
     Rewriting works slightly differently
     in this case.  For <command>INSERT</command>, the rewriter does
     nothing at all with the view, leaving it as the result relation
@@ -1266,7 +1271,7 @@ CREATE [ OR REPLACE ] RULE <replaceable class="parameter">name</replaceable> AS 
 <para>
     The query trees generated from rule actions are thrown into the
     rewrite system again, and maybe more rules get applied resulting
-    in more or less query trees.
+    in additional or fewer query trees.
     So a rule's actions must have either a different
     command type or a different result relation than the rule itself is
     on, otherwise this recursive process will end up in an infinite loop.
@@ -1941,7 +1946,7 @@ DELETE FROM shoelace WHERE EXISTS
              WHERE sl_name = shoelace.sl_name);
 </programlisting>
 
-    <foreignphrase>Voil&agrave;</foreignphrase>:
+    The results are:
 
 <programlisting>
 SELECT * FROM shoelace;
@@ -2087,7 +2092,7 @@ CREATE FUNCTION tricky(text, text) RETURNS bool AS $$
 BEGIN
     RAISE NOTICE '% =&gt; %', $1, $2;
     RETURN true;
-END
+END;
 $$ LANGUAGE plpgsql COST 0.0000000000000000000001;
 
 SELECT * FROM phone_number WHERE tricky(person, phone);

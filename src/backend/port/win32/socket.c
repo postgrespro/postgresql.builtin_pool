@@ -3,7 +3,7 @@
  * socket.c
  *	  Microsoft Windows Win32 Socket Functions
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *	  src/backend/port/win32/socket.c
@@ -120,13 +120,21 @@ TranslateSocketError(void)
 		case WSAEADDRNOTAVAIL:
 			errno = EADDRNOTAVAIL;
 			break;
-		case WSAEHOSTUNREACH:
 		case WSAEHOSTDOWN:
+			errno = EHOSTDOWN;
+			break;
+		case WSAEHOSTUNREACH:
 		case WSAHOST_NOT_FOUND:
-		case WSAENETDOWN:
-		case WSAENETUNREACH:
-		case WSAENETRESET:
 			errno = EHOSTUNREACH;
+			break;
+		case WSAENETDOWN:
+			errno = ENETDOWN;
+			break;
+		case WSAENETUNREACH:
+			errno = ENETUNREACH;
+			break;
+		case WSAENETRESET:
+			errno = ENETRESET;
 			break;
 		case WSAENOTCONN:
 		case WSAESHUTDOWN:
