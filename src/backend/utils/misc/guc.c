@@ -492,6 +492,7 @@ static const struct config_enum_entry session_schedule_options[] = {
 	{"round-robin", SESSION_SCHED_ROUND_ROBIN, false},
 	{"random", SESSION_SCHED_RANDOM, false},
 	{"load-balancing", SESSION_SCHED_LOAD_BALANCING, false},
+	{NULL, 0, false}
 };
 
 static struct config_enum_entry recovery_init_sync_method_options[] = {

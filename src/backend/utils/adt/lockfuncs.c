@@ -676,12 +676,14 @@ pg_isolation_test_session_is_blocked(PG_FUNCTION_ARGS)
  *	field4: 1 if using an int8 key, 2 if using 2 int4 keys
  */
 #define SET_LOCKTAG_INT64(tag, key64) \
+	MyProc->is_tainted = true; \
 	SET_LOCKTAG_ADVISORY(tag, \
 						 MyDatabaseId, \
 						 (uint32) ((key64) >> 32), \
 						 (uint32) (key64), \
 						 1)
 #define SET_LOCKTAG_INT32(tag, key1, key2) \
+	MyProc->is_tainted = true; \
 	SET_LOCKTAG_ADVISORY(tag, MyDatabaseId, key1, key2, 2)
 
 /*

@@ -2091,8 +2091,6 @@ ProcessStartupPacket(Port *port, bool ssl_done, bool gss_done)
 {
 	int32		len;
 	char	   *buf;
-	ProtocolVersion proto;
-	MemoryContext oldcontext;
 
 	pq_startmsgread();
 
@@ -2294,7 +2292,7 @@ retry1:
 
 		while (offset < len)
 		{
-			char	   *nameptr = buf + offset;
+			char	   *nameptr = (char*)buf + offset;
 			int32		valoffset;
 			char	   *valptr;
 
@@ -2303,7 +2301,7 @@ retry1:
 			valoffset = offset + strlen(nameptr) + 1;
 			if (valoffset >= len)
 				break;			/* missing value, will complain below */
-			valptr = buf + valoffset;
+			valptr = (char*)buf + valoffset;
 
 			if (strcmp(nameptr, "database") == 0)
 				port->database_name = pstrdup(valptr);
