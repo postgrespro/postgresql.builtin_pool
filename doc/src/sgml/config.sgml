@@ -831,7 +831,7 @@ include_dir 'conf.d'
           With <literal>random</literal> policy postmaster randomly choose proxy for new session.
         </para>
         <para>
-          With <literal>load-balancing</literal> policy postmaster choose proxy with lowest load average.
+          With <literal>load-balancing</literal> policy postmaster chooses proxy with lowest load average.
           Load average of proxy is estimated by number of clients connection assigned to this proxy with extra weight for SSL connections.
        </para>
       </listitem>

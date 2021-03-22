@@ -1,3 +1,17 @@
+/*-------------------------------------------------------------------------
+ *
+ * proxy.c
+ *    This process implements built-in connection pooler. It acts as proxy between clients and pooler backends.
+ *
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1994, Regents of the University of California
+ *
+ *
+ * IDENTIFICATION
+ *	  src/backend/postmaster/postmaster.c
+ *-------------------------------------------------------------------------
+ */
+
 #include <unistd.h>
 #include <errno.h>
 
@@ -354,7 +368,7 @@ client_connect(Channel* chan, int startup_packet_size)
 	else
 	{
 		/* Assume that all clients are using the same set of GUCs.
-		 * Use then for launching pooler worker backends and report error
+		 * Use them for launching pooler worker backends and report error
 		 * if GUCs in startup packets are different.
 		 */
 		if (chan->pool->n_launched_backends == chan->pool->n_dedicated_backends)
